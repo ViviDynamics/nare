@@ -3,6 +3,9 @@
 **Date:** 2026-09-09
 **Status:** Approved, not yet implemented
 **Scope:** The first of five slices. Core engine plus headless CLI.
+**Amended:** 2026-09-15 by `2026-09-15-nare-transport-layer-design.md`, which
+establishes the transport layer. Sections 4, 5, 6, 8, and 9 below carry those
+changes inline.
 
 ## 1. What nare is
 
@@ -79,28 +82,41 @@ src/nare/
   loop.py         step(), run()                          ~120
   events.py       Event + secret redaction               ~70
   tools.py        read write edit bash ask + dispatch     ~250
-  provider.py     Anthropic turn()                       ~150
-  cli.py          nare run [--jsonl] [--yes] [--resume]  ~120
+  transport/
+    __init__.py   Transport, Reply, make_transport()     ~70
+    anthropic.py  AnthropicTransport                     ~150
+  cli.py          nare run [flags below]                 ~140
 tests/
   fake_provider.py
-  test_loop.py  test_tools.py  test_cli.py
+  test_loop.py  test_tools.py  test_cli.py  test_transport.py
 docs/
   architecture.md            written after the skeleton runs
   adr/000{1..6}-*.md
 pyproject.toml  bin/build  .github/workflows/ci.yml
 ```
 
-Seven source files, roughly 800 lines. Flat deliberately. `provider.py`
-becomes `providers/` when a second provider lands; `tools.py` splits when it
-hurts. A directory holding one file is speculation.
+Roughly 900 lines. Flat deliberately, with one exception: `transport/` is a
+package because it is the layer every later slice sits on, and a package edge
+is what keeps slices 2 through 5 out of its internals. `tools.py` splits when
+it hurts. A directory holding one file is still speculation.
 
-### No Provider protocol class
+### The transport layer
 
-`step()` accepts anything with `async def turn(messages, tools) -> Reply`.
-Duck-typed, no ABC, no registry. The seam is justified rather than speculative
-because the test double is a genuine second implementation: `FakeProvider`
-replays scripted replies, which is also what makes the loop deterministic
-under test.
+The bottom layer. `step()` accepts anything with
+`async def turn(messages, tools) -> Reply`, and `make_transport(kind, ...)`
+builds one from configuration. Slice 1 ships exactly one implementation;
+Claude, OpenAI, and locally hosted models are the three planned
+configurations, which is what justifies the seam.
+
+Still duck-typed: `typing.Protocol` is structural, so `FakeProvider` inherits
+nothing and imports nothing, and it remains a genuine second implementation
+that keeps the loop deterministic under test. No ABC, and no registry — the
+registry is slice 4's, with the rest of the extension surface.
+
+The transport owns everything vendor-shaped: wire format, tool schema
+translation, sampling parameters, retry policy, and `stop_reason` and `usage`
+normalization. Full contract and rationale in
+`2026-09-15-nare-transport-layer-design.md`.
 
 ### Hand-written tool schemas
 
@@ -147,8 +163,8 @@ own edge, in its own file, when it exists.
 ### step()
 
 ```python
-async def step(s: Session, provider, approve) -> Session:
-    reply = await provider.turn(s.messages, TOOL_SCHEMAS)
+async def step(s: Session, transport, approve) -> Session:
+    reply = await transport.turn(s.messages, TOOL_SCHEMAS)
     s.usage += reply.usage; s.turns += 1
     s.messages.append(assistant(reply.content))
     if not reply.tool_calls:
@@ -178,6 +194,29 @@ rather than a mapping table.
 
 Events accumulate on the session per step; `run()` drains them.
 
+### Flags
+
+| Flag | Env | Default |
+|---|---|---|
+| `--provider {anthropic}` | `NARE_PROVIDER` | `anthropic` |
+| `--model NAME` | `NARE_MODEL` | `claude-sonnet-5` |
+| `--base-url URL` | `NARE_BASE_URL` | vendor default |
+| `--temperature FLOAT` | — | unset |
+| `--max-tokens INT` | — | 8192 |
+| `--effort {low,medium,high}` | — | unset |
+| `--system TEXT` | — | unset |
+| `--jsonl`, `--yes`, `--resume PATH`, `--session PATH`, `--max-turns N` | — | see below |
+
+Precedence is flag, then environment, then default. Everything above the rule
+is bound into a `Transport` by `make_transport()` and never reaches the loop.
+
+There is no `--api-key` flag: argv is world-readable through `ps` and `/proc`,
+and the performer spawns `nare` as a subprocess. Keys come from the
+environment, read by the vendor SDK itself.
+
+`--system` carries Conductor's per-role persona text. Without it the nine roles
+have no way in.
+
 ### Wire format
 
 Stdout is pure JSONL events, terminated by one `{"type": "result", ...}` line
@@ -201,9 +240,13 @@ whole slice 2 requirement falling out of slice 1 for free.
 
 **One runtime dependency: `anthropic`.** No pydantic (dataclasses and `json`
 cover a serializable session), no structlog (events are the log), no click or
-typer (argparse handles four flags). Conductor reaches for those and should. A
-harness that gets vendored into other people's containers should be nearly
+typer (argparse handles the flag set). Conductor reaches for those and should.
+A harness that gets vendored into other people's containers should be nearly
 impossible to conflict with.
+
+That claim only survives if it stays true, so the posture is recorded now: a
+second transport's SDK lands as an optional extra, `pip install nare[openai]`,
+and never as a base dependency.
 
 Dev dependencies are pytest, pytest-asyncio, ruff, mypy — Conductor's
 toolchain exactly. `bin/build` runs lint, types, and tests, matching
@@ -216,7 +259,7 @@ a `nare = "nare.cli:main"` console script.
 
 ## 7. Testing
 
-Everything rests on the loop being deterministic given a provider.
+Everything rests on the loop being deterministic given a transport.
 `FakeProvider` replays a scripted list of replies, so every path is an
 ordinary unit test with no mocking framework and no network.
 
@@ -224,6 +267,9 @@ ordinary unit test with no mocking framework and no network.
   resume round-trip asserting `Session -> json -> Session` runs identically.
 - `test_tools` — each tool, plus `approve` returning False.
 - `test_cli` — golden JSONL with timestamps normalized.
+- `test_transport` — factory selection and its errors, plus the real outbound
+  request asserted through `httpx.MockTransport`, which arrives with
+  `anthropic` and needs no mocking framework.
 - One `@pytest.mark.live` smoke test, skipped without `ANTHROPIC_API_KEY`, not
   run in CI.
 
@@ -237,6 +283,9 @@ In a throwaway git repository:
    `questions`.
 3. `--resume` on a written session file continues that session.
 4. `nare run` without `--yes` refuses to start.
+5. `--model`, `--max-tokens`, and `--temperature` reach the outbound request,
+   and an unknown `--provider` fails at construction with a clear message
+   rather than at the first request.
 
 A sketch of the roughly 80-line Conductor adapter that would consume these is
 part of the deliverable, as evidence the contract holds. Wiring it into the
@@ -253,7 +302,9 @@ Named explicitly so none of it gets built by accident:
 - No MCP, hooks, skills, or subagents.
 - No compaction or context management.
 - No TUI, HTTP daemon, or desktop app.
-- No second provider.
+- No second provider. Slice 1 ships the transport seam and one
+  implementation; Claude is the only `--provider` value that parses.
+- No transport registry and no plugin loading. Both are slice 4.
 - No API reference or plugin-authoring guide. There are no plugins, and a
   roadmap document is a promise maintained instead of code.
 
