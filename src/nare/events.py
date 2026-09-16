@@ -31,7 +31,11 @@ def _redact_value(value: Any) -> Any:
         return redact(value)
     if isinstance(value, dict):
         return {k: _redact_value(v) for k, v in value.items()}
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple, set, frozenset)):
+        # Normalized to a list on purpose: all of these serialize as a JSON
+        # array anyway, and `detail` has to stay JSON-serializable for the
+        # JSONL wire. json.dumps actually RAISES on a set, so this closes a
+        # latent emission crash as well as the redaction hole.
         return [_redact_value(v) for v in value]
     return value
 
