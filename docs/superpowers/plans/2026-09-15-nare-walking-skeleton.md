@@ -2137,7 +2137,7 @@ git commit -m "feat: add step(), the agent loop's single advance"
 ```python
 import nare
 from nare.loop import MAX_TURNS_DEFAULT, run
-from nare.session import Session, dumps, loads
+from nare.session import Session, Status, append_user_text, dumps, loads
 from nare.transport import Transport
 
 # Also add `Exploding` to the existing `from fake_provider import ...` line at
@@ -2213,10 +2213,15 @@ async def test_a_resumed_session_runs_identically(tmp_path: Path) -> None:
     revived = loads(dumps(first))
     assert revived == first
 
-    from nare.session import append_user_text
-
     append_user_text(revived, f"use {target}")
-    revived.status = "working"
+    # Route the value through a typed local rather than assigning the bare
+    # literal. A bare literal narrows `status` to Literal["working"], mypy does
+    # not invalidate that across the mutating `await drain(...)` below, and the
+    # later `== "done"` then fails as a comparison-overlap. Suppressing it with
+    # a type: ignore would be worse: strict mode implies warn_unused_ignores, so
+    # a future mypy that narrows better would turn the suppression into an error.
+    working: Status = "working"
+    revived.status = working
     fake = FakeProvider(
         [
             tool_reply("write", {"path": str(target), "content": "hi"}),
