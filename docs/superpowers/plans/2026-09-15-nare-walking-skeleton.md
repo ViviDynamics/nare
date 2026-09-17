@@ -1928,7 +1928,7 @@ git commit -m "feat: add tool dispatch and the approval seam"
 ```python
 from pathlib import Path
 
-from fake_provider import Exploding, FakeProvider, text_reply, tool_reply
+from fake_provider import FakeProvider, text_reply, tool_reply
 
 from nare.loop import step
 from nare.session import Usage, new_session
@@ -2135,6 +2135,9 @@ import nare
 from nare.loop import MAX_TURNS_DEFAULT, run
 from nare.session import Session, dumps, loads
 from nare.transport import Transport
+
+# Also add `Exploding` to the existing `from fake_provider import ...` line at
+# the top of the file. Task 10 does not use it, so task 10 does not import it.
 
 
 async def drain(
