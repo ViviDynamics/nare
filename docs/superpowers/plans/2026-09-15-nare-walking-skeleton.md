@@ -18,10 +18,11 @@ Every task's requirements implicitly include this section. Values are copied ver
 
 - **Python `>=3.12`.** uv for env management, hatchling for build.
 - **Exactly one runtime dependency: `anthropic`.** Adding any other runtime dependency fails the plan. A second transport's SDK lands later as an optional extra (`pip install nare[openai]`), never as a base dependency.
-- **Dev dependencies are pytest, pytest-asyncio, ruff, mypy.** Nothing else. No mocking framework — `httpx.MockTransport` (which arrives inside `anthropic`) covers the network, and `FakeProvider` covers the loop.
+- **Dev dependencies are pytest, pytest-asyncio, ruff, mypy.** Nothing else. No mocking framework — `httpx2.MockTransport` (which arrives inside `anthropic`) covers the network, and `FakeProvider` covers the loop.
 - **No network access in any test** except the single `@pytest.mark.live` smoke test, which is deselected by default and never runs in CI.
 - **License metadata:** `license = "LicenseRef-Elastic-License-2.0"`, `license-files = ["LICENSE", "NOTICE"]`. Console script `nare = "nare.cli:main"`.
-- **Defaults, exact:** model `claude-sonnet-5`; `max_tokens` 8192; `--max-turns` 50; effort budgets `low`=1024, `medium`=4096, `high`=16384; effort's default `max_tokens` = budget + 8192.
+- **Defaults, exact:** model `claude-sonnet-5`; `max_tokens` 8192; `--max-turns` 50; effort budgets `low`=1024, `medium`=4096, `high`=16384; effort's default `max_tokens` = `min(budget + 8192, 21333)`.
+- **SDK reality, amended 2026-09-16 (both specs carry amendment notes).** `anthropic` 1.6.0: the HTTP library is **`httpx2`**, not `httpx`; **`temperature` does not exist** on `messages.create`, and the anthropic transport raises when it is set rather than dropping it silently; the omission sentinel is **`omit`**, not `NOT_GIVEN`; and `max_tokens` above **21333** requires streaming, which is slice 3's, so the transport refuses it.
 - **`max_tokens` defaults to `None`** in both the CLI and `make_transport()` signatures, and resolves to 8192 inside the transport. The transport must be able to distinguish an explicit `--max-tokens 8192` from an unset value.
 - **There is no `--api-key` flag.** Argv is world-readable through `ps` and `/proc`. Keys come from the environment. `make_transport(api_key=...)` exists for library callers only.
 - **Event types are exactly six, verbatim:** `progress`, `tool_use`, `thinking`, `cost`, `error`, `output`. Four fields, verbatim: `timestamp`, `type`, `text`, `detail`. These match Conductor's `BackendEventType` so its adapter is `BackendEvent(**json.loads(line))`.
@@ -786,10 +787,11 @@ git commit -m "feat: establish the Transport protocol and its test double"
 - Produces:
   - `EFFORT_BUDGETS: dict[str, int]` — `{"low": 1024, "medium": 4096, "high": 16384}`
   - `DEFAULT_MAX_TOKENS: int = 8192`
+  - `NONSTREAMING_MAX_TOKENS: int = 21333`
   - `AnthropicTransport(*, model, base_url=None, api_key=None, temperature=None, max_tokens=None, effort=None, system=None, http_client=None)`
-  - Readable attributes for the tests: `.model`, `.max_tokens`, `.temperature`, `.thinking`, `.system`
+  - Readable attributes for the tests: `.model`, `.max_tokens`, `.thinking`, `.system`. There is deliberately **no `.temperature`** — the vendor removed the parameter, so the constructor refuses it rather than storing a value it could never send.
 
-A shared parameter bag cannot know that Anthropic's thinking budget forces `temperature=1` and must sit under `max_tokens`. A per-transport edge can, and that is the difference between a seam that varies something and one that varies nothing.
+A shared parameter bag cannot know that Anthropic's thinking budget must sit under `max_tokens`, that this vendor rejects `temperature` outright, or that the SDK refuses non-streaming requests above 21333 tokens. A per-transport edge can, and that is the difference between a seam that varies something and one that varies nothing.
 
 - [ ] **Step 1: Write the failing test** (append to `tests/test_transport.py`)
 
@@ -823,20 +825,24 @@ def test_no_effort_means_no_thinking_block() -> None:
 def test_effort_renders_a_thinking_budget(effort: str, budget: int) -> None:
     t = build(effort=effort)
     assert t.thinking == {"type": "enabled", "budget_tokens": budget}
-    assert t.temperature == 1
-    assert t.max_tokens == budget + DEFAULT_MAX_TOKENS
+    assert t.max_tokens == min(budget + DEFAULT_MAX_TOKENS, NONSTREAMING_MAX_TOKENS)
 
 
-def test_effort_high_resolves_to_the_specced_numbers() -> None:
+def test_effort_high_clamps_to_the_nonstreaming_ceiling() -> None:
+    # budget + 8192 would be 24576, which the SDK refuses without streaming.
     t = build(effort="high")
-    assert (t.thinking, t.temperature, t.max_tokens) == (
-        {"type": "enabled", "budget_tokens": 16384},
-        1,
-        24576,
-    )
+    assert t.thinking == {"type": "enabled", "budget_tokens": 16384}
+    assert t.max_tokens == NONSTREAMING_MAX_TOKENS == 21333
 
 
-def test_effort_with_explicit_temperature_raises() -> None:
+def test_temperature_is_refused_outright() -> None:
+    # anthropic 1.6.0 removed temperature from messages.create. Refusing beats
+    # silently dropping a sampling parameter the caller explicitly asked for.
+    with pytest.raises(ValueError, match="temperature"):
+        build(temperature=0.2)
+
+
+def test_temperature_is_refused_with_effort_too() -> None:
     with pytest.raises(ValueError, match="temperature"):
         build(effort="high", temperature=0.2)
 
@@ -850,8 +856,9 @@ def test_effort_with_max_tokens_above_the_budget_is_accepted() -> None:
     assert build(effort="high", max_tokens=20000).max_tokens == 20000
 
 
-def test_temperature_alone_is_bound() -> None:
-    assert build(temperature=0.2).temperature == 0.2
+def test_max_tokens_above_the_nonstreaming_ceiling_raises() -> None:
+    with pytest.raises(ValueError, match="streaming"):
+        build(max_tokens=NONSTREAMING_MAX_TOKENS + 1)
 
 
 def test_missing_api_key_raises_at_construction(
@@ -877,13 +884,16 @@ from __future__ import annotations
 import os
 from typing import Any, Literal
 
-import httpx
+import httpx2
 from anthropic import AsyncAnthropic
 
-from nare.session import Usage
-from nare.transport import Reply, StopReason, ToolCall
-
 DEFAULT_MAX_TOKENS = 8192
+
+# Above this the SDK's own _calculate_nonstreaming_timeout raises, because
+# 3600 * max_tokens / 128000 exceeds its ten-minute non-streaming budget.
+# Streaming turn() is slice 3's, so the transport refuses rather than guessing.
+NONSTREAMING_MAX_TOKENS = 21333
+
 EFFORT_BUDGETS: dict[str, int] = {"low": 1024, "medium": 4096, "high": 16384}
 
 Effort = Literal["low", "medium", "high"]
@@ -900,30 +910,30 @@ class AnthropicTransport:
         max_tokens: int | None = None,
         effort: Effort | None = None,
         system: str | None = None,
-        http_client: httpx.AsyncClient | None = None,
+        http_client: httpx2.AsyncClient | None = None,
     ) -> None:
         if api_key is None and not os.environ.get("ANTHROPIC_API_KEY"):
             raise ValueError(
                 "no Anthropic API key: set ANTHROPIC_API_KEY in the environment "
                 "(there is no --api-key flag; argv is world-readable)"
             )
+        if temperature is not None:
+            raise ValueError(
+                "anthropic no longer accepts temperature: the parameter was "
+                "removed from messages.create, so nare refuses it rather than "
+                "silently dropping it. Omit --temperature for this provider."
+            )
 
+        self.thinking: dict[str, Any] | None = None
         budget = EFFORT_BUDGETS[effort] if effort is not None else None
 
         if budget is None:
-            self.thinking: dict[str, Any] | None = None
-            self.temperature = temperature
-            self.max_tokens = (
-                max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
-            )
+            resolved = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
         else:
-            if temperature is not None:
-                raise ValueError(
-                    "effort and temperature cannot be combined on anthropic: "
-                    "extended thinking requires temperature=1"
-                )
             resolved = (
-                max_tokens if max_tokens is not None else budget + DEFAULT_MAX_TOKENS
+                max_tokens
+                if max_tokens is not None
+                else min(budget + DEFAULT_MAX_TOKENS, NONSTREAMING_MAX_TOKENS)
             )
             if resolved <= budget:
                 raise ValueError(
@@ -931,9 +941,14 @@ class AnthropicTransport:
                     f"budget of {budget}"
                 )
             self.thinking = {"type": "enabled", "budget_tokens": budget}
-            self.temperature = 1
-            self.max_tokens = resolved
 
+        if resolved > NONSTREAMING_MAX_TOKENS:
+            raise ValueError(
+                f"max_tokens {resolved} exceeds {NONSTREAMING_MAX_TOKENS}, above "
+                "which the SDK requires streaming; streaming turn() is slice 3's"
+            )
+
+        self.max_tokens = resolved
         self.model = model
         self.system = system
         self._client = AsyncAnthropic(
@@ -970,7 +985,7 @@ git commit -m "feat: validate anthropic sampling parameters at construction"
   - `stop_reason_from(raw: str | None) -> StopReason`
   - `usage_from(raw: Any) -> Usage`
 
-The tests assert against the **real request the real SDK constructs**, through `httpx.MockTransport`. That is materially stronger than stubbing `turn()`, and it is the harness that makes the second transport cheap to add. `httpx` arrives as a dependency of `anthropic`, so this costs zero new dependencies.
+The tests assert against the **real request the real SDK constructs**, through `httpx2.MockTransport`. That is materially stronger than stubbing `turn()`, and it is the harness that makes the second transport cheap to add. `httpx2` arrives as a dependency of `anthropic`, so this costs zero new dependencies.
 
 - [ ] **Step 1: Write the failing test** (append to `tests/test_transport.py`)
 
@@ -979,10 +994,14 @@ import json
 import os
 from typing import Any
 
-import httpx
+import httpx2
 
 from nare.session import Message
-from nare.transport.anthropic import stop_reason_from, usage_from
+from nare.transport.anthropic import (
+    NONSTREAMING_MAX_TOKENS,
+    stop_reason_from,
+    usage_from,
+)
 
 CANNED_BODY: dict[str, Any] = {
     "id": "msg_01",
@@ -1004,16 +1023,16 @@ CANNED_BODY: dict[str, Any] = {
 }
 
 
-def recording_client(captured: list[httpx.Request]) -> httpx.AsyncClient:
-    def handler(request: httpx.Request) -> httpx.Response:
+def recording_client(captured: list[httpx2.Request]) -> httpx2.AsyncClient:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         captured.append(request)
-        return httpx.Response(200, json=CANNED_BODY)
+        return httpx2.Response(200, json=CANNED_BODY)
 
-    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
 
 
 async def outbound(**kwargs: Any) -> dict[str, Any]:
-    captured: list[httpx.Request] = []
+    captured: list[httpx2.Request] = []
     transport = build(http_client=recording_client(captured), **kwargs)
     await transport.turn(
         [Message("user", [{"type": "text", "text": "read a.py"}])],
@@ -1028,13 +1047,16 @@ async def test_model_and_max_tokens_reach_the_wire() -> None:
     assert body["max_tokens"] == 512
 
 
-async def test_temperature_reaches_the_wire() -> None:
-    assert (await outbound(temperature=0.2))["temperature"] == 0.2
+async def test_temperature_never_reaches_the_wire() -> None:
+    # The constructor refuses --temperature outright (task 5), so there is no
+    # path by which this vendor's request body can carry one.
+    assert "temperature" not in await outbound()
+    with pytest.raises(ValueError, match="temperature"):
+        await outbound(temperature=0.2)
 
 
 async def test_unset_sampling_params_are_omitted_entirely() -> None:
     body = await outbound()
-    assert "temperature" not in body
     assert "thinking" not in body
     assert "system" not in body
 
@@ -1045,11 +1067,11 @@ async def test_system_reaches_the_wire() -> None:
     )
 
 
-async def test_effort_renders_thinking_and_temperature_one() -> None:
+async def test_effort_renders_thinking_clamped_to_the_ceiling() -> None:
     body = await outbound(effort="high")
     assert body["thinking"] == {"type": "enabled", "budget_tokens": 16384}
-    assert body["temperature"] == 1
-    assert body["max_tokens"] == 24576
+    assert "temperature" not in body
+    assert body["max_tokens"] == 21333
 
 
 async def test_tool_schemas_pass_through_anthropic_shaped() -> None:
@@ -1163,10 +1185,11 @@ import logging
 from dataclasses import asdict
 from typing import cast
 
-from anthropic import NOT_GIVEN
+from anthropic import omit
 from anthropic.types import MessageParam, ToolParam
 
-from nare.session import Message
+from nare.session import Message, Usage
+from nare.transport import Reply, StopReason, ToolCall
 
 log = logging.getLogger(__name__)
 
@@ -1213,11 +1236,8 @@ Add the method to the class:
             max_tokens=self.max_tokens,
             messages=cast("list[MessageParam]", [asdict(m) for m in messages]),
             tools=cast("list[ToolParam]", tools),
-            system=self.system if self.system is not None else NOT_GIVEN,
-            temperature=(
-                self.temperature if self.temperature is not None else NOT_GIVEN
-            ),
-            thinking=cast(Any, self.thinking) if self.thinking else NOT_GIVEN,
+            system=self.system if self.system is not None else omit,
+            thinking=cast(Any, self.thinking) if self.thinking else omit,
         )
         content = [block.model_dump(exclude_none=True) for block in response.content]
         return Reply(
@@ -1232,7 +1252,7 @@ Add the method to the class:
         )
 ```
 
-`NOT_GIVEN` is the SDK's own sentinel for "omit this parameter", which is why unset sampling params never reach the wire. `exclude_none=True` keeps null fields out of the blocks that get replayed on the next request.
+`omit` is the SDK's own sentinel for "leave this parameter out", which is why unset sampling params never reach the wire — the parameters are annotated `| Omit` in anthropic 1.6.0. There is no `temperature` argument at all: the vendor removed it, and task 5's constructor already refuses the flag. `exclude_none=True` keeps null fields out of the blocks that get replayed on the next request.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -1293,11 +1313,9 @@ def test_an_unknown_kind_names_the_supported_kinds() -> None:
         make_transport("openai", model="gpt-4o", api_key="k")
 
 
-def test_effort_conflicts_surface_from_the_factory() -> None:
+def test_temperature_refusal_surfaces_from_the_factory() -> None:
     with pytest.raises(ValueError, match="temperature"):
-        make_transport(
-            "anthropic", model="m", api_key="k", effort="high", temperature=0.2
-        )
+        make_transport("anthropic", model="m", api_key="k", temperature=0.2)
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -2287,7 +2305,9 @@ git commit -m "feat: add run() and settle the public API surface"
   - `build_parser() -> argparse.ArgumentParser`
   - `transport_from_args(args: argparse.Namespace) -> Transport`
 
-Precedence is flag, then environment, then default. `--max-tokens` has **no argparse default**: the transport must be able to tell an explicit `8192` from an unset value, which is what lets `--effort` resolve it to `budget + 8192`.
+Precedence is flag, then environment, then default. `--max-tokens` has **no argparse default**: the transport must be able to tell an explicit `8192` from an unset value, which is what lets `--effort` resolve it to `min(budget + 8192, 21333)`.
+
+`--temperature` is still parsed and still passed to `make_transport`, because the planned OpenAI and locally hosted transports accept it. On `anthropic` it raises at construction — see task 5.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2349,18 +2369,19 @@ def test_transport_from_args_binds_every_knob(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    args = parse(
-        "go", "--model", "m", "--max-tokens", "512", "--temperature", "0.2",
-        "--system", "persona",
-    )
+    args = parse("go", "--model", "m", "--max-tokens", "512", "--system", "persona")
     transport = transport_from_args(args)
     assert isinstance(transport, AnthropicTransport)
-    assert (transport.model, transport.max_tokens, transport.temperature) == (
-        "m",
-        512,
-        0.2,
-    )
+    assert (transport.model, transport.max_tokens) == ("m", 512)
     assert transport.system == "persona"
+
+
+def test_temperature_is_refused_by_the_anthropic_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    with pytest.raises(ValueError, match="temperature"):
+        transport_from_args(parse("go", "--temperature", "0.2"))
 
 
 def test_an_unknown_provider_from_the_environment_fails_at_construction(
@@ -2420,14 +2441,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("NARE_BASE_URL"),
         help="override the vendor endpoint (env: NARE_BASE_URL)",
     )
-    run_parser.add_argument("--temperature", type=float, help="sampling temperature")
+    run_parser.add_argument(
+        "--temperature",
+        type=float,
+        help="sampling temperature; not accepted by the anthropic provider",
+    )
     run_parser.add_argument(
         "--max-tokens", type=int, help="output token cap (default 8192)"
     )
     run_parser.add_argument(
         "--effort",
         choices=["low", "medium", "high"],
-        help="reasoning effort; excludes --temperature on anthropic",
+        help="reasoning effort",
     )
     run_parser.add_argument("--system", help="system prompt / persona text")
     run_parser.add_argument(
@@ -3214,9 +3239,9 @@ Transport layer, section 10:
 | # | Criterion | Verified by |
 |---|---|---|
 | 1 | Factory builds anthropic; unknown kind names the supported kinds | Task 7 |
-| 2 | `--model --max-tokens --temperature` bind into the outbound request | Task 6, through `httpx.MockTransport` |
-| 3 | `--effort high` → `budget_tokens=16384`, `temperature=1`, `max_tokens=24576` | Tasks 5 and 6 |
-| 4 | `--effort high --temperature 0.2` exits non-zero before any request | Tasks 5, 7, 13 |
+| 2 | `--model --max-tokens` bind into the outbound request, and no `temperature` key is ever present | Task 6, through `httpx2.MockTransport` |
+| 3 | `--effort high` → `budget_tokens=16384`, `max_tokens=21333` (the non-streaming ceiling) | Tasks 5 and 6 |
+| 4 | `--temperature` exits non-zero before any request, naming the vendor limitation | Tasks 5, 7, 12 |
 | 5 | `stop_reason` and `usage` tables pass for both vendors' inputs | Task 6 |
 | 6 | `_check: Transport = FakeProvider([])` type-checks under mypy | Task 4, enforced by `bin/build` |
 | 7 | Slice 1's criteria continue to pass | The table above |

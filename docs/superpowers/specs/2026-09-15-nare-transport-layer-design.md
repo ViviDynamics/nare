@@ -1,10 +1,47 @@
 # nare — Transport Layer
 
 **Date:** 2026-09-15
-**Status:** Approved, not yet implemented
+**Status:** Approved; amended 2026-09-16 during implementation
 **Scope:** Amends the slice-1 spec,
 `2026-09-09-nare-walking-skeleton-design.md`. Establishes the bottom layer of
 nare's architecture. Slice 1 still ships exactly one transport.
+
+> **Amendment, 2026-09-16.** This document was written against an `anthropic`
+> SDK API that no longer exists. Implementation resolved `anthropic` 1.6.0 and
+> found three divergences, each verified directly against the installed SDK:
+>
+> 1. The SDK now depends on **`httpx2`**, not `httpx`. `httpx2` provides the
+>    same `MockTransport`, `AsyncClient`, `Request` and `Response`, and
+>    `AsyncAnthropic.http_client` is annotated `httpx2.AsyncClient | None`, so
+>    section 7's reasoning survives intact — only the module name moved.
+> 2. **`temperature` no longer exists on `messages.create` at all.** There is
+>    no typed client-level equivalent. Everything in section 4 that reasons
+>    about `temperature` is therefore obsolete, and criteria 2, 3 and 4 in
+>    section 10 could not be satisfied as written.
+> 3. The SDK **refuses non-streaming requests above `max_tokens` 21333**
+>    (`_calculate_nonstreaming_timeout` raises when
+>    `3600 * max_tokens / 128000 > 600`). Section 4's unclamped
+>    `budget + 8192` default made `--effort high` resolve to 24576, which
+>    raises before any request — the spec's own default would have shipped a
+>    transport that cannot run. Streaming stays deferred to slice 3.
+>
+> The decision was to adapt rather than pin the SDK backwards: nare is meant to
+> be vendored into other projects' containers, and section 6's one-dependency
+> posture is worse served by pinning an `anthropic` six major versions behind
+> than by amending this document. `--temperature` is **kept** in the CLI and in
+> `make_transport`, and the Anthropic transport now raises at construction when
+> it is set, naming the vendor limitation. Accepting and silently ignoring it
+> was rejected: quietly discarding a sampling parameter is precisely the
+> dishonest reporting nare exists to eliminate.
+>
+> Sections 4, 5, 7 and 10 below carry these changes inline.
+>
+> One simplification is deliberately NOT taken here and is left for a later
+> slice: the vendor now exposes a native `output_config.effort`
+> (`low`/`medium`/`high`/`xhigh`/`max`), which would delete the budget table,
+> the `max_tokens` interaction, and the clamp entirely. `thinking.budget_tokens`
+> still works, so keeping it is the smaller change; revisit when slice 2 next
+> touches this file.
 
 ## 1. What changes, and why
 
@@ -144,8 +181,9 @@ concept, so `cache_write` is always zero there.
 OpenAI passes `reasoning_effort` through as one of `low`, `medium`, `high`.
 
 Anthropic maps it to an extended-thinking budget, which carries constraints the
-parameter itself does not express: `temperature` must be `1`, and
-`budget_tokens` must be at least 1024 and strictly less than `max_tokens`.
+parameter itself does not express: `budget_tokens` must be at least 1024 and
+strictly less than `max_tokens`, and the resolved `max_tokens` must stay under
+the SDK's non-streaming ceiling of 21333.
 
 | `effort` | Anthropic `thinking.budget_tokens` |
 |---|---|
@@ -155,16 +193,23 @@ parameter itself does not express: `temperature` must be `1`, and
 
 The Anthropic transport therefore validates at construction:
 
-- `--effort` together with an explicit `--temperature` raises. The two are
-  mutually exclusive on this vendor, and silently overriding the user's
-  temperature would be worse than refusing.
+- `--temperature` raises, with or without `--effort`. The vendor removed
+  `temperature` from `messages.create` entirely, so there is nothing to bind it
+  to. The flag stays in the CLI because the planned OpenAI and locally hosted
+  transports do accept it, and because refusing loudly is better than either
+  dropping a documented flag or accepting one that does nothing.
 - `--effort` without an explicit `--max-tokens` sets `max_tokens` to
-  `budget + 8192`, so the default never collides with the `high` budget.
+  `min(budget + 8192, 21333)`. The `+ 8192` keeps the default clear of the
+  `high` budget; the clamp keeps it under the non-streaming ceiling, without
+  which `--effort high` would refuse to run at its own default.
 - `--effort` with an explicit `--max-tokens` at or below the budget raises.
+- An explicit `--max-tokens` above 21333 raises, naming streaming as the
+  reason. Streaming `turn()` is slice 3's.
 
 `max_tokens` therefore defaults to `None` in the signature rather than to
 8192, so the transport can distinguish an explicit 8192 from an unset value.
-It resolves to 8192 with no `effort`, and to `budget + 8192` with one.
+It resolves to 8192 with no `effort`, and to `min(budget + 8192, 21333)` with
+one.
 
 A shared parameter bag cannot know any of this. A per-transport edge can, and
 that is the difference between a strategy that varies something and one that
@@ -180,7 +225,7 @@ and the primary consumer configures nare by constructing a command line.
 | `--provider {anthropic}` | `NARE_PROVIDER` | `anthropic` |
 | `--model NAME` | `NARE_MODEL` | `claude-sonnet-5` |
 | `--base-url URL` | `NARE_BASE_URL` | vendor default |
-| `--temperature FLOAT` | — | unset, vendor default |
+| `--temperature FLOAT` | — | unset; **rejected by the anthropic transport** |
 | `--max-tokens INT` | — | 8192 |
 | `--effort {low,medium,high}` | — | unset |
 | `--system TEXT` | — | unset |
@@ -234,15 +279,17 @@ keeping them honest.
 
 `test_transport.py` is new. Slice 1 forbids mocking frameworks and network
 access, which the Anthropic SDK accommodates directly: it accepts an injected
-`http_client`, and `httpx.MockTransport` ships inside httpx, which already
+`http_client`, and `MockTransport` ships inside `httpx2`, which already
 arrives as a dependency of `anthropic`. Zero new dependencies.
 
 The handler returns a canned response body and captures the outbound request,
 so the tests assert against the real request the real SDK constructs:
 
 - tool schemas translated correctly,
-- `temperature` and `max_tokens` actually bound,
-- `effort` rendered as `thinking.budget_tokens` with `temperature` at 1.
+- `max_tokens` actually bound,
+- `effort` rendered as `thinking.budget_tokens`, with no `temperature` on the
+  wire and `max_tokens` clamped to the non-streaming ceiling,
+- `--temperature` refused at construction rather than reaching the wire.
 
 This is materially stronger than stubbing `turn()`, and it is the harness that
 makes the second transport cheap to add.
@@ -325,12 +372,13 @@ against the seam this document establishes.
 1. `make_transport("anthropic", model=..., max_tokens=...)` returns a working
    transport, and `make_transport("openai", ...)` raises a clear error naming
    the supported kinds.
-2. `nare run --model X --max-tokens N --temperature T` binds all three into the
-   outbound request, verified through `httpx.MockTransport`.
-3. `--effort high` renders `thinking.budget_tokens=16384` with `temperature=1`
-   and `max_tokens=24576`.
-4. `--effort high --temperature 0.2` exits non-zero before any request, with a
-   message naming the conflict.
+2. `nare run --model X --max-tokens N` binds both into the outbound request,
+   verified through `httpx2.MockTransport`, and no `temperature` key is ever
+   present on the wire.
+3. `--effort high` renders `thinking.budget_tokens=16384` with
+   `max_tokens=21333`, the non-streaming ceiling.
+4. `--temperature 0.2` exits non-zero before any request, with a message
+   naming the vendor limitation — with or without `--effort`.
 5. The `stop_reason` and `usage` tables in section 4 pass as table tests for
    both vendors' inputs.
 6. `_check: Transport = FakeProvider([])` type-checks under mypy.

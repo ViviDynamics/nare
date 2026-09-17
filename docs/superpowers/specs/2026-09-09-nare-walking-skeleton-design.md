@@ -6,6 +6,13 @@
 **Amended:** 2026-09-15 by `2026-09-15-nare-transport-layer-design.md`, which
 establishes the transport layer. Sections 4, 5, 6, 8, and 9 below carry those
 changes inline.
+**Amended again:** 2026-09-16 during implementation. `anthropic` 1.6.0 removed
+`temperature` from `messages.create`, moved from `httpx` to `httpx2`, and
+refuses non-streaming requests above `max_tokens` 21333. The transport spec's
+2026-09-16 amendment note carries the full findings and the reasoning; sections
+5, 7 and 8 below carry the consequences inline. `--temperature` remains a flag
+and is refused at construction by the anthropic transport rather than dropped
+or silently ignored.
 
 ## 1. What nare is
 
@@ -201,7 +208,7 @@ Events accumulate on the session per step; `run()` drains them.
 | `--provider {anthropic}` | `NARE_PROVIDER` | `anthropic` |
 | `--model NAME` | `NARE_MODEL` | `claude-sonnet-5` |
 | `--base-url URL` | `NARE_BASE_URL` | vendor default |
-| `--temperature FLOAT` | — | unset |
+| `--temperature FLOAT` | — | unset; **rejected by the anthropic transport** |
 | `--max-tokens INT` | — | 8192 |
 | `--effort {low,medium,high}` | — | unset |
 | `--system TEXT` | — | unset |
@@ -268,7 +275,7 @@ ordinary unit test with no mocking framework and no network.
 - `test_tools` — each tool, plus `approve` returning False.
 - `test_cli` — golden JSONL with timestamps normalized.
 - `test_transport` — factory selection and its errors, plus the real outbound
-  request asserted through `httpx.MockTransport`, which arrives with
+  request asserted through `httpx2.MockTransport`, which arrives with
   `anthropic` and needs no mocking framework.
 - One `@pytest.mark.live` smoke test, skipped without `ANTHROPIC_API_KEY`, not
   run in CI.
@@ -283,9 +290,11 @@ In a throwaway git repository:
    `questions`.
 3. `--resume` on a written session file continues that session.
 4. `nare run` without `--yes` refuses to start.
-5. `--model`, `--max-tokens`, and `--temperature` reach the outbound request,
-   and an unknown `--provider` fails at construction with a clear message
-   rather than at the first request.
+5. `--model` and `--max-tokens` reach the outbound request; `--temperature`
+   exits non-zero at construction with a message naming the vendor limitation,
+   since `anthropic` 1.6.0 no longer accepts it; and an unknown `--provider`
+   fails at construction with a clear message rather than at the first
+   request.
 
 A sketch of the roughly 80-line Conductor adapter that would consume these is
 part of the deliverable, as evidence the contract holds. Wiring it into the
