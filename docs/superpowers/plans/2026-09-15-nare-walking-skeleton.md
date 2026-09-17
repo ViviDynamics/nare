@@ -799,6 +799,7 @@ A shared parameter bag cannot know that Anthropic's thinking budget must sit und
 from nare.transport.anthropic import (
     DEFAULT_MAX_TOKENS,
     EFFORT_BUDGETS,
+    NONSTREAMING_MAX_TOKENS,
     AnthropicTransport,
 )
 
