@@ -174,3 +174,22 @@ def test_questions_from_collects_across_calls() -> None:
 
 def test_questions_from_is_empty_without_an_ask() -> None:
     assert questions_from([ToolCall(id="c1", name="read", args={})]) == []
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (["a", "b"], ["a", "b"]),
+        ("which file?", ["which file?"]),
+        (3, []),
+        (None, []),
+        ([], []),
+    ],
+)
+def test_questions_from_survives_a_schema_violating_ask(
+    value: object, expected: list[str]
+) -> None:
+    # The model controls this value. A bare string must not become a list of
+    # characters, and a non-iterable must not turn blocked into error.
+    call = ToolCall(id="c1", name="ask", args={"questions": value})
+    assert questions_from([call]) == expected

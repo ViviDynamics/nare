@@ -33,6 +33,15 @@ _STOP_REASONS: dict[str, StopReason] = {
     "max_tokens": "max_tokens",
     "stop_sequence": "stop_sequence",
     "refusal": "refusal",
+    # The output was truncated; reporting end_turn would claim the model
+    # finished when context overflow cut it off mid-run.
+    "model_context_window_exceeded": "max_tokens",
+    # Unreachable without server-side tools, which nare does not use. Mapping
+    # it to tool_use would produce a contradictory done + tool_use result
+    # line, since the loop derives status from whether tool calls are
+    # present, not from this field. end_turn is at least internally
+    # consistent.
+    "pause_turn": "end_turn",
 }
 
 

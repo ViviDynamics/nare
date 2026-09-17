@@ -73,6 +73,12 @@ def test_loads_rejects_a_foreign_version() -> None:
         loads(raw)
 
 
+@pytest.mark.parametrize("body", ["[]", '"hello"', "42", "null", "true"])
+def test_loads_rejects_json_that_is_not_an_object(body: str) -> None:
+    with pytest.raises(ValueError, match="malformed session file"):
+        loads(body)
+
+
 def test_round_trip_is_equal_even_with_events_pending() -> None:
     s = new_session("go")
     s.events.append(Event("progress", "drained by run(), never persisted"))

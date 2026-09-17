@@ -84,6 +84,10 @@ def dumps(s: Session) -> str:
 
 def loads(text: str) -> Session:
     raw: dict[str, Any] = json.loads(text)
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"malformed session file: expected an object, got {type(raw).__name__}"
+        )
     version = raw.pop("version", 0)
     if version != SESSION_VERSION:
         raise ValueError(

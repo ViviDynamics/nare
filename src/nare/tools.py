@@ -192,9 +192,20 @@ async def dispatch(call: ToolCall, approve: Approve) -> dict[str, Any]:
 
 
 def questions_from(calls: Iterable[ToolCall]) -> list[str]:
-    return [
-        question
-        for call in calls
-        if call.name == "ask"
-        for question in call.args.get("questions", [])
-    ]
+    """Read the questions off the `ask` calls.
+
+    The model controls this value and does not always honour the schema, so
+    a bare string becomes one question rather than a list of characters, and
+    a non-iterable becomes no questions rather than an exception that would
+    turn a blocked session into an errored one.
+    """
+    questions: list[str] = []
+    for call in calls:
+        if call.name != "ask":
+            continue
+        raw = call.args.get("questions")
+        if isinstance(raw, str):
+            questions.append(raw)
+        elif isinstance(raw, Iterable):
+            questions.extend(str(q) for q in raw)
+    return questions

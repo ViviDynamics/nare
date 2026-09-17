@@ -218,6 +218,30 @@ def test_a_session_file_is_written_even_when_the_run_fails(tmp_path: Path) -> No
     assert json.loads(path.read_text())["status"] == "error"
 
 
+def test_a_construction_failure_exits_two_with_no_stdout(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # No transport= here on purpose: this exercises main()'s own
+    # construction path, which every other test bypasses.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    code = main(["run", "--yes", "--jsonl", "--temperature", "0.2", "go"])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert "temperature" in captured.err
+
+
+def test_a_missing_api_key_exits_two_with_no_stdout(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    code = main(["run", "--yes", "--jsonl", "go"])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert "ANTHROPIC_API_KEY" in captured.err
+
+
 def test_an_unreadable_resume_path_exits_two(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

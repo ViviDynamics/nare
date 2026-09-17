@@ -470,7 +470,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "anthropic", specifier = ">=0.40" }]
+requires-dist = [{ name = "anthropic", specifier = ">=1.6" }]
 
 [package.metadata.requires-dev]
 dev = [

@@ -17,6 +17,12 @@ Stdout is typed JSONL, terminated by one `result` line carrying status,
 questions, usage, and stop_reason. Stderr is logging. `--session PATH` writes
 the session, and `--resume PATH` continues it.
 
+`--yes` approves every tool call, including `bash`. nare runs
+model-generated shell commands with your privileges and no sandbox of its
+own, so treat it like piping a script you have not read: run it in a
+container, a VM, or a throwaway checkout. Containment is the caller's job —
+slice 1 ships the approval seam, not a policy engine.
+
 See [docs/architecture.md](docs/architecture.md) for the shape, and
 [docs/adr/](docs/adr/) for the decisions behind it.
 

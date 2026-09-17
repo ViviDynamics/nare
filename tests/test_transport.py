@@ -11,6 +11,7 @@ from fake_provider import FakeProvider, text_reply
 from nare.session import Message, Usage
 from nare.transport import Reply, StopReason, ToolCall, make_transport
 from nare.transport.anthropic import (
+    _STOP_REASONS,
     DEFAULT_MAX_TOKENS,
     EFFORT_BUDGETS,
     NONSTREAMING_MAX_TOKENS,
@@ -262,8 +263,20 @@ def test_openai_finish_reasons_have_a_target_in_the_vocabulary(
     assert expected in get_args(StopReason)
 
 
-def test_an_unknown_stop_reason_degrades_to_end_turn() -> None:
-    assert stop_reason_from("pause_turn") == "end_turn"
+def test_every_vendor_stop_reason_is_mapped() -> None:
+    # The map must be total against the SDK we ship with. Without this, a
+    # new vendor value degrades silently to end_turn, and a truncated run
+    # reports itself as done. Verified once by hand that this catches
+    # model_context_window_exceeded; the point is that it keeps catching
+    # whatever the next SDK release adds.
+    from anthropic.types.stop_reason import StopReason as VendorStopReason
+
+    for value in get_args(VendorStopReason):
+        assert value in _STOP_REASONS, f"unmapped vendor stop_reason: {value}"
+
+
+def test_a_genuinely_unknown_stop_reason_degrades_to_end_turn() -> None:
+    assert stop_reason_from("something_the_vendor_added_later") == "end_turn"
 
 
 class _RawUsage:

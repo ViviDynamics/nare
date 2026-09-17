@@ -14,7 +14,7 @@ No LangGraph, and no graph framework, in nare's public surface.
 
 ## Consequences
 
-The runtime dependency set stays at one package, which is the whole claim
-behind nare being nearly impossible to conflict with when vendored into another
-project's container. If nare ever needs branching orchestration, that belongs
-above it, in the consumer that already has a graph.
+The set of direct runtime dependencies stays at one package, which is the
+whole claim behind nare being nearly impossible to conflict with when vendored
+into another project's container. If nare ever needs branching orchestration,
+that belongs above it, in the consumer that already has a graph.
