@@ -89,6 +89,9 @@ def loads(text: str) -> Session:
         raise ValueError(
             f"session file is version {version}; this nare writes {SESSION_VERSION}"
         )
-    raw["usage"] = Usage(**raw["usage"])
-    raw["messages"] = [Message(**m) for m in raw["messages"]]
-    return Session(**raw)
+    try:
+        raw["usage"] = Usage(**raw["usage"])
+        raw["messages"] = [Message(**m) for m in raw["messages"]]
+        return Session(**raw)
+    except (KeyError, TypeError) as exc:
+        raise ValueError(f"malformed session file: {exc}") from exc

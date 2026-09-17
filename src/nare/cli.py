@@ -22,6 +22,8 @@ from nare.session import Session, append_user_text, dumps, loads, new_session
 from nare.tools import approve_all
 from nare.transport import Transport, make_transport
 
+log = logging.getLogger(__name__)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -103,6 +105,7 @@ def _load_or_new(args: argparse.Namespace) -> Session:
     session.status = "working"
     session.questions = []
     session.error = None
+    session.stop_reason = None
     return session
 
 
@@ -151,7 +154,10 @@ async def _execute(
             _emit(event, args.jsonl)
     finally:
         if args.session:
-            Path(args.session).write_text(dumps(session))
+            try:
+                Path(args.session).write_text(dumps(session))
+            except OSError as exc:
+                log.error("could not write --session %s: %s", args.session, exc)
     _emit_result(session, args.jsonl)
     return 1 if session.status == "error" else 0
 

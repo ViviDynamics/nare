@@ -227,3 +227,69 @@ def test_an_unreadable_resume_path_exits_two(
     )
     assert code == 2
     assert capsys.readouterr().out == ""
+
+
+def test_a_malformed_resume_file_exits_two(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "s.json"
+    main(
+        ["run", "--yes", "--jsonl", "--session", str(path), "go"],
+        transport=FakeProvider([text_reply("ok")]),
+    )
+    capsys.readouterr()
+    raw = json.loads(path.read_text())
+    raw["unexpected_field"] = 1
+    path.write_text(json.dumps(raw))
+    code = main(
+        ["run", "--yes", "--jsonl", "--resume", str(path)],
+        transport=FakeProvider([]),
+    )
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert "malformed session file" in captured.err
+
+
+def test_a_failed_session_write_still_emits_the_result_line(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The run completed; losing the result line would report success as a
+    # truncated failure and break the consumer's parser.
+    unwritable = tmp_path / "missing" / "deep" / "s.json"
+    code = main(
+        ["run", "--yes", "--jsonl", "--session", str(unwritable), "go"],
+        transport=FakeProvider([text_reply("ok")]),
+    )
+    captured = capsys.readouterr()
+    emitted = lines(captured.out)
+    assert code == 0
+    assert emitted[-1]["type"] == "result"
+    assert emitted[-1]["status"] == "done"
+    # logging output is observed via caplog, not capsys: pytest's own logging
+    # plugin pre-populates the root logger's handlers, which makes
+    # logging.basicConfig() a no-op and means log records never reach the
+    # real stderr stream that capsys inspects.
+    assert "--session" in caplog.text
+
+
+def test_resume_clears_the_previous_stop_reason(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "s.json"
+    main(
+        ["run", "--yes", "--jsonl", "--session", str(path), "go"],
+        transport=FakeProvider([tool_reply("ask", {"questions": ["which?"]})]),
+    )
+    capsys.readouterr()
+    code = main(
+        ["run", "--yes", "--jsonl", "--resume", str(path), "keep going"],
+        transport=Exploding(),
+    )
+    result = lines(capsys.readouterr().out)[-1]
+    assert code == 1
+    assert result["status"] == "error"
+    # Not the pre-resume "tool_use": a stale stop_reason on a new error lies.
+    assert result["stop_reason"] is None
