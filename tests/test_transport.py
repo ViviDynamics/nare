@@ -41,3 +41,17 @@ def test_reply_is_frozen() -> None:
 def test_tool_call_carries_id_name_and_args() -> None:
     call = ToolCall(id="c1", name="read", args={"path": "x.py"})
     assert (call.id, call.name, call.args) == ("c1", "read", {"path": "x.py"})
+
+
+async def test_recorded_calls_are_snapshots_not_live_references() -> None:
+    messages = [Message("user", [{"type": "text", "text": "one"}])]
+    tools = [{"name": "read"}]
+    fake = FakeProvider([text_reply("ok")])
+    await fake.turn(messages, tools)
+    # Mutating the caller's objects after the call must not rewrite history:
+    # later tasks assert on fake.calls to prove what a transport really saw.
+    messages[0].content.append({"type": "text", "text": "two"})
+    tools.append({"name": "write"})
+    recorded_messages, recorded_tools = fake.calls[0]
+    assert recorded_messages[0].content == [{"type": "text", "text": "one"}]
+    assert recorded_tools == [{"name": "read"}]

@@ -16,7 +16,9 @@ class FakeProvider:
         self.calls: list[tuple[list[Message], list[dict[str, Any]]]] = []
 
     async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
-        self.calls.append(([Message(m.role, list(m.content)) for m in messages], tools))
+        self.calls.append(
+            ([Message(m.role, list(m.content)) for m in messages], list(tools))
+        )
         if not self._replies:
             raise AssertionError("FakeProvider ran out of scripted replies")
         return self._replies.pop(0)
