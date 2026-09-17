@@ -3184,7 +3184,9 @@ The core is a library. Every surface is a thin adapter over it.
       v
     transport/        everything vendor-shaped, behind one method
 
-`session.py` and `events.py` sit underneath all of it and depend on nothing.
+`events.py` depends on nothing at all. `session.py` depends only on
+`events.py`, because a session carries the events its steps produced.
+Everything else sits on those two.
 
 ## The layer boundary
 
