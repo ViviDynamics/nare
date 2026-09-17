@@ -71,3 +71,13 @@ def test_loads_rejects_a_foreign_version() -> None:
     )
     with pytest.raises(ValueError, match="version 99"):
         loads(raw)
+
+
+def test_round_trip_is_equal_even_with_events_pending() -> None:
+    s = new_session("go")
+    s.events.append(Event("progress", "drained by run(), never persisted"))
+    # events is compare=False precisely because dumps() drops it: __eq__ and
+    # the persistence contract have to agree, or a resumed session compares
+    # unequal to the one it was written from.
+    assert loads(dumps(s)) == s
+    assert loads(dumps(s)).events == []
