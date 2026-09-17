@@ -94,7 +94,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "LicenseRef-Elastic-License-2.0"
 license-files = ["LICENSE", "NOTICE"]
-dependencies = ["anthropic>=0.40"]
+dependencies = ["anthropic>=1.6"]
 
 [project.scripts]
 nare = "nare.cli:main"
@@ -545,7 +545,15 @@ def dumps(s: Session) -> str:
 
 
 def loads(text: str) -> Session:
-    raw: dict[str, Any] = json.loads(text)
+    raw = json.loads(text)
+    if not isinstance(raw, dict):
+        # Before this guard, a file containing `[]` or `"hello"` died with an
+        # uncaught TypeError or AttributeError, which the CLI turns into exit 1
+        # with no result line -- the one combination the wire contract has no
+        # meaning for, since exit 1 tells the consumer a run started and failed.
+        raise ValueError(
+            f"malformed session file: expected an object, got {type(raw).__name__}"
+        )
     version = raw.pop("version", 0)
     if version != SESSION_VERSION:
         raise ValueError(
@@ -1136,8 +1144,19 @@ def test_openai_finish_reasons_have_a_target_in_the_vocabulary(
     assert expected in get_args(StopReason)
 
 
-def test_an_unknown_stop_reason_degrades_to_end_turn() -> None:
-    assert stop_reason_from("pause_turn") == "end_turn"
+def test_every_vendor_stop_reason_is_mapped() -> None:
+    # The map must be TOTAL against the SDK we ship with. Without this, a new
+    # vendor value degrades silently to end_turn and a truncated run reports
+    # itself as done. Reading the vendor's own vocabulary is what makes this
+    # keep working across SDK upgrades instead of going stale.
+    from anthropic.types import StopReason as VendorStopReason
+
+    for value in get_args(VendorStopReason):
+        assert value in _STOP_REASONS, f"unmapped vendor stop_reason: {value}"
+
+
+def test_a_genuinely_unknown_stop_reason_degrades_to_end_turn() -> None:
+    assert stop_reason_from("something_the_vendor_added_later") == "end_turn"
 
 
 class _RawUsage:
@@ -1240,6 +1259,15 @@ _STOP_REASONS: dict[str, StopReason] = {
     "max_tokens": "max_tokens",
     "stop_sequence": "stop_sequence",
     "refusal": "refusal",
+    # The output was truncated, so report it as such. Reporting end_turn here
+    # would claim the model finished, and the loop would then set status=done
+    # on a run that context overflow cut short.
+    "model_context_window_exceeded": "max_tokens",
+    # Deliberately end_turn, not tool_use. Unreachable without server-side
+    # tools, which nare does not use, and tool_use would produce a
+    # contradictory done + tool_use result line, since the loop derives status
+    # from whether tool calls are present rather than from this field.
+    "pause_turn": "end_turn",
 }
 
 
@@ -1894,12 +1922,26 @@ async def dispatch(call: ToolCall, approve: Approve) -> dict[str, Any]:
 
 
 def questions_from(calls: Iterable[ToolCall]) -> list[str]:
-    return [
-        question
-        for call in calls
-        if call.name == "ask"
-        for question in call.args.get("questions", [])
-    ]
+    """Read the questions off the `ask` calls.
+
+    The model controls this value and does not always honour the schema, so a
+    bare string becomes one question rather than a list of characters, and a
+    non-iterable becomes no questions rather than an exception that would turn
+    a blocked session into an errored one. `blocked` plus `questions` is the
+    feature this project exists for; it does not get to crash on bad input.
+
+    The `str` check has to come first, because a string is itself Iterable.
+    """
+    questions: list[str] = []
+    for call in calls:
+        if call.name != "ask":
+            continue
+        raw = call.args.get("questions")
+        if isinstance(raw, str):
+            questions.append(raw)
+        elif isinstance(raw, Iterable):
+            questions.extend(str(q) for q in raw)
+    return questions
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
@@ -3157,7 +3199,7 @@ No LangGraph, and no graph framework, in nare's public surface.
 
 ## Consequences
 
-The runtime dependency set stays at one package, which is the whole claim
+The set of direct runtime dependencies stays at one package, which is the whole claim
 behind nare being nearly impossible to conflict with when vendored into another
 project's container. If nare ever needs branching orchestration, that belongs
 above it, in the consumer that already has a graph.
@@ -3368,6 +3410,12 @@ argv is world-readable through `ps` and `/proc`.
 Stdout is typed JSONL, terminated by one `result` line carrying status,
 questions, usage, and stop_reason. Stderr is logging. `--session PATH` writes
 the session, and `--resume PATH` continues it.
+
+`--yes` approves every tool call, including `bash`. nare runs
+model-generated shell commands with your privileges and no sandbox of its
+own, so treat it like piping a script you have not read: run it in a
+container, a VM, or a throwaway checkout. Containment is the caller's job —
+slice 1 ships the approval seam, not a policy engine.
 
 See [docs/architecture.md](docs/architecture.md) for the shape, and
 [docs/adr/](docs/adr/) for the decisions behind it.
