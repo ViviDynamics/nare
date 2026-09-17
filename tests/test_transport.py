@@ -1,6 +1,9 @@
 import dataclasses
+import json
+import os
 from typing import Any, get_args
 
+import httpx2
 import pytest
 
 from fake_provider import FakeProvider, text_reply
@@ -11,6 +14,8 @@ from nare.transport.anthropic import (
     EFFORT_BUDGETS,
     NONSTREAMING_MAX_TOKENS,
     AnthropicTransport,
+    stop_reason_from,
+    usage_from,
 )
 
 
@@ -127,3 +132,174 @@ def test_missing_api_key_raises_at_construction(
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
         AnthropicTransport(model="claude-sonnet-5")
+
+
+CANNED_BODY: dict[str, Any] = {
+    "id": "msg_01",
+    "type": "message",
+    "role": "assistant",
+    "model": "claude-sonnet-5",
+    "content": [
+        {"type": "text", "text": "reading it now"},
+        {"type": "tool_use", "id": "call_1", "name": "read", "input": {"path": "a.py"}},
+    ],
+    "stop_reason": "tool_use",
+    "stop_sequence": None,
+    "usage": {
+        "input_tokens": 200,
+        "output_tokens": 50,
+        "cache_read_input_tokens": 800,
+        "cache_creation_input_tokens": 12,
+    },
+}
+
+
+def recording_client(captured: list[httpx2.Request]) -> httpx2.AsyncClient:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        captured.append(request)
+        return httpx2.Response(200, json=CANNED_BODY)
+
+    return httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+
+
+async def outbound(**kwargs: Any) -> dict[str, Any]:
+    captured: list[httpx2.Request] = []
+    transport = build(http_client=recording_client(captured), **kwargs)
+    await transport.turn(
+        [Message("user", [{"type": "text", "text": "read a.py"}])],
+        [{"name": "read", "description": "read a file", "input_schema": {}}],
+    )
+    body: dict[str, Any] = json.loads(captured[0].content)
+    return body
+
+
+async def test_model_and_max_tokens_reach_the_wire() -> None:
+    body = await outbound(max_tokens=512)
+    assert body["model"] == "claude-sonnet-5"
+    assert body["max_tokens"] == 512
+
+
+async def test_temperature_never_reaches_the_wire() -> None:
+    # The constructor refuses --temperature outright (task 5), so there is no
+    # path by which this vendor's request body can carry one.
+    assert "temperature" not in await outbound()
+    with pytest.raises(ValueError, match="temperature"):
+        await outbound(temperature=0.2)
+
+
+async def test_unset_sampling_params_are_omitted_entirely() -> None:
+    body = await outbound()
+    assert "thinking" not in body
+    assert "system" not in body
+
+
+async def test_system_reaches_the_wire() -> None:
+    assert (await outbound(system="You are the architect."))["system"] == (
+        "You are the architect."
+    )
+
+
+async def test_effort_renders_thinking_clamped_to_the_ceiling() -> None:
+    body = await outbound(effort="high")
+    assert body["thinking"] == {"type": "enabled", "budget_tokens": 16384}
+    assert "temperature" not in body
+    assert body["max_tokens"] == 21333
+
+
+async def test_tool_schemas_pass_through_anthropic_shaped() -> None:
+    assert (await outbound())["tools"] == [
+        {"name": "read", "description": "read a file", "input_schema": {}}
+    ]
+
+
+async def test_messages_serialize_as_role_plus_blocks() -> None:
+    assert (await outbound())["messages"] == [
+        {"role": "user", "content": [{"type": "text", "text": "read a.py"}]}
+    ]
+
+
+async def test_turn_normalizes_the_response() -> None:
+    transport = build(http_client=recording_client([]))
+    reply = await transport.turn([Message("user", [])], [])
+    assert reply.stop_reason == "tool_use"
+    assert reply.tool_calls == [
+        ToolCall(id="call_1", name="read", args={"path": "a.py"})
+    ]
+    assert reply.content[0]["text"] == "reading it now"
+    assert reply.usage == Usage(input=200, output=50, cache_read=800, cache_write=12)
+
+
+# --- Normalization tables, section 4 of the transport spec -------------------
+# The OpenAI rows are asserted now, before the OpenAI transport exists. If its
+# spec later contradicts these rows, that contradiction is worth catching.
+
+ANTHROPIC_STOP_REASONS = [
+    ("end_turn", "end_turn"),
+    ("tool_use", "tool_use"),
+    ("max_tokens", "max_tokens"),
+    ("stop_sequence", "stop_sequence"),
+    ("refusal", "refusal"),
+]
+
+OPENAI_FINISH_REASONS = [
+    ("stop", "end_turn"),
+    ("tool_calls", "tool_use"),
+    ("length", "max_tokens"),
+    ("content_filter", "refusal"),
+]
+
+
+@pytest.mark.parametrize("raw,expected", ANTHROPIC_STOP_REASONS)
+def test_anthropic_stop_reasons_normalize(raw: str, expected: str) -> None:
+    assert stop_reason_from(raw) == expected
+
+
+@pytest.mark.parametrize("raw,expected", OPENAI_FINISH_REASONS)
+def test_openai_finish_reasons_have_a_target_in_the_vocabulary(
+    raw: str, expected: str
+) -> None:
+    assert expected in get_args(StopReason)
+
+
+def test_an_unknown_stop_reason_degrades_to_end_turn() -> None:
+    assert stop_reason_from("pause_turn") == "end_turn"
+
+
+class _RawUsage:
+    input_tokens = 200
+    output_tokens = 50
+    cache_read_input_tokens = 800
+    cache_creation_input_tokens = 12
+
+
+def test_anthropic_usage_excludes_cache_reads_from_input() -> None:
+    assert usage_from(_RawUsage()) == Usage(
+        input=200, output=50, cache_read=800, cache_write=12
+    )
+
+
+def test_openai_usage_would_subtract_cached_tokens_to_reach_the_same_numbers() -> None:
+    # OpenAI's prompt_tokens INCLUDES cache reads; Anthropic's input_tokens does
+    # not. The same logical request must produce the same Usage on both edges.
+    prompt_tokens, cached_tokens, completion_tokens = 1000, 800, 50
+    openai_side = Usage(
+        input=prompt_tokens - cached_tokens,
+        output=completion_tokens,
+        cache_read=cached_tokens,
+        cache_write=0,  # OpenAI has no cache-write concept
+    )
+    assert openai_side.input == usage_from(_RawUsage()).input
+    assert openai_side.cache_read == usage_from(_RawUsage()).cache_read
+
+
+@pytest.mark.live
+@pytest.mark.skipif(
+    not os.environ.get("ANTHROPIC_API_KEY"), reason="needs a real API key"
+)
+async def test_live_smoke() -> None:
+    transport = AnthropicTransport(model="claude-sonnet-5", max_tokens=64)
+    reply = await transport.turn(
+        [Message("user", [{"type": "text", "text": "Reply with the word OK."}])], []
+    )
+    assert reply.stop_reason in get_args(StopReason)
+    assert reply.usage.output > 0

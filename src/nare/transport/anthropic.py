@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 import os
-from typing import Any, Literal
+from dataclasses import asdict
+from typing import Any, Literal, cast
 
 import httpx2
-from anthropic import AsyncAnthropic
+from anthropic import AsyncAnthropic, omit
+from anthropic.types import MessageParam, ToolParam
+
+from nare.session import Message, Usage
+from nare.transport import Reply, StopReason, ToolCall
+
+log = logging.getLogger(__name__)
 
 DEFAULT_MAX_TOKENS = 8192
 
@@ -18,6 +26,37 @@ NONSTREAMING_MAX_TOKENS = 21333
 EFFORT_BUDGETS: dict[str, int] = {"low": 1024, "medium": 4096, "high": 16384}
 
 Effort = Literal["low", "medium", "high"]
+
+_STOP_REASONS: dict[str, StopReason] = {
+    "end_turn": "end_turn",
+    "tool_use": "tool_use",
+    "max_tokens": "max_tokens",
+    "stop_sequence": "stop_sequence",
+    "refusal": "refusal",
+}
+
+
+def stop_reason_from(raw: str | None) -> StopReason:
+    """Normalize. An unknown value degrades to end_turn with a warning rather
+    than killing a run, because the loop decides when to stop from tool_calls,
+    not from this field.
+    """
+    if raw in _STOP_REASONS:
+        return _STOP_REASONS[raw]
+    log.warning("unknown anthropic stop_reason %r; reporting end_turn", raw)
+    return "end_turn"
+
+
+def usage_from(raw: Any) -> Usage:
+    """input EXCLUDES cache reads, which is Anthropic's own convention and the
+    one nare normalizes to.
+    """
+    return Usage(
+        input=raw.input_tokens,
+        output=raw.output_tokens,
+        cache_read=getattr(raw, "cache_read_input_tokens", 0) or 0,
+        cache_write=getattr(raw, "cache_creation_input_tokens", 0) or 0,
+    )
 
 
 class AnthropicTransport:
@@ -74,4 +113,25 @@ class AnthropicTransport:
         self.system = system
         self._client = AsyncAnthropic(
             api_key=api_key, base_url=base_url, http_client=http_client
+        )
+
+    async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
+        response = await self._client.messages.create(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            messages=cast("list[MessageParam]", [asdict(m) for m in messages]),
+            tools=cast("list[ToolParam]", tools),
+            system=self.system if self.system is not None else omit,
+            thinking=cast(Any, self.thinking) if self.thinking else omit,
+        )
+        content = [block.model_dump(exclude_none=True) for block in response.content]
+        return Reply(
+            content=content,
+            tool_calls=[
+                ToolCall(id=b["id"], name=b["name"], args=b.get("input") or {})
+                for b in content
+                if b.get("type") == "tool_use"
+            ],
+            usage=usage_from(response.usage),
+            stop_reason=stop_reason_from(response.stop_reason),
         )
