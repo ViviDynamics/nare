@@ -47,6 +47,24 @@ def stop_reason_from(raw: str | None) -> StopReason:
     return "end_turn"
 
 
+def _cache_tokens(raw: Any, field: str) -> int:
+    """Read a cache-token field, warning if the vendor no longer has it.
+
+    A null from the vendor is a legitimate zero and stays quiet. A missing
+    attribute means the schema moved, and reporting a silent zero there
+    would make the token accounting wrong with no way to notice.
+    """
+    if not hasattr(raw, field):
+        log.warning(
+            "anthropic usage has no %s; reporting 0 for it. Token accounting "
+            "for cached requests may be understated.",
+            field,
+        )
+        return 0
+    value: int | None = getattr(raw, field)
+    return value or 0
+
+
 def usage_from(raw: Any) -> Usage:
     """input EXCLUDES cache reads, which is Anthropic's own convention and the
     one nare normalizes to.
@@ -54,8 +72,8 @@ def usage_from(raw: Any) -> Usage:
     return Usage(
         input=raw.input_tokens,
         output=raw.output_tokens,
-        cache_read=getattr(raw, "cache_read_input_tokens", 0) or 0,
-        cache_write=getattr(raw, "cache_creation_input_tokens", 0) or 0,
+        cache_read=_cache_tokens(raw, "cache_read_input_tokens"),
+        cache_write=_cache_tokens(raw, "cache_creation_input_tokens"),
     )
 
 

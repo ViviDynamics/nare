@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import logging
 import os
 from typing import Any, get_args
 
@@ -290,6 +291,36 @@ def test_openai_usage_would_subtract_cached_tokens_to_reach_the_same_numbers() -
     )
     assert openai_side.input == usage_from(_RawUsage()).input
     assert openai_side.cache_read == usage_from(_RawUsage()).cache_read
+
+
+def test_a_missing_cache_field_warns_instead_of_silently_reporting_zero(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class MovedSchema:
+        input_tokens = 200
+        output_tokens = 50
+        # cache_read_input_tokens / cache_creation_input_tokens are gone
+
+    with caplog.at_level(logging.WARNING):
+        usage = usage_from(MovedSchema())
+    assert usage == Usage(input=200, output=50, cache_read=0, cache_write=0)
+    assert "cache_read_input_tokens" in caplog.text
+    assert "cache_creation_input_tokens" in caplog.text
+
+
+def test_a_null_cache_field_is_a_quiet_zero(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class NullCache:
+        input_tokens = 200
+        output_tokens = 50
+        cache_read_input_tokens = None
+        cache_creation_input_tokens = None
+
+    with caplog.at_level(logging.WARNING):
+        usage = usage_from(NullCache())
+    assert usage == Usage(input=200, output=50, cache_read=0, cache_write=0)
+    assert caplog.text == ""
 
 
 @pytest.mark.live
