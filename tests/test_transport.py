@@ -2,14 +2,14 @@ import dataclasses
 import json
 import logging
 import os
-from typing import Any, get_args
+from typing import Any, cast, get_args
 
 import httpx2
 import pytest
 
 from fake_provider import FakeProvider, text_reply
 from nare.session import Message, Usage
-from nare.transport import Reply, StopReason, ToolCall
+from nare.transport import Reply, StopReason, ToolCall, make_transport
 from nare.transport.anthropic import (
     DEFAULT_MAX_TOKENS,
     EFFORT_BUDGETS,
@@ -334,3 +334,28 @@ async def test_live_smoke() -> None:
     )
     assert reply.stop_reason in get_args(StopReason)
     assert reply.usage.output > 0
+
+
+def test_anthropic_kind_builds_an_anthropic_transport() -> None:
+    t = make_transport("anthropic", model="claude-sonnet-5", api_key="test-key")
+    assert isinstance(t, AnthropicTransport)
+
+
+def test_parameters_reach_the_transport() -> None:
+    t = cast(
+        AnthropicTransport,
+        make_transport(
+            "anthropic", model="m", api_key="k", max_tokens=99, system="persona"
+        ),
+    )
+    assert (t.model, t.max_tokens, t.system) == ("m", 99, "persona")
+
+
+def test_an_unknown_kind_names_the_supported_kinds() -> None:
+    with pytest.raises(ValueError, match="anthropic"):
+        make_transport("openai", model="gpt-4o", api_key="k")
+
+
+def test_temperature_refusal_surfaces_from_the_factory() -> None:
+    with pytest.raises(ValueError, match="temperature"):
+        make_transport("anthropic", model="m", api_key="k", temperature=0.2)

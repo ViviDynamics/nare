@@ -43,4 +43,38 @@ class Transport(Protocol):
     ) -> Reply: ...
 
 
-__all__ = ["Reply", "StopReason", "ToolCall", "Transport"]
+def make_transport(
+    kind: str,
+    *,
+    model: str,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    effort: Literal["low", "medium", "high"] | None = None,
+    system: str | None = None,
+) -> Transport:
+    """Build a transport from configuration.
+
+    ponytail: one arm today. The match is the extension point — the OpenAI
+    transport (and with it, locally hosted models via base_url) lands as a
+    second arm. A registry is slice 4, with the rest of the extension surface.
+    """
+    match kind:
+        case "anthropic":
+            from nare.transport.anthropic import AnthropicTransport
+
+            return AnthropicTransport(
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                effort=effort,
+                system=system,
+            )
+        case _:
+            raise ValueError(f"unknown provider {kind!r}; nare supports: anthropic")
+
+
+__all__ = ["Reply", "StopReason", "ToolCall", "Transport", "make_transport"]
