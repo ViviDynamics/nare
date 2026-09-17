@@ -1,8 +1,12 @@
 import argparse
+import json
+import re
+from pathlib import Path
 
 import pytest
 
-from nare.cli import build_parser, transport_from_args
+from fake_provider import Exploding, FakeProvider, text_reply, tool_reply
+from nare.cli import build_parser, main, transport_from_args
 from nare.transport.anthropic import AnthropicTransport
 
 
@@ -75,3 +79,151 @@ def test_an_unknown_provider_from_the_environment_fails_at_construction(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     with pytest.raises(ValueError, match="anthropic"):
         transport_from_args(parse("go"))
+
+
+TIMESTAMP = re.compile(r'"timestamp": "[^"]+"')
+
+
+def lines(captured: str) -> list[dict[str, object]]:
+    return [
+        json.loads(TIMESTAMP.sub('"timestamp": "T"', line))
+        for line in captured.strip().splitlines()
+    ]
+
+
+def test_run_refuses_to_start_without_yes(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["run", "go"], transport=FakeProvider([])) == 2
+    captured = capsys.readouterr()
+    assert "--yes" in captured.err
+    # A run that never started emits no result line, because the result line
+    # implies a session existed.
+    assert captured.out == ""
+
+
+def test_run_needs_a_prompt_or_a_resume(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["run", "--yes"], transport=FakeProvider([])) == 2
+    assert "prompt" in capsys.readouterr().err
+
+
+def test_golden_jsonl(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    target = tmp_path / "out.txt"
+    fake = FakeProvider(
+        [
+            tool_reply("write", {"path": str(target), "content": "hi"}),
+            text_reply("finished"),
+        ]
+    )
+    code = main(["run", "--yes", "--jsonl", "write a file"], transport=fake)
+    assert code == 0
+    assert target.read_text() == "hi"
+
+    emitted = lines(capsys.readouterr().out)
+    usage = {"input": 10, "output": 5, "cache_read": 0, "cache_write": 0}
+    assert emitted[:5] == [
+        {"timestamp": "T", "type": "cost", "text": "10 in / 5 out", "detail": usage},
+        {
+            "timestamp": "T",
+            "type": "tool_use",
+            "text": "write",
+            "detail": {"path": str(target), "content": "hi"},
+        },
+        {"timestamp": "T", "type": "progress", "text": "finished", "detail": {}},
+        {"timestamp": "T", "type": "cost", "text": "10 in / 5 out", "detail": usage},
+        {"timestamp": "T", "type": "output", "text": "finished", "detail": {}},
+    ]
+    result = emitted[5]
+    assert result["type"] == "result"
+    assert result["status"] == "done"
+    assert result["stop_reason"] == "end_turn"
+    assert result["questions"] == []
+    assert result["turns"] == 2
+    assert result["usage"] == {
+        "input": 20,
+        "output": 10,
+        "cache_read": 0,
+        "cache_write": 0,
+    }
+    assert len(emitted) == 6
+
+
+def test_every_line_is_json_and_the_result_is_last(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    main(["run", "--yes", "--jsonl", "go"], transport=FakeProvider([text_reply("ok")]))
+    emitted = lines(capsys.readouterr().out)
+    assert [e["type"] for e in emitted].count("result") == 1
+    assert emitted[-1]["type"] == "result"
+
+
+def test_blocked_exits_zero_with_questions(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake = FakeProvider([tool_reply("ask", {"questions": ["which file?"]})])
+    assert main(["run", "--yes", "--jsonl", "go"], transport=fake) == 0
+    result = lines(capsys.readouterr().out)[-1]
+    assert result["status"] == "blocked"
+    assert result["questions"] == ["which file?"]
+
+
+def test_an_errored_run_exits_one(capsys: pytest.CaptureFixture[str]) -> None:
+    code = main(["run", "--yes", "--jsonl", "go"], transport=Exploding())
+    assert code == 1
+    assert lines(capsys.readouterr().out)[-1]["status"] == "error"
+
+
+def test_max_turns_is_honoured(capsys: pytest.CaptureFixture[str]) -> None:
+    fake = FakeProvider([tool_reply("bash", {"command": "true"}) for _ in range(5)])
+    code = main(["run", "--yes", "--jsonl", "--max-turns", "2", "loop"], transport=fake)
+    assert code == 1
+    result = lines(capsys.readouterr().out)[-1]
+    assert result["stop_reason"] == "max_turns"
+    assert result["turns"] == 2
+
+
+def test_without_jsonl_the_output_is_plain_text(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    main(["run", "--yes", "go"], transport=FakeProvider([text_reply("ok")]))
+    out = capsys.readouterr().out
+    assert "[progress] ok" in out
+    assert "{" not in out
+
+
+def test_session_file_is_written_and_resumable(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "s.json"
+    fake = FakeProvider([tool_reply("ask", {"questions": ["which file?"]})])
+    main(["run", "--yes", "--jsonl", "--session", str(path), "go"], transport=fake)
+    assert json.loads(path.read_text())["status"] == "blocked"
+
+    resumed = FakeProvider([text_reply("finished")])
+    code = main(
+        ["run", "--yes", "--jsonl", "--resume", str(path), "use bar.py"],
+        transport=resumed,
+    )
+    assert code == 0
+    result = lines(capsys.readouterr().out)[-1]
+    assert result["status"] == "done"
+    assert result["turns"] == 2
+    # The feedback merged into the trailing user turn rather than following it.
+    sent = resumed.calls[0][0]
+    assert sent[-1].role == "user"
+    assert sent[-1].content[-1] == {"type": "text", "text": "use bar.py"}
+
+
+def test_a_session_file_is_written_even_when_the_run_fails(tmp_path: Path) -> None:
+    path = tmp_path / "s.json"
+    main(["run", "--yes", "--session", str(path), "go"], transport=Exploding())
+    assert json.loads(path.read_text())["status"] == "error"
+
+
+def test_an_unreadable_resume_path_exits_two(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(
+        ["run", "--yes", "--resume", str(tmp_path / "missing.json")],
+        transport=FakeProvider([]),
+    )
+    assert code == 2
+    assert capsys.readouterr().out == ""
