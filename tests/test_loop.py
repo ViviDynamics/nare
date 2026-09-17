@@ -3,7 +3,15 @@ from pathlib import Path
 import nare
 from fake_provider import Exploding, FakeProvider, text_reply, tool_reply
 from nare.loop import MAX_TURNS_DEFAULT, run, step
-from nare.session import Session, Usage, dumps, loads, new_session
+from nare.session import (
+    Session,
+    Status,
+    Usage,
+    append_user_text,
+    dumps,
+    loads,
+    new_session,
+)
 from nare.tools import approve_all
 from nare.transport import Transport
 
@@ -177,10 +185,9 @@ async def test_a_resumed_session_runs_identically(tmp_path: Path) -> None:
     revived = loads(dumps(first))
     assert revived == first
 
-    from nare.session import append_user_text
-
     append_user_text(revived, f"use {target}")
-    revived.status = "working"
+    working: Status = "working"
+    revived.status = working
     fake = FakeProvider(
         [
             tool_reply("write", {"path": str(target), "content": "hi"}),
@@ -188,7 +195,7 @@ async def test_a_resumed_session_runs_identically(tmp_path: Path) -> None:
         ]
     )
     await drain(revived, fake)
-    assert revived.status == "done"  # type: ignore[comparison-overlap]
+    assert revived.status == "done"
     assert revived.turns == 3
     assert target.read_text() == "hi"
     # The revived transcript is what the transport actually saw.
