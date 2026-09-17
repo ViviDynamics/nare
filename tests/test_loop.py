@@ -80,6 +80,10 @@ async def test_step_emits_a_tool_use_event(tmp_path: Path) -> None:
     session = new_session("go")
     fake = FakeProvider([tool_reply("bash", {"command": "echo hi"})])
     await step(session, fake, approve_all)
+    # The full order is a contract, not an accident: task 13 asserts a golden
+    # JSONL stream, and the downstream adapter is built against this sequence.
+    # Note there is no `progress` here — this reply carries no text block.
+    assert [e.type for e in session.events] == ["cost", "tool_use"]
     tool_events = [e for e in session.events if e.type == "tool_use"]
     assert len(tool_events) == 1
     assert tool_events[0].text == "bash"
