@@ -1,9 +1,11 @@
 from pathlib import Path
 
-from fake_provider import FakeProvider, text_reply, tool_reply
-from nare.loop import step
-from nare.session import Usage, new_session
+import nare
+from fake_provider import Exploding, FakeProvider, text_reply, tool_reply
+from nare.loop import MAX_TURNS_DEFAULT, run, step
+from nare.session import Session, Usage, dumps, loads, new_session
 from nare.tools import approve_all
+from nare.transport import Transport
 
 
 async def test_a_reply_without_tool_calls_finishes_the_session() -> None:
@@ -105,3 +107,110 @@ async def test_thinking_blocks_become_thinking_events() -> None:
     )
     await step(session, FakeProvider([reply]), approve_all)
     assert [e.type for e in session.events][:2] == ["thinking", "progress"]
+
+
+async def drain(
+    session: Session, transport: Transport, *, max_turns: int = MAX_TURNS_DEFAULT
+) -> list[str]:
+    return [
+        e.type async for e in run(session, transport=transport, max_turns=max_turns)
+    ]
+
+
+async def test_run_drives_to_done_and_yields_every_event(tmp_path: Path) -> None:
+    target = tmp_path / "out.txt"
+    session = new_session("write then finish")
+    fake = FakeProvider(
+        [
+            tool_reply("write", {"path": str(target), "content": "hi"}),
+            text_reply("finished"),
+        ]
+    )
+    kinds = await drain(session, fake)
+    assert kinds == ["cost", "tool_use", "progress", "cost", "output"]
+    assert session.status == "done"
+    assert session.turns == 2
+    assert target.read_text() == "hi"
+
+
+async def test_run_stops_at_blocked() -> None:
+    session = new_session("go")
+    fake = FakeProvider([tool_reply("ask", {"questions": ["which one?"]})])
+    await drain(session, fake)
+    assert session.status == "blocked"
+    assert session.questions == ["which one?"]
+
+
+async def test_max_turns_ends_the_run_honestly(tmp_path: Path) -> None:
+    session = new_session("loop forever")
+    fake = FakeProvider([tool_reply("bash", {"command": "true"}) for _ in range(5)])
+    kinds = await drain(session, fake, max_turns=2)
+    assert session.status == "error"
+    assert session.stop_reason == "max_turns"
+    assert session.turns == 2
+    assert "error" in kinds
+
+
+async def test_a_transport_failure_becomes_status_error() -> None:
+    session = new_session("go")
+    kinds = await drain(session, Exploding())
+    assert session.status == "error"
+    assert session.error is not None
+    assert "connection reset" in session.error
+    assert kinds == ["error"]
+
+
+async def test_events_are_drained_not_hoarded() -> None:
+    session = new_session("go")
+    await drain(session, FakeProvider([text_reply("done")]))
+    assert session.events == []
+
+
+async def test_a_resumed_session_runs_identically(tmp_path: Path) -> None:
+    target = tmp_path / "out.txt"
+    first = new_session("write then finish")
+    await drain(
+        first, FakeProvider([tool_reply("ask", {"questions": ["which path?"]})])
+    )
+    assert first.status == "blocked"
+
+    revived = loads(dumps(first))
+    assert revived == first
+
+    from nare.session import append_user_text
+
+    append_user_text(revived, f"use {target}")
+    revived.status = "working"
+    fake = FakeProvider(
+        [
+            tool_reply("write", {"path": str(target), "content": "hi"}),
+            text_reply("finished"),
+        ]
+    )
+    await drain(revived, fake)
+    assert revived.status == "done"  # type: ignore[comparison-overlap]
+    assert revived.turns == 3
+    assert target.read_text() == "hi"
+    # The revived transcript is what the transport actually saw.
+    assert fake.calls[0][0][0].role == "user"
+
+
+def test_the_public_api_is_the_documented_surface() -> None:
+    assert set(nare.__all__) == {
+        "Event",
+        "Message",
+        "Reply",
+        "Session",
+        "ToolCall",
+        "Transport",
+        "Usage",
+        "approve_all",
+        "dumps",
+        "loads",
+        "make_transport",
+        "new_session",
+        "run",
+        "step",
+    }
+    for name in nare.__all__:
+        assert hasattr(nare, name), name
