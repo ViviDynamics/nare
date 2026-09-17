@@ -551,9 +551,16 @@ def loads(text: str) -> Session:
         raise ValueError(
             f"session file is version {version}; this nare writes {SESSION_VERSION}"
         )
-    raw["usage"] = Usage(**raw["usage"])
-    raw["messages"] = [Message(**m) for m in raw["messages"]]
-    return Session(**raw)
+    try:
+        raw["usage"] = Usage(**raw["usage"])
+        raw["messages"] = [Message(**m) for m in raw["messages"]]
+        return Session(**raw)
+    except (KeyError, TypeError) as exc:
+        # This function owns the file format, so a malformed file gets one
+        # coherent error rather than a leaked dataclass construction failure.
+        # The CLI turns ValueError into exit 2; an uncaught TypeError would
+        # exit 1 and mean "the run started and failed", which is a lie.
+        raise ValueError(f"malformed session file: {exc}") from exc
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
@@ -2744,6 +2751,70 @@ def test_an_unreadable_resume_path_exits_two(
     )
     assert code == 2
     assert capsys.readouterr().out == ""
+
+
+def test_a_malformed_resume_file_exits_two(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Valid JSON, right version, one key Session cannot take. Before loads()
+    # normalised its errors this raised an uncaught TypeError and exited 1,
+    # which means "ran and failed" to the consumer rather than "never started".
+    path = tmp_path / "s.json"
+    main(
+        ["run", "--yes", "--jsonl", "--session", str(path), "go"],
+        transport=FakeProvider([text_reply("ok")]),
+    )
+    capsys.readouterr()
+    raw = json.loads(path.read_text())
+    raw["unexpected_field"] = 1
+    path.write_text(json.dumps(raw))
+    code = main(
+        ["run", "--yes", "--jsonl", "--resume", str(path)],
+        transport=FakeProvider([]),
+    )
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert "malformed session file" in captured.err
+
+
+def test_a_failed_session_write_still_emits_the_result_line(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The run completed. Losing the result line would report success as a
+    # truncated failure and break the consumer's parser.
+    #
+    # This asserts through caplog rather than capsys because pytest's logging
+    # plugin pre-populates the root logger's handlers, which makes the CLI's
+    # logging.basicConfig() a no-op under pytest. In a real process the message
+    # does reach stderr.
+    unwritable = tmp_path / "missing" / "deep" / "s.json"
+    code = main(
+        ["run", "--yes", "--jsonl", "--session", str(unwritable), "go"],
+        transport=FakeProvider([text_reply("ok")]),
+    )
+    assert code == 0
+    assert "--session" in caplog.text
+
+
+def test_resume_clears_the_previous_stop_reason(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "s.json"
+    main(
+        ["run", "--yes", "--jsonl", "--session", str(path), "go"],
+        transport=FakeProvider([tool_reply("ask", {"questions": ["which?"]})]),
+    )
+    capsys.readouterr()
+    code = main(
+        ["run", "--yes", "--jsonl", "--resume", str(path), "keep going"],
+        transport=Exploding(),
+    )
+    result = lines(capsys.readouterr().out)[-1]
+    assert code == 1
+    assert result["status"] == "error"
+    # Not the pre-resume "tool_use": a stale stop_reason on a new error lies.
+    assert result["stop_reason"] is None
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -2767,6 +2838,8 @@ from nare.events import Event
 from nare.loop import run
 from nare.session import Session, append_user_text, dumps, loads, new_session
 from nare.tools import approve_all
+
+log = logging.getLogger(__name__)
 ```
 
 Add at the end of the module:
@@ -2782,6 +2855,11 @@ def _load_or_new(args: argparse.Namespace) -> Session:
     session.status = "working"
     session.questions = []
     session.error = None
+    # Clear the previous turn's stop_reason too. StopReason has no honest value
+    # for "a transport raised", so None is the truthful answer after a resume —
+    # carrying the pre-resume value forward would report a stale reason
+    # alongside an unrelated new error.
+    session.stop_reason = None
     return session
 
 
@@ -2830,7 +2908,14 @@ async def _execute(
             _emit(event, args.jsonl)
     finally:
         if args.session:
-            Path(args.session).write_text(dumps(session))
+            try:
+                Path(args.session).write_text(dumps(session))
+            except OSError as exc:
+                # Never let this cost the result line. A run that completed
+                # must still terminate the stream, or the consumer reads a
+                # truncated stdout as a failure. The run's own exit code
+                # stands; the write failure goes to stderr with diagnostics.
+                log.error("could not write --session %s: %s", args.session, exc)
     _emit_result(session, args.jsonl)
     return 1 if session.status == "error" else 0
 
@@ -3180,10 +3265,13 @@ class NareAdapter(BackendAdapter):
         if score.persona:
             argv += ["--system", score.persona]
         for flag, value in (("--model", model), ("--effort", effort),
-                            ("--temperature", temperature),
                             ("--max-tokens", max_tokens)):
             if value is not None:
                 argv += [flag, str(value)]
+        # temperature is deliberately NOT forwarded. anthropic 1.6.0 removed it
+        # from messages.create, and nare refuses the flag rather than silently
+        # dropping it -- so passing it through would exit 2 before the run
+        # starts. Forward it once a provider that accepts it exists.
         argv.append(score.prompt)
 
         self._proc = await asyncio.create_subprocess_exec(
@@ -3249,6 +3337,14 @@ Two contract details this sketch depends on: the `result` line is not a
 `BackendEvent` and must be filtered, and a run that never starts emits no
 result line at all — a failure to spawn surfaces through the exit code, not
 through `status=error`.
+
+One live integration consequence: `start()` accepts a `temperature`, and this
+sketch drops it on the floor for the anthropic provider, because the vendor
+removed the parameter and nare refuses the flag instead of ignoring it. Slice 2
+has to decide what the performer does with a per-role temperature it cannot
+honour — surface it to the operator, or hold it until a provider that accepts
+it lands. Quietly discarding it is the one option this project's premise rules
+out.
 ````
 
 - [ ] **Step 4: Update `README.md`**
