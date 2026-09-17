@@ -5,12 +5,16 @@ import pytest
 from nare.tools import (
     TOOL_SCHEMAS,
     TOOLS,
+    approve_all,
     ask,
+    dispatch,
     edit_file,
+    questions_from,
     read_file,
     run_bash,
     write_file,
 )
+from nare.transport import ToolCall
 
 
 def test_exactly_five_tools_with_matching_schemas() -> None:
@@ -96,3 +100,77 @@ def test_bash_times_out() -> None:
 
 def test_ask_returns_an_acknowledgement() -> None:
     assert "blocked" in ask(["which file?"])
+
+
+async def test_dispatch_returns_a_tool_result_block(tmp_path: Path) -> None:
+    target = tmp_path / "a.txt"
+    target.write_text("hello")
+    result = await dispatch(
+        ToolCall(id="c1", name="read", args={"path": str(target)}), approve_all
+    )
+    assert result == {
+        "type": "tool_result",
+        "tool_use_id": "c1",
+        "content": "hello",
+        "is_error": False,
+    }
+
+
+async def test_a_tool_exception_becomes_an_error_result(tmp_path: Path) -> None:
+    result = await dispatch(
+        ToolCall(id="c1", name="read", args={"path": str(tmp_path / "nope")}),
+        approve_all,
+    )
+    assert result["is_error"] is True
+    assert "FileNotFoundError" in result["content"]
+
+
+async def test_an_unknown_tool_becomes_an_error_result() -> None:
+    result = await dispatch(ToolCall(id="c1", name="grep", args={}), approve_all)
+    assert result["is_error"] is True
+    assert "grep" in result["content"]
+
+
+async def test_a_bad_argument_becomes_an_error_result_not_a_crash() -> None:
+    result = await dispatch(
+        ToolCall(id="c1", name="read", args={"wrong": 1}), approve_all
+    )
+    assert result["is_error"] is True
+
+
+async def test_denied_approval_blocks_the_tool(tmp_path: Path) -> None:
+    target = tmp_path / "a.txt"
+
+    def deny(tool: str, args: dict[str, object]) -> bool:
+        return False
+
+    result = await dispatch(
+        ToolCall(id="c1", name="write", args={"path": str(target), "content": "x"}),
+        deny,
+    )
+    assert result["is_error"] is True
+    assert "not approved" in result["content"]
+    assert not target.exists()
+
+
+async def test_approve_sees_the_tool_name_and_args() -> None:
+    seen: list[tuple[str, dict[str, object]]] = []
+
+    def record(tool: str, args: dict[str, object]) -> bool:
+        seen.append((tool, args))
+        return False
+
+    await dispatch(ToolCall(id="c1", name="bash", args={"command": "ls"}), record)
+    assert seen == [("bash", {"command": "ls"})]
+
+
+def test_questions_from_collects_across_calls() -> None:
+    calls = [
+        ToolCall(id="c1", name="read", args={"path": "a"}),
+        ToolCall(id="c2", name="ask", args={"questions": ["which file?", "why?"]}),
+    ]
+    assert questions_from(calls) == ["which file?", "why?"]
+
+
+def test_questions_from_is_empty_without_an_ask() -> None:
+    assert questions_from([ToolCall(id="c1", name="read", args={})]) == []

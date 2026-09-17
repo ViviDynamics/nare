@@ -6,10 +6,13 @@ fifteen tools. At five it is a dependency on cleverness for no gain.
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
+
+from nare.transport import ToolCall
 
 MAX_TOOL_OUTPUT = 30_000
 
@@ -149,3 +152,49 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
 ]
+
+Approve = Callable[[str, dict[str, Any]], bool]
+
+
+def approve_all(tool: str, args: dict[str, Any]) -> bool:
+    """Slice 1's only approval policy. `nare run` refuses to start without
+    --yes, which is what makes one implementation honest rather than lax.
+    """
+    return True
+
+
+def tool_result(call_id: str, text: str, *, is_error: bool = False) -> dict[str, Any]:
+    return {
+        "type": "tool_result",
+        "tool_use_id": call_id,
+        "content": text,
+        "is_error": is_error,
+    }
+
+
+async def dispatch(call: ToolCall, approve: Approve) -> dict[str, Any]:
+    """Run one tool call. Every failure comes back as an is_error result rather
+    than an exception: the model adapts, which is what it is good at.
+    """
+    function = TOOLS.get(call.name)
+    if function is None:
+        return tool_result(
+            call.id,
+            f"unknown tool {call.name!r}; available: {', '.join(sorted(TOOLS))}",
+            is_error=True,
+        )
+    if not approve(call.name, call.args):
+        return tool_result(call.id, f"{call.name} was not approved", is_error=True)
+    try:
+        return tool_result(call.id, await asyncio.to_thread(function, **call.args))
+    except Exception as exc:
+        return tool_result(call.id, f"{type(exc).__name__}: {exc}", is_error=True)
+
+
+def questions_from(calls: Iterable[ToolCall]) -> list[str]:
+    return [
+        question
+        for call in calls
+        if call.name == "ask"
+        for question in call.args.get("questions", [])
+    ]
