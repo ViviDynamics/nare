@@ -992,6 +992,7 @@ The tests assert against the **real request the real SDK constructs**, through `
 
 ```python
 import json
+import logging
 import os
 from typing import Any
 
@@ -1159,6 +1160,38 @@ def test_openai_usage_would_subtract_cached_tokens_to_reach_the_same_numbers() -
     assert openai_side.cache_read == usage_from(_RawUsage()).cache_read
 
 
+def test_a_missing_cache_field_warns_instead_of_silently_reporting_zero(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class MovedSchema:
+        input_tokens = 200
+        output_tokens = 50
+        # cache_read_input_tokens / cache_creation_input_tokens are gone
+
+    with caplog.at_level(logging.WARNING):
+        usage = usage_from(MovedSchema())
+    assert usage == Usage(input=200, output=50, cache_read=0, cache_write=0)
+    assert "cache_read_input_tokens" in caplog.text
+    assert "cache_creation_input_tokens" in caplog.text
+
+
+def test_a_null_cache_field_is_a_quiet_zero(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The distinction that matters: a vendor null is a real zero, a vanished
+    # attribute is a schema change. Only the second one deserves a warning.
+    class NullCache:
+        input_tokens = 200
+        output_tokens = 50
+        cache_read_input_tokens = None
+        cache_creation_input_tokens = None
+
+    with caplog.at_level(logging.WARNING):
+        usage = usage_from(NullCache())
+    assert usage == Usage(input=200, output=50, cache_read=0, cache_write=0)
+    assert caplog.text == ""
+
+
 @pytest.mark.live
 @pytest.mark.skipif(
     not os.environ.get("ANTHROPIC_API_KEY"), reason="needs a real API key"
@@ -1214,15 +1247,37 @@ def stop_reason_from(raw: str | None) -> StopReason:
     return "end_turn"
 
 
+def _cache_tokens(raw: Any, field: str) -> int:
+    """Read a cache-token field, warning if the vendor no longer has it.
+
+    A null from the vendor is a legitimate zero and stays quiet. A missing
+    attribute means the schema moved, and reporting a silent zero there would
+    make the token accounting wrong with no way to notice — the same reason
+    stop_reason_from warns rather than guessing.
+    """
+    if not hasattr(raw, field):
+        log.warning(
+            "anthropic usage has no %s; reporting 0 for it. Token accounting "
+            "for cached requests may be understated.",
+            field,
+        )
+        return 0
+    value: int | None = getattr(raw, field)
+    return value or 0
+
+
 def usage_from(raw: Any) -> Usage:
     """input EXCLUDES cache reads, which is Anthropic's own convention and the
     one nare normalizes to.
+
+    input and output are Required on the vendor model, so a missing one should
+    fail loudly rather than be papered over.
     """
     return Usage(
         input=raw.input_tokens,
         output=raw.output_tokens,
-        cache_read=getattr(raw, "cache_read_input_tokens", 0) or 0,
-        cache_write=getattr(raw, "cache_creation_input_tokens", 0) or 0,
+        cache_read=_cache_tokens(raw, "cache_read_input_tokens"),
+        cache_write=_cache_tokens(raw, "cache_creation_input_tokens"),
     )
 ```
 
