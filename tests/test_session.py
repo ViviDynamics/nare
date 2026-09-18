@@ -87,3 +87,25 @@ def test_round_trip_is_equal_even_with_events_pending() -> None:
     # unequal to the one it was written from.
     assert loads(dumps(s)) == s
     assert loads(dumps(s)).events == []
+
+
+def test_dumps_redacts_the_transcript() -> None:
+    # The session file lands in a git checkout; it cannot be the one surface
+    # that keeps secrets in the clear while events are scrubbed.
+    s = new_session("go")
+    s.messages.append(
+        Message(
+            role="user",
+            content=[
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "t1",
+                    "content": "exit 0\nANTHROPIC_API_KEY=sk-ant-" + "Z" * 30,
+                }
+            ],
+        )
+    )
+    text = dumps(s)
+    assert "sk-ant-" not in text
+    assert "[redacted]" in text
+    assert loads(text).status == "working"

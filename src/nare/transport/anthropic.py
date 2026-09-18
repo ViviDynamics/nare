@@ -23,6 +23,22 @@ DEFAULT_MAX_TOKENS = 8192
 # Streaming turn() is slice 3's, so the transport refuses rather than guessing.
 NONSTREAMING_MAX_TOKENS = 21333
 
+# Per-model output caps, which are lower than the global ceiling: every
+# opus-4 id caps at 8192. Checking only the global one let those models
+# construct fine and then fail on every single turn, blaming streaming. The
+# SDK's table is private but it is the same one messages.create feeds to
+# _calculate_nonstreaming_timeout; a hardcoded model list here would rot.
+MODEL_NONSTREAMING_TOKENS: dict[str, int] = {}
+try:
+    from anthropic._constants import MODEL_NONSTREAMING_TOKENS as _SDK_MODEL_CAPS
+except ImportError:  # pragma: no cover - the SDK moved it; fall back to global
+    log.warning(
+        "anthropic SDK has no MODEL_NONSTREAMING_TOKENS; per-model output "
+        "caps are not checked at construction"
+    )
+else:
+    MODEL_NONSTREAMING_TOKENS = dict(_SDK_MODEL_CAPS)
+
 EFFORT_BUDGETS: dict[str, int] = {"low": 1024, "medium": 4096, "high": 16384}
 
 Effort = Literal["low", "medium", "high"]
@@ -113,6 +129,10 @@ class AnthropicTransport:
 
         self.thinking: dict[str, Any] | None = None
         budget = EFFORT_BUDGETS[effort] if effort is not None else None
+        ceiling = min(
+            NONSTREAMING_MAX_TOKENS,
+            MODEL_NONSTREAMING_TOKENS.get(model, NONSTREAMING_MAX_TOKENS),
+        )
 
         if budget is None:
             resolved = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
@@ -120,7 +140,7 @@ class AnthropicTransport:
             resolved = (
                 max_tokens
                 if max_tokens is not None
-                else min(budget + DEFAULT_MAX_TOKENS, NONSTREAMING_MAX_TOKENS)
+                else min(budget + DEFAULT_MAX_TOKENS, ceiling)
             )
             if resolved <= budget:
                 raise ValueError(
@@ -129,9 +149,14 @@ class AnthropicTransport:
                 )
             self.thinking = {"type": "enabled", "budget_tokens": budget}
 
-        if resolved > NONSTREAMING_MAX_TOKENS:
+        if resolved > ceiling:
+            limit = (
+                f"{ceiling}, this model's non-streaming cap"
+                if ceiling < NONSTREAMING_MAX_TOKENS
+                else str(NONSTREAMING_MAX_TOKENS)
+            )
             raise ValueError(
-                f"max_tokens {resolved} exceeds {NONSTREAMING_MAX_TOKENS}, above "
+                f"max_tokens {resolved} exceeds {limit}, above "
                 "which the SDK requires streaming; streaming turn() is slice 3's"
             )
 

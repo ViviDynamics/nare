@@ -221,3 +221,84 @@ def test_the_public_api_is_the_documented_surface() -> None:
     }
     for name in nare.__all__:
         assert hasattr(nare, name), name
+
+
+async def test_a_dying_dispatch_still_answers_every_tool_use() -> None:
+    # A transcript ending in an unanswered tool_use is rejected by the vendor
+    # on every future resume, so the session would be dead for good.
+    session = new_session("go")
+    fake = FakeProvider([tool_reply("bash", {"command": "ls"})])
+
+    def explode(tool: str, args: dict[str, object]) -> bool:
+        raise ConnectionError("approval service is down")
+
+    await step(session, fake, explode)
+    assert session.messages[-1].role == "user"
+    assert [b["type"] for b in session.messages[-1].content] == ["tool_result"]
+
+
+async def test_a_truncated_turn_is_an_error_not_a_finished_one() -> None:
+    # The adapter maps done -> completed, so reporting a cut-off answer as
+    # done would tell conductor the task succeeded.
+    session = new_session("write an essay")
+    fake = FakeProvider([text_reply("half an ans", stop_reason="max_tokens")])
+    await step(session, fake, approve_all)
+    assert session.status == "error"
+    assert session.stop_reason == "max_tokens"
+    assert "max_tokens" in (session.error or "")
+
+
+async def test_a_refusal_is_an_error_not_a_finished_one() -> None:
+    session = new_session("do something dubious")
+    fake = FakeProvider([text_reply("", stop_reason="refusal")])
+    await step(session, fake, approve_all)
+    assert session.status == "error"
+    assert session.stop_reason == "refusal"
+
+
+async def test_a_truncated_tool_call_is_answered_but_never_run(tmp_path: Path) -> None:
+    # A cut-off `write` would overwrite a real file with partial content, but
+    # skipping it must not leave a dangling tool_use either.
+    target = tmp_path / "keep.txt"
+    target.write_text("original")
+    session = new_session("write a file")
+    fake = FakeProvider(
+        [
+            tool_reply(
+                "write",
+                {"path": str(target), "content": "trunc"},
+                stop_reason="max_tokens",
+            )
+        ]
+    )
+    await step(session, fake, approve_all)
+    assert target.read_text() == "original"
+    assert session.status == "error"
+    assert session.messages[-1].role == "user"
+    assert session.messages[-1].content[0]["is_error"] is True
+
+
+async def test_max_turns_is_a_budget_for_this_invocation_not_a_lifetime_total() -> None:
+    # Conductor resumes the same session once per feedback round; a cumulative
+    # budget makes every resume past the Nth die before its first call.
+    session = new_session("go")
+    session.turns = 49
+    fake = FakeProvider([text_reply("finished")])
+    kinds = await drain(session, fake, max_turns=2)
+    assert session.status == "done"
+    assert session.turns == 50
+    assert "error" not in kinds
+
+
+async def test_a_transport_failure_does_not_inherit_the_last_turns_stop_reason() -> (
+    None
+):
+    # The previous turn's "tool_use" describes that turn, not this failure.
+    session = new_session("go")
+    await step(
+        session, FakeProvider([tool_reply("bash", {"command": "true"})]), approve_all
+    )
+    assert session.stop_reason == "tool_use"
+    await drain(session, Exploding())
+    assert session.status == "error"
+    assert session.stop_reason is None

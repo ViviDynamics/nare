@@ -341,7 +341,9 @@ def test_a_null_cache_field_is_a_quiet_zero(
     not os.environ.get("ANTHROPIC_API_KEY"), reason="needs a real API key"
 )
 async def test_live_smoke() -> None:
-    transport = AnthropicTransport(model="claude-sonnet-5", max_tokens=64)
+    transport = AnthropicTransport(
+        model=os.environ.get("NARE_MODEL", "claude-sonnet-5"), max_tokens=64
+    )
     reply = await transport.turn(
         [Message("user", [{"type": "text", "text": "Reply with the word OK."}])], []
     )
@@ -372,3 +374,26 @@ def test_an_unknown_kind_names_the_supported_kinds() -> None:
 def test_temperature_refusal_surfaces_from_the_factory() -> None:
     with pytest.raises(ValueError, match="temperature"):
         make_transport("anthropic", model="m", api_key="k", temperature=0.2)
+
+
+# claude-opus-4-0 caps non-streaming output at 8192 in the SDK's own table.
+# Checking only the global ceiling let it construct and then fail on every
+# single turn, with an error blaming streaming rather than the model.
+OPUS = "claude-opus-4-0"
+
+
+def test_a_models_own_nonstreaming_cap_is_enforced_at_construction() -> None:
+    with pytest.raises(ValueError, match="non-streaming cap"):
+        build(model=OPUS, max_tokens=12288)
+
+
+def test_effort_resolves_under_the_models_cap_rather_than_the_global_one() -> None:
+    assert build(model=OPUS, effort="medium").max_tokens == 8192
+    # An uncapped model still gets the global headroom.
+    assert build(effort="medium").max_tokens > 8192
+
+
+def test_an_effort_budget_the_model_cannot_afford_fails_loudly() -> None:
+    # high wants 16384 of thinking, which this model cannot fit under 8192.
+    with pytest.raises(ValueError, match="must exceed"):
+        build(model=OPUS, effort="high")

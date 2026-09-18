@@ -7,7 +7,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
-from nare.events import Event
+from nare.events import Event, redact_value
 
 SESSION_VERSION = 1
 
@@ -76,9 +76,17 @@ def append_user_text(s: Session, text: str) -> None:
 
 
 def dumps(s: Session) -> str:
-    """Serialize. Events are drained by `run()` each step and are never state."""
+    """Serialize. Events are drained by `run()` each step and are never state.
+
+    The transcript is redacted on the way out, for the same reason events are
+    redacted at construction: this file lands in the workdir, which is a git
+    checkout, so it cannot be the one surface that keeps secrets in the clear.
+    The cost is that a resumed session reads `[redacted]` where a secret was,
+    which is the correct trade — the model should not be re-sent one either.
+    """
     raw = asdict(s)
     raw.pop("events")
+    raw["messages"] = redact_value(raw["messages"])
     return json.dumps(raw)
 
 

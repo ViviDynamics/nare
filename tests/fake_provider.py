@@ -45,10 +45,16 @@ class Exploding:
         raise RuntimeError("connection reset")
 
 
-def tool_reply(name: str, args: dict[str, Any], *, call_id: str = "call_1") -> Reply:
+def tool_reply(
+    name: str,
+    args: dict[str, Any],
+    *,
+    call_id: str = "call_1",
+    stop_reason: StopReason = "tool_use",
+) -> Reply:
     return Reply(
         content=[{"type": "tool_use", "id": call_id, "name": name, "input": args}],
         tool_calls=[ToolCall(id=call_id, name=name, args=args)],
         usage=Usage(input=10, output=5),
-        stop_reason="tool_use",
+        stop_reason=stop_reason,
     )

@@ -1,8 +1,13 @@
+import os
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
 
 from nare.tools import (
+    MAX_TOOL_OUTPUT,
     TOOL_SCHEMAS,
     TOOLS,
     approve_all,
@@ -193,3 +198,103 @@ def test_questions_from_survives_a_schema_violating_ask(
     # characters, and a non-iterable must not turn blocked into error.
     call = ToolCall(id="c1", name="ask", args={"questions": value})
     assert questions_from([call]) == expected
+
+
+async def test_a_raising_approve_comes_back_as_an_error_result() -> None:
+    # A real approval seam prompts a human or calls a service, so it can fail.
+    # Escaping here would leave a tool_use with no tool_result.
+    def explode(tool: str, args: dict[str, object]) -> bool:
+        raise ConnectionError("approval service is down")
+
+    result = await dispatch(
+        ToolCall(id="c1", name="bash", args={"command": "ls"}), explode
+    )
+    assert result["is_error"] is True
+    assert result["tool_use_id"] == "c1"
+    assert "ConnectionError" in result["content"]
+
+
+def test_the_file_tools_pin_utf8_regardless_of_locale(tmp_path: Path) -> None:
+    # The schema promises UTF-8, but Path.read_text defaults to the locale
+    # codec. Under LANG=C an edit would mojibake every non-ASCII byte in the
+    # file, so this runs a child in that locale rather than trusting ours.
+    target = tmp_path / "a.txt"
+    target.write_bytes("héllo = 1\n".encode())
+    script = tmp_path / "child.py"
+    script.write_text(
+        "import sys\n"
+        "from nare.tools import read_file, edit_file\n"
+        "assert read_file(sys.argv[1]) == 'h\\u00e9llo = 1'\n"
+        "edit_file(sys.argv[1], '1', '2')\n",
+        encoding="utf-8",
+    )
+    env = {**os.environ, "LC_ALL": "C", "LANG": "C", "PYTHONUTF8": "0"}
+    done = subprocess.run(
+        [sys.executable, "-X", "utf8=0", str(script), str(target)],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert done.returncode == 0, done.stderr
+    assert target.read_bytes() == "héllo = 2\n".encode()
+
+
+def test_a_timeout_kills_the_whole_process_group(tmp_path: Path) -> None:
+    # subprocess.run's timeout kills the shell and nothing the shell started,
+    # so `sleep 41 & sleep 42` left both sleeps running. In a real run that is
+    # an orphaned dev server or test watcher per timed-out command.
+    pidfile = tmp_path / "pid"
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_bash(f"sleep 30 & echo $! > {pidfile}; wait", timeout=1)
+
+    pid = int(pidfile.read_text())
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, PermissionError):
+            return
+        time.sleep(0.02)
+    pytest.fail(f"pid {pid} outlived the timeout that was supposed to kill it")
+
+
+def test_commands_do_not_inherit_nares_stdin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # nare's stdin belongs to conductor. Piping a line into nare and running
+    # `cat` printed it back, so anything that reads would eat conductor's
+    # input or block until the timeout. Asserted on the kwargs rather than
+    # behaviorally: pytest already replaces fd 0, so a `cat` test would pass
+    # with or without the fix.
+    seen: dict[str, object] = {}
+    real = subprocess.Popen
+
+    def spy(*args: object, **kwargs: object) -> object:
+        seen.update(kwargs)
+        return real(*args, **kwargs)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(subprocess, "Popen", spy)
+    run_bash("true")
+    assert seen["stdin"] is subprocess.DEVNULL
+    assert seen["start_new_session"] is True
+
+
+def test_read_is_capped_by_bytes_not_only_by_lines(tmp_path: Path) -> None:
+    # `limit` bounds a read by LINES, which says nothing about size: one line
+    # of minified code can be the whole context window.
+    target = tmp_path / "bundle.min.js"
+    target.write_text("x" * (MAX_TOOL_OUTPUT * 2))
+    out = read_file(str(target))
+    assert len(out) < MAX_TOOL_OUTPUT * 2
+    assert out.endswith(f"[truncated at {MAX_TOOL_OUTPUT} chars]")
+
+
+def test_a_missing_edit_target_names_the_parameter_the_model_sees(
+    tmp_path: Path,
+) -> None:
+    # The schema calls it `old`. Saying `old_string` invites a retry with an
+    # argument name that does not exist.
+    target = tmp_path / "f.txt"
+    target.write_text("hello")
+    with pytest.raises(ValueError, match=r"\bold not found\b"):
+        edit_file(str(target), "nope", "x")

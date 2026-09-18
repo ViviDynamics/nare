@@ -14,7 +14,13 @@ def parse(*argv: str) -> argparse.Namespace:
     return build_parser().parse_args(["run", *argv])
 
 
-def test_defaults_match_the_spec() -> None:
+def test_defaults_match_the_spec(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The defaults are read from the environment, so this test has to state
+    # what it means by "default". Without this, anyone with NARE_MODEL
+    # exported -- which a .env for a LiteLLM proxy does -- fails here, and
+    # the failure reads like a code defect rather than their own shell.
+    for var in ("NARE_PROVIDER", "NARE_MODEL", "NARE_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
     args = parse("do a thing")
     assert args.prompt == "do a thing"
     assert args.provider == "anthropic"
@@ -280,8 +286,10 @@ def test_a_failed_session_write_still_emits_the_result_line(
     capsys: pytest.CaptureFixture[str],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    # The run completed; losing the result line would report success as a
-    # truncated failure and break the consumer's parser.
+    # Losing the result line would break the consumer's parser. But the run
+    # is not `done` either: conductor derives everything from the four-value
+    # status, so a `done` line beside a non-zero exit still reads as finished
+    # work, and its next --resume would fail far from the cause.
     unwritable = tmp_path / "missing" / "deep" / "s.json"
     code = main(
         ["run", "--yes", "--jsonl", "--session", str(unwritable), "go"],
@@ -289,9 +297,10 @@ def test_a_failed_session_write_still_emits_the_result_line(
     )
     captured = capsys.readouterr()
     emitted = lines(captured.out)
-    assert code == 0
+    assert code == 1
     assert emitted[-1]["type"] == "result"
-    assert emitted[-1]["status"] == "done"
+    assert emitted[-1]["status"] == "error"
+    assert "--session" in str(emitted[-1]["error"])
     # logging output is observed via caplog, not capsys: pytest's own logging
     # plugin pre-populates the root logger's handlers, which makes
     # logging.basicConfig() a no-op and means log records never reach the
@@ -317,3 +326,93 @@ def test_resume_clears_the_previous_stop_reason(
     assert result["status"] == "error"
     # Not the pre-resume "tool_use": a stale stop_reason on a new error lies.
     assert result["stop_reason"] is None
+
+
+def test_resume_writes_the_session_back_without_an_explicit_session_flag(
+    tmp_path: Path,
+) -> None:
+    # Without this the whole resumed run is discarded and the next --resume
+    # replays the stale prefix.
+    path = tmp_path / "s.json"
+    fake = FakeProvider([tool_reply("ask", {"questions": ["which file?"]})])
+    main(["run", "--yes", "--jsonl", "--session", str(path), "go"], transport=fake)
+    assert json.loads(path.read_text())["turns"] == 1
+
+    main(
+        ["run", "--yes", "--jsonl", "--resume", str(path), "use bar.py"],
+        transport=FakeProvider([text_reply("finished")]),
+    )
+    saved = json.loads(path.read_text())
+    assert saved["status"] == "done"
+    assert saved["turns"] == 2
+
+
+def test_a_failed_session_write_leaves_the_previous_file_intact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The adapter SIGTERMs mid-run and resumes the same path, so a torn write
+    # would strand the run with no backup. The rename is what prevents it.
+    path = tmp_path / "s.json"
+    main(
+        ["run", "--yes", "--session", str(path), "go"],
+        transport=FakeProvider([tool_reply("ask", {"questions": ["which file?"]})]),
+    )
+    good = path.read_text()
+
+    def boom(src: object, dst: object) -> None:
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr("nare.cli.os.replace", boom)
+    code = main(
+        ["run", "--yes", "--resume", str(path), "keep going"],
+        transport=FakeProvider([text_reply("finished")]),
+    )
+    assert path.read_text() == good
+    assert code == 1
+    # And no half-written temp file left beside it in the workdir.
+    assert [f.name for f in tmp_path.iterdir()] == ["s.json"]
+
+
+def test_the_session_is_written_after_every_turn_not_just_at_the_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Conductor SIGTERMs a slow run, and SIGTERM's default handler exits
+    # without unwinding, so `finally` never runs. A run persisted only at the
+    # end is not resumable after a kill -- which is the whole claim.
+    path = tmp_path / "s.json"
+    seen: list[int] = []
+
+    def watch(tool: str, args: dict[str, object]) -> bool:
+        # Runs mid-run, inside a turn: whatever is on disk here is what a kill
+        # at this instant would leave behind.
+        seen.append(json.loads(path.read_text())["turns"] if path.exists() else 0)
+        return True
+
+    monkeypatch.setattr("nare.cli.approve_all", watch)
+    main(
+        ["run", "--yes", "--jsonl", "--session", str(path), "go"],
+        transport=FakeProvider(
+            [
+                tool_reply("bash", {"command": "true"}, call_id="c1"),
+                tool_reply("bash", {"command": "true"}, call_id="c2"),
+                text_reply("finished"),
+            ]
+        ),
+    )
+
+    # Every completed turn is durable before the next one starts work: turn 2
+    # runs its tool with turn 1 already on disk. The turn in flight is the only
+    # thing a kill can cost, instead of the whole run.
+    assert seen == [0, 1]
+    assert json.loads(path.read_text())["turns"] == 3
+
+
+def test_the_session_file_is_readable_only_by_its_owner(tmp_path: Path) -> None:
+    # It holds the full transcript, including whatever `read` and `bash`
+    # returned, and it lands in the workdir, which is a git checkout.
+    path = tmp_path / "s.json"
+    main(
+        ["run", "--yes", "--session", str(path), "go"],
+        transport=FakeProvider([text_reply("ok")]),
+    )
+    assert path.stat().st_mode & 0o777 == 0o600

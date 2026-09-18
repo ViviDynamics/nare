@@ -55,3 +55,19 @@ def test_the_assignment_pattern_prefers_over_redaction_to_leaking() -> None:
     # it. A mangled clause of narration is a cheaper failure than a leaked
     # credential, and every surface downstream trusts these events.
     assert redact("covers auth: see section 3") == "covers [redacted] section 3"
+
+
+def test_affixed_credential_names_are_redacted() -> None:
+    # The real-world forms. `_` is a word character, so a \b-anchored keyword
+    # matched none of these.
+    assert redact("ANTHROPIC_AUTH_TOKEN=abcdefghijk") == "[redacted]"
+    assert redact("AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI") == "[redacted]"
+    assert redact("GITHUB_TOKEN: ghs_short") == "[redacted]"
+
+
+def test_bearer_schemes_are_redacted_past_the_scheme_word() -> None:
+    # The secret is the SECOND word after the colon here.
+    assert "abc123xyz789secretvalue" not in redact(
+        "Authorization: Bearer abc123xyz789secretvalue"
+    )
+    assert "hunter2" not in redact('"Authorization": "Bearer hunter2"')

@@ -7,6 +7,8 @@ fifteen tools. At five it is a dependency on cleverness for no gain.
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
 import subprocess
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -17,41 +19,74 @@ from nare.transport import ToolCall
 MAX_TOOL_OUTPUT = 30_000
 
 
+def _truncate(text: str) -> str:
+    """One output cap for every tool. `limit` bounds a read by LINES, which says
+    nothing about size: 2,000 lines of minified code is a context window.
+    """
+    if len(text) <= MAX_TOOL_OUTPUT:
+        return text
+    return text[:MAX_TOOL_OUTPUT] + f"\n[truncated at {MAX_TOOL_OUTPUT} chars]"
+
+
 def read_file(path: str, offset: int = 0, limit: int = 2000) -> str:
-    lines = Path(path).read_text().splitlines()
-    return "\n".join(lines[offset : offset + limit])
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    return _truncate("\n".join(lines[offset : offset + limit]))
 
 
 def write_file(path: str, content: str) -> str:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content)
+    target.write_text(content, encoding="utf-8")
     return f"wrote {len(content)} characters to {path}"
 
 
 def edit_file(path: str, old: str, new: str) -> str:
     target = Path(path)
-    text = target.read_text()
+    text = target.read_text(encoding="utf-8")
     count = text.count(old)
     if count == 0:
-        raise ValueError(f"old_string not found in {path}")
+        raise ValueError(f"old not found in {path}")
     if count > 1:
         raise ValueError(
-            f"old_string appears {count} times in {path}; include enough "
+            f"old appears {count} times in {path}; include enough "
             "surrounding context to make it unique"
         )
-    target.write_text(text.replace(old, new))
+    target.write_text(text.replace(old, new), encoding="utf-8")
     return f"edited {path}"
 
 
 def run_bash(command: str, timeout: int = 120) -> str:
-    done = subprocess.run(
-        command, shell=True, capture_output=True, text=True, timeout=timeout
+    """Run a shell command in its own process group, with no stdin.
+
+    `subprocess.run(timeout=...)` kills the shell and nothing the shell started,
+    so `make dev &` outlives the call and the run leaks a server. The group is
+    what makes the timeout mean what it says.
+
+    stdin is DEVNULL because nare's own stdin belongs to conductor: a command
+    that reads would either eat conductor's pipe or block until the timeout.
+    """
+    proc = subprocess.Popen(
+        command,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        start_new_session=True,
     )
-    output = (done.stdout + done.stderr).strip()
-    if len(output) > MAX_TOOL_OUTPUT:
-        output = output[:MAX_TOOL_OUTPUT] + f"\n[truncated at {MAX_TOOL_OUTPUT} chars]"
-    return f"exit {done.returncode}\n{output}".rstrip()
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # ponytail: killpg reaches the group the shell leads. A grandchild that
+        # calls setsid itself escapes it; a pid-tree walk is the upgrade, and
+        # not before something actually escapes.
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        # Raised, not returned: dispatch turns it into an is_error result, so
+        # the model still sees the timeout and can adapt.
+        raise
+    output = (out + err).strip()
+    return f"exit {proc.returncode}\n{_truncate(output)}".rstrip()
 
 
 def ask(questions: list[str]) -> str:
@@ -183,9 +218,12 @@ async def dispatch(call: ToolCall, approve: Approve) -> dict[str, Any]:
             f"unknown tool {call.name!r}; available: {', '.join(sorted(TOOLS))}",
             is_error=True,
         )
-    if not approve(call.name, call.args):
-        return tool_result(call.id, f"{call.name} was not approved", is_error=True)
     try:
+        # approve() is inside the try on purpose: a real approval seam prompts
+        # a human or calls a service, so it can raise. Escaping here would
+        # leave the transcript with a tool_use and no tool_result.
+        if not approve(call.name, call.args):
+            return tool_result(call.id, f"{call.name} was not approved", is_error=True)
         return tool_result(call.id, await asyncio.to_thread(function, **call.args))
     except Exception as exc:
         return tool_result(call.id, f"{type(exc).__name__}: {exc}", is_error=True)
