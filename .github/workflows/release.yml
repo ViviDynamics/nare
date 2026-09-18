@@ -1,0 +1,92 @@
+name: Release
+
+# Tags a release only after CI passes on main, so an unvalidated commit is never
+# released. workflow_run also fires for fork PRs, which is why the job below
+# accepts nothing but a successful push to this repository's main.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  release:
+    name: Tag CalVer release
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout the validated commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Fetch tags
+        run: git fetch --tags --force
+
+      # Derived from existing tags rather than a committed file, as in elm and
+      # conductor: nothing on a branch can go stale or need bumping. A tag
+      # already on the commit is reused so a rerun is idempotent.
+      - name: Derive CalVer version from existing tags
+        id: derive
+        shell: bash
+        run: |
+          set -euo pipefail
+          existing="$(git tag --points-at HEAD | grep -E '^v?[0-9]{4}\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' | head -n 1 || true)"
+          if [ -n "$existing" ]; then
+            echo "Reusing existing tag on HEAD: $existing"
+            version="${existing#v}"
+          else
+            version="$(python3 .github/scripts/next_calver.py)"
+            echo "Derived new version: $version"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release and tag
+        uses: actions/github-script@v7
+        env:
+          VERSION: ${{ steps.derive.outputs.version }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        with:
+          script: |
+            const version = process.env.VERSION;
+            const sha = process.env.SHA;
+
+            try {
+              await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag: version,
+              });
+              console.log(`Release ${version} already exists, skipping`);
+              return;
+            } catch (e) {
+              if (e.status !== 404) throw e;
+            }
+
+            const commit = await github.rest.repos.getCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: sha,
+            });
+
+            await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: version,
+              target_commitish: sha,
+              name: version,
+              body: commit.data.commit.message,
+            });
+            console.log(`Created release ${version}`);
