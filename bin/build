@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Lint, types, tests. Matches conductor's idiom so one habit covers both repos.
+set -euo pipefail
+uv run ruff format --check src tests
+uv run ruff check src tests
+uv run mypy src tests
+uv run pytest -q
