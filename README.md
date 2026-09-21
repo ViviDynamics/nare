@@ -26,6 +26,21 @@ slice 1 ships the approval seam, not a policy engine.
 See [docs/architecture.md](docs/architecture.md) for the shape, and
 [docs/adr/](docs/adr/) for the decisions behind it.
 
+## Working on nare
+
+`bin/build` runs everything CI runs: formatting, lint, strict types, tests.
+
+Agent workflow skills for this repo live in [`.agents/skills/`](.agents/skills/)
+(`.claude/skills` and `.opencode/skill` point at the same copies): `conventions`,
+`ci-safety`, `watch-ci`, and `merge-pr`. They were adapted from the org's internal
+skill set at tag `2026.09.8` and are maintained here, tuned to nare. To use them in a
+fresh clone:
+
+    cp repo.env.example repo.env
+    .agents/skills/ci-safety/scripts/check-wiring
+
+The scripts need `gh`, `jq`, and `git`.
+
 ## Licensing
 
 nare is source-available under the

@@ -6,3 +6,7 @@ __pycache__/
 .ruff_cache/
 dist/
 .env
+
+# Skills: local settings and per-issue state
+.agents/state/
+repo.env
