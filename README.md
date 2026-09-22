@@ -43,8 +43,14 @@ nare validates a subset of JSON Schema: `type`, `properties`, `required`,
 refused at startup rather than validated in part, because an answer that was
 only partly checked is worse than one that was not checked at all.
 
-See [docs/architecture.md](docs/architecture.md) for the shape, and
-[docs/adr/](docs/adr/) for the decisions behind it.
+`nare contract` prints the machine contract this build speaks: the version,
+the exit codes, the statuses and the event types. A caller pins what it
+understands with `nare run --contract N`, and nare refuses to start when the
+numbers differ rather than emitting a stream the caller would mis-read.
+
+See [docs/contract.md](docs/contract.md) for what a caller may rely on and what
+changes the version, [docs/architecture.md](docs/architecture.md) for the
+shape, and [docs/adr/](docs/adr/) for the decisions behind it.
 
 ## Working on nare
 
