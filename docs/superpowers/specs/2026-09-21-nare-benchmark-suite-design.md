@@ -105,7 +105,7 @@ a refinement of this design; it is the only available instrument.
         judge.py                assertion scoring via transport   (impure)
       tests/test_runner.py
       Dockerfile
-      .dockerignore
+      Dockerfile.dockerignore
       baselines/<model>.<tier>.toml   committed, blessed numbers
       results/                  gitignored, one JSONL per run
     bin/bench
@@ -123,8 +123,8 @@ are slugified, so `ada/qwen3-14b` becomes `ada-qwen3-14b.smoke.toml`.
 ### What is committed
 
 Everything above except `results/`. Cases grow deliberately, one reviewable
-PR each. `baselines/<tier>.toml` is rewritten in place, so its history grows
-and the file does not. Nothing machine-generated enters the tree, which is
+PR each. Each `baselines/<model>.<tier>.toml` is rewritten in place, so its
+history grows and the file does not. Nothing machine-generated enters the tree, which is
 the property that keeps the suite pleasant at two hundred cases.
 
 ### Why not in `src/nare/`
@@ -276,6 +276,11 @@ Then, per rep:
 
 Three details carry weight:
 
+The build context is the repository root, so the ignore file is
+`benchmarks/Dockerfile.dockerignore` — BuildKit's per-Dockerfile form. A file
+at `benchmarks/.dockerignore` would never be read, because Docker looks for
+`.dockerignore` at the context root.
+
 **`git init` inside the sandbox** produces a clean `git diff HEAD` to hand the
 judge, and gives the agent an environment it recognizes. The session is
 written to `/out`, outside the graded tree, so it never appears in the diff
@@ -395,8 +400,14 @@ plumbing.
 
 The worst bug a benchmark can have is a check that already passes before the
 agent does anything, because it silently scores every future run as a success.
-`bin/bench verify` runs each case's checks against the pristine, untouched
-fixture and requires at least one to fail.
+`bin/bench verify` runs each case's `bash` checks against the pristine,
+untouched fixture and requires at least one to fail.
+
+Only `bash` checks are exercised: a `result` check reads nare's result line,
+and verify never runs the agent, so there is no line to read. A case whose
+checks are all `result` kind — `ambiguous-request` is one — is therefore
+exempt and reported as such rather than failed. The rule is "every case that
+can be verified is", not "every case has a bash check".
 
 It needs Docker and no API key, which makes it the one benchmark job that can
 run in CI on every pull request at no cost.
