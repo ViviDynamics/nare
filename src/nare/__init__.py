@@ -15,7 +15,7 @@ asyncio.run(main())
 from nare.events import Event
 from nare.loop import run, step
 from nare.session import Message, Session, Usage, dumps, loads, new_session
-from nare.tools import approve_all
+from nare.tools import Policy, approve_all
 from nare.transport import Reply, ToolCall, Transport, make_transport
 
 __version__ = "0.1.0"
@@ -23,6 +23,7 @@ __version__ = "0.1.0"
 __all__ = [
     "Event",
     "Message",
+    "Policy",
     "Reply",
     "Session",
     "ToolCall",

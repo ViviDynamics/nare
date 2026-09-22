@@ -10,6 +10,7 @@ from nare.tools import (
     MAX_TOOL_OUTPUT,
     TOOL_SCHEMAS,
     TOOLS,
+    Policy,
     approve_all,
     ask,
     dispatch,
@@ -111,7 +112,9 @@ async def test_dispatch_returns_a_tool_result_block(tmp_path: Path) -> None:
     target = tmp_path / "a.txt"
     target.write_text("hello")
     result = await dispatch(
-        ToolCall(id="c1", name="read", args={"path": str(target)}), approve_all
+        ToolCall(id="c1", name="read", args={"path": str(target)}),
+        Policy(),
+        approve_all,
     )
     assert result == {
         "type": "tool_result",
@@ -124,6 +127,7 @@ async def test_dispatch_returns_a_tool_result_block(tmp_path: Path) -> None:
 async def test_a_tool_exception_becomes_an_error_result(tmp_path: Path) -> None:
     result = await dispatch(
         ToolCall(id="c1", name="read", args={"path": str(tmp_path / "nope")}),
+        Policy(),
         approve_all,
     )
     assert result["is_error"] is True
@@ -131,14 +135,16 @@ async def test_a_tool_exception_becomes_an_error_result(tmp_path: Path) -> None:
 
 
 async def test_an_unknown_tool_becomes_an_error_result() -> None:
-    result = await dispatch(ToolCall(id="c1", name="grep", args={}), approve_all)
+    result = await dispatch(
+        ToolCall(id="c1", name="grep", args={}), Policy(), approve_all
+    )
     assert result["is_error"] is True
     assert "grep" in result["content"]
 
 
 async def test_a_bad_argument_becomes_an_error_result_not_a_crash() -> None:
     result = await dispatch(
-        ToolCall(id="c1", name="read", args={"wrong": 1}), approve_all
+        ToolCall(id="c1", name="read", args={"wrong": 1}), Policy(), approve_all
     )
     assert result["is_error"] is True
 
@@ -151,6 +157,7 @@ async def test_denied_approval_blocks_the_tool(tmp_path: Path) -> None:
 
     result = await dispatch(
         ToolCall(id="c1", name="write", args={"path": str(target), "content": "x"}),
+        Policy(),
         deny,
     )
     assert result["is_error"] is True
@@ -165,7 +172,9 @@ async def test_approve_sees_the_tool_name_and_args() -> None:
         seen.append((tool, args))
         return False
 
-    await dispatch(ToolCall(id="c1", name="bash", args={"command": "ls"}), record)
+    await dispatch(
+        ToolCall(id="c1", name="bash", args={"command": "ls"}), Policy(), record
+    )
     assert seen == [("bash", {"command": "ls"})]
 
 
@@ -207,7 +216,7 @@ async def test_a_raising_approve_comes_back_as_an_error_result() -> None:
         raise ConnectionError("approval service is down")
 
     result = await dispatch(
-        ToolCall(id="c1", name="bash", args={"command": "ls"}), explode
+        ToolCall(id="c1", name="bash", args={"command": "ls"}), Policy(), explode
     )
     assert result["is_error"] is True
     assert result["tool_use_id"] == "c1"

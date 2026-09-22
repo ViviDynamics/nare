@@ -11,6 +11,7 @@ import os
 import signal
 import subprocess
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -55,7 +56,7 @@ def edit_file(path: str, old: str, new: str) -> str:
     return f"edited {path}"
 
 
-def run_bash(command: str, timeout: int = 120) -> str:
+def run_bash(command: str, timeout: int = 120, *, cwd: str | None = None) -> str:
     """Run a shell command in its own process group, with no stdin.
 
     `subprocess.run(timeout=...)` kills the shell and nothing the shell started,
@@ -73,6 +74,7 @@ def run_bash(command: str, timeout: int = 120) -> str:
         stdin=subprocess.DEVNULL,
         text=True,
         start_new_session=True,
+        cwd=cwd,
     )
     try:
         out, err = proc.communicate(timeout=timeout)
@@ -198,6 +200,58 @@ def approve_all(tool: str, args: dict[str, Any]) -> bool:
     return True
 
 
+PATH_TOOLS = frozenset({"read", "write", "edit"})
+
+
+@dataclass(frozen=True)
+class Policy:
+    """What a session is allowed to do: which tools, and where they may reach.
+
+    A prompt is not a permission system, so neither is a tool description. The
+    allowlist also decides which schemas the model is shown: a tool it cannot
+    call is a tool it should never be offered.
+    """
+
+    tools: frozenset[str] = field(default_factory=lambda: frozenset(TOOLS))
+    root: Path | None = None
+
+    def __post_init__(self) -> None:
+        unknown = sorted(self.tools - set(TOOLS))
+        if unknown:
+            raise ValueError(
+                f"unknown tool {', '.join(unknown)}; "
+                f"nare has: {', '.join(sorted(TOOLS))}"
+            )
+
+    def schemas(self) -> list[dict[str, Any]]:
+        return [s for s in TOOL_SCHEMAS if s["name"] in self.tools]
+
+    def recorded(self) -> dict[str, Any]:
+        """What the session stores, so a run's permissions are readable after it."""
+        return {
+            "tools": sorted(self.tools),
+            "root": None if self.root is None else str(self.root),
+        }
+
+    def resolve(self, path: str) -> Path:
+        """Resolve a model-supplied path, refusing anything outside the root.
+
+        `resolve()` follows symlinks and normalizes `..`, so a link planted
+        inside the root during the run is caught here rather than obeyed. A
+        relative path is relative to the root when there is one, which is the
+        same directory bash runs in.
+        """
+        if self.root is None:
+            return Path(path)
+        root = self.root.resolve()
+        candidate = Path(path)
+        candidate = root / candidate if not candidate.is_absolute() else candidate
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(root):
+            raise ValueError(f"{path} is outside the root {root}")
+        return resolved
+
+
 def tool_result(call_id: str, text: str, *, is_error: bool = False) -> dict[str, Any]:
     return {
         "type": "tool_result",
@@ -207,9 +261,13 @@ def tool_result(call_id: str, text: str, *, is_error: bool = False) -> dict[str,
     }
 
 
-async def dispatch(call: ToolCall, approve: Approve) -> dict[str, Any]:
+async def dispatch(
+    call: ToolCall, policy: Policy, approve: Approve = approve_all
+) -> dict[str, Any]:
     """Run one tool call. Every failure comes back as an is_error result rather
-    than an exception: the model adapts, which is what it is good at.
+    than an exception: the model adapts, which is what it is good at. A policy
+    refusal is one of those failures, so a narrowed session keeps working
+    instead of dying on the first attempt to leave its box.
     """
     function = TOOLS.get(call.name)
     if function is None:
@@ -218,13 +276,25 @@ async def dispatch(call: ToolCall, approve: Approve) -> dict[str, Any]:
             f"unknown tool {call.name!r}; available: {', '.join(sorted(TOOLS))}",
             is_error=True,
         )
+    if call.name not in policy.tools:
+        return tool_result(
+            call.id,
+            f"{call.name} is not allowed in this session; "
+            f"allowed: {', '.join(sorted(policy.tools)) or 'none'}",
+            is_error=True,
+        )
     try:
         # approve() is inside the try on purpose: a real approval seam prompts
         # a human or calls a service, so it can raise. Escaping here would
         # leave the transcript with a tool_use and no tool_result.
         if not approve(call.name, call.args):
             return tool_result(call.id, f"{call.name} was not approved", is_error=True)
-        return tool_result(call.id, await asyncio.to_thread(function, **call.args))
+        args = dict(call.args)
+        if call.name in PATH_TOOLS and "path" in args:
+            args["path"] = str(policy.resolve(str(args["path"])))
+        if call.name == "bash" and policy.root is not None:
+            args["cwd"] = str(policy.root.resolve())
+        return tool_result(call.id, await asyncio.to_thread(function, **args))
     except Exception as exc:
         return tool_result(call.id, f"{type(exc).__name__}: {exc}", is_error=True)
 
