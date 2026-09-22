@@ -51,6 +51,7 @@ class Session:
     stop_reason: str | None = None
     error: str | None = None
     turns: int = 0
+    policy: dict[str, Any] = field(default_factory=dict)
     events: list[Event] = field(default_factory=list, compare=False)
     version: int = SESSION_VERSION
 

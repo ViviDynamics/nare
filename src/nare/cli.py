@@ -20,7 +20,7 @@ from pathlib import Path
 from nare.events import Event
 from nare.loop import MAX_TURNS_DEFAULT, run
 from nare.session import Session, append_user_text, dumps, loads, new_session
-from nare.tools import approve_all
+from nare.tools import TOOLS, Policy, approve_all
 from nare.transport import Transport, make_transport
 
 log = logging.getLogger(__name__)
@@ -73,6 +73,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="approve every tool call (required for unattended runs)",
     )
     run_parser.add_argument(
+        "--tools",
+        help=(
+            "comma-separated tools this run may call "
+            f"(default all: {','.join(sorted(TOOLS))}; 'none' allows no tool)"
+        ),
+    )
+    run_parser.add_argument(
+        "--root",
+        help=(
+            "confine read, write and edit to this directory, and run bash in "
+            "it. bash is given it as a working directory, not a jail: a shell "
+            "can still walk upward, and confining it is the sandbox's job"
+        ),
+    )
+    run_parser.add_argument(
         "--resume",
         help="continue the session at this path, writing it back unless "
         "--session says otherwise",
@@ -98,6 +113,22 @@ def transport_from_args(args: argparse.Namespace) -> Transport:
         effort=args.effort,
         system=args.system,
     )
+
+
+def policy_from_args(args: argparse.Namespace) -> Policy:
+    """Both failures here are startup failures: a caller that asked for a
+    narrower session and did not get one must not be handed a wider one.
+    """
+    tools = frozenset(TOOLS)
+    if args.tools is not None:
+        named = [name.strip() for name in args.tools.split(",") if name.strip()]
+        tools = frozenset() if named == ["none"] else frozenset(named)
+    root = None
+    if args.root is not None:
+        root = Path(args.root)
+        if not root.is_dir():
+            raise ValueError(f"--root {args.root} is not a directory")
+    return Policy(tools=tools, root=root)
 
 
 def _load_or_new(args: argparse.Namespace) -> Session:
@@ -171,7 +202,7 @@ def _save(session: Session, path: str) -> None:
 
 
 async def _execute(
-    session: Session, transport: Transport, args: argparse.Namespace
+    session: Session, transport: Transport, args: argparse.Namespace, policy: Policy
 ) -> int:
     saved_turns = -1
     try:
@@ -179,6 +210,7 @@ async def _execute(
             session,
             transport=transport,
             approve=approve_all,
+            policy=policy,
             max_turns=args.max_turns,
         ):
             _emit(event, args.jsonl)
@@ -233,6 +265,7 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         args.session = args.resume
 
     try:
+        policy = policy_from_args(args)
         session = _load_or_new(args)
         if transport is None:
             transport = transport_from_args(args)
@@ -240,4 +273,4 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         print(f"nare: {exc}", file=sys.stderr)
         return 2
 
-    return asyncio.run(_execute(session, transport, args))
+    return asyncio.run(_execute(session, transport, args, policy))

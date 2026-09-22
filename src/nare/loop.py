@@ -11,8 +11,8 @@ from typing import Any
 from nare.events import Event
 from nare.session import Message, Session
 from nare.tools import (
-    TOOL_SCHEMAS,
     Approve,
+    Policy,
     approve_all,
     dispatch,
     questions_from,
@@ -37,8 +37,10 @@ def _final_text(content: list[dict[str, Any]]) -> str:
     return "\n".join(b.get("text", "") for b in content if b.get("type") == "text")
 
 
-async def step(s: Session, transport: Transport, approve: Approve) -> Session:
-    reply = await transport.turn(s.messages, TOOL_SCHEMAS)
+async def step(
+    s: Session, transport: Transport, approve: Approve, policy: Policy
+) -> Session:
+    reply = await transport.turn(s.messages, policy.schemas())
     s.usage += reply.usage
     s.turns += 1
     s.messages.append(Message(role="assistant", content=reply.content))
@@ -86,7 +88,7 @@ async def step(s: Session, transport: Transport, approve: Approve) -> Session:
             # parallel tool calls; asyncio.gather is the upgrade once a run is
             # measurably slow because of it, and not before.
             for call in reply.tool_calls:
-                results.append(await dispatch(call, approve))
+                results.append(await dispatch(call, policy, approve))
     finally:
         # Every tool_use gets an answer even if dispatch dies mid-way. A
         # transcript ending in an unanswered tool_use is rejected by the
@@ -113,6 +115,7 @@ async def run(
     *,
     transport: Transport,
     approve: Approve = approve_all,
+    policy: Policy | None = None,
     max_turns: int = MAX_TURNS_DEFAULT,
 ) -> AsyncIterator[Event]:
     """Advance the session to a terminal status, yielding events as they occur.
@@ -120,6 +123,10 @@ async def run(
     The only place that catches broadly: a harness reports failures as events
     and a status, it does not hand a traceback to its caller.
     """
+    policy = Policy() if policy is None else policy
+    # Recorded before the first turn, so a run that dies still says what it was
+    # allowed to do.
+    session.policy = policy.recorded()
     # Counted from where this invocation started, not from the session's
     # lifetime total. Conductor resumes the same session once per feedback
     # round, and a cumulative budget makes every resume past the Nth die
@@ -133,7 +140,7 @@ async def run(
             session.events.append(Event("error", session.error))
         else:
             try:
-                await step(session, transport, approve)
+                await step(session, transport, approve, policy)
             except Exception as exc:
                 session.status = "error"
                 # The last completed turn's reason describes that turn, not
