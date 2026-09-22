@@ -1,0 +1,35 @@
+# Blessed benchmark numbers. Reviewed like any other committed file.
+
+[meta]
+blessed     = "2026-09-22T23:11:22+00:00"
+commit      = "c9291a6"
+provider    = "anthropic"
+model       = "ada/qwen3-14b"
+judge_model = "ada/qwen3-14b"
+
+[case.ambiguous-request]
+pass_rate        = 1.0
+reps             = 3
+tokens_median    = 268
+turns_median     = 1
+
+[case.edit-docstring]
+pass_rate        = 0.0
+reps             = 3
+tokens_median    = 903
+turns_median     = 1
+judge_met_median = 1
+
+[case.fix-failing-test]
+pass_rate        = 0.6666666666666666
+reps             = 3
+tokens_median    = 2515
+turns_median     = 3
+judge_met_median = 3
+
+[case.multi-file-rename]
+pass_rate        = 1.0
+reps             = 3
+tokens_median    = 6141
+turns_median     = 7
+judge_met_median = 2
