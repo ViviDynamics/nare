@@ -1,7 +1,20 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from benchmarks.runner.grade import Outcome
-from benchmarks.runner.report import RepRecord, median_int, summarize
+from benchmarks.runner.report import (
+    BaselineMeta,
+    RepRecord,
+    baseline_path,
+    dumps_baseline,
+    load_baseline,
+    median_int,
+    slugify,
+    summarize,
+)
 
 
 def record(
@@ -99,3 +112,64 @@ def test_judge_median_is_none_when_no_rep_was_judged() -> None:
 def test_summaries_are_sorted_by_case() -> None:
     records = [record(case="zeta"), record(case="alpha")]
     assert [s.case for s in summarize(records)] == ["alpha", "zeta"]
+
+
+META = BaselineMeta(
+    blessed="2026-09-22T14:02:00Z",
+    commit="237a678",
+    provider="anthropic",
+    model="claude-haiku",
+    judge_model="claude-haiku",
+)
+
+
+def test_slugify_makes_a_model_name_filesystem_safe() -> None:
+    assert slugify("claude-haiku") == "claude-haiku"
+    assert slugify("ada/qwen3-14b") == "ada-qwen3-14b"
+    assert slugify("spark/glm-5.3-flash") == "spark-glm-5-3-flash"
+
+
+def test_baseline_path_keys_by_model_and_tier(tmp_path: Path) -> None:
+    assert baseline_path(tmp_path, "ada/qwen3-14b", "smoke") == (
+        tmp_path / "ada-qwen3-14b.smoke.toml"
+    )
+
+
+def test_a_blessed_baseline_round_trips(tmp_path: Path) -> None:
+    summaries = summarize([record(case="c", tokens=1000, turns=4, judge_met=3)])
+    path = tmp_path / "claude-haiku.smoke.toml"
+    path.write_text(dumps_baseline(META, summaries))
+
+    baseline = load_baseline(path)
+    assert baseline.meta == META
+    assert baseline.cases["c"].pass_rate == 1.0
+    assert baseline.cases["c"].tokens_median == 1000
+    assert baseline.cases["c"].judge_met_median == 3
+
+
+def test_inconclusive_cases_are_not_blessed(tmp_path: Path) -> None:
+    """A baseline is a claim about what should happen. 'We don't know' isn't one."""
+    summaries = summarize(
+        [record(case="c", outcome="error"), record(case="c", outcome="error")]
+    )
+    path = tmp_path / "b.toml"
+    path.write_text(dumps_baseline(META, summaries))
+    assert load_baseline(path).cases == {}
+
+
+def test_loading_a_missing_baseline_raises(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        load_baseline(tmp_path / "absent.toml")
+
+
+def test_a_model_name_with_quotes_survives_the_round_trip(tmp_path: Path) -> None:
+    meta = BaselineMeta(
+        blessed=META.blessed,
+        commit=META.commit,
+        provider="anthropic",
+        model='weird"name',
+        judge_model="claude-haiku",
+    )
+    path = tmp_path / "b.toml"
+    path.write_text(dumps_baseline(meta, summarize([record(case="c")])))
+    assert load_baseline(path).meta.model == 'weird"name'
