@@ -20,6 +20,7 @@ from pathlib import Path
 from benchmarks.runner.case import Case, CaseError, load_cases
 from benchmarks.runner.config import Config, ConfigError, resolve_config
 from benchmarks.runner.grade import (
+    CheckResult,
     grade_bash_check,
     grade_result_check,
     parse_stdout,
@@ -27,12 +28,15 @@ from benchmarks.runner.grade import (
 )
 from benchmarks.runner.judge import JudgeError, judge_transport, score
 from benchmarks.runner.report import (
+    Baseline,
+    BaselineMeta,
     CaseDelta,
     CaseSummary,
     Comparison,
     RepRecord,
     baseline_path,
     compare,
+    dumps_baseline,
     load_baseline,
     render,
     summarize,
@@ -255,6 +259,50 @@ def write_results(root: Path, records: Sequence[RepRecord]) -> Path:
     return path
 
 
+def latest_results(root: Path) -> Path | None:
+    directory = root / "benchmarks" / "results"
+    if not directory.is_dir():
+        return None
+    files = sorted(directory.glob("*.jsonl"))
+    return files[-1] if files else None
+
+
+def read_results(path: Path) -> list[RepRecord]:
+    records: list[RepRecord] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if not raw.strip():
+            continue
+        payload = json.loads(raw)
+        payload["checks"] = tuple(
+            CheckResult(**check) for check in payload.get("checks", [])
+        )
+        records.append(RepRecord(**payload))
+    return records
+
+
+def model_changed(baseline: Baseline, config: Config, allow: bool) -> bool:
+    """Numbers are comparable within a model and nowhere else.
+
+    Pinning the judge model too is the non-obvious half: if it changes under
+    the suite, every score shifts at once and reads as a harness regression.
+    """
+    if allow:
+        return False
+    if (
+        baseline.meta.model == config.model
+        and baseline.meta.judge_model == config.judge_model
+    ):
+        return False
+    print(
+        f"bench: baseline was blessed on model {baseline.meta.model!r} / "
+        f"judge {baseline.meta.judge_model!r}; this run used "
+        f"{config.model!r} / {config.judge_model!r}. Numbers are not "
+        "comparable across models. Pass --allow-model-change to override.",
+        file=sys.stderr,
+    )
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command is None:
@@ -320,17 +368,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         baseline = load_baseline(baseline_file)
-        if not args.allow_model_change and (
-            baseline.meta.model != config.model
-            or baseline.meta.judge_model != config.judge_model
-        ):
-            print(
-                f"bench: baseline was blessed on model {baseline.meta.model!r} / "
-                f"judge {baseline.meta.judge_model!r}; this run used "
-                f"{config.model!r} / {config.judge_model!r}. Numbers are not "
-                "comparable across models. Pass --allow-model-change to override.",
-                file=sys.stderr,
-            )
+        if model_changed(baseline, config, args.allow_model_change):
             return 2
 
         first = compare(
@@ -357,8 +395,42 @@ def main(argv: list[str] | None = None) -> int:
         print(render(final))
         return final.exit_code
 
-    print(f"bench: {args.command} is not wired yet", file=sys.stderr)
-    return 2
+    results_file = latest_results(root)
+    if results_file is None:
+        print("bench: no results yet; run `bin/bench run` first", file=sys.stderr)
+        return 2
+    summaries = summarize(read_results(results_file))
+    baselines = root / "benchmarks" / "baselines"
+    baseline_file = baseline_path(baselines, config.model, args.tier)
+
+    if args.command == "bless":
+        baselines.mkdir(parents=True, exist_ok=True)
+        meta = BaselineMeta(
+            blessed=datetime.now(UTC).isoformat(timespec="seconds"),
+            commit=_commit(),
+            provider=config.provider,
+            model=config.model,
+            judge_model=config.judge_model,
+        )
+        baseline_file.write_text(dumps_baseline(meta, summaries), encoding="utf-8")
+        print(f"blessed {baseline_file} from {results_file.name}")
+        return 0
+
+    if not baseline_file.exists():
+        print(f"bench: no baseline at {baseline_file}", file=sys.stderr)
+        return 2
+    baseline = load_baseline(baseline_file)
+    if model_changed(baseline, config, args.allow_model_change):
+        return 2
+    comparison = compare(
+        summaries,
+        baseline,
+        confirmed=True,
+        token_band=TOKEN_BAND,
+        strict_tokens=args.strict_tokens,
+    )
+    print(render(comparison))
+    return comparison.exit_code
 
 
 if __name__ == "__main__":

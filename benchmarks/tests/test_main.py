@@ -6,12 +6,14 @@ from pathlib import Path
 from benchmarks.runner.__main__ import (
     CONFIRM_REPS,
     build_parser,
+    latest_results,
     main,
+    read_results,
     verify,
     write_results,
 )
 from benchmarks.runner.case import Case, Check
-from benchmarks.runner.report import RepRecord
+from benchmarks.runner.report import BaselineMeta, RepRecord, dumps_baseline, summarize
 
 
 def case_with(*checks: Check, case_id: str = "demo") -> Case:
@@ -114,3 +116,78 @@ def test_results_are_gitignored(tmp_path: Path) -> None:
 
 def test_confirmation_uses_seven_reps() -> None:
     assert CONFIRM_REPS == 7
+
+
+def test_results_round_trip(tmp_path: Path) -> None:
+    records = [
+        RepRecord(
+            case="demo",
+            rep=0,
+            outcome="pass",
+            checks=(),
+            judge_met=2,
+            judge_why="",
+            status="done",
+            stop_reason="end_turn",
+            turns=4,
+            usage={"input": 10, "output": 5, "cache_read": 0, "cache_write": 0},
+            duration_s=1.0,
+            model="claude-haiku",
+        )
+    ]
+    path = write_results(tmp_path, records)
+    assert [r.case for r in read_results(path)] == ["demo"]
+    assert read_results(path)[0].outcome == "pass"
+
+
+def test_latest_results_picks_the_newest(tmp_path: Path) -> None:
+    directory = tmp_path / "benchmarks" / "results"
+    directory.mkdir(parents=True)
+    (directory / "2026-09-20T00-00-00Z.jsonl").write_text("")
+    (directory / "2026-09-22T00-00-00Z.jsonl").write_text("")
+    newest = latest_results(tmp_path)
+    assert newest is not None
+    assert newest.name == "2026-09-22T00-00-00Z.jsonl"
+
+
+def test_latest_results_is_none_when_nothing_has_run(tmp_path: Path) -> None:
+    assert latest_results(tmp_path) is None
+
+
+def test_blessing_writes_a_baseline_keyed_by_model(tmp_path: Path) -> None:
+    from benchmarks.runner.report import baseline_path, load_baseline
+
+    records = [
+        RepRecord(
+            case="demo",
+            rep=n,
+            outcome="pass",
+            checks=(),
+            judge_met=2,
+            judge_why="",
+            status="done",
+            stop_reason="end_turn",
+            turns=4,
+            usage={"input": 1000, "output": 0, "cache_read": 0, "cache_write": 0},
+            duration_s=1.0,
+            model="ada/qwen3-14b",
+        )
+        for n in range(3)
+    ]
+    baselines = tmp_path / "baselines"
+    baselines.mkdir()
+    path = baseline_path(baselines, "ada/qwen3-14b", "smoke")
+    path.write_text(
+        dumps_baseline(
+            BaselineMeta(
+                "2026-09-22T00:00:00Z",
+                "abc1234",
+                "anthropic",
+                "ada/qwen3-14b",
+                "ada/qwen3-14b",
+            ),
+            summarize(records),
+        )
+    )
+    assert path.name == "ada-qwen3-14b.smoke.toml"
+    assert load_baseline(path).cases["demo"].pass_rate == 1.0
