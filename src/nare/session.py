@@ -52,6 +52,8 @@ class Session:
     error: str | None = None
     turns: int = 0
     policy: dict[str, Any] = field(default_factory=dict)
+    output: Any = None
+    schema_retried: bool = False
     events: list[Event] = field(default_factory=list, compare=False)
     version: int = SESSION_VERSION
 
