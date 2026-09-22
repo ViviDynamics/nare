@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-from benchmarks.runner.__main__ import build_parser, main, verify
+from benchmarks.runner.__main__ import (
+    CONFIRM_REPS,
+    build_parser,
+    main,
+    verify,
+    write_results,
+)
 from benchmarks.runner.case import Case, Check
+from benchmarks.runner.report import RepRecord
 
 
 def case_with(*checks: Check, case_id: str = "demo") -> Case:
@@ -70,3 +78,39 @@ def test_verify_needs_only_one_failing_check_of_several() -> None:
 
 def test_main_without_a_subcommand_exits_two() -> None:
     assert main([]) == 2
+
+
+def test_results_are_written_as_one_json_line_per_rep(tmp_path: Path) -> None:
+    records = [
+        RepRecord(
+            case="demo",
+            rep=0,
+            outcome="pass",
+            checks=(),
+            judge_met=2,
+            judge_why="fine",
+            status="done",
+            stop_reason="end_turn",
+            turns=4,
+            usage={"input": 10, "output": 5, "cache_read": 0, "cache_write": 0},
+            duration_s=1.5,
+            model="claude-haiku",
+        )
+    ]
+    path = write_results(tmp_path, records)
+    assert path.parent == tmp_path / "benchmarks" / "results"
+    payload = json.loads(path.read_text().splitlines()[0])
+    assert payload["case"] == "demo"
+    assert payload["outcome"] == "pass"
+    assert payload["usage"]["input"] == 10
+    assert payload["model"] == "claude-haiku"
+
+
+def test_results_are_gitignored(tmp_path: Path) -> None:
+    from benchmarks.runner.sandbox import repo_root
+
+    assert "benchmarks/results/" in (repo_root() / ".gitignore").read_text()
+
+
+def test_confirmation_uses_seven_reps() -> None:
+    assert CONFIRM_REPS == 7

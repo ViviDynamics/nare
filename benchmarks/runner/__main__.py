@@ -7,23 +7,51 @@ arguments, orders the work, and prints.
 from __future__ import annotations
 
 import argparse
+import asyncio
+import json
 import os
+import subprocess
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 
 from benchmarks.runner.case import Case, CaseError, load_cases
-from benchmarks.runner.config import ConfigError, resolve_config
+from benchmarks.runner.config import Config, ConfigError, resolve_config
+from benchmarks.runner.grade import (
+    grade_bash_check,
+    grade_result_check,
+    parse_stdout,
+    rep_outcome,
+)
+from benchmarks.runner.judge import JudgeError, judge_transport, score
+from benchmarks.runner.report import (
+    CaseDelta,
+    CaseSummary,
+    Comparison,
+    RepRecord,
+    baseline_path,
+    compare,
+    load_baseline,
+    render,
+    summarize,
+)
 from benchmarks.runner.sandbox import (
     SandboxError,
     build_image,
     git_checkpoint,
+    git_diff,
     repo_root,
+    run_agent,
     run_check,
     sandbox,
 )
+from nare.transport import Transport
 
 CheckRunner = Callable[[Case, str, int], tuple[int, str]]
+CONFIRM_REPS = 7
+TOKEN_BAND = 0.10
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -112,6 +140,121 @@ def verify(
     return "\n".join(lines), 1 if failed else 0
 
 
+def _commit() -> str:
+    proc = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True
+    )
+    return proc.stdout.strip() or "unknown"
+
+
+def line_text(stdout: str) -> str:
+    """The final assistant text, which nare emits as the `output` event."""
+    for raw in reversed(stdout.splitlines()):
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and payload.get("type") == "output":
+            return str(payload.get("text", ""))
+    return ""
+
+
+def render_first_run(summaries: Sequence[CaseSummary]) -> str:
+    return render(
+        Comparison(
+            deltas=tuple(
+                CaseDelta(s.case, "new", s, None, None, ()) for s in summaries
+            ),
+            exit_code=0,
+        )
+    )
+
+
+async def run_rep(
+    case: Case, config: Config, transport: Transport, rep: int
+) -> RepRecord:
+    """One repetition, from a clean fixture to a graded record."""
+    empty = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    with sandbox(case) as (workdir, artifacts):
+        result = run_agent(case, workdir, artifacts, config)
+        line = parse_stdout(result.stdout)
+        if line is None:
+            # No result line means the run never produced one: a crash, a
+            # timeout, a Docker fault. That is an error, never a failure.
+            return RepRecord(
+                case=case.id,
+                rep=rep,
+                outcome="error",
+                checks=(),
+                judge_met=None,
+                judge_why="timed out" if result.timed_out else "no result line",
+                status=None,
+                stop_reason=None,
+                turns=None,
+                usage=empty,
+                duration_s=result.duration_s,
+                model=config.model,
+            )
+
+        graded = [
+            grade_result_check(check, line)
+            for check in case.checks
+            if check.kind == "result"
+        ]
+        for check in case.bash_checks:
+            code, output = run_check(workdir, check.cmd or "", 120)
+            graded.append(grade_bash_check(check, code, output))
+
+        met: list[bool] | None = None
+        why = ""
+        if case.judge is not None:
+            try:
+                met, why = await score(
+                    case,
+                    git_diff(workdir),
+                    line_text(result.stdout),
+                    transport=transport,
+                )
+            except JudgeError as exc:
+                why = f"judge failed: {exc}"
+
+    return RepRecord(
+        case=case.id,
+        rep=rep,
+        outcome=rep_outcome(graded, case.judge, met),
+        checks=tuple(graded),
+        judge_met=None if met is None else sum(met),
+        judge_why=why,
+        status=line.status,
+        stop_reason=line.stop_reason,
+        turns=line.turns,
+        usage=line.usage,
+        duration_s=result.duration_s,
+        model=config.model,
+    )
+
+
+async def run_case(
+    case: Case, config: Config, transport: Transport, reps: int
+) -> list[RepRecord]:
+    # Sequential on purpose: repetitions share one rate limit and one Docker
+    # daemon, and a benchmark that saturates either measures the machine.
+    return [await run_rep(case, config, transport, rep) for rep in range(reps)]
+
+
+def write_results(root: Path, records: Sequence[RepRecord]) -> Path:
+    directory = root / "benchmarks" / "results"
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
+    path = directory / f"{stamp}.jsonl"
+    with path.open("w", encoding="utf-8") as handle:
+        for rec in records:
+            payload = asdict(rec)
+            payload["checks"] = [asdict(c) for c in rec.checks]
+            handle.write(json.dumps(payload) + "\n")
+    return path
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command is None:
@@ -141,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
         return code
 
     try:
-        resolve_config(
+        config = resolve_config(
             model=args.model,
             provider=args.provider,
             base_url=args.base_url,
@@ -151,6 +294,68 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"bench: {exc}", file=sys.stderr)
         return 2
+
+    if args.command == "run":
+        try:
+            build_image(root)
+        except SandboxError as exc:
+            print(f"bench: {exc}", file=sys.stderr)
+            return 2
+        transport = judge_transport(config)
+        records: list[RepRecord] = []
+        for case in cases:
+            records += asyncio.run(run_case(case, config, transport, case.reps))
+
+        path = write_results(root, records)
+        print(f"results: {path}")
+
+        baseline_file = baseline_path(
+            root / "benchmarks" / "baselines", config.model, args.tier
+        )
+        if not baseline_file.exists():
+            print(render_first_run(summarize(records)))
+            print(
+                f"\nno baseline yet; bless one with: bin/bench bless --tier {args.tier}"
+            )
+            return 0
+
+        baseline = load_baseline(baseline_file)
+        if not args.allow_model_change and (
+            baseline.meta.model != config.model
+            or baseline.meta.judge_model != config.judge_model
+        ):
+            print(
+                f"bench: baseline was blessed on model {baseline.meta.model!r} / "
+                f"judge {baseline.meta.judge_model!r}; this run used "
+                f"{config.model!r} / {config.judge_model!r}. Numbers are not "
+                "comparable across models. Pass --allow-model-change to override.",
+                file=sys.stderr,
+            )
+            return 2
+
+        first = compare(
+            summarize(records),
+            baseline,
+            token_band=TOKEN_BAND,
+            strict_tokens=args.strict_tokens,
+        )
+        suspects = [d.case for d in first.deltas if d.verdict == "suspect"]
+        if suspects:
+            print(f"re-confirming {', '.join(suspects)} at {CONFIRM_REPS} reps...")
+            for case in [c for c in cases if c.id in suspects]:
+                extra = asyncio.run(run_case(case, config, transport, CONFIRM_REPS))
+                records = [r for r in records if r.case != case.id] + extra
+            write_results(root, records)
+
+        final = compare(
+            summarize(records),
+            baseline,
+            confirmed=True,
+            token_band=TOKEN_BAND,
+            strict_tokens=args.strict_tokens,
+        )
+        print(render(final))
+        return final.exit_code
 
     print(f"bench: {args.command} is not wired yet", file=sys.stderr)
     return 2
