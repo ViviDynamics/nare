@@ -9,7 +9,8 @@ from dataclasses import asdict
 from typing import Any
 
 from nare.events import Event
-from nare.session import Message, Session
+from nare.schema import extract_json, validate
+from nare.session import Message, Session, append_user_text
 from nare.tools import (
     Approve,
     Policy,
@@ -37,8 +38,22 @@ def _final_text(content: list[dict[str, Any]]) -> str:
     return "\n".join(b.get("text", "") for b in content if b.get("type") == "text")
 
 
+def _answer_errors(text: str, schema: dict[str, Any]) -> list[str]:
+    """The validator's complaints about this answer, or none."""
+    try:
+        parsed = extract_json(text)
+    except ValueError as exc:
+        return [str(exc)]
+    errors = validate(parsed, schema)
+    return errors
+
+
 async def step(
-    s: Session, transport: Transport, approve: Approve, policy: Policy
+    s: Session,
+    transport: Transport,
+    approve: Approve,
+    policy: Policy,
+    schema: dict[str, Any] | None = None,
 ) -> Session:
     reply = await transport.turn(s.messages, policy.schemas())
     s.usage += reply.usage
@@ -66,9 +81,35 @@ async def step(
             s.status = "error"
             s.error = unfinished
             s.events.append(Event("error", unfinished))
-        else:
+            return s
+        text = _final_text(reply.content)
+        if schema is None:
             s.status = "done"
-            s.events.append(Event("output", _final_text(reply.content)))
+            s.events.append(Event("output", text))
+            return s
+        errors = _answer_errors(text, schema)
+        if not errors:
+            s.output = extract_json(text)
+            s.status = "done"
+            s.events.append(Event("output", text, {"output": s.output}))
+            return s
+        complaint = "; ".join(errors)
+        if s.schema_retried:
+            # One correction round, then stop. A model that cannot satisfy the
+            # schema twice will not satisfy it on the tenth turn either, and a
+            # caller waiting on data is better served by a named failure than
+            # by a budget spent in a loop.
+            s.status = "error"
+            s.stop_reason = "schema_violation"
+            s.error = f"answer does not satisfy the schema: {complaint}"
+            s.events.append(Event("error", s.error))
+            return s
+        s.schema_retried = True
+        append_user_text(
+            s,
+            "Your answer did not satisfy the required JSON Schema: "
+            f"{complaint}. Reply with JSON that satisfies it, and nothing else.",
+        )
         return s
 
     for call in reply.tool_calls:
@@ -116,6 +157,7 @@ async def run(
     transport: Transport,
     approve: Approve = approve_all,
     policy: Policy | None = None,
+    schema: dict[str, Any] | None = None,
     max_turns: int = MAX_TURNS_DEFAULT,
 ) -> AsyncIterator[Event]:
     """Advance the session to a terminal status, yielding events as they occur.
@@ -140,7 +182,7 @@ async def run(
             session.events.append(Event("error", session.error))
         else:
             try:
-                await step(session, transport, approve, policy)
+                await step(session, transport, approve, policy, schema)
             except Exception as exc:
                 session.status = "error"
                 # The last completed turn's reason describes that turn, not
