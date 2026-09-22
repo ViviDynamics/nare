@@ -106,3 +106,40 @@ def test_a_fenced_block_without_a_language_is_extracted() -> None:
 def test_text_carrying_no_json_raises() -> None:
     with pytest.raises(ValueError, match="no JSON"):
         extract_json("I could not do it, sorry.")
+
+
+def test_a_type_that_is_not_a_string_is_refused() -> None:
+    with pytest.raises(UnsupportedSchema, match="type"):
+        validate(True, {"type": ["string", "number"]})
+
+
+def test_required_that_is_not_a_list_is_refused() -> None:
+    with pytest.raises(UnsupportedSchema, match="required"):
+        validate({}, {"type": "object", "required": "name"})
+
+
+def test_an_enum_that_is_not_a_list_is_refused() -> None:
+    with pytest.raises(UnsupportedSchema, match="enum"):
+        validate("val", {"enum": "valid"})
+
+
+def test_items_that_are_not_a_schema_are_refused() -> None:
+    with pytest.raises(UnsupportedSchema, match="items"):
+        validate([1], {"type": "array", "items": "string"})
+
+
+def test_additional_properties_that_is_not_a_boolean_is_refused() -> None:
+    with pytest.raises(UnsupportedSchema, match="additionalProperties"):
+        validate({}, {"type": "object", "additionalProperties": {"type": "string"}})
+
+
+def test_properties_that_are_not_a_mapping_are_refused() -> None:
+    with pytest.raises(UnsupportedSchema, match="properties"):
+        validate({}, {"type": "object", "properties": "name"})
+
+
+def test_a_refused_schema_shape_names_where_it_is() -> None:
+    schema = {"type": "object", "properties": {"a": {"type": ["string"]}}}
+
+    with pytest.raises(UnsupportedSchema, match="at a"):
+        validate({}, schema)

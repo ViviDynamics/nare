@@ -37,18 +37,44 @@ class UnsupportedSchema(Exception):
     """The schema uses a keyword this validator does not implement."""
 
 
+# A keyword whose VALUE is not the shape this validator implements. Checking
+# the name alone let a schema through that _validate then silently skipped:
+# `"required": "name"` iterated characters, `"enum": "valid"` tested substrings,
+# and `"items": "string"` checked no item at all. A schema nare cannot enforce
+# is refused whole, never enforced in part.
+_SHAPES: dict[str, tuple[type | tuple[type, ...], str]] = {
+    "type": (str, "a type name"),
+    "properties": (dict, "an object of property schemas"),
+    "required": (list, "a list of property names"),
+    "items": (dict, "a schema"),
+    "enum": (list, "a list of allowed values"),
+    "additionalProperties": (bool, "true or false"),
+}
+
+
 def check_supported(schema: Any, path: str = "") -> None:
-    """Walk the schema and refuse the first keyword outside SUPPORTED."""
+    """Walk the schema and refuse anything this validator cannot enforce: a
+    keyword outside SUPPORTED, or a supported keyword carrying a shape the
+    validator does not implement.
+    """
+    where = f" at {path}" if path else ""
     if not isinstance(schema, dict):
-        return
-    for key in schema:
+        raise UnsupportedSchema(
+            f"schema{where} must be an object, got {_type_of(schema)}"
+        )
+    for key, value in schema.items():
         if key not in SUPPORTED:
-            where = f" at {path}" if path else ""
             raise UnsupportedSchema(
                 f"schema keyword {key!r}{where} is not supported by nare's validator; "
                 f"supported: {', '.join(sorted(SUPPORTED))}"
             )
-    for name, sub in (schema.get("properties") or {}).items():
+        shape = _SHAPES.get(key)
+        if shape is not None and not isinstance(value, shape[0]):
+            raise UnsupportedSchema(
+                f"schema keyword {key!r}{where} must be {shape[1]}, "
+                f"got {_type_of(value)}; nare refuses a schema it cannot enforce whole"
+            )
+    for name, sub in schema.get("properties", {}).items():
         check_supported(sub, f"{path}.{name}" if path else name)
     if "items" in schema:
         check_supported(schema["items"], f"{path}[]" if path else "[]")
