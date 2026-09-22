@@ -6,6 +6,22 @@
 tree that measures whether a change to nare made the harness better. Nothing
 under `src/nare/` changes, and nothing here ships in the wheel.
 
+> **Amendment, 2026-09-22.** Written assuming direct Anthropic access with
+> `claude-sonnet-5` available. The first environment to run this suite reaches
+> models through a LiteLLM proxy whose model names — `claude-haiku`,
+> `gpt-5-nano`, `ada/qwen3-14b`, `spark/glm-5.3-flash` — exist on that proxy
+> and nowhere else. A case naming a model is therefore unportable by
+> construction, which the original section 5 did not account for.
+>
+> Three changes follow, carried inline below. Cases name no model, provider or
+> base URL; the run supplies all three through the `NARE_MODEL`,
+> `NARE_PROVIDER` and `NARE_BASE_URL` variables `cli.py` already defines.
+> Baselines are keyed by model, so contributors' numbers coexist. The judge
+> scores a checklist of binary assertions rather than a holistic 1-5, because
+> the models available to score are small ones.
+>
+> Sections 2, 3, 5, 6, 7, 12 and 13 carry these changes inline.
+
 ## 1. The question this answers
 
 Every test in `tests/` asks the same question: does the harness behave
@@ -22,7 +38,7 @@ are frozen.
 Improvement is defined here as, in order:
 
 1. The task is completed correctly, verified programmatically.
-2. The work is of good quality, rated against a per-case rubric.
+2. The work is of good quality, judged against per-case assertions.
 3. Fewer tokens and fewer dollars to get there.
 
 The best change lowers cost while raising quality. A change that raises the
@@ -37,6 +53,10 @@ turn accounting and error handling, `MAX_TOOL_OUTPUT`, the approval seam, and
 later compaction. The benchmark measures those levers and nothing else, which
 is why the baseline pins the model and refuses to compare across models.
 
+The model is supplied by the run, never by a case. Holding it fixed is the
+entire experiment; naming it in a case would both break portability and put
+the controlled variable in the wrong file.
+
 ## 3. Decisions
 
 Seven decisions were settled before this spec. Only the first earns an ADR.
@@ -45,7 +65,7 @@ Seven decisions were settled before this spec. Only the first earns an ADR.
 2. **Both tiers are live.** `smoke` is small and cheap and runs often; `full`
    is the real suite and runs on change. There is no deterministic tier —
    `tests/` already owns that question and answers it better.
-3. **Programmatic checks gate, the judge grades.** A rubric-scored judge can
+3. **Programmatic checks gate, the judge grades.** An assertion-scored judge can
    fail a rep that passed its checks. It can never rescue one that failed.
 4. **A case is a directory of data, not code.** `case.toml` plus a `fixture/`
    tree. TOML reads with stdlib `tomllib`, so the suite adds no dependency to
@@ -58,6 +78,10 @@ Seven decisions were settled before this spec. Only the first earns an ADR.
 7. **Few reps with automatic re-confirmation.** Sampling cannot be pinned, so
    noise is managed by re-running suspect cases rather than by pretending
    three reps are conclusive.
+8. **Cases are provider-agnostic.** A case carries a task and its checks. The
+   model, the provider and the base URL come from the environment, so the
+   same case runs against a proxy alias, a first-party Anthropic model, or
+   whatever a future transport supports, unchanged.
 
 ### Why sampling cannot be pinned
 
@@ -70,7 +94,7 @@ a refinement of this design; it is the only available instrument.
 
     benchmarks/
       cases/<case-id>/
-        case.toml               the prompt, checks, rubric
+        case.toml               the prompt, checks, assertions
         fixture/                the repo the agent is dropped into
       runner/
         __main__.py             CLI: run | compare | bless | verify
@@ -78,11 +102,11 @@ a refinement of this design; it is the only available instrument.
         grade.py                run the checks                    (pure)
         report.py               aggregate, diff baseline, render  (pure)
         sandbox.py              docker: build, run one rep        (impure)
-        judge.py                rubric scoring via the API        (impure)
+        judge.py                assertion scoring via transport   (impure)
       tests/test_runner.py
       Dockerfile
       .dockerignore
-      baselines/<tier>.toml     committed, blessed numbers
+      baselines/<model>.<tier>.toml   committed, blessed numbers
       results/                  gitignored, one JSONL per run
     bin/bench
 
@@ -90,8 +114,11 @@ Three pure modules and two that touch the world. That split is the whole
 testability story: `case`, `grade` and `report` are unit-tested with no Docker
 and no network, exactly as `FakeProvider` does for the harness.
 
-One baseline file per tier, because the tiers run different models and a
-single file would have to nest them.
+One baseline file per model and tier. Numbers are only comparable within a
+model, so the model belongs in the filename: a contributor running
+`gpt-5-nano` blesses `gpt-5-nano.smoke.toml` and never touches the file
+holding someone else's `claude-haiku` numbers. Model names containing a slash
+are slugified, so `ada/qwen3-14b` becomes `ada-qwen3-14b.smoke.toml`.
 
 ### What is committed
 
@@ -121,7 +148,6 @@ id     = "fix-failing-test"
 tier   = "smoke"                          # smoke | full
 prompt = """test_parse fails. Fix bar.py so the suite passes."""
 max_turns = 12
-model  = "claude-haiku-4-5-20251001"      # optional; tier default otherwise
 reps   = 3                                # optional; tier default otherwise
 
 [[check]]
@@ -134,9 +160,16 @@ status = "done"
 max_turns = 10
 
 [judge]
-rubric    = """Fixed the cause in bar.py. Did not delete or weaken the test."""
-min_score = 3
+assertions = [
+  "The fix is in bar.py, not in the test file.",
+  "test_parse was not deleted, skipped, or weakened.",
+  "No files unrelated to the failure were modified.",
+]
+min_met = 3
 ```
+
+There is no `model`, `provider` or `base_url` field, and adding one would be
+a bug. A case describes a task; where it runs is the environment's business.
 
 Two check kinds, and no more:
 
@@ -147,29 +180,69 @@ Two check kinds, and no more:
 
 A `file` kind was considered and rejected: it is `grep` with extra steps.
 
-`[judge]` is optional. Without `min_score` the score is reported and does not
-gate. `case.py` rejects a case with no checks, an unknown `kind`, a `tier`
-outside the two, a missing `fixture/`, or an `id` that does not match its
-directory name — the directory name is the identity, and the field exists so
-a case file read on its own says what it is.
+### The judge scores assertions, not a feeling
 
-`model`, `reps` and `timeout` are optional per case and fall back to the tier:
+`[judge]` is optional and holds a list of binary, objectively checkable
+claims about the diff. The score is how many were met, and `min_met` gates.
+Without `min_met` the count is reported and does not gate.
 
-| Tier | Model | Reps | Rep timeout |
+A holistic 1-5 rubric was the original design and is rejected. Every model
+available to score is a small one, and a small model is far better at "is
+this true of this diff, yes or no" than at rating quality on a scale. Three
+consequences follow, all of them wanted: scores are stable run to run, which
+is a direct attack on section 3's noise problem; a failure names the
+assertion that failed rather than moving 3.8 to 3.4; and the output is short,
+so judging is cheap.
+
+Assertions stay objective and about the diff. Anything subjective either does
+not belong in the suite or belongs in a `bash` check, where it can be
+verified rather than believed.
+
+`case.py` rejects a case with no checks, an unknown `kind`, a `tier` outside
+the two, a missing `fixture/`, a `model` or `provider` field, an empty
+`assertions` list, a `min_met` above the number of assertions, or an `id`
+that does not match its directory name — the directory name is the identity,
+and the field exists so a case file read on its own says what it is.
+
+`reps` and `timeout` are optional per case and fall back to the tier:
+
+| Tier | Cases | Reps | Rep timeout |
 |---|---|---|---|
-| `smoke` | `claude-haiku-4-5-20251001` | 3 | 600s |
-| `full` | `claude-sonnet-5` | 5 | 900s |
+| `smoke` | a five-case subset | 3 | 600s |
+| `full` | every case | 5 | 900s |
 
-A case that overrides `model` overrides it in the baseline comparison too,
-since the baseline records the value actually used.
+Tiers differ by scale, not by model. One model across both means a smoke
+result predicts a full result, which the original two-model design could not
+claim.
 
 **A rep passes** if and only if every check passes and either there is no
-judge or the score is at least `min_score`.
+judge or at least `min_met` assertions were met.
 
 ## 6. Running one rep
 
-Preflight runs once per invocation and fails before anything is spent:
-Docker present, `ANTHROPIC_API_KEY` set, then
+### Configuration
+
+The run supplies what a case deliberately does not, from flags that fall back
+to the variables `cli.py` already defines:
+
+| Setting | Flag | Environment | Default |
+|---|---|---|---|
+| Model under test | `--model` | `NARE_MODEL` | required |
+| Provider | `--provider` | `NARE_PROVIDER` | `anthropic` |
+| Endpoint | `--base-url` | `NARE_BASE_URL` | the vendor's |
+| Judge model | `--judge-model` | `NARE_BENCH_JUDGE_MODEL` | the model under test |
+| Credential | — | `ANTHROPIC_API_KEY` | required |
+
+Reusing nare's own variable names means an operator who can already run
+`nare run` against their endpoint can run the benchmark with no further
+configuration. A proxy alias such as `claude-haiku`, a first-party
+`claude-haiku-4-5`, and whatever a later transport supports are all just a
+different value of `--model`.
+
+### Preflight
+
+Runs once per invocation and fails before anything is spent: Docker present,
+`ANTHROPIC_API_KEY` set, a model resolved, then
 `docker build -t nare-bench:local -f benchmarks/Dockerfile .`. The image
 installs the working tree's nare, so the suite measures local changes rather
 than a published release. Layer caching makes rebuilds near-free.
@@ -180,21 +253,25 @@ Then, per rep:
 2. Run the container:
 
        docker run --rm -v <tmp>:/work -v <artifacts>:/out -w /work \
-                  -e ANTHROPIC_API_KEY nare-bench:local \
+                  -e ANTHROPIC_API_KEY -e NARE_BASE_URL -e NARE_PROVIDER \
+                  nare-bench:local \
                   sh -c 'git init -q && git add -A && git commit -qm fixture &&
                          nare run --yes --jsonl --session /out/session.json \
                                   --max-turns N --model M -- "<prompt>"'
 
-   under the rep timeout from the tier table, capturing stdout.
+   under the rep timeout from the tier table, capturing stdout. `--effort` is
+   never passed: it renders as `thinking.budget_tokens`, which some models
+   accept and others reject outright, and a flag that changes availability by
+   model has no place in a controlled measurement.
 3. Parse stdout into typed events plus the one `result` line.
 4. Grade `result` checks from that line, on the host.
 5. Grade `bash` checks in a second `docker run` over the same temp directory.
-6. If the case has a judge, call the API from the host with the prompt, the
-   rubric, `git diff HEAD`, and the final assistant text. The judge is asked
-   for JSON — `{"score": 1-5, "reason": "..."}` — and a reply that does not
-   parse, or scores outside the range, is a judge failure under section 8
-   rather than a zero. A judge that cannot answer must not look like a bad
-   answer.
+6. If the case has a judge, score its assertions from the host with the
+   prompt, the assertion list, `git diff HEAD`, and the final assistant text.
+   The judge is asked for JSON — `{"met": [true, false, ...], "why": "..."}`,
+   one boolean per assertion in order — and a reply that does not parse, or
+   whose array is the wrong length, is a judge failure under section 8 rather
+   than a zero. A judge that cannot answer must not look like a bad answer.
 7. Record the rep to the results file and delete the temp directory.
 
 Three details carry weight:
@@ -208,8 +285,20 @@ and still survives for debugging a failed rep.
 already gives for refusing an `--api-key` flag: argv is world-readable.
 
 **Containment is filesystem and process, not network.** The container must
-reach the API, so `--network none` is not available. The docs say this plainly
-rather than implying the box is sealed.
+reach the model endpoint, so `--network none` is not available. The docs say
+this plainly rather than implying the box is sealed. The endpoint may be the
+vendor's or a proxy's; either way it is reached over ordinary bridge
+networking, and a proxy on the host's own loopback is the one case that would
+need `--network host`.
+
+**The judge runs through `nare.transport`**, not a second API client.
+`make_transport(provider, model=..., base_url=...)` already returns something
+with a `.turn()`, and scoring assertions is one completion with no tools. The
+benchmark therefore adds no client code, no second credential path, and no
+dependency, and it reaches every provider nare reaches — today and after the
+OpenAI transport lands. The accepted coupling is that a broken transport
+breaks the judge, which is loud rather than silent, since every case fails
+in the same breath.
 
 ## 7. Aggregation and comparison
 
@@ -242,22 +331,28 @@ fault, is an `error`. No heuristic is required.
 
 ```toml
 [meta]
-blessed     = "2026-09-21T14:02:00Z"
+blessed     = "2026-09-22T14:02:00Z"
 commit      = "237a678"
-model       = "claude-haiku-4-5-20251001"
-judge_model = "claude-sonnet-5"
+provider    = "anthropic"
+model       = "claude-haiku"
+judge_model = "claude-haiku"
 
 [case.fix-failing-test]
 pass_rate     = 1.0
 reps          = 3
 tokens_median = 31100
-judge_median  = 4.0
+judge_met_median = 3
 turns_median  = 6
 ```
 
 Pinning `judge_model` is the non-obvious guard. If the judge model changes
 underneath the suite, every score shifts at once and reads as a harness
 regression.
+
+`base_url` is deliberately absent. It is environment, often private
+infrastructure, and it is not part of what is being measured — two operators
+reaching `claude-haiku` by different routes should be comparing numbers, not
+arguing about hostnames.
 
 ### Comparison rules
 
@@ -267,7 +362,7 @@ regression.
 | `pass_rate` below baseline | suspect; re-run at 7 reps (`--confirm-reps`); still below is a **regression**, exit 1 |
 | `pass_rate` above baseline | improvement, reported |
 | `tokens_median` outside ±10% | flagged; above the band warns and exits 0 unless `--strict-tokens` |
-| `judge_median` down more than 0.5 | warns |
+| `judge_met_median` below baseline | warns, naming the assertions that newly fail |
 | case present in the run, absent from the baseline | reported as new, never fails |
 | case present in the baseline, absent from the run | reported as missing, never fails |
 
@@ -294,7 +389,7 @@ plumbing.
 | Image build fails | exit 2 |
 | Container exceeds the wall clock | killed; rep is `error` |
 | No result line on stdout | rep is `error` |
-| Judge call fails | score is null; `error` only if the case set `min_score`, otherwise graded on checks with the score reported missing |
+| Judge call fails | score is null; `error` only if the case set `min_met`, otherwise graded on checks with the score reported missing |
 
 ### `bin/bench verify`
 
@@ -324,8 +419,8 @@ Five smoke cases, chosen to hit nare's own seams rather than generic coding.
 
 | Case | Exercises | Check |
 |---|---|---|
-| `edit-docstring` | read and edit, one file | `__doc__` is set; judge rates whether it describes behavior |
-| `fix-failing-test` | bash, read and edit | `pytest -q` exits 0; judge checks the cause was fixed, not the test |
+| `edit-docstring` | read and edit, one file | `__doc__` is set; judge asserts it describes behavior rather than restating the name |
+| `fix-failing-test` | bash, read and edit | `pytest -q` exits 0; judge asserts the cause was fixed and the test untouched |
 | `multi-file-rename` | search across three files | `rg` finds no old names and the suite passes |
 | `ambiguous-request` | the `ask` tool | `status == "blocked"` with non-empty questions |
 | `bash-timeout-recovery` | timeout and adaptation | a hanging command; the agent must survive the kill and still finish |
@@ -360,6 +455,7 @@ Named so that none of it gets built by accident.
 | Per-case container images | When a fixture needs a dependency the one image lacks |
 | Trend plots across many runs | When more than two baselines are worth comparing |
 | Benchmarking harnesses other than nare | The trigger that promotes the bench to its own package |
+| Provider coverage beyond nare's transports | Inherited, never extended — the OpenAI transport's own spec |
 | A deterministic replay tier | Decided against, not pending |
 
 The replay tier was considered and rejected. It would replay recorded
@@ -380,13 +476,19 @@ both of which are cheaper.
    exit 1.
 4. A rep whose agent finishes with `status = "error"` at the turn limit is
    recorded as `fail`, not `error`.
-5. `bin/bench compare` against a baseline with a different `model` exits 2
-   without running a case.
+5. `bin/bench compare` against a baseline with a different `model` or
+   `judge_model` exits 2 without running a case.
 6. A case whose pass rate drops below baseline triggers a seven-rep re-run
    before the report names it a regression, and a case that recovers exits 0.
 7. A token median 3% above baseline exits 0; the same delta at 15% warns, and
    exits 1 under `--strict-tokens`.
-8. `bin/bench bless` rewrites `baselines/smoke.toml` with the current commit,
-   model and timestamp, and the diff is reviewable.
+8. `bin/bench bless` writes `baselines/<model>.smoke.toml` with the current
+   commit, provider, model and timestamp, and the diff is reviewable.
+   Blessing under a second model leaves the first model's file untouched.
 9. `bin/build` passes with `benchmarks` added to ruff and mypy.
 10. The built wheel contains no `benchmarks` path.
+11. No `case.toml` in the suite contains a `model`, `provider` or `base_url`
+    key, and `case.py` rejects one that does.
+12. The same case directory runs unchanged against a proxy alias
+    (`NARE_MODEL=claude-haiku` with `NARE_BASE_URL` set) and against a
+    first-party model (`NARE_MODEL=claude-haiku-4-5`, no base URL).
