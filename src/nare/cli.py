@@ -18,6 +18,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from nare.contract import CONTRACT_VERSION, EXIT_CODES, NEVER_STARTED, describe
 from nare.events import Event
 from nare.loop import MAX_TURNS_DEFAULT, run
 from nare.schema import UnsupportedSchema, check_supported
@@ -33,6 +34,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="nare", description="A standalone agent harness."
     )
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser(
+        "contract",
+        help="print the machine contract this nare speaks, as JSON, and exit",
+    )
     run_parser = sub.add_parser("run", help="run a task headlessly")
 
     run_parser.add_argument("prompt", nargs="?", help="the task, as plain text")
@@ -73,6 +78,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes",
         action="store_true",
         help="approve every tool call (required for unattended runs)",
+    )
+    run_parser.add_argument(
+        "--contract",
+        type=int,
+        help=(
+            "the contract version the caller speaks. nare refuses to start when "
+            "it speaks a different one, rather than emitting a stream the caller "
+            f"would mis-read (this nare: {CONTRACT_VERSION})"
+        ),
     )
     run_parser.add_argument(
         "--schema",
@@ -192,6 +206,7 @@ def _emit_result(session: Session, jsonl: bool) -> None:
                     "usage": asdict(session.usage),
                     "stop_reason": session.stop_reason,
                     "turns": session.turns,
+                    "contract": CONTRACT_VERSION,
                     "output": session.output,
                     "error": session.error,
                 }
@@ -277,7 +292,7 @@ async def _execute(
                 session.error = f"could not write --session {args.session}: {exc}"
                 _emit(Event("error", session.error), args.jsonl)
     _emit_result(session, args.jsonl)
-    return 1 if session.status == "error" else 0
+    return EXIT_CODES.get(session.status, EXIT_CODES["error"])
 
 
 def main(argv: list[str] | None = None, *, transport: Transport | None = None) -> int:
@@ -285,14 +300,26 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    if args.command == "contract":
+        print(json.dumps(describe()), flush=True)
+        return 0
+
     # Everything below exits 2 and emits nothing on stdout: the result line
     # implies a session existed, so a run that never started does not emit one.
+    if args.contract is not None and args.contract != CONTRACT_VERSION:
+        print(
+            f"nare speaks contract {CONTRACT_VERSION}, and the caller asked for "
+            f"{args.contract}. Refusing rather than emitting a stream it would "
+            "mis-read.",
+            file=sys.stderr,
+        )
+        return NEVER_STARTED
     if not args.yes:
         print("nare run refuses to start unattended without --yes", file=sys.stderr)
-        return 2
+        return NEVER_STARTED
     if not args.prompt and not args.resume:
         print("nare run needs a prompt, or --resume PATH", file=sys.stderr)
-        return 2
+        return NEVER_STARTED
     # A resume with nowhere to write back silently throws the run away and
     # replays the stale prefix next time. Resuming a file means updating it.
     if args.resume and not args.session:
@@ -306,6 +333,6 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
             transport = transport_from_args(args)
     except (ValueError, OSError, UnsupportedSchema) as exc:
         print(f"nare: {exc}", file=sys.stderr)
-        return 2
+        return NEVER_STARTED
 
     return asyncio.run(_execute(session, transport, args, policy, schema))

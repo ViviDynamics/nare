@@ -10,6 +10,7 @@ from typing import Any, Literal
 from nare.events import Event, redact_value
 
 SESSION_VERSION = 1
+CONTRACT_VERSION = 1
 
 Status = Literal["working", "blocked", "done", "error"]
 Role = Literal["user", "assistant"]
@@ -54,6 +55,7 @@ class Session:
     policy: dict[str, Any] = field(default_factory=dict)
     output: Any = None
     schema_retried: bool = False
+    contract: int = CONTRACT_VERSION
     events: list[Event] = field(default_factory=list, compare=False)
     version: int = SESSION_VERSION
 
@@ -103,6 +105,13 @@ def loads(text: str) -> Session:
     if version != SESSION_VERSION:
         raise ValueError(
             f"session file is version {version}; this nare writes {SESSION_VERSION}"
+        )
+    contract = raw.get("contract", CONTRACT_VERSION)
+    if contract != CONTRACT_VERSION:
+        raise ValueError(
+            f"session file speaks contract {contract}; this nare speaks "
+            f"{CONTRACT_VERSION}. Resuming it would mean reading shapes this "
+            "nare does not define."
         )
     try:
         raw["usage"] = Usage(**raw["usage"])
