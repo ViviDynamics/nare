@@ -10,7 +10,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from benchmarks.runner.grade import CheckResult, Outcome
 
@@ -189,3 +189,143 @@ def load_baseline(path: Path) -> Baseline:
             judge_met_median=body.get("judge_met_median"),
         )
     return Baseline(meta=meta, cases=cases)
+
+
+Verdict = Literal[
+    "ok", "improved", "suspect", "regression", "inconclusive", "new", "missing"
+]
+
+
+@dataclass(frozen=True)
+class CaseDelta:
+    case: str
+    verdict: Verdict
+    summary: CaseSummary | None
+    baseline: CaseSummary | None
+    token_delta: float | None
+    notes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Comparison:
+    deltas: tuple[CaseDelta, ...]
+    exit_code: int
+
+
+def compare(
+    summaries: Sequence[CaseSummary],
+    baseline: Baseline,
+    *,
+    confirmed: bool = False,
+    token_band: float = 0.10,
+    strict_tokens: bool = False,
+) -> Comparison:
+    """Diff a run against a baseline.
+
+    `confirmed` is the difference between "this looks wrong" and "this is
+    wrong". A pass-rate drop is `suspect` on the first pass and becomes a
+    `regression` only after the caller has re-run the case at higher reps, so
+    ordinary sampling noise never turns the build red on its own.
+    """
+    by_case = {s.case: s for s in summaries}
+    deltas: list[CaseDelta] = []
+    failed = False
+
+    for name in sorted(set(by_case) | set(baseline.cases)):
+        current = by_case.get(name)
+        before = baseline.cases.get(name)
+        notes: list[str] = []
+        token_delta: float | None = None
+
+        if current is None:
+            deltas.append(CaseDelta(name, "missing", None, before, None, ()))
+            continue
+        if current.inconclusive:
+            failed = True
+            total = current.passes + current.fails + current.errors
+            deltas.append(
+                CaseDelta(
+                    name,
+                    "inconclusive",
+                    current,
+                    before,
+                    None,
+                    (f"{current.errors} of {total} reps errored",),
+                )
+            )
+            continue
+        if before is None:
+            deltas.append(CaseDelta(name, "new", current, None, None, ()))
+            continue
+
+        verdict: Verdict = "ok"
+        if current.pass_rate is not None and before.pass_rate is not None:
+            if current.pass_rate < before.pass_rate:
+                verdict = "regression" if confirmed else "suspect"
+                if confirmed:
+                    failed = True
+            elif current.pass_rate > before.pass_rate:
+                verdict = "improved"
+
+        if current.tokens_median and before.tokens_median:
+            token_delta = (
+                current.tokens_median - before.tokens_median
+            ) / before.tokens_median
+            if token_delta > token_band:
+                notes.append(f"tokens +{token_delta:.0%}, outside the band")
+                if strict_tokens:
+                    failed = True
+
+        if (
+            current.judge_met_median is not None
+            and before.judge_met_median is not None
+            and current.judge_met_median < before.judge_met_median
+        ):
+            notes.append(
+                f"judge {before.judge_met_median} -> {current.judge_met_median}"
+            )
+
+        deltas.append(
+            CaseDelta(name, verdict, current, before, token_delta, tuple(notes))
+        )
+
+    return Comparison(deltas=tuple(deltas), exit_code=1 if failed else 0)
+
+
+def _rate(summary: CaseSummary | None) -> str:
+    if summary is None or summary.pass_rate is None:
+        return "-"
+    return f"{summary.passes}/{summary.passes + summary.fails}"
+
+
+def render(comparison: Comparison) -> str:
+    lines = [
+        f"{'case':<24} {'pass':>7} {'tokens':>10} {'judge':>6}  verdict",
+        "-" * 70,
+    ]
+    for delta in comparison.deltas:
+        tokens = "-"
+        if delta.summary and delta.summary.tokens_median is not None:
+            tokens = f"{delta.summary.tokens_median:,}"
+            if delta.token_delta is not None:
+                tokens += f" {delta.token_delta:+.0%}"
+        judge = "-"
+        if delta.summary and delta.summary.judge_met_median is not None:
+            judge = str(delta.summary.judge_met_median)
+        lines.append(
+            f"{delta.case:<24} {_rate(delta.summary):>7} {tokens:>10} "
+            f"{judge:>6}  {delta.verdict}"
+        )
+        for note in delta.notes:
+            lines.append(f"{'':<24} {note}")
+    lines.append("-" * 70)
+
+    bad = [d for d in comparison.deltas if d.verdict in ("regression", "inconclusive")]
+    for delta in bad:
+        lines.append(
+            f"{delta.verdict.upper()}: {delta.case} "
+            f"{_rate(delta.baseline)} -> {_rate(delta.summary)}"
+        )
+    if not bad:
+        lines.append("no regressions")
+    return "\n".join(lines)

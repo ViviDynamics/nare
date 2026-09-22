@@ -6,12 +6,16 @@ import pytest
 
 from benchmarks.runner.grade import Outcome
 from benchmarks.runner.report import (
+    Baseline,
     BaselineMeta,
+    CaseSummary,
     RepRecord,
     baseline_path,
+    compare,
     dumps_baseline,
     load_baseline,
     median_int,
+    render,
     slugify,
     summarize,
 )
@@ -173,3 +177,115 @@ def test_a_model_name_with_quotes_survives_the_round_trip(tmp_path: Path) -> Non
     path = tmp_path / "b.toml"
     path.write_text(dumps_baseline(meta, summarize([record(case="c")])))
     assert load_baseline(path).meta.model == 'weird"name'
+
+
+def summary(
+    case: str = "c",
+    pass_rate: float | None = 1.0,
+    tokens: int | None = 1000,
+    judge: int | None = 3,
+    inconclusive: bool = False,
+) -> CaseSummary:
+    return CaseSummary(
+        case=case,
+        passes=3,
+        fails=0,
+        errors=0,
+        pass_rate=pass_rate,
+        inconclusive=inconclusive,
+        tokens_median=tokens,
+        turns_median=4,
+        judge_met_median=judge,
+    )
+
+
+def baseline_of(*summaries: CaseSummary) -> Baseline:
+    return Baseline(meta=META, cases={s.case: s for s in summaries})
+
+
+def test_matching_numbers_are_ok_and_exit_zero() -> None:
+    comparison = compare([summary()], baseline_of(summary()))
+    assert comparison.deltas[0].verdict == "ok"
+    assert comparison.exit_code == 0
+
+
+def test_a_pass_rate_drop_is_suspect_before_confirmation() -> None:
+    comparison = compare([summary(pass_rate=0.67)], baseline_of(summary()))
+    assert comparison.deltas[0].verdict == "suspect"
+    assert comparison.exit_code == 0
+
+
+def test_a_confirmed_pass_rate_drop_is_a_regression() -> None:
+    comparison = compare(
+        [summary(pass_rate=0.67)], baseline_of(summary()), confirmed=True
+    )
+    assert comparison.deltas[0].verdict == "regression"
+    assert comparison.exit_code == 1
+
+
+def test_a_higher_pass_rate_is_an_improvement_not_a_failure() -> None:
+    comparison = compare([summary(pass_rate=1.0)], baseline_of(summary(pass_rate=0.5)))
+    assert comparison.deltas[0].verdict == "improved"
+    assert comparison.exit_code == 0
+
+
+def test_tokens_inside_the_band_do_not_register() -> None:
+    comparison = compare([summary(tokens=1030)], baseline_of(summary(tokens=1000)))
+    assert comparison.deltas[0].verdict == "ok"
+    assert comparison.exit_code == 0
+
+
+def test_tokens_above_the_band_warn_but_exit_zero() -> None:
+    comparison = compare([summary(tokens=1150)], baseline_of(summary(tokens=1000)))
+    assert comparison.exit_code == 0
+    assert any("token" in note for note in comparison.deltas[0].notes)
+
+
+def test_tokens_above_the_band_fail_under_strict() -> None:
+    comparison = compare(
+        [summary(tokens=1150)], baseline_of(summary(tokens=1000)), strict_tokens=True
+    )
+    assert comparison.exit_code == 1
+
+
+def test_tokens_below_the_band_are_never_a_failure() -> None:
+    comparison = compare(
+        [summary(tokens=500)], baseline_of(summary(tokens=1000)), strict_tokens=True
+    )
+    assert comparison.exit_code == 0
+
+
+def test_a_judge_drop_warns() -> None:
+    comparison = compare([summary(judge=1)], baseline_of(summary(judge=3)))
+    assert comparison.exit_code == 0
+    assert any("judge" in note for note in comparison.deltas[0].notes)
+
+
+def test_an_inconclusive_case_exits_one() -> None:
+    comparison = compare(
+        [summary(pass_rate=None, inconclusive=True)], baseline_of(summary())
+    )
+    assert comparison.deltas[0].verdict == "inconclusive"
+    assert comparison.exit_code == 1
+
+
+def test_a_case_absent_from_the_baseline_is_new_and_never_fails() -> None:
+    comparison = compare([summary(case="fresh")], baseline_of(summary(case="old")))
+    verdicts = {d.case: d.verdict for d in comparison.deltas}
+    assert verdicts["fresh"] == "new"
+    assert comparison.exit_code == 0
+
+
+def test_a_case_absent_from_the_run_is_missing_and_never_fails() -> None:
+    comparison = compare([], baseline_of(summary(case="old")))
+    assert comparison.deltas[0].verdict == "missing"
+    assert comparison.exit_code == 0
+
+
+def test_render_names_the_regression() -> None:
+    comparison = compare(
+        [summary(pass_rate=0.67)], baseline_of(summary()), confirmed=True
+    )
+    text = render(comparison)
+    assert "REGRESSION" in text
+    assert "c" in text
