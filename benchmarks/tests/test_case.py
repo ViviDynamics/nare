@@ -167,6 +167,11 @@ def test_load_cases_filters_by_tier_and_sorts(tmp_path: Path) -> None:
         "fix-failing-test",
     ]
     assert [c.id for c in load_cases(tmp_path, tier="smoke")] == ["fix-failing-test"]
+    # `full` is every case, not only the full-tagged ones.
+    assert [c.id for c in load_cases(tmp_path, tier="full")] == [
+        "aaa-full-case",
+        "fix-failing-test",
+    ]
 
 
 def test_load_cases_on_an_empty_root_returns_nothing(tmp_path: Path) -> None:

@@ -1,8 +1,9 @@
 id = "bash-timeout-recovery"
-tier = "smoke"
+tier = "full"
 prompt = """Run ./slow.sh with a timeout of 5 seconds to see what it does. It \
-will hang -- do not wait for it. Then change greet() in bar.py to return an \
-uppercase greeting, and write what happened with slow.sh to notes.txt."""
+will hang -- do not wait for it. Then change greet() in bar.py so that \
+greet("sam") returns exactly "HELLO SAM", and write what happened with \
+slow.sh to notes.txt."""
 max_turns = 12
 
 [[check]]
@@ -16,6 +17,6 @@ status = "done"
 [judge]
 assertions = [
   "notes.txt records that slow.sh hung or timed out.",
-  "greet() returns an uppercase greeting.",
+  "greet() uppercases the whole greeting, not only the name.",
 ]
 min_met = 2

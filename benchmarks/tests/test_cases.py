@@ -17,9 +17,14 @@ def test_every_seed_case_loads() -> None:
     assert {c.id for c in cases} == SEEDS
 
 
-def test_the_smoke_tier_is_the_whole_seed_set() -> None:
-    cases = load_cases(repo_root() / "benchmarks" / "cases", tier="smoke")
-    assert len(cases) == 5
+def test_the_full_tier_is_every_case_and_smoke_is_a_subset() -> None:
+    """Tiers differ by scale, so a smoke result predicts a full result."""
+    root = repo_root() / "benchmarks" / "cases"
+    smoke = {c.id for c in load_cases(root, tier="smoke")}
+    full = {c.id for c in load_cases(root, tier="full")}
+    assert full == SEEDS
+    assert smoke < full
+    assert "bash-timeout-recovery" not in smoke
 
 
 def test_no_case_names_a_model() -> None:

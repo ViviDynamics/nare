@@ -200,6 +200,9 @@ def load_cases(root: Path, tier: str | None = None) -> list[Case]:
         for entry in sorted(root.iterdir())
         if entry.is_dir() and (entry / "case.toml").exists()
     ]
-    if tier is not None:
+    # `full` is every case, not only the full-tagged ones: the tiers differ by
+    # scale, so a smoke result predicts a full result. A case is tagged with
+    # the smallest tier it belongs to.
+    if tier is not None and tier != "full":
         cases = [c for c in cases if c.tier == tier]
     return cases

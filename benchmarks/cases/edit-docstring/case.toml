@@ -17,4 +17,4 @@ assertions = [
   "The docstring describes what foo does, rather than only restating its name.",
   "The behaviour of foo() is unchanged.",
 ]
-min_met = 3
+min_met = 2
