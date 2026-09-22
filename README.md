@@ -32,6 +32,17 @@ permissions can be read afterwards rather than inferred.
 `--root` gives `bash` that directory to start in. It is not a jail: a shell
 can still walk upward, so real confinement stays the sandbox's job.
 
+`--schema FILE` makes the answer data rather than prose. The final answer must
+satisfy the JSON Schema in that file; a violation is reported back to the model
+once, and a second violation ends the run with `stop_reason=schema_violation`
+and no partial object. A validating answer is parsed onto the session, carried
+in the `output` event's detail, and included in the final `result` line.
+
+nare validates a subset of JSON Schema: `type`, `properties`, `required`,
+`items`, `enum`, and `additionalProperties`. A schema using anything else is
+refused at startup rather than validated in part, because an answer that was
+only partly checked is worse than one that was not checked at all.
+
 See [docs/architecture.md](docs/architecture.md) for the shape, and
 [docs/adr/](docs/adr/) for the decisions behind it.
 

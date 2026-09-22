@@ -16,9 +16,11 @@ import sys
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 from nare.events import Event
 from nare.loop import MAX_TURNS_DEFAULT, run
+from nare.schema import UnsupportedSchema, check_supported
 from nare.session import Session, append_user_text, dumps, loads, new_session
 from nare.tools import TOOLS, Policy, approve_all
 from nare.transport import Transport, make_transport
@@ -73,6 +75,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="approve every tool call (required for unattended runs)",
     )
     run_parser.add_argument(
+        "--schema",
+        help=(
+            "a JSON Schema file the final answer must satisfy. nare validates a "
+            "subset (type, properties, required, items, enum, "
+            "additionalProperties) and refuses a schema using anything else "
+            "rather than validating it only in part"
+        ),
+    )
+    run_parser.add_argument(
         "--tools",
         help=(
             "comma-separated tools this run may call "
@@ -115,6 +126,19 @@ def transport_from_args(args: argparse.Namespace) -> Transport:
     )
 
 
+def schema_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
+    """Read and vet the schema before the run starts: a caller that asked for
+    data should not spend a model call to learn the schema was unreadable.
+    """
+    if args.schema is None:
+        return None
+    loaded = json.loads(Path(args.schema).read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError(f"--schema {args.schema} is not a JSON object")
+    check_supported(loaded)
+    return loaded
+
+
 def policy_from_args(args: argparse.Namespace) -> Policy:
     """Both failures here are startup failures: a caller that asked for a
     narrower session and did not get one must not be handed a wider one.
@@ -140,6 +164,10 @@ def _load_or_new(args: argparse.Namespace) -> Session:
     # Resuming is how conductor's relay_feedback works: reopen and keep going.
     session.status = "working"
     session.questions = []
+    # Per-run state, like the budget in run(): a resume that inherited the
+    # spent correction round would end on its first imperfect answer.
+    session.schema_retried = False
+    session.output = None
     session.error = None
     session.stop_reason = None
     return session
@@ -164,6 +192,7 @@ def _emit_result(session: Session, jsonl: bool) -> None:
                     "usage": asdict(session.usage),
                     "stop_reason": session.stop_reason,
                     "turns": session.turns,
+                    "output": session.output,
                     "error": session.error,
                 }
             ),
@@ -202,7 +231,11 @@ def _save(session: Session, path: str) -> None:
 
 
 async def _execute(
-    session: Session, transport: Transport, args: argparse.Namespace, policy: Policy
+    session: Session,
+    transport: Transport,
+    args: argparse.Namespace,
+    policy: Policy,
+    schema: dict[str, Any] | None,
 ) -> int:
     saved_turns = -1
     try:
@@ -211,6 +244,7 @@ async def _execute(
             transport=transport,
             approve=approve_all,
             policy=policy,
+            schema=schema,
             max_turns=args.max_turns,
         ):
             _emit(event, args.jsonl)
@@ -266,11 +300,12 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
 
     try:
         policy = policy_from_args(args)
+        schema = schema_from_args(args)
         session = _load_or_new(args)
         if transport is None:
             transport = transport_from_args(args)
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, UnsupportedSchema) as exc:
         print(f"nare: {exc}", file=sys.stderr)
         return 2
 
-    return asyncio.run(_execute(session, transport, args, policy))
+    return asyncio.run(_execute(session, transport, args, policy, schema))
