@@ -1,4 +1,4 @@
-# nare — Benchmark Suite
+# nare - Benchmark Suite
 
 **Date:** 2026-09-21
 **Status:** Approved, not yet implemented
@@ -8,8 +8,8 @@ under `src/nare/` changes, and nothing here ships in the wheel.
 
 > **Amendment, 2026-09-22.** Written assuming direct Anthropic access with
 > `claude-sonnet-5` available. The first environment to run this suite reaches
-> models through a LiteLLM proxy whose model names — `claude-haiku`,
-> `gpt-5-nano`, `ada/qwen3-14b`, `spark/glm-5.3-flash` — exist on that proxy
+> models through a LiteLLM proxy whose model names - `claude-haiku`,
+> `gpt-5-nano`, `ada/qwen3-14b`, `spark/glm-5.3-flash` - exist on that proxy
 > and nowhere else. A case naming a model is therefore unportable by
 > construction, which the original section 5 did not account for.
 >
@@ -63,7 +63,7 @@ Seven decisions were settled before this spec. Only the first earns an ADR.
 
 1. **Benchmarks are unshipped dev tooling, isolated by container.** ADR 0007.
 2. **Both tiers are live.** `smoke` is small and cheap and runs often; `full`
-   is the real suite and runs on change. There is no deterministic tier —
+   is the real suite and runs on change. There is no deterministic tier , 
    `tests/` already owns that question and answers it better.
 3. **Programmatic checks gate, the judge grades.** An assertion-scored judge can
    fail a rep that passed its checks. It can never rescue one that failed.
@@ -135,7 +135,7 @@ the install by configuration that is already there.
 
 Shipping the runner would put Docker orchestration and a judge client into
 nare's public surface and its dependency list, for every user of `nare run`
-forever. It would also contradict architecture.md's first line — the core is
+forever. It would also contradict architecture.md's first line - the core is
 a library and every surface is a thin adapter over it. A benchmark runner is
 not a thin adapter. If the bench ever grades harnesses other than nare, it
 graduates to its own package; that is a later decision with a clear trigger,
@@ -201,7 +201,7 @@ verified rather than believed.
 `case.py` rejects a case with no checks, an unknown `kind`, a `tier` outside
 the two, a missing `fixture/`, a `model` or `provider` field, an empty
 `assertions` list, a `min_met` above the number of assertions, or an `id`
-that does not match its directory name — the directory name is the identity,
+that does not match its directory name - the directory name is the identity,
 and the field exists so a case file read on its own says what it is.
 
 `reps` and `timeout` are optional per case and fall back to the tier:
@@ -231,7 +231,7 @@ to the variables `cli.py` already defines:
 | Provider | `--provider` | `NARE_PROVIDER` | `anthropic` |
 | Endpoint | `--base-url` | `NARE_BASE_URL` | the vendor's |
 | Judge model | `--judge-model` | `NARE_BENCH_JUDGE_MODEL` | the model under test |
-| Credential | — | `ANTHROPIC_API_KEY` | required |
+| Credential | - | `ANTHROPIC_API_KEY` | required |
 
 Reusing nare's own variable names means an operator who can already run
 `nare run` against their endpoint can run the benchmark with no further
@@ -268,8 +268,8 @@ Then, per rep:
 5. Grade `bash` checks in a second `docker run` over the same temp directory.
 6. If the case has a judge, score its assertions from the host with the
    prompt, the assertion list, `git diff HEAD`, and the final assistant text.
-   The judge is asked for JSON — `{"met": [true, false, ...], "why": "..."}`,
-   one boolean per assertion in order — and a reply that does not parse, or
+   The judge is asked for JSON - `{"met": [true, false, ...], "why": "..."}`,
+   one boolean per assertion in order - and a reply that does not parse, or
    whose array is the wrong length, is a judge failure under section 8 rather
    than a zero. A judge that cannot answer must not look like a bad answer.
 7. Record the rep to the results file and delete the temp directory.
@@ -277,7 +277,7 @@ Then, per rep:
 Three details carry weight:
 
 The build context is the repository root, so the ignore file is
-`benchmarks/Dockerfile.dockerignore` — BuildKit's per-Dockerfile form. A file
+`benchmarks/Dockerfile.dockerignore` - BuildKit's per-Dockerfile form. A file
 at `benchmarks/.dockerignore` would never be read, because Docker looks for
 `.dockerignore` at the context root.
 
@@ -300,7 +300,7 @@ need `--network host`.
 `make_transport(provider, model=..., base_url=...)` already returns something
 with a `.turn()`, and scoring assertions is one completion with no tools. The
 benchmark therefore adds no client code, no second credential path, and no
-dependency, and it reaches every provider nare reaches — today and after the
+dependency, and it reaches every provider nare reaches - today and after the
 OpenAI transport lands. The accepted coupling is that a broken transport
 breaks the judge, which is loud rather than silent, since every case fails
 in the same breath.
@@ -327,7 +327,7 @@ naming it, and it is never scored as a pass or a regression.
 without re-running it.
 
 The boundary between `fail` and `error` is drawn by a contract nare already
-has — a run that never started emits no result line. A well-formed result
+has - a run that never started emits no result line. A well-formed result
 line is graded normally, so `status = "error"` from a turn limit is a genuine
 task failure. No result line at all, from a crash, a timeout, or a Docker
 fault, is an `error`. No heuristic is required.
@@ -355,7 +355,7 @@ underneath the suite, every score shifts at once and reads as a harness
 regression.
 
 `base_url` is deliberately absent. It is environment, often private
-infrastructure, and it is not part of what is being measured — two operators
+infrastructure, and it is not part of what is being measured - two operators
 reaching `claude-haiku` by different routes should be comparing numbers, not
 arguing about hostnames.
 
@@ -405,7 +405,7 @@ untouched fixture and requires at least one to fail.
 
 Only `bash` checks are exercised: a `result` check reads nare's result line,
 and verify never runs the agent, so there is no line to read. A case whose
-checks are all `result` kind — `ambiguous-request` is one — is therefore
+checks are all `result` kind - `ambiguous-request` is one - is therefore
 exempt and reported as such rather than failed. The rule is "every case that
 can be verified is", not "every case has a bash check".
 
@@ -437,7 +437,7 @@ Five smoke cases, chosen to hit nare's own seams rather than generic coding.
 | `bash-timeout-recovery` | timeout and adaptation | a hanging command; the agent must survive the kill and still finish |
 
 Two of these measure things nothing else in the repo measures.
-`multi-file-rename` exists because nare has no grep tool — the question is
+`multi-file-rename` exists because nare has no grep tool - the question is
 whether bash plus `rg` is genuinely enough, and only a live run answers it.
 `ambiguous-request` exercises the blocked-plus-questions terminal state, which
 is the capability nare was built for and which `tests/` verifies only against
@@ -466,11 +466,11 @@ Named so that none of it gets built by accident.
 | Per-case container images | When a fixture needs a dependency the one image lacks |
 | Trend plots across many runs | When more than two baselines are worth comparing |
 | Benchmarking harnesses other than nare | The trigger that promotes the bench to its own package |
-| Provider coverage beyond nare's transports | Inherited, never extended — the OpenAI transport's own spec |
+| Provider coverage beyond nare's transports | Inherited, never extended - the OpenAI transport's own spec |
 | A deterministic replay tier | Decided against, not pending |
 
 The replay tier was considered and rejected. It would replay recorded
-transcripts through the graders for free, in CI, on every PR — but with the
+transcripts through the graders for free, in CI, on every PR - but with the
 model's replies frozen it cannot detect a better tool description or a worse
 system prompt, which is the entire point. The machinery it would protect is
 already protected by section 9's unit tests and section 8's `bin/bench verify`,

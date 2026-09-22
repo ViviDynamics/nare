@@ -9,8 +9,8 @@ fewer tokens.
 **Architecture:** A top-level `benchmarks/` tree, excluded from the wheel. Six
 runner modules split into four pure ones (`config`, `case`, `grade`, `report`)
 that are unit-tested with no Docker and no network, and two impure ones
-(`sandbox`, `judge`) that talk to Docker and to the model. Cases are data —
-a `case.toml` plus a `fixture/` tree — and name no model, so the same case
+(`sandbox`, `judge`) that talk to Docker and to the model. Cases are data , 
+a `case.toml` plus a `fixture/` tree - and name no model, so the same case
 runs against a proxy alias or a first-party model unchanged.
 
 **Tech Stack:** Python 3.12 stdlib only (`tomllib`, `subprocess`, `shutil`,
@@ -21,15 +21,25 @@ Docker CLI via `subprocess`. pytest, ruff, mypy already in the dev group.
 
 ## Starting point
 
-**Branch:** `spec/nare-benchmark-suite`, branched from
-`spec/nare-walking-skeleton`.
+**Branch:** `spec/nare-benchmark-suite`, branched from `main`.
 
-`main` carries no code — only LICENSE, README, CONTRIBUTING, SECURITY and two
-workflow files. Slice 1 (the harness itself) is unmerged and lives on
-`spec/nare-walking-skeleton`. A worktree based on `main` cannot execute Task 1,
-whose first action is editing a `pyproject.toml` that does not exist there.
+Slice 1 (the harness itself) merged as PR #4, so `main` carries `src/nare`,
+`tests/`, `pyproject.toml` and `bin/build`. Nothing in this plan depends on
+unmerged work.
 
-Confirm you are in the right place before Task 1:
+Read `.agents/skills/conventions/SKILL.md` before the first commit. Four of its
+rules bind this plan: squash merges only, never push to `main`, never
+force-push anything but your own unmerged branch and then only with
+`--force-with-lease`, and published prose carries no em dashes.
+
+Set a fresh clone up first, because CI runs the same check:
+
+```bash
+cp repo.env.example repo.env
+.agents/skills/ci-safety/scripts/check-wiring    # prints {"ok":true}
+```
+
+Then confirm you are in the right place before Task 1:
 
 ```bash
 git rev-parse --abbrev-ref HEAD          # spec/nare-benchmark-suite
@@ -37,7 +47,7 @@ ls src/nare/loop.py tests/fake_provider.py pyproject.toml bin/build
 bin/build                                # must be green before you change anything
 ```
 
-If `bin/build` is red on a clean checkout, stop — that is a pre-existing
+If `bin/build` is red on a clean checkout, stop. That is a pre-existing
 failure and not this plan's to fix.
 
 **What each phase needs:**
@@ -337,7 +347,7 @@ git commit -m "feat: add the benchmark package skeleton and config resolution"
 ### Task 2: Case loading and validation
 
 Cases are data. This task makes a directory of TOML into typed objects and
-rejects every malformed shape the spec names — including the model fields
+rejects every malformed shape the spec names - including the model fields
 that would break portability.
 
 **Files:**
@@ -931,8 +941,8 @@ git commit -m "feat: parse nare's result line out of a run's stdout"
 
 ### Task 4: Check grading and the rep outcome
 
-The heart of the grading policy: what passes, what fails, and — the rule that
-makes the numbers trustworthy — what is neither.
+The heart of the grading policy: what passes, what fails, and - the rule that
+makes the numbers trustworthy - what is neither.
 
 **Files:**
 - Modify: `benchmarks/runner/grade.py`
@@ -1382,7 +1392,7 @@ git commit -m "feat: aggregate repetitions into per-case summaries"
 ### Task 6: Baseline reading, writing, and naming
 
 Baselines are keyed by model so contributors' numbers coexist. TOML is written
-by hand — the standard library reads TOML but does not write it, and this
+by hand - the standard library reads TOML but does not write it, and this
 shape is too small to justify a dependency.
 
 **Files:**
@@ -2229,7 +2239,7 @@ benchmarks/results
 ```
 
 Note: the build context is the repository root, so this must be the
-per-Dockerfile ignore file. A `benchmarks/.dockerignore` would never be read —
+per-Dockerfile ignore file. A `benchmarks/.dockerignore` would never be read , 
 Docker looks for `.dockerignore` at the context root.
 
 - [ ] **Step 3: Write the failing test**
@@ -2687,8 +2697,8 @@ git commit -m "feat: run one repetition in a throwaway container"
 
 ### Task 11: The CLI and `bench verify`
 
-`verify` is the cheapest end-to-end path — Docker but no API key and no money
-— so it is the first subcommand wired, and the one CI can run on every PR.
+`verify` is the cheapest end-to-end path - Docker but no API key and no money
+,  so it is the first subcommand wired, and the one CI can run on every PR.
 
 **Files:**
 - Create: `benchmarks/runner/__main__.py`
@@ -3445,7 +3455,7 @@ def test_the_ask_case_expects_a_blocked_run() -> None:
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `uv run pytest benchmarks/tests/test_cases.py -v`
-Expected: FAIL — the case directories do not exist
+Expected: FAIL - the case directories do not exist
 
 - [ ] **Step 3: Write `edit-docstring`**
 
@@ -3668,7 +3678,7 @@ Run: `bin/bench verify`
 Expected: exit 0. `ambiguous-request` reports `exempt (no bash checks to
 verify)`; the other four report `ok (fails on the pristine fixture)`. If any
 case reports `BROKEN`, its check passes before the agent runs and the check is
-wrong — fix the check, not the message.
+wrong - fix the check, not the message.
 
 - [ ] **Step 10: Commit**
 
@@ -3694,7 +3704,9 @@ Wires the free CI job, documents the suite, and takes the first measurement.
 
 - [ ] **Step 1: Add the CI job**
 
-In `.github/workflows/ci.yml`, add a second job beside `build`:
+`.github/workflows/ci.yml` now sets `permissions: contents: read` and runs on
+pushes to `main` plus every pull request. The job below needs nothing beyond
+`contents: read`, so the existing block covers it. Add it beside `build`:
 
 ```yaml
   cases:
@@ -3722,8 +3734,8 @@ Create `benchmarks/README.md`:
 Measures whether a change to nare made the harness better: whether real tasks
 get done, at what quality, for how many tokens.
 
-This is development tooling. It is not installed with nare — the wheel
-contains only `src/nare` — so running it means working from a checkout.
+This is development tooling. It is not installed with nare - the wheel
+contains only `src/nare` - so running it means working from a checkout.
 
 ## Running it
 
@@ -3754,7 +3766,7 @@ and a first-party model unchanged. `case.py` rejects them.
 Checks are `bash` (must exit 0) or `result` (asserts on nare's result line).
 The optional `[judge]` block lists binary, objectively checkable claims about
 the diff; `min_met` turns it into a gate. A judge can only ever fail a
-repetition that passed its checks — it can never rescue one that failed.
+repetition that passed its checks - it can never rescue one that failed.
 
 Run `bin/bench verify` on any case you add. It proves the checks fail on the
 pristine fixture, which is the difference between a case that measures
@@ -3763,7 +3775,7 @@ something and a case that is green no matter what the agent does.
 ## Containment
 
 The container bounds the filesystem and the process tree. It does not bound
-the network — the agent's endpoint has to be reachable, so `--network none` is
+the network - the agent's endpoint has to be reachable, so `--network none` is
 not available. Treat a benchmark run like any other unattended execution of
 model-generated shell commands.
 ```
@@ -3776,8 +3788,8 @@ Append to `docs/architecture.md`:
 ## Measuring it
 
 `tests/` proves the harness honours its contract given a scripted model.
-`benchmarks/` asks the other question — whether real tasks get done, at what
-quality, for how many tokens — by running the real thing in a container. It is
+`benchmarks/` asks the other question - whether real tasks get done, at what
+quality, for how many tokens - by running the real thing in a container. It is
 development tooling, excluded from the wheel, and it is where a change to a
 tool description or the turn budget is shown to have helped. See
 [benchmarks/README.md](../benchmarks/README.md) and ADR 0007.
@@ -3791,8 +3803,8 @@ Expected: both green
 - [ ] **Step 5: Take the first measurement**
 
 Run: `bin/bench run --tier smoke`
-Expected: five cases run, a results file is written, and — because no baseline
-exists yet — every case reports `new` and the run exits 0 with a hint to
+Expected: five cases run, a results file is written, and - because no baseline
+exists yet - every case reports `new` and the run exits 0 with a hint to
 bless.
 
 Read the table before blessing. A case at 0/3 measures nothing and should be
@@ -3850,5 +3862,5 @@ actual assertions.
 by the `CheckRunner` alias in Task 11). All consistent.
 
 **One gap found and closed during review:** Task 12 needs the final assistant
-text for the judge, which is not on the result line — it is the `output`
+text for the judge, which is not on the result line - it is the `output`
 event. `line_text()` was added to Task 12 step 3 to read it.

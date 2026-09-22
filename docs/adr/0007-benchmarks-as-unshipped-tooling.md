@@ -7,7 +7,7 @@ Status: Accepted (2026-09-21)
 Every test in `tests/` runs against `FakeProvider`, so it measures whether the
 harness honours its contract given a scripted model. Nothing measures whether
 a real task gets done, or what it costs. The levers nare can actually improve
-— tool descriptions, the system prompt, turn accounting, output truncation —
+,  tool descriptions, the system prompt, turn accounting, output truncation , 
 are invisible to a suite whose model replies are frozen.
 
 Measuring them requires running a real model against a real task, which means
@@ -30,7 +30,7 @@ judge client never reach a user of `nare run`, and no one files a bug about
 `nare bench` on a machine we cannot see.
 
 Docker becomes a prerequisite for benchmarking, though not for using or
-developing nare — `bin/build` is unaffected. Containment covers the filesystem
+developing nare - `bin/build` is unaffected. Containment covers the filesystem
 and the process tree, not the network, because the container must reach the
 model API.
 
