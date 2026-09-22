@@ -32,6 +32,9 @@ select = ["E", "F", "I", "UP", "B"]
 python_version = "3.12"
 strict = true
 mypy_path = "tests"
+# Case fixtures are sample code for the agent to edit, not runner code: they
+# are deliberately untyped, and several of them are named bar.py.
+exclude = ["^benchmarks/cases/"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

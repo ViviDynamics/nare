@@ -55,3 +55,12 @@ Both are marked in the source with `ponytail:` comments.
   upgrade once a run is measurably slow because of it.
 - `make_transport()` has one `match` arm. That arm is the extension point; a
   registry is slice 4.
+
+## Measuring it
+
+`tests/` proves the harness honours its contract given a scripted model.
+`benchmarks/` asks the other question - whether real tasks get done, at what
+quality, for how many tokens - by running the real thing in a container. It is
+development tooling, excluded from the wheel, and it is where a change to a
+tool description or the turn budget is shown to have helped. See
+[benchmarks/README.md](../benchmarks/README.md) and ADR 0007.
