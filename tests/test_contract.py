@@ -9,7 +9,7 @@ from typing import Any
 from fake_provider import FakeProvider, text_reply, tool_reply
 from nare.cli import main
 from nare.contract import CONTRACT_VERSION, EXIT_CODES, describe
-from nare.session import loads
+from nare.session import Session, loads
 
 
 def test_every_terminal_status_has_an_exit_code() -> None:
@@ -131,3 +131,22 @@ def test_the_documented_contract_matches_the_code() -> None:
     for event_type in describe()["event_types"]:
         assert event_type in text
     assert f"contract version {CONTRACT_VERSION}" in text
+
+
+def test_the_contract_version_is_defined_once() -> None:
+    """Two constants that must agree are a version skew waiting for the release
+    where somebody bumps only one of them. Identity proves nothing here, since
+    CPython interns small integers, so this reads the source: session.py may
+    import the version but must not declare one.
+    """
+    import nare.contract
+    import nare.session
+
+    assert Session(id="x").contract == nare.contract.CONTRACT_VERSION
+    source = Path(nare.session.__file__).read_text(encoding="utf-8")
+    declarations = [
+        line
+        for line in source.splitlines()
+        if line.startswith("CONTRACT_VERSION") and "=" in line
+    ]
+    assert declarations == []

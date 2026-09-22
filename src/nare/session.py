@@ -7,10 +7,10 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
+from nare.contract import CONTRACT_VERSION
 from nare.events import Event, redact_value
 
 SESSION_VERSION = 1
-CONTRACT_VERSION = 1
 
 Status = Literal["working", "blocked", "done", "error"]
 Role = Literal["user", "assistant"]

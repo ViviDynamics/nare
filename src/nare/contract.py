@@ -12,10 +12,12 @@ mis-read bumps it.
 
 from __future__ import annotations
 
-from typing import Any, get_args
+from typing import TYPE_CHECKING, Any, get_args
 
 from nare.events import EventType
-from nare.session import Status
+
+if TYPE_CHECKING:
+    from nare.session import Status
 
 CONTRACT_VERSION = 1
 
@@ -31,7 +33,14 @@ NEVER_STARTED = 2
 
 
 def describe() -> dict[str, Any]:
-    """The contract as data, for a caller to read before it spawns a run."""
+    """The contract as data, for a caller to read before it spawns a run.
+
+    The Status import is local: session.py takes CONTRACT_VERSION from here, so
+    a module-level import back into session would be a cycle. One definition of
+    the version is worth a function-level import.
+    """
+    from nare.session import Status
+
     return {
         "contract": CONTRACT_VERSION,
         "exit_codes": dict(EXIT_CODES),
