@@ -12,13 +12,13 @@ from nare.session import (
     loads,
     new_session,
 )
-from nare.tools import approve_all
+from nare.tools import Policy, approve_all
 from nare.transport import Transport
 
 
 async def test_a_reply_without_tool_calls_finishes_the_session() -> None:
     session = new_session("say hi")
-    await step(session, FakeProvider([text_reply("all done")]), approve_all)
+    await step(session, FakeProvider([text_reply("all done")]), approve_all, Policy())
     assert session.status == "done"
     assert session.stop_reason == "end_turn"
     assert session.turns == 1
@@ -27,16 +27,16 @@ async def test_a_reply_without_tool_calls_finishes_the_session() -> None:
 async def test_usage_accumulates_across_steps() -> None:
     session = new_session("go")
     fake = FakeProvider([text_reply("one"), text_reply("two")])
-    await step(session, fake, approve_all)
+    await step(session, fake, approve_all, Policy())
     session.status = "working"
-    await step(session, fake, approve_all)
+    await step(session, fake, approve_all, Policy())
     assert session.usage == Usage(input=20, output=10)
     assert session.turns == 2
 
 
 async def test_the_assistant_reply_lands_in_the_transcript() -> None:
     session = new_session("go")
-    await step(session, FakeProvider([text_reply("all done")]), approve_all)
+    await step(session, FakeProvider([text_reply("all done")]), approve_all, Policy())
     assert session.messages[-1].role == "assistant"
     assert session.messages[-1].content == [{"type": "text", "text": "all done"}]
 
@@ -45,7 +45,7 @@ async def test_a_tool_call_runs_and_appends_a_user_result(tmp_path: Path) -> Non
     target = tmp_path / "out.txt"
     session = new_session("write a file")
     fake = FakeProvider([tool_reply("write", {"path": str(target), "content": "hi"})])
-    await step(session, fake, approve_all)
+    await step(session, fake, approve_all, Policy())
     assert target.read_text() == "hi"
     assert session.status == "working"
     assert session.messages[-1].role == "user"
@@ -55,7 +55,7 @@ async def test_a_tool_call_runs_and_appends_a_user_result(tmp_path: Path) -> Non
 async def test_ask_blocks_the_session_with_questions() -> None:
     session = new_session("do the thing")
     fake = FakeProvider([tool_reply("ask", {"questions": ["which file?"]})])
-    await step(session, fake, approve_all)
+    await step(session, fake, approve_all, Policy())
     assert session.status == "blocked"
     assert session.questions == ["which file?"]
     # The tool_result is still appended, so a resume picks up from a
@@ -66,14 +66,14 @@ async def test_ask_blocks_the_session_with_questions() -> None:
 async def test_a_failing_tool_keeps_the_session_working() -> None:
     session = new_session("read a missing file")
     fake = FakeProvider([tool_reply("read", {"path": "/nope/nope.py"})])
-    await step(session, fake, approve_all)
+    await step(session, fake, approve_all, Policy())
     assert session.status == "working"
     assert session.messages[-1].content[0]["is_error"] is True
 
 
 async def test_step_emits_progress_and_cost_events() -> None:
     session = new_session("go")
-    await step(session, FakeProvider([text_reply("all done")]), approve_all)
+    await step(session, FakeProvider([text_reply("all done")]), approve_all, Policy())
     kinds = [e.type for e in session.events]
     assert kinds == ["progress", "cost", "output"]
     assert session.events[0].text == "all done"
@@ -89,7 +89,7 @@ async def test_step_emits_progress_and_cost_events() -> None:
 async def test_step_emits_a_tool_use_event(tmp_path: Path) -> None:
     session = new_session("go")
     fake = FakeProvider([tool_reply("bash", {"command": "echo hi"})])
-    await step(session, fake, approve_all)
+    await step(session, fake, approve_all, Policy())
     # The full order is a contract, not an accident: task 13 asserts a golden
     # JSONL stream, and the downstream adapter is built against this sequence.
     # Note there is no `progress` here — this reply carries no text block.
@@ -113,7 +113,7 @@ async def test_thinking_blocks_become_thinking_events() -> None:
         usage=Usage(input=1, output=1),
         stop_reason="end_turn",
     )
-    await step(session, FakeProvider([reply]), approve_all)
+    await step(session, FakeProvider([reply]), approve_all, Policy())
     assert [e.type for e in session.events][:2] == ["thinking", "progress"]
 
 
@@ -206,6 +206,7 @@ def test_the_public_api_is_the_documented_surface() -> None:
     assert set(nare.__all__) == {
         "Event",
         "Message",
+        "Policy",
         "Reply",
         "Session",
         "ToolCall",
@@ -232,7 +233,7 @@ async def test_a_dying_dispatch_still_answers_every_tool_use() -> None:
     def explode(tool: str, args: dict[str, object]) -> bool:
         raise ConnectionError("approval service is down")
 
-    await step(session, fake, explode)
+    await step(session, fake, explode, Policy())
     assert session.messages[-1].role == "user"
     assert [b["type"] for b in session.messages[-1].content] == ["tool_result"]
 
@@ -242,7 +243,7 @@ async def test_a_truncated_turn_is_an_error_not_a_finished_one() -> None:
     # done would tell conductor the task succeeded.
     session = new_session("write an essay")
     fake = FakeProvider([text_reply("half an ans", stop_reason="max_tokens")])
-    await step(session, fake, approve_all)
+    await step(session, fake, approve_all, Policy())
     assert session.status == "error"
     assert session.stop_reason == "max_tokens"
     assert "max_tokens" in (session.error or "")
@@ -251,7 +252,7 @@ async def test_a_truncated_turn_is_an_error_not_a_finished_one() -> None:
 async def test_a_refusal_is_an_error_not_a_finished_one() -> None:
     session = new_session("do something dubious")
     fake = FakeProvider([text_reply("", stop_reason="refusal")])
-    await step(session, fake, approve_all)
+    await step(session, fake, approve_all, Policy())
     assert session.status == "error"
     assert session.stop_reason == "refusal"
 
@@ -271,7 +272,7 @@ async def test_a_truncated_tool_call_is_answered_but_never_run(tmp_path: Path) -
             )
         ]
     )
-    await step(session, fake, approve_all)
+    await step(session, fake, approve_all, Policy())
     assert target.read_text() == "original"
     assert session.status == "error"
     assert session.messages[-1].role == "user"
@@ -296,7 +297,10 @@ async def test_a_transport_failure_does_not_inherit_the_last_turns_stop_reason()
     # The previous turn's "tool_use" describes that turn, not this failure.
     session = new_session("go")
     await step(
-        session, FakeProvider([tool_reply("bash", {"command": "true"})]), approve_all
+        session,
+        FakeProvider([tool_reply("bash", {"command": "true"})]),
+        approve_all,
+        Policy(),
     )
     assert session.stop_reason == "tool_use"
     await drain(session, Exploding())

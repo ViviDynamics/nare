@@ -20,8 +20,17 @@ the session, and `--resume PATH` continues it.
 `--yes` approves every tool call, including `bash`. nare runs
 model-generated shell commands with your privileges and no sandbox of its
 own, so treat it like piping a script you have not read: run it in a
-container, a VM, or a throwaway checkout. Containment is the caller's job —
-slice 1 ships the approval seam, not a policy engine.
+container, a VM, or a throwaway checkout.
+
+Two flags narrow a run. `--tools read,bash` allows only the tools you name,
+and `--tools none` allows no tool at all, which is what a caller wants when
+it needs one answer and no side effects. `--root DIR` confines `read`,
+`write` and `edit` to a directory, refusing any path that leaves it,
+including through a symlink. Both are recorded in the session, so a run's
+permissions can be read afterwards rather than inferred.
+
+`--root` gives `bash` that directory to start in. It is not a jail: a shell
+can still walk upward, so real confinement stays the sandbox's job.
 
 See [docs/architecture.md](docs/architecture.md) for the shape, and
 [docs/adr/](docs/adr/) for the decisions behind it.
