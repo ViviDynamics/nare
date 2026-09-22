@@ -19,6 +19,37 @@ Docker CLI via `subprocess`. pytest, ruff, mypy already in the dev group.
 
 **Spec:** `docs/superpowers/specs/2026-09-21-nare-benchmark-suite-design.md`
 
+## Starting point
+
+**Branch:** `spec/nare-benchmark-suite`, branched from
+`spec/nare-walking-skeleton`.
+
+`main` carries no code — only LICENSE, README, CONTRIBUTING, SECURITY and two
+workflow files. Slice 1 (the harness itself) is unmerged and lives on
+`spec/nare-walking-skeleton`. A worktree based on `main` cannot execute Task 1,
+whose first action is editing a `pyproject.toml` that does not exist there.
+
+Confirm you are in the right place before Task 1:
+
+```bash
+git rev-parse --abbrev-ref HEAD          # spec/nare-benchmark-suite
+ls src/nare/loop.py tests/fake_provider.py pyproject.toml bin/build
+bin/build                                # must be green before you change anything
+```
+
+If `bin/build` is red on a clean checkout, stop — that is a pre-existing
+failure and not this plan's to fix.
+
+**What each phase needs:**
+
+| Tasks | Needs |
+|---|---|
+| 1-8 | `uv` only. No Docker, no API key, no network, no money. |
+| 9-11 | Docker. Still no API key and no money. |
+| 12-15 | Docker, plus a key and a model. Task 15 step 5 spends real tokens. |
+
+Tasks 1-8 are more than half the work and can be executed entirely offline.
+
 ## Global Constraints
 
 - **No new dependencies, runtime or dev.** The benchmark uses the standard
