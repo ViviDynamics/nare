@@ -37,6 +37,11 @@ jobs:
       - name: Fetch tags
         run: git fetch --tags --force
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
       # Derived from existing tags rather than a committed file, as in elm and
       # conductor: nothing on a branch can go stale or need bumping. A tag
       # already on the commit is reused so a rerun is idempotent.
@@ -55,11 +60,23 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      # Tagged locally first: hatch-vcs reads `git describe`, so the wheel can
+      # only carry the release version if the tag exists before the build.
+      - name: Tag locally, then build the wheel and the sdist
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ steps.derive.outputs.version }}'
+          git tag --force "$version"
+          uv build
+          ls "dist/nare-${version}-py3-none-any.whl" "dist/nare-${version}.tar.gz"
+
       - name: Create GitHub release and tag
         uses: actions/github-script@v7
         env:
           VERSION: ${{ steps.derive.outputs.version }}
           SHA: ${{ github.event.workflow_run.head_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           script: |
             const version = process.env.VERSION;
@@ -83,22 +100,28 @@ jobs:
               ref: sha,
             });
 
-            await github.rest.repos.createRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: version,
-              target_commitish: sha,
-              name: version,
-              body: commit.data.commit.message,
-            });
-            console.log(`Created release ${version}`);
+            // The assets go on in the SAME call that creates the release.
+            // This repository's releases are immutable, so `gh release upload`
+            // afterwards fails with HTTP 422 and a release ships bare.
+            const { execFileSync } = require('node:child_process');
+            const files = require('node:fs')
+              .readdirSync('dist')
+              .map((name) => `dist/${name}`);
+            execFileSync('gh', [
+              'release', 'create', version,
+              '--target', sha,
+              '--title', version,
+              '--notes', commit.data.commit.message,
+              ...files,
+            ], { stdio: 'inherit', env: { ...process.env, GH_TOKEN: process.env.GITHUB_TOKEN } });
+            console.log(`Created release ${version} with ${files.length} asset(s)`);
 
-  publish:
-    name: Publish the wheel and the image
+  image:
+    name: Publish the container image
     needs: release
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       packages: write
     steps:
       # The TAG, not the branch head: what ships must be the commit that was
@@ -125,11 +148,6 @@ jobs:
           set -euo pipefail
           version='${{ needs.release.outputs.version }}'
           ls "dist/nare-${version}-py3-none-any.whl" "dist/nare-${version}.tar.gz"
-
-      - name: Attach both to the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload '${{ needs.release.outputs.version }}' dist/* --clobber
 
       - name: Log in to ghcr
         uses: docker/login-action@v3
