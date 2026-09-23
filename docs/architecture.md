@@ -16,6 +16,7 @@ The core is a library. Every surface is a thin adapter over it.
       |                      and the policy that narrows both
       v
     transport/        everything vendor-shaped, behind one method
+                      anthropic.py and openai.py; which rail is configuration
 
 `events.py` depends on nothing at all. `session.py` depends only on
 `events.py`, because a session carries the events its steps produced.
