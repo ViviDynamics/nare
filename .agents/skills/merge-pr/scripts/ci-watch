@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Poll CI for a PR to a terminal state and emit CI_RESULT JSON.
-# usage: ci-watch <pr> [--timeout-min N] [--timeout-sec N] [--interval-sec S]
+# usage: ci-watch <pr> [--expect-head SHA] [--timeout-min N] [--timeout-sec N] [--interval-sec S]
+# --expect-head: only a run for this head (or a head it prefixes) may end the
+# watch. Right after a push GitHub can still report the previous head, whose
+# run is already green; without this the watch reports green on poll 1 for
+# code that was never tested. A caller that just pushed knows the SHA.
 # --timeout-min and --timeout-sec both set the deadline; if both are given,
 # whichever one appears later on the command line wins.
 # exit: 0 green, 1 failed, 4 timed out / no runs by the deadline
@@ -8,14 +12,15 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/_lib.sh"
 vivi_load_env; vivi_require VIVI_REPO
-pr=${1:-}; [ -n "$pr" ] || vivi_die 2 "usage: ci-watch <pr> [--timeout-min N] [--timeout-sec N] [--interval-sec S]"
+pr=${1:-}; [ -n "$pr" ] || vivi_die 2 "usage: ci-watch <pr> [--expect-head SHA] [--timeout-min N] [--timeout-sec N] [--interval-sec S]"
 shift
-timeout_total_sec=$((60 * 60)); interval=30
+timeout_total_sec=$((60 * 60)); interval=30; expect_head=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --timeout-min) timeout_total_sec=$((${2} * 60)); shift 2;;
     --timeout-sec) timeout_total_sec=$2; shift 2;;
     --interval-sec) interval=$2; shift 2;;
+    --expect-head) expect_head=$2; shift 2;;
     *) vivi_die 2 "unknown option $1";;
   esac
 done
@@ -45,6 +50,15 @@ while :; do
   snap=$new_snap
   polls=$((polls+1))
   head=$(printf '%s' "$snap" | jq -r .head_sha)
+  if [ -n "$expect_head" ]; then
+    case "$head" in
+      "$expect_head"*) ;;
+      *)
+        echo "poll $polls: head is $head, waiting for $expect_head" >&2
+        if [ "$(date +%s)" -ge "$deadline" ]; then state=timed_out; break; fi
+        vivi_sleep "$interval"; continue;;
+    esac
+  fi
   if [ -z "$first_head" ]; then first_head=$head; fi
   if [ "$head" != "$first_head" ]; then head_changed=true; echo "head moved $first_head -> $head, following the new run" >&2; first_head=$head; fi
   state=$(printf '%s' "$snap" | jq -r .state)

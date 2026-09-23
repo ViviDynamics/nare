@@ -22,6 +22,8 @@ then run every script as `$S/<script>`.
 ## §1 Truth is the run for the PR's current head SHA
 
 Only a run whose `head_sha` equals the PR's current head says anything about the PR.
+Right after a push, "current" can still be the previous head for a few seconds, so a
+watcher started then must be told which head to wait for: `ci-watch --expect-head`.
 `$S/ci-runs <pr>` selects those runs for you and ignores everything else. Never
 use `gh run list --commit` (returns empty) or `gh pr checks` (403s on some tokens and
 renders cancelled as fail). An empty result means "not ready", never "green".

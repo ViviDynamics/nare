@@ -38,7 +38,10 @@ Read the budget already spent before acting: `$S/state get <issue>`.
 
 1. Record the phase: `$S/state set <issue> phase watching`.
 
-2. Watch: `$S/ci-watch <pr> > .agents/state/<issue>-ci.json`. This blocks until a
+2. Watch: `$S/ci-watch <pr> --expect-head "$(git rev-parse HEAD)" > .agents/state/<issue>-ci.json`.
+   Pass `--expect-head` whenever you just pushed: GitHub can report the previous
+   head for a few seconds, and its run may already be green, so without it the
+   watch can end green on poll 1 for code that was never tested. This blocks until a
    terminal state. Read the exit code and the JSON in that file.
    - exit 0, `state: green`: go to step 6.
    - exit 4, `state: timed_out`: report the last state and elapsed time (ci-safety §6),
