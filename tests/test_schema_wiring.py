@@ -166,3 +166,45 @@ def test_a_resumed_run_gets_its_own_correction_round(
     last = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert code == 0
     assert last["output"] == {"name": "ada"}
+
+
+async def test_the_model_is_told_the_schema_before_it_answers() -> None:
+    # nare validated the answer without ever stating the requirement, so the
+    # first turn was wasted by construction: the model cannot satisfy a shape
+    # it was never shown. Caught against a live model, not by these tests.
+    provider = FakeProvider([text_reply('{"name": "ada"}')])
+    session = new_session("go")
+
+    await drain(session, provider, schema=PERSON)
+
+    first_request = json.dumps(
+        [block for message in provider.calls[0][0] for block in message.content]
+    )
+    assert "required" in first_request
+    assert "name" in first_request
+    assert "JSON Schema" in first_request
+
+
+async def test_the_correction_restates_the_schema() -> None:
+    provider = FakeProvider([text_reply("prose"), text_reply('{"name": "ada"}')])
+    session = new_session("go")
+
+    await drain(session, provider, schema=PERSON)
+
+    correction = json.dumps(
+        [block for message in provider.calls[1][0] for block in message.content]
+    )
+    assert "no JSON found" in correction
+    assert "required" in correction
+
+
+async def test_a_run_without_a_schema_says_nothing_extra() -> None:
+    provider = FakeProvider([text_reply("just prose")])
+    session = new_session("the whole prompt")
+
+    await drain(session, provider)
+
+    sent = json.dumps(
+        [block for message in provider.calls[0][0] for block in message.content]
+    )
+    assert "JSON Schema" not in sent

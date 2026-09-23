@@ -55,6 +55,7 @@ class Session:
     policy: dict[str, Any] = field(default_factory=dict)
     output: Any = None
     schema_retried: bool = False
+    schema_stated: bool = False
     contract: int = CONTRACT_VERSION
     nare: str = NARE_VERSION
     events: list[Event] = field(default_factory=list, compare=False)
