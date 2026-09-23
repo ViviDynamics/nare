@@ -1,5 +1,10 @@
+from importlib.metadata import version
+
 import nare
 
 
 def test_version_is_exposed() -> None:
-    assert nare.__version__ == "0.1.0"
+    # Not a literal: the version comes from the tag the release was cut at, so
+    # asserting a hard-coded number here would pin the test to one release.
+    assert nare.__version__ == version("nare")
+    assert nare.__version__[0].isdigit()

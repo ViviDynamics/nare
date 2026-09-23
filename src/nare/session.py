@@ -7,7 +7,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
-from nare.contract import CONTRACT_VERSION
+from nare.contract import CONTRACT_VERSION, NARE_VERSION
 from nare.events import Event, redact_value
 
 SESSION_VERSION = 1
@@ -56,6 +56,7 @@ class Session:
     output: Any = None
     schema_retried: bool = False
     contract: int = CONTRACT_VERSION
+    nare: str = NARE_VERSION
     events: list[Event] = field(default_factory=list, compare=False)
     version: int = SESSION_VERSION
 
