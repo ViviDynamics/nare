@@ -10,9 +10,8 @@ Every release publishes a wheel and a container image. nare is not on PyPI, so
 Pin a version. `latest` is fine for a look around and wrong for anything that
 records what produced a result:
 
-    # wheel, from the release (any version from the Releases page that has
-    # artifacts attached: publishing starts with the first release after #10)
-    V=2026.9.6
+    # wheel, from the release
+    V=2026.9.7
     uv tool install "https://github.com/ViviDynamics/nare/releases/download/$V/nare-$V-py3-none-any.whl"
 
     # container, same argv as the CLI

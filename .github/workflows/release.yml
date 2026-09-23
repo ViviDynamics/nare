@@ -104,9 +104,15 @@ jobs:
             // This repository's releases are immutable, so `gh release upload`
             // afterwards fails with HTTP 422 and a release ships bare.
             const { execFileSync } = require('node:child_process');
+            // Only the artifacts. `uv build` leaves a .gitignore in dist/,
+            // and 2026.9.7 shipped it as an asset called default.gitignore.
             const files = require('node:fs')
               .readdirSync('dist')
+              .filter((name) => name.endsWith('.whl') || name.endsWith('.tar.gz'))
               .map((name) => `dist/${name}`);
+            if (files.length !== 2) {
+              throw new Error(`expected a wheel and an sdist in dist/, found ${files.join(', ') || 'nothing'}`);
+            }
             execFileSync('gh', [
               'release', 'create', version,
               '--target', sha,
@@ -149,6 +155,12 @@ jobs:
           version='${{ needs.release.outputs.version }}'
           ls "dist/nare-${version}-py3-none-any.whl" "dist/nare-${version}.tar.gz"
 
+      - name: Set up QEMU for the arm64 half
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Log in to ghcr
         uses: docker/login-action@v3
         with:
@@ -162,11 +174,14 @@ jobs:
           set -euo pipefail
           version='${{ needs.release.outputs.version }}'
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/nare"
-          docker build \
+          # Both architectures in one manifest: the runners are amd64 and the
+          # machines that pull this are arm64, and a single-arch image makes
+          # every local run go through emulation.
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
             --build-arg "WHEEL=dist/nare-${version}-py3-none-any.whl" \
-            -t "${image}:${version}" -t "${image}:latest" .
-          docker push "${image}:${version}"
-          docker push "${image}:latest"
+            -t "${image}:${version}" -t "${image}:latest" \
+            --push .
 
       - name: Check the image reports the released version
         shell: bash
@@ -174,6 +189,7 @@ jobs:
           set -euo pipefail
           version='${{ needs.release.outputs.version }}'
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/nare"
+          # Pulls the manifest and runs the runner's own architecture.
           printed="$(docker run --rm "${image}:${version}" --version)"
           if [ "$printed" != "$version" ]; then
             echo "image reports ${printed}, release is ${version}" >&2
