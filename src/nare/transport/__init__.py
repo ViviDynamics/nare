@@ -56,9 +56,10 @@ def make_transport(
 ) -> Transport:
     """Build a transport from configuration.
 
-    ponytail: one arm today. The match is the extension point — the OpenAI
-    transport (and with it, locally hosted models via base_url) lands as a
-    second arm. A registry is slice 4, with the rest of the extension surface.
+    Two arms. `openai` reaches anything speaking Chat Completions, which is a
+    proxy, vLLM, llama.cpp or Ollama as much as it is OpenAI, and `--base-url`
+    is how a caller says which. A registry is slice 4, with the rest of the
+    extension surface.
     """
     match kind:
         case "anthropic":
@@ -73,8 +74,22 @@ def make_transport(
                 effort=effort,
                 system=system,
             )
+        case "openai":
+            from nare.transport.openai import OpenAITransport
+
+            return OpenAITransport(
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                effort=effort,
+                system=system,
+            )
         case _:
-            raise ValueError(f"unknown provider {kind!r}; nare supports: anthropic")
+            raise ValueError(
+                f"unknown provider {kind!r}; nare supports: anthropic, openai"
+            )
 
 
 __all__ = ["Reply", "StopReason", "ToolCall", "Transport", "make_transport"]

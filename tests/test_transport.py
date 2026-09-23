@@ -367,8 +367,8 @@ def test_parameters_reach_the_transport() -> None:
 
 
 def test_an_unknown_kind_names_the_supported_kinds() -> None:
-    with pytest.raises(ValueError, match="anthropic"):
-        make_transport("openai", model="gpt-4o", api_key="k")
+    with pytest.raises(ValueError, match="anthropic, openai"):
+        make_transport("gemini", model="gemini-3.1-flash-lite", api_key="k")
 
 
 def test_temperature_refusal_surfaces_from_the_factory() -> None:

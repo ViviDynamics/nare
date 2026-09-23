@@ -55,8 +55,13 @@ def test_there_is_no_api_key_flag() -> None:
 
 
 def test_an_unknown_provider_flag_is_rejected_by_argparse() -> None:
+    # openai became a real arm in #25; gemini stands in for one that has not.
     with pytest.raises(SystemExit):
-        parse("go", "--provider", "openai")
+        parse("go", "--provider", "gemini")
+
+
+def test_the_openai_provider_is_accepted() -> None:
+    assert parse("go", "--provider", "openai").provider == "openai"
 
 
 def test_transport_from_args_binds_every_knob(
@@ -81,9 +86,11 @@ def test_temperature_is_refused_by_the_anthropic_transport(
 def test_an_unknown_provider_from_the_environment_fails_at_construction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("NARE_PROVIDER", "openai")
+    # argparse does not check a default against its choices, so an unknown
+    # NARE_PROVIDER reaches the factory and is refused there instead.
+    monkeypatch.setenv("NARE_PROVIDER", "gemini")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    with pytest.raises(ValueError, match="anthropic"):
+    with pytest.raises(ValueError, match="anthropic, openai"):
         transport_from_args(parse("go"))
 
 

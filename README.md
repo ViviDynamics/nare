@@ -25,8 +25,23 @@ records what produced a result:
 `nare`, and so does the session file. A caller records the version that
 produced a result rather than whatever main was that day.
 
-Set `ANTHROPIC_API_KEY` in the environment. There is no `--api-key` flag:
-argv is world-readable through `ps` and `/proc`.
+## Providers
+
+Two rails. `--provider anthropic` (the default) speaks Anthropic's API and
+reads `ANTHROPIC_API_KEY`. `--provider openai` speaks Chat Completions, which
+is also what a LiteLLM proxy, vLLM, llama.cpp and Ollama speak, and reads
+`OPENAI_API_KEY`; point it anywhere with `--base-url`.
+
+    nare run --yes --provider openai \
+      --base-url https://your-proxy/v1 --model some/model "..."
+
+Which rail matters for reasoning models. A model whose reasoning and answer
+arrive together can lose the answer in a translation to Anthropic's shape, and
+then it looks silent rather than broken. On the openai rail the reasoning
+arrives as a `thinking` event and the answer stays the answer.
+
+There is no `--api-key` flag on either: argv is world-readable through `ps`
+and `/proc`.
 
 ## Use
 
