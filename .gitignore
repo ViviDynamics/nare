@@ -10,3 +10,6 @@ dist/
 # Skills: local settings and per-issue state
 .agents/state/
 repo.env
+
+# Written by hatch-vcs at build time, never by hand
+src/nare/_version.py

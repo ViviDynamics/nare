@@ -4,9 +4,29 @@ An internal agent harness for optimizing Coordinare across the environments it t
 
 ## Install
 
-    uv tool install nare        # or: pip install nare
+Every release publishes a wheel and a container image. nare is not on PyPI, so
+`pip install nare` does not work and this file will not pretend it does.
 
-Set `ANTHROPIC_API_KEY` in the environment. There is no `--api-key` flag —
+Pin a version. `latest` is fine for a look around and wrong for anything that
+records what produced a result:
+
+    # wheel, from the release (any version from the Releases page that has
+    # artifacts attached: publishing starts with the first release after #10)
+    V=2026.9.6
+    uv tool install "https://github.com/ViviDynamics/nare/releases/download/$V/nare-$V-py3-none-any.whl"
+
+    # container, same argv as the CLI
+    docker run --rm -e ANTHROPIC_API_KEY -v "$PWD:/work" \
+      ghcr.io/vividynamics/nare:$V run --yes --jsonl "..."
+
+    # from source, at a tag
+    pip install "git+https://github.com/ViviDynamics/nare@$V"
+
+`nare --version` prints the installed release, the `result` line carries it as
+`nare`, and so does the session file. A caller records the version that
+produced a result rather than whatever main was that day.
+
+Set `ANTHROPIC_API_KEY` in the environment. There is no `--api-key` flag:
 argv is world-readable through `ps` and `/proc`.
 
 ## Use
