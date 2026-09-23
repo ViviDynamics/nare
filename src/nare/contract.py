@@ -12,6 +12,7 @@ mis-read bumps it.
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any, get_args
 
 from nare.events import EventType
@@ -20,6 +21,14 @@ if TYPE_CHECKING:
     from nare.session import Status
 
 CONTRACT_VERSION = 1
+
+# The release that produced a run. Read from the installed distribution when
+# there is one, so a wheel's metadata and what nare reports can never disagree;
+# the fallback is for a source checkout, which has no distribution to read.
+try:  # pragma: no cover - exercised by whichever branch the environment takes
+    NARE_VERSION = version("nare")
+except PackageNotFoundError:  # pragma: no cover
+    NARE_VERSION = "0.0.0+source"
 
 # One code per terminal status, and these three are the whole set. done and
 # blocked both exit 0 because both are runs that did what was asked: blocked
@@ -43,6 +52,7 @@ def describe() -> dict[str, Any]:
 
     return {
         "contract": CONTRACT_VERSION,
+        "nare": NARE_VERSION,
         "exit_codes": dict(EXIT_CODES),
         "never_started": NEVER_STARTED,
         "statuses": list(get_args(Status)),

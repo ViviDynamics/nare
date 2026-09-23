@@ -25,6 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.derive.outputs.version }}
     steps:
       - name: Checkout the validated commit
         uses: actions/checkout@v4
@@ -90,3 +92,72 @@ jobs:
               body: commit.data.commit.message,
             });
             console.log(`Created release ${version}`);
+
+  publish:
+    name: Publish the wheel and the image
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      # The TAG, not the branch head: what ships must be the commit that was
+      # validated and released, even if main has moved since.
+      - name: Checkout the released tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.version }}
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      # hatch-vcs reads the tag, so the wheel's metadata is the release version
+      # by construction rather than by a value somebody remembered to bump.
+      - name: Build the wheel and the sdist
+        run: uv build
+
+      - name: Check the built version is the released one
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ needs.release.outputs.version }}'
+          ls "dist/nare-${version}-py3-none-any.whl" "dist/nare-${version}.tar.gz"
+
+      - name: Attach both to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload '${{ needs.release.outputs.version }}' dist/* --clobber
+
+      - name: Log in to ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push the image
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ needs.release.outputs.version }}'
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/nare"
+          docker build \
+            --build-arg "WHEEL=dist/nare-${version}-py3-none-any.whl" \
+            -t "${image}:${version}" -t "${image}:latest" .
+          docker push "${image}:${version}"
+          docker push "${image}:latest"
+
+      - name: Check the image reports the released version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ needs.release.outputs.version }}'
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/nare"
+          printed="$(docker run --rm "${image}:${version}" --version)"
+          if [ "$printed" != "$version" ]; then
+            echo "image reports ${printed}, release is ${version}" >&2
+            exit 1
+          fi

@@ -18,6 +18,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from nare import __version__
 from nare.contract import CONTRACT_VERSION, EXIT_CODES, NEVER_STARTED, describe
 from nare.events import Event
 from nare.loop import MAX_TURNS_DEFAULT, run
@@ -32,6 +33,12 @@ log = logging.getLogger(__name__)
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="nare", description="A standalone agent harness."
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=__version__,
+        help="print the installed nare version and exit",
     )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser(
@@ -207,6 +214,7 @@ def _emit_result(session: Session, jsonl: bool) -> None:
                     "stop_reason": session.stop_reason,
                     "turns": session.turns,
                     "contract": CONTRACT_VERSION,
+                    "nare": __version__,
                     "output": session.output,
                     "error": session.error,
                 }
