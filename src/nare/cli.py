@@ -50,9 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("prompt", nargs="?", help="the task, as plain text")
     run_parser.add_argument(
         "--provider",
-        choices=["anthropic"],
+        choices=["anthropic", "openai"],
         default=os.environ.get("NARE_PROVIDER", "anthropic"),
-        help="model provider (env: NARE_PROVIDER)",
+        help="model provider: anthropic, or openai for anything speaking Chat "
+        "Completions, including a proxy or a local server via --base-url "
+        "(env: NARE_PROVIDER)",
     )
     run_parser.add_argument(
         "--model",
