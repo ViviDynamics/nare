@@ -4,6 +4,7 @@ an async generator: resumable by construction, deterministic under test.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from dataclasses import asdict
 from typing import Any
@@ -36,6 +37,20 @@ _UNFINISHED: dict[StopReason, str] = {
 
 def _final_text(content: list[dict[str, Any]]) -> str:
     return "\n".join(b.get("text", "") for b in content if b.get("type") == "text")
+
+
+def schema_instruction(schema: dict[str, Any]) -> str:
+    """What the model is told when a run is schema-constrained.
+
+    Validating an answer without ever stating the requirement wastes the first
+    turn by construction: a model cannot satisfy a shape it was never shown,
+    and a weaker one never converges on it through corrections alone.
+    """
+    return (
+        "Your final answer must be a JSON document satisfying this JSON Schema, "
+        "and nothing else:\n"
+        f"{json.dumps(schema)}"
+    )
 
 
 def _answer_errors(text: str, schema: dict[str, Any]) -> list[str]:
@@ -94,6 +109,7 @@ async def step(
             s.events.append(Event("output", text, {"output": s.output}))
             return s
         complaint = "; ".join(errors)
+        restated = schema_instruction(schema)
         if s.schema_retried:
             # One correction round, then stop. A model that cannot satisfy the
             # schema twice will not satisfy it on the tenth turn either, and a
@@ -107,8 +123,8 @@ async def step(
         s.schema_retried = True
         append_user_text(
             s,
-            "Your answer did not satisfy the required JSON Schema: "
-            f"{complaint}. Reply with JSON that satisfies it, and nothing else.",
+            f"Your answer did not satisfy the required JSON Schema: {complaint}.\n"
+            f"{restated}",
         )
         return s
 
@@ -166,6 +182,12 @@ async def run(
     and a status, it does not hand a traceback to its caller.
     """
     policy = Policy() if policy is None else policy
+    if schema is not None and not session.schema_stated:
+        # Said once, in the transcript rather than in a system prompt: a resume
+        # carries it forward, and a reader can see exactly what the model was
+        # asked for.
+        append_user_text(session, schema_instruction(schema))
+        session.schema_stated = True
     # Recorded before the first turn, so a run that dies still says what it was
     # allowed to do.
     session.policy = policy.recorded()
