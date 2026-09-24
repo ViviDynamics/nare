@@ -15,7 +15,7 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any, get_args
 
-from nare.events import EventType
+from nare.events import REDACTION_RULES, REDACTION_VERSION, EventType
 
 if TYPE_CHECKING:
     from nare.session import Status
@@ -57,4 +57,11 @@ def describe() -> dict[str, Any]:
         "never_started": NEVER_STARTED,
         "statuses": list(get_args(Status)),
         "event_types": list(get_args(EventType)),
+        # The redaction is part of what a caller relies on: event `text` and
+        # whatever a caller pipes through `nare redact` carry it, and a rule
+        # change is a change to what those mean.
+        "redaction": {
+            "version": REDACTION_VERSION,
+            "rules": list(REDACTION_RULES),
+        },
     }
