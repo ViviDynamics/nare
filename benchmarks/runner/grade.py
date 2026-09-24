@@ -65,6 +65,17 @@ def parse_stdout(text: str) -> ResultLine | None:
 Outcome = Literal["pass", "fail", "error"]
 
 
+def infra_error(line: ResultLine) -> bool:
+    """A result line reporting that the run broke underneath the agent.
+
+    nare catches every transport exception (a 429, a 5xx, a refused
+    connection) and still emits a result line, with status `error` and no
+    stop_reason. Running out of turns or tokens keeps a stop_reason: that is
+    the agent's doing, and stays a failure.
+    """
+    return line.status == "error" and line.stop_reason is None
+
+
 @dataclass(frozen=True)
 class CheckResult:
     label: str
@@ -112,7 +123,8 @@ def rep_outcome(
     `error` means the repetition could not be judged at all, and is counted in
     neither the numerator nor the denominator. It is returned here only when a
     gating judge produced no answer; every other `error` -- a dead container, a
-    missing result line -- is decided by the caller before grading starts.
+    missing result line, an `infra_error` -- is decided by the caller before
+    grading starts.
     """
     if judge is not None and judge.min_met is not None and met is None:
         return "error"

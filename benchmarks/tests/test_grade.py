@@ -8,6 +8,7 @@ from benchmarks.runner.grade import (
     ResultLine,
     grade_bash_check,
     grade_result_check,
+    infra_error,
     parse_stdout,
     rep_outcome,
 )
@@ -155,3 +156,13 @@ def test_an_unanswerable_judge_is_an_error_only_when_it_gates() -> None:
     passed = [CheckResult("x", True, "")]
     assert rep_outcome(passed, gating, None) == "error"
     assert rep_outcome(passed, reporting, None) == "pass"
+
+
+def test_a_caught_transport_failure_is_an_infra_error() -> None:
+    def line(status: str, stop_reason: str | None) -> ResultLine:
+        return ResultLine(status, 1, {}, stop_reason, "boom")
+
+    assert infra_error(line("error", None))
+    assert not infra_error(line("error", "max_turns"))
+    assert not infra_error(line("error", "max_tokens"))
+    assert not infra_error(line("done", "end_turn"))

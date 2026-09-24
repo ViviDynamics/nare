@@ -1,19 +1,34 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
+from typing import cast
+
+import pytest
 
 from benchmarks.runner.__main__ import (
     CONFIRM_REPS,
     build_parser,
     latest_results,
     main,
+    merge_baseline,
     read_results,
+    run_rep,
     verify,
     write_results,
 )
 from benchmarks.runner.case import Case, Check
-from benchmarks.runner.report import BaselineMeta, RepRecord, dumps_baseline, summarize
+from benchmarks.runner.config import Config
+from benchmarks.runner.report import (
+    BaselineMeta,
+    CaseSummary,
+    RepRecord,
+    dumps_baseline,
+    summarize,
+)
+from benchmarks.runner.sandbox import RunArtifacts
+from nare.transport import Transport
 
 
 def case_with(*checks: Check, case_id: str = "demo") -> Case:
@@ -191,3 +206,76 @@ def test_blessing_writes_a_baseline_keyed_by_model(tmp_path: Path) -> None:
     )
     assert path.name == "ada-qwen3-14b.smoke.toml"
     assert load_baseline(path).cases["demo"].pass_rate == 1.0
+
+
+def summary(case: str, rate: float | None) -> CaseSummary:
+    return CaseSummary(case, 3, 0, 0, rate, rate is None, 100, 4, None)
+
+
+def test_bless_merges_into_the_baseline_instead_of_replacing_it() -> None:
+    kept = {
+        "a": summary("a", 1.0),
+        "b": summary("b", 1.0),
+        "gone": summary("gone", 1.0),
+    }
+    fresh = [summary("a", 0.5), summary("b", None)]
+    merged = merge_baseline(kept, fresh, {"a", "b"})
+    assert [(s.case, s.pass_rate) for s in merged] == [("a", 0.5), ("b", 1.0)]
+
+
+def test_results_from_another_model_are_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import benchmarks.runner.__main__ as bench
+    from benchmarks.runner.sandbox import repo_root
+
+    (tmp_path / "benchmarks").mkdir()
+    (tmp_path / "benchmarks" / "cases").symlink_to(repo_root() / "benchmarks" / "cases")
+    write_results(tmp_path, [record("edit-docstring", model="other-model")])
+    monkeypatch.setattr(bench, "repo_root", lambda: tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    assert main(["bless", "--model", "ada/qwen3-14b"]) == 2
+    assert not (tmp_path / "benchmarks" / "baselines").exists()
+
+
+async def test_a_transport_failure_in_the_agent_is_an_error_not_a_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import benchmarks.runner.__main__ as bench
+
+    (tmp_path / "fixture").mkdir()
+    line = json.dumps(
+        {
+            "type": "result",
+            "status": "error",
+            "stop_reason": None,
+            "turns": 1,
+            "usage": {},
+            "error": "RateLimitError: 429",
+        }
+    )
+    monkeypatch.setattr(
+        bench, "run_agent", lambda *a: RunArtifacts(line, "", 1, False, 1.0)
+    )
+    case = replace(case_with(Check(kind="bash", cmd="true")), directory=tmp_path)
+    config = Config("m", "anthropic", None, "m", "k")
+    rec = await run_rep(case, config, cast(Transport, None), 0)
+    assert rec.outcome == "error"
+    assert rec.judge_why == "RateLimitError: 429"
+
+
+def record(case: str, *, model: str) -> RepRecord:
+    return RepRecord(
+        case=case,
+        rep=0,
+        outcome="pass",
+        checks=(),
+        judge_met=None,
+        judge_why="",
+        status="done",
+        stop_reason="end_turn",
+        turns=4,
+        usage={"input": 10, "output": 5, "cache_read": 0, "cache_write": 0},
+        duration_s=1.0,
+        model=model,
+    )

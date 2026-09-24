@@ -118,6 +118,48 @@ def test_git_diff_shows_the_agents_change_only(tmp_path: Path) -> None:
 
 
 @pytest.mark.docker
+def test_git_diff_shows_new_files_and_survives_an_agent_commit(
+    tmp_path: Path,
+) -> None:
+    import subprocess
+
+    from benchmarks.runner.sandbox import git_checkpoint, git_diff, sandbox
+
+    with sandbox(make_case(tmp_path)) as (workdir, _):
+        git_checkpoint(workdir)
+        (workdir / "notes.txt").write_text("slow.sh hung\n")
+        assert "notes.txt" in git_diff(workdir)
+        subprocess.run(
+            ["git", "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "x"],
+            cwd=workdir,
+            check=True,
+        )
+        assert "slow.sh hung" in git_diff(workdir)
+
+
+def test_run_agent_sends_the_resolved_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    from benchmarks.runner import sandbox as mod
+
+    seen: dict[str, object] = {}
+
+    def fake_run(*args: object, **kwargs: object) -> tuple[int, str, str, bool]:
+        seen.update(kwargs)
+        return 0, "", "", False
+
+    monkeypatch.setattr(mod, "_docker_run", fake_run)
+    config = replace(CONFIG, provider="openai", base_url="http://proxy")
+    mod.run_agent(make_case(tmp_path), tmp_path, tmp_path, config)
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert env["NARE_PROVIDER"] == "openai"
+    assert env["NARE_BASE_URL"] == "http://proxy"
+
+
+@pytest.mark.docker
 def test_a_hanging_command_is_killed_at_the_timeout(tmp_path: Path) -> None:
     from benchmarks.runner.sandbox import run_check, sandbox
 

@@ -97,3 +97,13 @@ async def test_score_returns_the_booleans_and_the_reason() -> None:
 async def test_score_raises_on_an_unusable_reply() -> None:
     with pytest.raises(JudgeError):
         await score(CASE, "d", "f", transport=FakeJudge("no json here"))
+
+
+class DeadJudge:
+    async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
+        raise ConnectionError("rate limited")
+
+
+async def test_a_transport_failure_is_a_judge_failure() -> None:
+    with pytest.raises(JudgeError, match="rate limited"):
+        await score(CASE, "d", "f", transport=DeadJudge())

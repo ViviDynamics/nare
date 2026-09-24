@@ -101,10 +101,16 @@ async def score(
 ) -> tuple[list[bool], str]:
     assert case.judge is not None, "score is only called for judged cases"
     prompt = build_prompt(case, diff, final_text)
-    reply = await transport.turn(
-        [Message(role="user", content=[{"type": "text", "text": prompt}])],
-        [],
-    )
+    try:
+        reply = await transport.turn(
+            [Message(role="user", content=[{"type": "text", "text": prompt}])],
+            [],
+        )
+    except Exception as exc:
+        # A 429 or a dropped connection is the judge failing to answer. Raised
+        # as JudgeError so the rep records an error instead of crashing the
+        # run and discarding every rep already paid for.
+        raise JudgeError(f"{type(exc).__name__}: {exc}") from exc
     text = "\n".join(
         block.get("text", "") for block in reply.content if block.get("type") == "text"
     )

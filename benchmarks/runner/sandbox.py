@@ -171,12 +171,16 @@ def run_agent(
         ["sh", "-c", _AGENT_SCRIPT],
         case.timeout,
         artifacts=artifacts,
+        # Provider and endpoint come from the resolved config, not the host
+        # environment: `--base-url` must steer the agent, not just the judge.
         env={
             "BENCH_PROMPT": case.prompt,
             "BENCH_MODEL": config.model,
             "BENCH_MAX_TURNS": str(case.max_turns),
+            "NARE_PROVIDER": config.provider,
+            **({"NARE_BASE_URL": config.base_url} if config.base_url else {}),
         },
-        passthrough=("ANTHROPIC_API_KEY", "NARE_BASE_URL", "NARE_PROVIDER"),
+        passthrough=("ANTHROPIC_API_KEY",),
     )
     return RunArtifacts(
         stdout=out,
@@ -209,11 +213,19 @@ def git_checkpoint(workdir: Path) -> None:
 
 
 def git_diff(workdir: Path) -> str:
-    """Read the agent's change on the host: the bind mount put .git here."""
-    proc = subprocess.run(
-        ["git", "diff", "HEAD"],
-        cwd=workdir,
-        capture_output=True,
-        text=True,
-    )
-    return proc.stdout
+    """Read the agent's change on the host: the bind mount put .git here.
+
+    Staged and diffed against the fixture commit, not `git diff HEAD`: that
+    leaves out every file the agent created, and shows nothing at all once the
+    agent commits its own work.
+    """
+
+    def git(*args: str) -> str:
+        proc = subprocess.run(
+            ["git", *args], cwd=workdir, capture_output=True, text=True
+        )
+        return proc.stdout
+
+    git("add", "-A")
+    fixture = git("rev-list", "--max-parents=0", "HEAD").strip()
+    return git("diff", "--cached", fixture) if fixture else ""

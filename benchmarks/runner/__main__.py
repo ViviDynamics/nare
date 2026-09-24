@@ -23,6 +23,7 @@ from benchmarks.runner.grade import (
     CheckResult,
     grade_bash_check,
     grade_result_check,
+    infra_error,
     parse_stdout,
     rep_outcome,
 )
@@ -182,23 +183,31 @@ async def run_rep(
     with sandbox(case) as (workdir, artifacts):
         result = run_agent(case, workdir, artifacts, config)
         line = parse_stdout(result.stdout)
-        if line is None:
+        if line is None or infra_error(line):
             # No result line means the run never produced one: a crash, a
-            # timeout, a Docker fault. That is an error, never a failure.
+            # timeout, a Docker fault. A transport failure nare caught is the
+            # same thing with a result line. Either is an error, never a failure.
+            if line is None:
+                why = "timed out" if result.timed_out else "no result line"
+            else:
+                why = line.error or "run errored"
             return RepRecord(
                 case=case.id,
                 rep=rep,
                 outcome="error",
                 checks=(),
                 judge_met=None,
-                judge_why="timed out" if result.timed_out else "no result line",
-                status=None,
+                judge_why=why,
+                status=None if line is None else line.status,
                 stop_reason=None,
-                turns=None,
-                usage=empty,
+                turns=None if line is None else line.turns,
+                usage=empty if line is None else line.usage,
                 duration_s=result.duration_s,
                 model=config.model,
             )
+
+        # Before the bash checks, so nothing a check writes reaches the judge.
+        diff = git_diff(workdir)
 
         graded = [
             grade_result_check(check, line)
@@ -215,7 +224,7 @@ async def run_rep(
             try:
                 met, why = await score(
                     case,
-                    git_diff(workdir),
+                    diff,
                     line_text(result.stdout),
                     transport=transport,
                 )
@@ -301,6 +310,22 @@ def model_changed(baseline: Baseline, config: Config, allow: bool) -> bool:
         file=sys.stderr,
     )
     return True
+
+
+def merge_baseline(
+    kept: dict[str, CaseSummary],
+    fresh: Sequence[CaseSummary],
+    tier_ids: set[str],
+) -> list[CaseSummary]:
+    """What a bless writes: the fresh results on top of the existing baseline.
+
+    Merged, not replaced, so blessing after `run --case X` updates X and keeps
+    the rest. An inconclusive fresh result never displaces a good number, and a
+    case no longer in the tier drops out.
+    """
+    merged = {name: s for name, s in kept.items() if name in tier_ids}
+    merged |= {s.case: s for s in fresh if s.pass_rate is not None}
+    return [merged[name] for name in sorted(merged)]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -399,12 +424,32 @@ def main(argv: list[str] | None = None) -> int:
     if results_file is None:
         print("bench: no results yet; run `bin/bench run` first", file=sys.stderr)
         return 2
-    summaries = summarize(read_results(results_file))
+    records = read_results(results_file)
+    produced = sorted({r.model for r in records} - {config.model})
+    if produced:
+        print(
+            f"bench: {results_file.name} was produced by {', '.join(produced)}, "
+            f"not {config.model!r}; pass --model to match it",
+            file=sys.stderr,
+        )
+        return 2
+    # Only the cases this invocation selected: a full-tier results file must
+    # not leak full-only cases into a smoke comparison or baseline.
+    selected = {c.id for c in cases}
+    summaries = [s for s in summarize(records) if s.case in selected]
+    if not summaries:
+        print(
+            f"bench: {results_file.name} holds none of the selected cases",
+            file=sys.stderr,
+        )
+        return 2
     baselines = root / "benchmarks" / "baselines"
     baseline_file = baseline_path(baselines, config.model, args.tier)
 
     if args.command == "bless":
         baselines.mkdir(parents=True, exist_ok=True)
+        kept = load_baseline(baseline_file).cases if baseline_file.exists() else {}
+        tier_ids = {c.id for c in _select(root, args.tier, None)}
         meta = BaselineMeta(
             blessed=datetime.now(UTC).isoformat(timespec="seconds"),
             commit=_commit(),
@@ -412,7 +457,10 @@ def main(argv: list[str] | None = None) -> int:
             model=config.model,
             judge_model=config.judge_model,
         )
-        baseline_file.write_text(dumps_baseline(meta, summaries), encoding="utf-8")
+        baseline_file.write_text(
+            dumps_baseline(meta, merge_baseline(kept, summaries, tier_ids)),
+            encoding="utf-8",
+        )
         print(f"blessed {baseline_file} from {results_file.name}")
         return 0
 
