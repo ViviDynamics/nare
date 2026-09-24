@@ -13,6 +13,11 @@ WORKDIR /src
 # pyproject references all three, so a build without them fails.
 COPY pyproject.toml README.md LICENSE NOTICE ./
 COPY src ./src
+# hatch-vcs reads the version out of git, and .git is not in the build context
+# on purpose: shipping the history would bloat every build and bust the layer
+# cache on every commit. The benchmark never reads this version, so a stand-in
+# is enough. The tree under test is still the working tree.
+ARG SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0+bench
 RUN pip install --no-cache-dir .
 
 # The container runs as the invoking user so that files written into the bind
