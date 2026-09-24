@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling>=1.27"]
+requires = ["hatchling>=1.27", "hatch-vcs>=0.4"]
 build-backend = "hatchling.build"
 
 [project]
 name = "nare"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A standalone agent harness: a loop, a tool set, a transport layer, and a serializable session."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -17,6 +17,15 @@ nare = "nare.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6", "mypy>=1.11"]
+
+# The version comes from the git tag the release workflow minted, so a wheel's
+# metadata cannot drift from the release it was built at. A caller pins that
+# number and reads the same one back off the session.
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/nare/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nare"]

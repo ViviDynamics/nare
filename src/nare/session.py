@@ -7,6 +7,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
+from nare.contract import CONTRACT_VERSION, NARE_VERSION
 from nare.events import Event, redact_value
 
 SESSION_VERSION = 1
@@ -51,6 +52,12 @@ class Session:
     stop_reason: str | None = None
     error: str | None = None
     turns: int = 0
+    policy: dict[str, Any] = field(default_factory=dict)
+    output: Any = None
+    schema_retried: bool = False
+    schema_stated: bool = False
+    contract: int = CONTRACT_VERSION
+    nare: str = NARE_VERSION
     events: list[Event] = field(default_factory=list, compare=False)
     version: int = SESSION_VERSION
 
@@ -100,6 +107,13 @@ def loads(text: str) -> Session:
     if version != SESSION_VERSION:
         raise ValueError(
             f"session file is version {version}; this nare writes {SESSION_VERSION}"
+        )
+    contract = raw.get("contract", CONTRACT_VERSION)
+    if contract != CONTRACT_VERSION:
+        raise ValueError(
+            f"session file speaks contract {contract}; this nare speaks "
+            f"{CONTRACT_VERSION}. Resuming it would mean reading shapes this "
+            "nare does not define."
         )
     try:
         raw["usage"] = Usage(**raw["usage"])

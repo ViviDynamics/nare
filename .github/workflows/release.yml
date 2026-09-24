@@ -25,6 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.derive.outputs.version }}
     steps:
       - name: Checkout the validated commit
         uses: actions/checkout@v4
@@ -34,6 +36,11 @@ jobs:
 
       - name: Fetch tags
         run: git fetch --tags --force
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
 
       # Derived from existing tags rather than a committed file, as in elm and
       # conductor: nothing on a branch can go stale or need bumping. A tag
@@ -53,11 +60,23 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      # Tagged locally first: hatch-vcs reads `git describe`, so the wheel can
+      # only carry the release version if the tag exists before the build.
+      - name: Tag locally, then build the wheel and the sdist
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ steps.derive.outputs.version }}'
+          git tag --force "$version"
+          uv build
+          ls "dist/nare-${version}-py3-none-any.whl" "dist/nare-${version}.tar.gz"
+
       - name: Create GitHub release and tag
         uses: actions/github-script@v7
         env:
           VERSION: ${{ steps.derive.outputs.version }}
           SHA: ${{ github.event.workflow_run.head_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           script: |
             const version = process.env.VERSION;
@@ -81,12 +100,98 @@ jobs:
               ref: sha,
             });
 
-            await github.rest.repos.createRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: version,
-              target_commitish: sha,
-              name: version,
-              body: commit.data.commit.message,
-            });
-            console.log(`Created release ${version}`);
+            // The assets go on in the SAME call that creates the release.
+            // This repository's releases are immutable, so `gh release upload`
+            // afterwards fails with HTTP 422 and a release ships bare.
+            const { execFileSync } = require('node:child_process');
+            // Only the artifacts. `uv build` leaves a .gitignore in dist/,
+            // and 2026.9.7 shipped it as an asset called default.gitignore.
+            const files = require('node:fs')
+              .readdirSync('dist')
+              .filter((name) => name.endsWith('.whl') || name.endsWith('.tar.gz'))
+              .map((name) => `dist/${name}`);
+            if (files.length !== 2) {
+              throw new Error(`expected a wheel and an sdist in dist/, found ${files.join(', ') || 'nothing'}`);
+            }
+            execFileSync('gh', [
+              'release', 'create', version,
+              '--target', sha,
+              '--title', version,
+              '--notes', commit.data.commit.message,
+              ...files,
+            ], { stdio: 'inherit', env: { ...process.env, GH_TOKEN: process.env.GITHUB_TOKEN } });
+            console.log(`Created release ${version} with ${files.length} asset(s)`);
+
+  image:
+    name: Publish the container image
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # The TAG, not the branch head: what ships must be the commit that was
+      # validated and released, even if main has moved since.
+      - name: Checkout the released tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.version }}
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      # hatch-vcs reads the tag, so the wheel's metadata is the release version
+      # by construction rather than by a value somebody remembered to bump.
+      - name: Build the wheel and the sdist
+        run: uv build
+
+      - name: Check the built version is the released one
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ needs.release.outputs.version }}'
+          ls "dist/nare-${version}-py3-none-any.whl" "dist/nare-${version}.tar.gz"
+
+      - name: Set up QEMU for the arm64 half
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push the image
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ needs.release.outputs.version }}'
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/nare"
+          # Both architectures in one manifest: the runners are amd64 and the
+          # machines that pull this are arm64, and a single-arch image makes
+          # every local run go through emulation.
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --build-arg "WHEEL=dist/nare-${version}-py3-none-any.whl" \
+            -t "${image}:${version}" -t "${image}:latest" \
+            --push .
+
+      - name: Check the image reports the released version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ needs.release.outputs.version }}'
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/nare"
+          # Pulls the manifest and runs the runner's own architecture.
+          printed="$(docker run --rm "${image}:${version}" --version)"
+          if [ "$printed" != "$version" ]; then
+            echo "image reports ${printed}, release is ${version}" >&2
+            exit 1
+          fi
