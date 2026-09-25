@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 from benchmarks.runner.case import Check, Judge
 
-_USAGE_FIELDS = ("input", "output", "cache_read", "cache_write")
+USAGE_FIELDS = ("input", "output", "cache_read", "cache_write")
 
 
 @dataclass(frozen=True)
@@ -31,7 +31,7 @@ class ResultLine:
 
 def _usage_from(raw: Any) -> dict[str, int]:
     source = raw if isinstance(raw, dict) else {}
-    return {field: int(source.get(field, 0)) for field in _USAGE_FIELDS}
+    return {field: int(source.get(field, 0)) for field in USAGE_FIELDS}
 
 
 def _questions_from(raw: Any) -> list[str]:

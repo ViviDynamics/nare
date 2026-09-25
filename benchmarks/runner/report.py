@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from benchmarks.runner.grade import CheckResult, Outcome
+from benchmarks.runner.grade import USAGE_FIELDS, CheckResult, Outcome
 
 
 @dataclass(frozen=True)
@@ -85,8 +85,10 @@ def summarize(records: Sequence[RepRecord]) -> list[CaseSummary]:
                     else passes / (passes + fails)
                 ),
                 inconclusive=inconclusive,
-                # usage holds exactly grade's four fields, cached input included.
-                tokens_median=median_int([sum(r.usage.values()) for r in judged]),
+                # Cached input included: a proxy serves most input from cache.
+                tokens_median=median_int(
+                    [sum(r.usage.get(f, 0) for f in USAGE_FIELDS) for r in judged]
+                ),
                 turns_median=median_int(
                     [r.turns for r in judged if r.turns is not None]
                 ),

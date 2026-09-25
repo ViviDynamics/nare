@@ -36,9 +36,12 @@ hide a longer prompt.
       stderr.txt
       judge.txt                               judged cases: every judge reply
 
-Each results line names its directory in `artifacts`. A confirmation re-run
-rewrites the same files, so one run leaves one results file. Nothing is
-pruned: a repetition is a few kilobytes, and the directory is gitignored.
+Each results line names its directory in `artifacts`, relative to
+`benchmarks/results/`. A confirmation re-run rewrites the same files, so
+one run leaves one results file; it also replaces the evidence from that
+case's first pass, as it replaces those reps in the results file. Nothing
+is pruned: a repetition is a few kilobytes, and the directory is
+gitignored.
 
 ## Writing a case
 

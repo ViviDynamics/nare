@@ -112,6 +112,13 @@ def test_tokens_median_counts_cached_input() -> None:
     assert summarize([rec])[0].tokens_median == 700
 
 
+def test_tokens_median_ignores_keys_beyond_the_four_usage_fields() -> None:
+    rec = record(tokens=100)
+    usage = {**rec.usage, "reasoning": 5000}
+    rec = RepRecord(**{**rec.__dict__, "usage": usage})
+    assert summarize([rec])[0].tokens_median == 100
+
+
 def test_judge_median_is_none_when_no_rep_was_judged() -> None:
     assert summarize([record(judge_met=None)])[0].judge_met_median is None
 
