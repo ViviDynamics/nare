@@ -1,0 +1,20 @@
+id = "fix-failing-test"
+tier = "smoke"
+prompt = "The test suite fails. Fix bar.py so that `pytest` passes."
+max_turns = 12
+
+[[check]]
+kind = "bash"
+cmd = "pytest -q"
+
+[[check]]
+kind = "result"
+status = "done"
+
+[judge]
+assertions = [
+  "The fix is in bar.py.",
+  "test_bar.py was not modified, deleted, or skipped.",
+  "parse() still returns a list of integers for well-formed input.",
+]
+min_met = 3

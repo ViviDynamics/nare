@@ -1,0 +1,20 @@
+id = "edit-docstring"
+tier = "smoke"
+prompt = "Add a docstring to foo() in bar.py."
+max_turns = 6
+
+[[check]]
+kind = "bash"
+cmd = "python -c \"import bar; assert bar.foo.__doc__, 'no docstring'\""
+
+[[check]]
+kind = "result"
+status = "done"
+
+[judge]
+assertions = [
+  "bar.py gained a docstring on foo().",
+  "The docstring describes what foo does, rather than only restating its name.",
+  "The behaviour of foo() is unchanged.",
+]
+min_met = 2

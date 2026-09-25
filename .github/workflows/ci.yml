@@ -20,3 +20,18 @@ jobs:
           enable-cache: true
       - run: uv sync
       - run: bin/build
+
+  cases:
+    name: benchmark cases measure something
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync
+      # Needs Docker, but no API key and no money: it only proves that each
+      # case's checks fail before an agent touches the fixture.
+      # --tier full is every case: verify is free, so nothing goes unchecked.
+      - run: bin/bench verify --tier full

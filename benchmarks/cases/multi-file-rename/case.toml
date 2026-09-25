@@ -1,0 +1,20 @@
+id = "multi-file-rename"
+tier = "smoke"
+prompt = """Rename the function calc_area to rectangle_area everywhere it \
+appears, and make sure the test suite still passes."""
+max_turns = 15
+
+[[check]]
+kind = "bash"
+cmd = "! rg -q 'calc_area' . && rg -q 'rectangle_area' shape.py && pytest -q"
+
+[[check]]
+kind = "result"
+status = "done"
+
+[judge]
+assertions = [
+  "Every occurrence of calc_area was renamed, across all three files.",
+  "No file was deleted and no test was removed.",
+]
+min_met = 2
