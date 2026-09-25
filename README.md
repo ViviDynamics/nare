@@ -78,9 +78,17 @@ refused at startup rather than validated in part, because an answer that was
 only partly checked is worse than one that was not checked at all.
 
 `nare contract` prints the machine contract this build speaks: the version,
-the exit codes, the statuses and the event types. A caller pins what it
-understands with `nare run --contract N`, and nare refuses to start when the
-numbers differ rather than emitting a stream the caller would mis-read.
+the exit codes, the statuses, the event types, and the redaction rule set. A
+caller pins what it understands with `nare run --contract N`, and nare refuses
+to start when the numbers differ rather than emitting a stream the caller
+would mis-read.
+
+`nare redact` applies the same rules nare applies to its events to whatever a
+caller pipes through it, so a caller redacts its own logs with the rules it
+already trusts instead of copying them. It is linear in the input size, and it
+refuses to guess: stdin that is not readable UTF-8 text exits nonzero with
+nothing on stdout. The rules are named in the contract, so a caller can tell
+when they change.
 
 See [docs/contract.md](docs/contract.md) for what a caller may rely on and what
 changes the version, [docs/architecture.md](docs/architecture.md) for the

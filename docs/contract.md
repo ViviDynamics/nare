@@ -11,8 +11,8 @@ Read the contract as data instead of parsing this page:
 
     nare contract
 
-It prints the version, the exit codes, the statuses and the event types this
-build speaks.
+It prints the version, the exit codes, the statuses, the event types and the
+redaction rule set this build speaks.
 
 ## Refusing a contract you do not speak
 
@@ -25,6 +25,28 @@ both numbers named on stderr.
 
 The session file carries the same number. Resuming a session written under a
 different contract is refused for the same reason.
+
+## The redaction rule set
+
+Every event's `text`, and whatever text a caller pipes through:
+
+    nare redact < its-own-log.txt > its-redacted-log.txt
+
+is redacted by the same rule set. The rules, in the order they are applied, are
+`anthropic-key`, `openai-key`, `github-token` and `credential-assignment`.
+Matching is replaced with `[redacted]`.
+
+The rule set has an identity, printed by `nare contract` under `redaction`: a
+`version` and the rule names. A caller that also redacts its own published
+output runs `nare redact` instead of copying the patterns, and reads the
+identity back so a drift between its nare and its assumptions is detected
+rather than silently ignored.
+
+The route is a filter: text on stdin, redacted text on stdout, no arguments
+and no state. It exits 0 with the redacted text on stdout. When stdin is not
+readable UTF-8 text it exits 1, explains on stderr, and writes nothing to
+stdout. It is linear in the input size: a megabyte of command output is
+redacted in milliseconds, not minutes.
 
 ## Exit codes
 
@@ -56,7 +78,8 @@ an unredacted event never exists.
 ## What changes the version
 
 Contract version 1 covers the event types and their fields, the `result`
-object's fields, the session file's shape, and the exit codes above.
+object's fields, the session file's shape, the exit codes above, and the
+redaction rule set.
 
 **These keep the version:** a new event type, a new field on an event or on the
 `result` object, a new session field with a default, a new flag, a new status
@@ -67,7 +90,8 @@ That is the price of additive changes not bumping the number.
 
 **These bump it:** removing or renaming a field or an event type, changing what
 an existing field means, changing an exit code, and changing when a status is
-reported.
+reported. Changing or removing a redaction rule, or changing what a rule
+matches, bumps it too: the rule set is part of what an event's `text` means.
 
 nare speaks one contract version at a time. There is no negotiation and no
 compatibility mode: a caller pins a version, and a nare that speaks another one

@@ -1,12 +1,15 @@
 import argparse
+import io
 import json
 import re
+import sys
 from pathlib import Path
 
 import pytest
 
 from fake_provider import Exploding, FakeProvider, text_reply, tool_reply
 from nare.cli import build_parser, main, transport_from_args
+from nare.events import Event
 from nare.transport.anthropic import AnthropicTransport
 
 
@@ -423,3 +426,58 @@ def test_the_session_file_is_readable_only_by_its_owner(tmp_path: Path) -> None:
         transport=FakeProvider([text_reply("ok")]),
     )
     assert path.stat().st_mode & 0o777 == 0o600
+
+
+class FakeStdin:
+    def __init__(self, data: bytes) -> None:
+        self.buffer = io.BytesIO(data)
+
+
+class FakeStdout:
+    def __init__(self) -> None:
+        self.buffer = io.BytesIO()
+
+
+def test_redact_pipes_stdin_through_the_event_redaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # capsys cannot see writes to sys.stdout.buffer, so the tests substitute
+    # their own stdin and stdout. The expected output is the event's own
+    # text field: the pipe has to match what an event carries, byte for byte.
+    payload = (
+        "Authorization: Bearer abc123xyz789secretvalue, token=hunter2\r\n"
+        "señor 東京, no trailing newline"
+    ).encode()
+    stdin, stdout = FakeStdin(payload), FakeStdout()
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.setattr(sys, "stdout", stdout)
+
+    assert main(["redact"]) == 0
+    expected = Event("progress", payload.decode("utf-8")).text
+    assert stdout.buffer.getvalue() == expected.encode("utf-8")
+
+
+def test_redact_on_empty_stdin_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stdin, stdout = FakeStdin(b""), FakeStdout()
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.setattr(sys, "stdout", stdout)
+
+    assert main(["redact"]) == 0
+    assert stdout.buffer.getvalue() == b""
+
+
+def test_unreadable_stdin_exits_nonzero_writing_nothing_to_stdout(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A caller piping megabytes must learn the bytes were unreadable before a
+    # partial result reaches its consumer: nothing goes to stdout, and the
+    # explanation goes to stderr.
+    stdin, stdout = FakeStdin(b"token=ok\xff"), FakeStdout()
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.setattr(sys, "stdout", stdout)
+
+    assert main(["redact"]) == 1
+    assert stdout.buffer.getvalue() == b""
+    assert "utf-8" in capsys.readouterr().err.lower()
