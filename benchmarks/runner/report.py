@@ -29,6 +29,9 @@ class RepRecord:
     usage: dict[str, int] = field(default_factory=dict)
     duration_s: float = 0.0
     model: str = ""
+    # The rep's evidence directory, relative to benchmarks/results/. Empty in
+    # results files written before evidence was kept.
+    artifacts: str = ""
 
 
 @dataclass(frozen=True)

@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
@@ -27,7 +28,13 @@ from benchmarks.runner.grade import (
     parse_stdout,
     rep_outcome,
 )
-from benchmarks.runner.judge import JudgeError, judge_transport, score
+from benchmarks.runner.judge import (
+    JudgeAttempt,
+    JudgeError,
+    judge_transport,
+    render_attempts,
+    score,
+)
 from benchmarks.runner.report import (
     Baseline,
     BaselineMeta,
@@ -43,6 +50,7 @@ from benchmarks.runner.report import (
     summarize,
 )
 from benchmarks.runner.sandbox import (
+    RunArtifacts,
     SandboxError,
     build_image,
     git_checkpoint,
@@ -195,13 +203,40 @@ def render_first_run(summaries: Sequence[CaseSummary]) -> str:
     )
 
 
+def new_stamp() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
+
+
+def keep_evidence(dest: Path, artifacts: Path, result: RunArtifacts) -> None:
+    """Copy what a rep produced out of its sandbox before the sandbox goes.
+
+    Cleared first: a confirmation re-run reuses the same case-rep names, and a
+    judge.txt left from the first pass would describe a different run. The
+    session can be missing when the container died before nare wrote it.
+    """
+    shutil.rmtree(dest, ignore_errors=True)
+    dest.mkdir(parents=True)
+    session = artifacts / "session.json"
+    if session.is_file():
+        shutil.copyfile(session, dest / "session.json")
+    (dest / "stdout.jsonl").write_text(result.stdout, encoding="utf-8")
+    (dest / "stderr.txt").write_text(result.stderr, encoding="utf-8")
+
+
 async def run_rep(
-    case: Case, config: Config, transport: Transport, rep: int
+    case: Case, config: Config, transport: Transport, rep: int, evidence: Path
 ) -> RepRecord:
-    """One repetition, from a clean fixture to a graded record."""
+    """One repetition, from a clean fixture to a graded record.
+
+    `evidence` is this run's directory under benchmarks/results/; the rep's
+    session, output and judge replies are kept in a subdirectory of it.
+    """
     empty = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    kept = evidence / f"{case.id}-{rep}"
+    kept_ref = kept.relative_to(evidence.parent).as_posix()
     with sandbox(case) as (workdir, artifacts):
         result = run_agent(case, workdir, artifacts, config)
+        keep_evidence(kept, artifacts, result)
         line = parse_stdout(result.stdout)
         if line is None or infra_error(line):
             # No result line means the run never produced one: a crash, a
@@ -224,6 +259,7 @@ async def run_rep(
                 usage=empty if line is None else line.usage,
                 duration_s=result.duration_s,
                 model=config.model,
+                artifacts=kept_ref,
             )
 
         # Before the bash checks, so nothing a check writes reaches the judge.
@@ -241,8 +277,9 @@ async def run_rep(
         met: list[bool] | None = None
         why = ""
         if case.judge is not None:
+            attempts: tuple[JudgeAttempt, ...]
             try:
-                met, why, _ = await score(
+                met, why, attempts = await score(
                     case,
                     diff,
                     line_text(result.stdout, line.questions),
@@ -250,6 +287,8 @@ async def run_rep(
                 )
             except JudgeError as exc:
                 why = f"judge failed: {exc}"
+                attempts = exc.attempts
+            (kept / "judge.txt").write_text(render_attempts(attempts), encoding="utf-8")
 
     return RepRecord(
         case=case.id,
@@ -264,22 +303,26 @@ async def run_rep(
         usage=line.usage,
         duration_s=result.duration_s,
         model=config.model,
+        artifacts=kept_ref,
     )
 
 
 async def run_case(
-    case: Case, config: Config, transport: Transport, reps: int
+    case: Case, config: Config, transport: Transport, reps: int, evidence: Path
 ) -> list[RepRecord]:
     # Sequential on purpose: repetitions share one rate limit and one Docker
     # daemon, and a benchmark that saturates either measures the machine.
-    return [await run_rep(case, config, transport, rep) for rep in range(reps)]
+    return [
+        await run_rep(case, config, transport, rep, evidence) for rep in range(reps)
+    ]
 
 
-def write_results(root: Path, records: Sequence[RepRecord]) -> Path:
+def write_results(
+    root: Path, records: Sequence[RepRecord], stamp: str | None = None
+) -> Path:
     directory = root / "benchmarks" / "results"
     directory.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
-    path = directory / f"{stamp}.jsonl"
+    path = directory / f"{stamp or new_stamp()}.jsonl"
     with path.open("w", encoding="utf-8") as handle:
         for rec in records:
             payload = asdict(rec)
@@ -397,11 +440,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"bench: {exc}", file=sys.stderr)
             return 2
         transport = judge_transport(config)
+        # One stamp per run: the confirmation re-run rewrites this run's
+        # results file and evidence instead of starting a second of each.
+        stamp = new_stamp()
+        evidence = root / "benchmarks" / "results" / stamp
         records: list[RepRecord] = []
         for case in cases:
-            records += asyncio.run(run_case(case, config, transport, case.reps))
+            records += asyncio.run(
+                run_case(case, config, transport, case.reps, evidence)
+            )
 
-        path = write_results(root, records)
+        path = write_results(root, records, stamp)
         print(f"results: {path}")
 
         baseline_file = baseline_path(
@@ -428,9 +477,11 @@ def main(argv: list[str] | None = None) -> int:
         if suspects:
             print(f"re-confirming {', '.join(suspects)} at {CONFIRM_REPS} reps...")
             for case in [c for c in cases if c.id in suspects]:
-                extra = asyncio.run(run_case(case, config, transport, CONFIRM_REPS))
+                extra = asyncio.run(
+                    run_case(case, config, transport, CONFIRM_REPS, evidence)
+                )
                 records = [r for r in records if r.case != case.id] + extra
-            write_results(root, records)
+            write_results(root, records, stamp)
 
         final = compare(
             summarize(records),
