@@ -233,7 +233,7 @@ async def run_rep(
         why = ""
         if case.judge is not None:
             try:
-                met, why = await score(
+                met, why, _ = await score(
                     case,
                     diff,
                     line_text(result.stdout),

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from benchmarks.runner.case import Case
@@ -37,8 +39,34 @@ Judge only what the diff shows. Do not reward effort or intent.\
 JUDGE_MAX_TOKENS = 1024
 
 
+@dataclass(frozen=True)
+class JudgeAttempt:
+    """One call to the judge, kept whole so a bad reply can be read later."""
+
+    stop_reason: str | None
+    text: str
+
+
 class JudgeError(Exception):
     """The judge could not answer. Never a zero -- see grade.rep_outcome."""
+
+    def __init__(self, message: str, attempts: Sequence[JudgeAttempt] = ()) -> None:
+        super().__init__(message)
+        self.attempts = tuple(attempts)
+
+
+# One retry: enough to survive a single empty or garbled reply, few enough
+# that a judge which cannot answer costs two calls rather than a loop.
+JUDGE_ATTEMPTS = 2
+
+
+def render_attempts(attempts: Sequence[JudgeAttempt]) -> str:
+    """The body of judge.txt: each attempt's stop reason, then its raw text."""
+    body = "\n\n".join(
+        f"attempt {n}: stop_reason={a.stop_reason}\n{a.text}"
+        for n, a in enumerate(attempts, start=1)
+    )
+    return body + "\n"
 
 
 def judge_transport(config: Config) -> Transport:
@@ -96,11 +124,10 @@ def parse_reply(text: str, expected: int) -> list[bool]:
     return [bool(value) for value in met]
 
 
-async def score(
-    case: Case, diff: str, final_text: str, *, transport: Transport
-) -> tuple[list[bool], str]:
-    assert case.judge is not None, "score is only called for judged cases"
-    prompt = build_prompt(case, diff, final_text)
+async def _ask(
+    prompt: str, expected: int, transport: Transport
+) -> tuple[list[bool], str, JudgeAttempt]:
+    """One attempt. Every failure raises JudgeError carrying this attempt."""
     try:
         reply = await transport.turn(
             [Message(role="user", content=[{"type": "text", "text": prompt}])],
@@ -110,10 +137,33 @@ async def score(
         # A 429 or a dropped connection is the judge failing to answer. Raised
         # as JudgeError so the rep records an error instead of crashing the
         # run and discarding every rep already paid for.
-        raise JudgeError(f"{type(exc).__name__}: {exc}") from exc
+        why = f"{type(exc).__name__}: {exc}"
+        raise JudgeError(why, [JudgeAttempt("transport error", why)]) from exc
     text = "\n".join(
         block.get("text", "") for block in reply.content if block.get("type") == "text"
     )
-    payload = _extract_json(text)
-    met = parse_reply(text, len(case.judge.assertions))
-    return met, str(payload.get("why", ""))
+    attempt = JudgeAttempt(reply.stop_reason, text)
+    try:
+        met = parse_reply(text, expected)
+    except JudgeError as exc:
+        raise JudgeError(str(exc), [attempt]) from exc
+    return met, str(_extract_json(text).get("why", "")), attempt
+
+
+async def score(
+    case: Case, diff: str, final_text: str, *, transport: Transport
+) -> tuple[list[bool], str, tuple[JudgeAttempt, ...]]:
+    assert case.judge is not None, "score is only called for judged cases"
+    prompt = build_prompt(case, diff, final_text)
+    attempts: list[JudgeAttempt] = []
+    while True:
+        try:
+            met, why, attempt = await _ask(
+                prompt, len(case.judge.assertions), transport
+            )
+        except JudgeError as exc:
+            attempts += exc.attempts
+            if len(attempts) >= JUDGE_ATTEMPTS:
+                raise JudgeError(str(exc), attempts) from exc
+            continue
+        return met, why, (*attempts, attempt)
