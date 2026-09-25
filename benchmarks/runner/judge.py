@@ -158,14 +158,15 @@ async def score(
     assert case.judge is not None, "score is only called for judged cases"
     prompt = build_prompt(case, diff, final_text)
     attempts: list[JudgeAttempt] = []
-    while True:
+    last: JudgeError | None = None
+    for _ in range(JUDGE_ATTEMPTS):
         try:
             met, why, attempt = await _ask(
                 prompt, len(case.judge.assertions), transport
             )
         except JudgeError as exc:
             attempts += exc.attempts
-            if len(attempts) >= JUDGE_ATTEMPTS:
-                raise JudgeError(str(exc), attempts) from exc
+            last = exc
             continue
         return met, why, (*attempts, attempt)
+    raise JudgeError(str(last), attempts) from last

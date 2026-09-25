@@ -127,6 +127,25 @@ async def test_two_bad_replies_raise_carrying_both() -> None:
     assert [a.text for a in info.value.attempts] == ["", "still not json"]
 
 
+async def test_retries_are_bounded_by_calls_not_by_attempts_carried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A JudgeError carrying no attempts must not keep the retry loop going.
+    calls = 0
+
+    async def ask(*_: object) -> None:
+        nonlocal calls
+        calls += 1
+        if calls > 10:
+            raise RuntimeError("unbounded retry")
+        raise JudgeError("no attempt attached")
+
+    monkeypatch.setattr("benchmarks.runner.judge._ask", ask)
+    with pytest.raises(JudgeError):
+        await score(CASE, "d", "f", transport=FakeJudge("unused"))
+    assert calls == 2
+
+
 async def test_a_transport_failure_then_an_answer_scores() -> None:
     transport = FakeJudge(
         ConnectionError("reset"), '{"met": [true, false], "why": "x"}'
