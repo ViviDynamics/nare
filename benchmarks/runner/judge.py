@@ -32,7 +32,9 @@ Reply with JSON only, in exactly this shape:
 {"met": [true, false, ...], "why": "one short sentence"}
 
 The "met" array must have exactly one boolean per claim, in the same order.
-Judge only what the diff shows. Do not reward effort or intent.\
+Judge only what the diff shows. Do not reward effort or intent.
+The closing message is context: use it for claims about what the agent said \
+or asked, but a claim about a file's contents is true only if the diff shows it.\
 """
 
 # Judging is a short answer; this bounds a runaway reply rather than the task.

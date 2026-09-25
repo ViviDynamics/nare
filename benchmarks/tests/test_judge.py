@@ -7,6 +7,7 @@ import pytest
 
 from benchmarks.runner.case import Case, Check, Judge
 from benchmarks.runner.judge import (
+    JUDGE_SYSTEM,
     JudgeAttempt,
     JudgeError,
     build_prompt,
@@ -158,3 +159,8 @@ class DeadJudge:
 async def test_a_transport_failure_is_a_judge_failure() -> None:
     with pytest.raises(JudgeError, match="rate limited"):
         await score(CASE, "d", "f", transport=DeadJudge())
+
+
+def test_the_diff_not_the_closing_message_decides_file_claims() -> None:
+    """Before #30 the judge credited a file claim the diff could not show."""
+    assert "true only if the diff shows it" in JUDGE_SYSTEM
