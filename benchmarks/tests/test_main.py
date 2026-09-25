@@ -93,6 +93,14 @@ def test_verify_needs_only_one_failing_check_of_several() -> None:
     assert code == 0
 
 
+def test_verify_errors_when_a_check_could_not_run() -> None:
+    """A timed-out or broken check never measured the fixture. Not an `ok`."""
+    case = case_with(Check(kind="bash", cmd="test -f done.txt"))
+    text, code = verify([case], run_check=lambda w, c, t: (124, ""))
+    assert code == 1
+    assert "ERROR" in text
+
+
 def test_main_without_a_subcommand_exits_two() -> None:
     assert main([]) == 2
 
@@ -238,6 +246,22 @@ def test_results_from_another_model_are_refused(
     assert not (tmp_path / "benchmarks" / "baselines").exists()
 
 
+def test_bless_needs_no_api_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It reads local files and calls no model, so it must not demand a key."""
+    import benchmarks.runner.__main__ as bench
+    from benchmarks.runner.sandbox import repo_root
+
+    (tmp_path / "benchmarks").mkdir()
+    (tmp_path / "benchmarks" / "cases").symlink_to(repo_root() / "benchmarks" / "cases")
+    write_results(tmp_path, [record("edit-docstring", model="ada/qwen3-14b")])
+    monkeypatch.setattr(bench, "repo_root", lambda: tmp_path)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert main(["bless", "--model", "ada/qwen3-14b"]) == 0
+
+
 async def test_a_transport_failure_in_the_agent_is_an_error_not_a_fail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -258,7 +282,7 @@ async def test_a_transport_failure_in_the_agent_is_an_error_not_a_fail(
         bench, "run_agent", lambda *a: RunArtifacts(line, "", 1, False, 1.0)
     )
     case = replace(case_with(Check(kind="bash", cmd="true")), directory=tmp_path)
-    config = Config("m", "anthropic", None, "m", "k")
+    config = Config("m", "anthropic", None, "m", "k", "ANTHROPIC_API_KEY")
     rec = await run_rep(case, config, cast(Transport, None), 0)
     assert rec.outcome == "error"
     assert rec.judge_why == "RateLimitError: 429"

@@ -6,7 +6,13 @@ import pytest
 
 from benchmarks.runner.case import Case, Check
 from benchmarks.runner.config import Config
-from benchmarks.runner.sandbox import IMAGE, SandboxError, preflight, repo_root
+from benchmarks.runner.sandbox import (
+    IMAGE,
+    SandboxError,
+    preflight,
+    repo_root,
+    run_agent,
+)
 
 CONFIG = Config(
     model="claude-haiku",
@@ -14,6 +20,7 @@ CONFIG = Config(
     base_url=None,
     judge_model="claude-haiku",
     api_key="k",
+    api_key_var="ANTHROPIC_API_KEY",
 )
 
 
@@ -185,3 +192,39 @@ def test_run_agent_end_to_end(tmp_path: Path) -> None:
         result = run_agent(case, workdir, artifacts, config)
     assert not result.timed_out
     assert '"type": "result"' in result.stdout or '"type":"result"' in result.stdout
+
+
+def test_the_agent_gets_the_key_its_provider_reads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An openai run needs OPENAI_API_KEY inside the container, not the other."""
+    import benchmarks.runner.sandbox as sandbox_mod
+
+    seen: dict[str, object] = {}
+
+    def fake_run(*args: object, **kwargs: object) -> tuple[int, str, str, bool]:
+        seen.update(kwargs)
+        return 0, "", "", False
+
+    monkeypatch.setattr(sandbox_mod, "_docker_run", fake_run)
+    config = Config(
+        model="gpt-5-nano",
+        provider="openai",
+        base_url=None,
+        judge_model="gpt-5-nano",
+        api_key="k",
+        api_key_var="OPENAI_API_KEY",
+    )
+    case = Case(
+        id="demo",
+        tier="smoke",
+        prompt="do a thing",
+        directory=tmp_path,
+        max_turns=4,
+        reps=3,
+        timeout=60,
+        checks=(Check(kind="bash", cmd="true"),),
+        judge=None,
+    )
+    run_agent(case, tmp_path, tmp_path, config)
+    assert seen["passthrough"] == ("OPENAI_API_KEY",)

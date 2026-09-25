@@ -180,7 +180,9 @@ def run_agent(
             "NARE_PROVIDER": config.provider,
             **({"NARE_BASE_URL": config.base_url} if config.base_url else {}),
         },
-        passthrough=("ANTHROPIC_API_KEY",),
+        # The key the provider under test actually reads, not always the
+        # Anthropic one: an openai run needs OPENAI_API_KEY in the container.
+        passthrough=(config.api_key_var,),
     )
     return RunArtifacts(
         stdout=out,

@@ -56,6 +56,10 @@ from nare.transport import Transport
 
 CheckRunner = Callable[[Case, str, int], tuple[int, str]]
 CONFIRM_REPS = 7
+# 124 is the sandbox timeout; 125-127 are docker's own (daemon, permissions,
+# command not found). A check that exits one of these never ran, so it proves
+# nothing about the fixture and must not read as a failing check.
+DID_NOT_RUN = range(124, 128)
 TOKEN_BAND = 0.10
 
 
@@ -134,7 +138,14 @@ def verify(
         outcomes = [
             run_check(case, check.cmd or "", 120)[0] for check in case.bash_checks
         ]
-        if any(code != 0 for code in outcomes):
+        stalled = [code for code in outcomes if code in DID_NOT_RUN]
+        if stalled:
+            failed = True
+            lines.append(
+                f"{case.id:<24} ERROR: a check exited {stalled[0]}, so it timed "
+                "out or never ran; this case was not verified"
+            )
+        elif any(code != 0 for code in outcomes):
             lines.append(f"{case.id:<24} ok (fails on the pristine fixture)")
         else:
             failed = True
@@ -363,6 +374,8 @@ def main(argv: list[str] | None = None) -> int:
             base_url=args.base_url,
             judge_model=args.judge_model,
             env=os.environ,
+            # compare and bless read local files only; they never spend a key.
+            need_key=args.command == "run",
         )
     except ConfigError as exc:
         print(f"bench: {exc}", file=sys.stderr)

@@ -77,3 +77,49 @@ def test_missing_api_key_is_refused() -> None:
             judge_model=None,
             env={},
         )
+
+
+def test_the_required_key_follows_the_provider() -> None:
+    config = resolve_config(
+        model="gpt-5-nano",
+        provider="openai",
+        base_url=None,
+        judge_model=None,
+        env={"OPENAI_API_KEY": "k"},
+    )
+    assert config.api_key_var == "OPENAI_API_KEY"
+    assert config.api_key == "k"
+
+
+def test_an_openai_run_is_not_satisfied_by_the_anthropic_key() -> None:
+    with pytest.raises(ConfigError, match="OPENAI_API_KEY"):
+        resolve_config(
+            model="gpt-5-nano",
+            provider="openai",
+            base_url=None,
+            judge_model=None,
+            env={"ANTHROPIC_API_KEY": "k"},
+        )
+
+
+def test_an_unknown_provider_is_refused() -> None:
+    with pytest.raises(ConfigError, match="unknown provider"):
+        resolve_config(
+            model="m",
+            provider="gemini",
+            base_url=None,
+            judge_model=None,
+            env={"ANTHROPIC_API_KEY": "k"},
+        )
+
+
+def test_a_key_is_optional_for_the_subcommands_that_never_spend_one() -> None:
+    config = resolve_config(
+        model="claude-haiku",
+        provider=None,
+        base_url=None,
+        judge_model=None,
+        env={},
+        need_key=False,
+    )
+    assert config.api_key is None
