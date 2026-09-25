@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# The benchmark entry point. Matches bin/build's idiom so one habit covers both.
+set -euo pipefail
+exec uv run python -m benchmarks.runner "$@"
