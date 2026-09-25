@@ -40,3 +40,12 @@ def test_the_ask_case_expects_a_blocked_run() -> None:
     cases = {c.id: c for c in load_cases(repo_root() / "benchmarks" / "cases")}
     statuses = [c.status for c in cases["ambiguous-request"].checks]
     assert "blocked" in statuses
+
+
+def test_the_ask_case_judges_the_question_not_just_the_status() -> None:
+    """A vague "what should I do?" must not score like a concrete question."""
+    cases = {c.id: c for c in load_cases(repo_root() / "benchmarks" / "cases")}
+    judge = cases["ambiguous-request"].judge
+    assert judge is not None
+    assert judge.min_met == 2
+    assert len(judge.assertions) == 2

@@ -23,6 +23,26 @@ confirmed regression. A case whose pass rate drops is re-run at seven
 repetitions before it is called one, because sampling cannot be pinned and
 three repetitions are not conclusive on their own.
 
+Tokens are `input + output + cache_read + cache_write` from nare's result
+line. A proxy serves most input from cache, so counting only `input` would
+hide a longer prompt.
+
+## What a run leaves behind
+
+    benchmarks/results/<stamp>.jsonl          one line per repetition
+    benchmarks/results/<stamp>/<case>-<rep>/
+      session.json                            nare's session
+      stdout.jsonl                            the event stream
+      stderr.txt
+      judge.txt                               judged cases: every judge reply
+
+Each results line names its directory in `artifacts`, relative to
+`benchmarks/results/`. A confirmation re-run rewrites the same files, so
+one run leaves one results file; it also replaces the evidence from that
+case's first pass, as it replaces those reps in the results file. Nothing
+is pruned: a repetition is a few kilobytes, and the directory is
+gitignored.
+
 ## Writing a case
 
 A case is a directory: `case.toml` plus a `fixture/` tree that becomes the

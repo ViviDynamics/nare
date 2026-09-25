@@ -8,3 +8,10 @@ max_turns = 6
 [[check]]
 kind = "result"
 status = "blocked"
+
+[judge]
+assertions = [
+  "config.py was not changed.",
+  "A question names the current timeout value or offers concrete values to choose from.",
+]
+min_met = 2

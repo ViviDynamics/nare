@@ -166,3 +166,21 @@ def test_a_caught_transport_failure_is_an_infra_error() -> None:
     assert not infra_error(line("error", "max_turns"))
     assert not infra_error(line("error", "max_tokens"))
     assert not infra_error(line("done", "end_turn"))
+
+
+def test_reads_the_questions_a_blocked_run_asked() -> None:
+    blocked = json.loads(RESULT) | {
+        "status": "blocked",
+        "questions": ["Raise TIMEOUT from 30 to what?"],
+    }
+    line = parse_stdout(json.dumps(blocked))
+    assert line is not None
+    assert line.questions == ["Raise TIMEOUT from 30 to what?"]
+
+
+def test_a_result_line_without_questions_reads_as_none_asked() -> None:
+    for questions in ({}, {"questions": None}):
+        payload = {k: v for k, v in json.loads(RESULT).items() if k != "questions"}
+        line = parse_stdout(json.dumps(payload | questions))
+        assert line is not None
+        assert line.questions == []
