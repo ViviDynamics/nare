@@ -163,16 +163,25 @@ def _commit() -> str:
     return proc.stdout.strip() or "unknown"
 
 
-def line_text(stdout: str) -> str:
-    """The final assistant text, which nare emits as the `output` event."""
+def line_text(stdout: str, questions: Sequence[str] = ()) -> str:
+    """What the judge reads as the agent's closing message.
+
+    The `output` event's text, which nare emits only on `done`, then any
+    questions a blocked run asked: without them no claim can be about them.
+    """
+    text = ""
     for raw in reversed(stdout.splitlines()):
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
             continue
         if isinstance(payload, dict) and payload.get("type") == "output":
-            return str(payload.get("text", ""))
-    return ""
+            text = str(payload.get("text", ""))
+            break
+    if questions:
+        asked = "\n".join(f"- {q}" for q in questions)
+        text = f"{text}\n\nThe agent stopped to ask:\n{asked}".lstrip()
+    return text
 
 
 def render_first_run(summaries: Sequence[CaseSummary]) -> str:
@@ -236,7 +245,7 @@ async def run_rep(
                 met, why, _ = await score(
                     case,
                     diff,
-                    line_text(result.stdout),
+                    line_text(result.stdout, line.questions),
                     transport=transport,
                 )
             except JudgeError as exc:

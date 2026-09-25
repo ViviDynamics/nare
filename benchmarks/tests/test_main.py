@@ -11,6 +11,7 @@ from benchmarks.runner.__main__ import (
     CONFIRM_REPS,
     build_parser,
     latest_results,
+    line_text,
     main,
     merge_baseline,
     read_results,
@@ -302,4 +303,26 @@ def record(case: str, *, model: str) -> RepRecord:
         usage={"input": 10, "output": 5, "cache_read": 0, "cache_write": 0},
         duration_s=1.0,
         model=model,
+    )
+
+
+OUTPUT = json.dumps({"type": "output", "text": "Done: raised it to 60."})
+
+
+def test_the_closing_message_is_the_output_event() -> None:
+    assert line_text(f"{OUTPUT}\n") == "Done: raised it to 60."
+
+
+def test_the_closing_message_carries_a_blocked_runs_questions() -> None:
+    """nare emits no output event on a blocked run, only the questions."""
+    text = line_text("", ["Raise TIMEOUT from 30 to what?", "Which file?"])
+    assert text == (
+        "The agent stopped to ask:\n- Raise TIMEOUT from 30 to what?\n- Which file?"
+    )
+
+
+def test_questions_follow_the_output_when_there_is_both() -> None:
+    text = line_text(f"{OUTPUT}\n", ["Which file?"])
+    assert text == (
+        "Done: raised it to 60.\n\nThe agent stopped to ask:\n- Which file?"
     )

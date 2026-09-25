@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from benchmarks.runner.case import Check, Judge
@@ -26,11 +26,16 @@ class ResultLine:
     usage: dict[str, int]
     stop_reason: str | None
     error: str | None
+    questions: list[str] = field(default_factory=list)
 
 
 def _usage_from(raw: Any) -> dict[str, int]:
     source = raw if isinstance(raw, dict) else {}
     return {field: int(source.get(field, 0)) for field in _USAGE_FIELDS}
+
+
+def _questions_from(raw: Any) -> list[str]:
+    return [str(q) for q in raw] if isinstance(raw, list) else []
 
 
 def parse_stdout(text: str) -> ResultLine | None:
@@ -58,6 +63,7 @@ def parse_stdout(text: str) -> ResultLine | None:
             usage=_usage_from(payload.get("usage")),
             stop_reason=payload.get("stop_reason"),
             error=payload.get("error"),
+            questions=_questions_from(payload.get("questions")),
         )
     return found
 
