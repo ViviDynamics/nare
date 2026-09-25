@@ -9,6 +9,7 @@ from typing import Any
 from fake_provider import FakeProvider, text_reply, tool_reply
 from nare.cli import main
 from nare.contract import CONTRACT_VERSION, EXIT_CODES, describe
+from nare.events import REDACTION_RULES, REDACTION_VERSION
 from nare.session import Session, loads
 
 
@@ -22,6 +23,35 @@ def test_the_description_carries_the_version_and_the_exit_codes() -> None:
     assert described["contract"] == CONTRACT_VERSION
     assert described["exit_codes"] == dict(EXIT_CODES)
     assert "never_started" in described
+
+
+def test_the_contract_names_the_redaction_rule_set() -> None:
+    described = describe()
+
+    assert described["redaction"]["version"] == REDACTION_VERSION
+    assert described["redaction"]["rules"] == list(REDACTION_RULES)
+
+
+def test_the_redaction_identity_is_defined_once() -> None:
+    """Same rule as CONTRACT_VERSION: two constants that must agree are a
+    version skew waiting for the release where somebody bumps only one of
+    them. contract.py may import the redaction identity but not declare it.
+    """
+    import nare.contract
+    import nare.events
+
+    assert (
+        Path(nare.events.__file__)
+        .read_text(encoding="utf-8")
+        .count("REDACTION_VERSION")
+        > 0
+    )
+    assert (
+        Path(nare.contract.__file__)
+        .read_text(encoding="utf-8")
+        .count("REDACTION_VERSION =")
+        == 0
+    )
 
 
 def test_the_contract_subcommand_prints_it(capsys: Any) -> None:
@@ -131,6 +161,15 @@ def test_the_documented_contract_matches_the_code() -> None:
     for event_type in describe()["event_types"]:
         assert event_type in text
     assert f"contract version {CONTRACT_VERSION}" in text
+
+
+def test_the_documented_contract_names_the_redaction_rules() -> None:
+    doc = Path(__file__).parent.parent / "docs" / "contract.md"
+    text = doc.read_text(encoding="utf-8")
+
+    assert "nare redact" in text
+    for rule in describe()["redaction"]["rules"]:
+        assert rule in text
 
 
 def test_the_contract_version_is_defined_once() -> None:

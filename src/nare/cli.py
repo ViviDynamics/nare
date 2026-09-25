@@ -20,7 +20,7 @@ from typing import Any
 
 from nare import __version__
 from nare.contract import CONTRACT_VERSION, EXIT_CODES, NEVER_STARTED, describe
-from nare.events import Event
+from nare.events import Event, redact
 from nare.loop import MAX_TURNS_DEFAULT, run
 from nare.schema import UnsupportedSchema, check_supported
 from nare.session import Session, append_user_text, dumps, loads, new_session
@@ -44,6 +44,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "contract",
         help="print the machine contract this nare speaks, as JSON, and exit",
+    )
+    sub.add_parser(
+        "redact",
+        help=(
+            "apply the event redaction rules to text on stdin, writing the "
+            "redacted text to stdout, and exit"
+        ),
     )
     run_parser = sub.add_parser("run", help="run a task headlessly")
 
@@ -305,6 +312,26 @@ async def _execute(
     return EXIT_CODES.get(session.status, EXIT_CODES["error"])
 
 
+def _redact_stdin() -> int:
+    """`nare redact`: the event redaction over a caller's own text.
+
+    Raw bytes in and out, with exactly one decode and one encode: text mode
+    would translate newlines and the locale could mangle what was not asked
+    for, and the point of this command is that what comes out is byte for byte
+    what an event's text field would carry. The whole result is decided before
+    anything is written, so an unreadable stream costs the caller nothing.
+    """
+    data = sys.stdin.buffer.read()
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        print(f"nare redact: stdin is not readable UTF-8 text: {exc}", file=sys.stderr)
+        return 1
+    sys.stdout.buffer.write(redact(text).encode("utf-8"))
+    sys.stdout.buffer.flush()
+    return 0
+
+
 def main(argv: list[str] | None = None, *, transport: Transport | None = None) -> int:
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
     parser = build_parser()
@@ -313,6 +340,9 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     if args.command == "contract":
         print(json.dumps(describe()), flush=True)
         return 0
+
+    if args.command == "redact":
+        return _redact_stdin()
 
     # Everything below exits 2 and emits nothing on stdout: the result line
     # implies a session existed, so a run that never started does not emit one.

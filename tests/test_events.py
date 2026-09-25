@@ -1,3 +1,6 @@
+import random
+import re
+import time
 from dataclasses import asdict
 
 from nare.events import Event, redact
@@ -71,3 +74,79 @@ def test_bearer_schemes_are_redacted_past_the_scheme_word() -> None:
         "Authorization: Bearer abc123xyz789secretvalue"
     )
     assert "hunter2" not in redact('"Authorization": "Bearer hunter2"')
+
+
+# The rule set as it shipped before #31, verbatim. It is the oracle: the
+# in-module redaction must reproduce it byte-for-byte, or callers piping text
+# through `nare redact` would see different output than events carry.
+_LEGACY = [
+    re.compile(r"sk-ant-[A-Za-z0-9_\-]{20,}"),
+    re.compile(r"sk-[A-Za-z0-9_\-]{20,}"),
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
+    re.compile(
+        r"(?i)[\w.\-]*(?:api[_-]?key|auth|token|secret|password|passwd|credential)"
+        r"[\w.\-]*[\"']?\s*[=:]\s*[\"']?(?:bearer|basic|token)?\s*\S+"
+    ),
+]
+
+
+def _legacy_redact(text: str) -> str:
+    for pattern in _LEGACY:
+        text = pattern.sub("[redacted]", text)
+    return text
+
+
+def test_the_linear_rules_match_the_legacy_rules_exactly() -> None:
+    # The shapes that make the legacy key/value rule's backtracking subtle:
+    # multi-keyword runs, affixed names, scheme words, quoted values.
+    cases = [
+        "Authorization: Bearer sk-abc",
+        "tokentoken=x",
+        "tokentokentoken = x",
+        "token secret = x",
+        "secret: token = x",
+        "password=x:y",
+        "token=basic=creds",
+        "Credentials: basic user pass",
+        "==token==x==",
+        "a token b c d = e",
+        "no_keyword_here = x",
+        "_token_=_value_",
+        ".token.=.value.",
+        "token==value==here",
+        "MY.AUTH-token:someval",
+        "É_token = ü_value",
+    ]
+    for case in cases:
+        assert redact(case) == _legacy_redact(case), case
+
+
+def test_the_linear_rules_stay_equivalent_on_random_text() -> None:
+    # Seeded, so a failure reproduces. The alphabet is the backtracking
+    # grammar's own alphabet: keywords, separators, quotes, word runs.
+    rng = random.Random(31)
+    alphabet = (
+        "token seCret auth password passwd credential api_key apiKey"
+        " x=1 :y\"'_-.=:,bearer1\n\tTOKen{}[]|"
+    )
+    for _ in range(3000):
+        text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 120)))
+        assert redact(text) == _legacy_redact(text), repr(text)
+
+
+def test_one_mib_of_repeated_keywords_is_redacted_well_under_a_second() -> None:
+    # The legacy key/value rule's open [\w.\-]* prefix backtracks quadratically
+    # on a long run of word characters: 2 KiB already took seconds, and a
+    # megabyte was out of reach. The acceptance line is "well under a second".
+    text = "token" * (2**20 // 5)
+    assert redact(text) == text
+
+    with_value = text + "=x"
+    start = time.perf_counter()
+    no_match = redact(text)
+    match = redact(with_value)
+    elapsed = time.perf_counter() - start
+
+    assert no_match == text
+    assert match == "[redacted]"
+    assert elapsed < 1.0

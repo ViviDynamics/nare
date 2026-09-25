@@ -12,26 +12,81 @@ from typing import Any, Literal
 
 EventType = Literal["progress", "tool_use", "thinking", "cost", "error", "output"]
 
-_SECRETS = [
-    re.compile(r"sk-ant-[A-Za-z0-9_\-]{20,}"),
-    re.compile(r"sk-[A-Za-z0-9_\-]{20,}"),
-    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
-    # No \b around the keyword: `_` is a word character, so \btoken\b never
-    # matches inside AUTH_TOKEN and \bauth\b never matches inside
-    # Authorization. Affixes are allowed instead, which is what the real
-    # names look like. The optional scheme word covers `Bearer <token>`,
-    # where the secret is the SECOND word after the colon.
-    re.compile(
-        r"(?i)[\w.\-]*(?:api[_-]?key|auth|token|secret|password|passwd|credential)"
-        r"[\w.\-]*[\"']?\s*[=:]\s*[\"']?(?:bearer|basic|token)?\s*\S+"
-    ),
-]
+# One version number for the rule set, and one stable name per rule. Both are
+# published through `nare contract`, so a caller can tell when the redaction it
+# is paying for has changed without diffing patterns.
+REDACTION_VERSION = 1
+REDACTION_RULES: tuple[str, ...] = (
+    "anthropic-key",
+    "openai-key",
+    "github-token",
+    "credential-assignment",
+)
+
+_REDACTED = "[redacted]"
+
+# Keys and tokens are anchored at their own prefixes, so a failed match attempt
+# costs bounded work no matter how long the text is.
+_PREFIX_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("anthropic-key", re.compile(r"sk-ant-[A-Za-z0-9_\-]{20,}")),
+    ("openai-key", re.compile(r"sk-[A-Za-z0-9_\-]{20,}")),
+    ("github-token", re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}")),
+)
+
+# No \b around the keyword: `_` is a word character, so \btoken\b never
+# matches inside AUTH_TOKEN and \bauth\b never matches inside
+# Authorization. Affixes are allowed instead, which is what the real
+# names look like.
+_CREDENTIAL_RUN = re.compile(r"[\w.\-]+")
+_CREDENTIAL_KEYWORD = re.compile(
+    r"(?i)(?:api[_-]?key|auth|token|secret|password|passwd|credential)"
+)
+# The optional scheme word covers `Bearer <token>`, where the secret is the
+# SECOND word after the colon.
+_CREDENTIAL_TAIL = re.compile(
+    r"""(?i)["']?\s*[:=]\s*["']?(?:bearer|basic|token)?\s*\S+"""
+)
+
+
+def _redact_credentials(text: str) -> str:
+    """The key/value rule, in linear time.
+
+    Written out as three passes rather than one regex because the single
+    regex cannot be linear: matching `[\\w.-]*(keyword)[\\w.-]*` at every
+    start position re-scans the run between them, so a megabyte of word
+    characters took minutes before the first value was even ruled out. The
+    equivalent linear shape, proven on this pattern, is:
+
+    A match spans from the start of the maximal `\\w.-` run holding a keyword
+    to the end of the value tail after that run. The tail is matched at the
+    run's end, so which keyword occurrence the legacy pattern would have
+    picked cannot change the span, and a run whose tail does not match can
+    only fail everywhere: the tail's quote, separator and scheme characters
+    are never run characters, so the greedy run before it is maximal, and
+    `[=:]` cannot occur inside a run. The differential tests against the
+    legacy rule above hold this to its word.
+    """
+    pieces: list[str] = []
+    replaced = 0
+    for run in _CREDENTIAL_RUN.finditer(text):
+        if run.start() < replaced:
+            continue
+        if not _CREDENTIAL_KEYWORD.search(text, run.start(), run.end()):
+            continue
+        tail = _CREDENTIAL_TAIL.match(text, run.end())
+        if tail is None:
+            continue
+        pieces.append(text[replaced : run.start()])
+        pieces.append(_REDACTED)
+        replaced = tail.end()
+    pieces.append(text[replaced:])
+    return "".join(pieces)
 
 
 def redact(text: str) -> str:
-    for pattern in _SECRETS:
-        text = pattern.sub("[redacted]", text)
-    return text
+    for _, pattern in _PREFIX_PATTERNS:
+        text = pattern.sub(_REDACTED, text)
+    return _redact_credentials(text)
 
 
 def redact_value(value: Any) -> Any:
