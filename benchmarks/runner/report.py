@@ -82,9 +82,8 @@ def summarize(records: Sequence[RepRecord]) -> list[CaseSummary]:
                     else passes / (passes + fails)
                 ),
                 inconclusive=inconclusive,
-                tokens_median=median_int(
-                    [r.usage.get("input", 0) + r.usage.get("output", 0) for r in judged]
-                ),
+                # usage holds exactly grade's four fields, cached input included.
+                tokens_median=median_int([sum(r.usage.values()) for r in judged]),
                 turns_median=median_int(
                     [r.turns for r in judged if r.turns is not None]
                 ),

@@ -103,10 +103,13 @@ def test_one_runaway_rep_cannot_swing_the_median() -> None:
     assert summarize(records)[0].tokens_median == 1100
 
 
-def test_tokens_median_sums_input_and_output() -> None:
-    rec = record(tokens=1000)
-    rec = RepRecord(**{**rec.__dict__, "usage": {**rec.usage, "output": 500}})
-    assert summarize([rec])[0].tokens_median == 1500
+def test_tokens_median_counts_cached_input() -> None:
+    """The proxy serves most input from cache; leaving it out hides a longer
+    prompt, which is exactly what a harness change tends to add."""
+    rec = record(tokens=1)
+    usage = {"input": 1, "output": 50, "cache_read": 640, "cache_write": 9}
+    rec = RepRecord(**{**rec.__dict__, "usage": usage})
+    assert summarize([rec])[0].tokens_median == 700
 
 
 def test_judge_median_is_none_when_no_rep_was_judged() -> None:

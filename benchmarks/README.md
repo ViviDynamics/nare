@@ -23,6 +23,10 @@ confirmed regression. A case whose pass rate drops is re-run at seven
 repetitions before it is called one, because sampling cannot be pinned and
 three repetitions are not conclusive on their own.
 
+Tokens are `input + output + cache_read + cache_write` from nare's result
+line. A proxy serves most input from cache, so counting only `input` would
+hide a longer prompt.
+
 ## Writing a case
 
 A case is a directory: `case.toml` plus a `fixture/` tree that becomes the
