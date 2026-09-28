@@ -43,6 +43,10 @@ case's first pass, as it replaces those reps in the results file. Nothing
 is pruned: a repetition is a few kilobytes, and the directory is
 gitignored.
 
+The stamp is taken when a run starts, and `compare` and `bless` read the
+newest stamp. If two runs overlap, that is the one that started last, not
+the one that finished last, so let one run finish before starting another.
+
 ## Writing a case
 
 A case is a directory: `case.toml` plus a `fixture/` tree that becomes the
