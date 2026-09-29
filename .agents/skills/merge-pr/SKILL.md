@@ -41,7 +41,7 @@ then run every script as `$S/<script>`.
    If neither holds, stop and report `preconditions_failed: review gate missing`;
    never merge silently past a missing gate.
 
-## BLOCKED is not red
+## BLOCKED and BEHIND are not red
 
 `mergeStateStatus: BLOCKED` with green checks means a rule other than CI is unmet. On
 nare that is almost always an unresolved review thread: `main` requires every thread
@@ -49,6 +49,16 @@ resolved before it accepts a merge. Resolving threads is the author's call once 
 feedback is addressed; never resolve someone else's thread to get a merge through.
 nare needs no admin bypass, so `VIVI_MERGE_FLAGS` carries none. Judge CI by
 `ci-runs`, never by `mergeStateStatus`.
+
+`mergeStateStatus: BEHIND` with green checks and `mergeable: MERGEABLE` means the branch
+needs updates but the code is green: merge now, do not wait for a fresh run or rebase.
+Check the actual `mergeable` field:
+
+    $S/vgh pr view <pr> --json mergeable --jq .mergeable
+
+- `MERGEABLE`: use VIVI_MERGE_FLAGS to merge now.
+- `CONFLICTING`: rebase, push, and re-run CI instead.
+- `UNKNOWN`: re-read (transient API state).
 
 ## Stacked PRs
 
