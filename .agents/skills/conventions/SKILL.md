@@ -24,7 +24,11 @@ script as `$S/<script>`.
 | --- | --- |
 | Know the CI rules before touching a run | `ci-safety` (read first) |
 | Wait for a PR's CI, retry safely, find out why it failed | `watch-ci` |
+| Watch the default branch's CI and retry flakes | `watch-ci-main` |
 | Merge a PR, or decide whether it can merge | `merge-pr` |
+| Bring a branch up to date with the default branch | `rebase-main` |
+| Run a GitHub Copilot review loop on a PR | `copilot-review` |
+| Take an issue to a merged PR unattended | `ship-issue` |
 
 ## How nare is set up
 

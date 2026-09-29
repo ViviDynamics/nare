@@ -100,9 +100,9 @@ shape, and [docs/adr/](docs/adr/) for the decisions behind it.
 
 Agent workflow skills for this repo live in [`.agents/skills/`](.agents/skills/)
 (`.claude/skills` and `.opencode/skill` point at the same copies): `conventions`,
-`ci-safety`, `watch-ci`, and `merge-pr`. They were adapted from the org's internal
-skill set at tag `2026.09.8` and are maintained here, tuned to nare. To use them in a
-fresh clone:
+`ci-safety`, `watch-ci`, `merge-pr`, `ship-issue`, `rebase-main`, `copilot-review`,
+and `watch-ci-main`. They were adapted from the org's internal skill set at tag
+`2026.09.11` and are maintained here, tuned to nare. To use them in a fresh clone:
 
     cp repo.env.example repo.env
     .agents/skills/ci-safety/scripts/check-wiring
