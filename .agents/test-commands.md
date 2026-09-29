@@ -1,13 +1,18 @@
 # Test commands
 
-Each area's local command, mirroring `bin/build`, which CI runs. Run `bin/build` to do
-all of them in the same order CI does.
+Run by `preflight` before every push. A row runs only when the branch's diff touches
+its paths; rows run top to bottom, cheapest first, and stop at the first failure.
+`{files}` is the changed files the row matched. These mirror `bin/build`, which CI
+runs; `bin/build` does all of them in CI's order.
 
-| Area | Command |
-| --- | --- |
-| Formatting | `uv run ruff format --check src tests` |
-| Lint | `uv run ruff check src tests` |
-| Types | `uv run mypy src tests` |
-| Tests | `uv run pytest -q` |
-| One test | `uv run pytest -q tests/<file>.py::<test>` |
-| Skills wiring | `.agents/skills/ci-safety/scripts/check-wiring` |
+| Area | Paths | Command |
+| --- | --- | --- |
+| Formatting, changed files | *.py | uv run ruff format --check {files} |
+| Lint, changed files | *.py | uv run ruff check {files} |
+| Whole-tree lint and format | pyproject.toml, uv.lock | uv run ruff format --check src tests && uv run ruff check src tests |
+| Types | src/*.py, tests/*.py, pyproject.toml | uv run mypy src tests |
+| Changed tests | tests/*.py | uv run pytest -q {files} |
+| Tests | src/*, tests/*, pyproject.toml, uv.lock | uv run pytest -q |
+| Skills wiring | .agents/*, repo.env.example | .agents/skills/ci-safety/scripts/check-wiring |
+
+To run one test: `uv run pytest -q tests/<file>.py::<test>`.
