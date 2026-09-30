@@ -170,7 +170,12 @@ def ask(questions: list[str]) -> str:
     Tool calls are the only structured channel a model has, so asking is a tool.
     The loop reads the questions off the call and sets status=blocked; this
     result exists so the transcript stays well-formed for a resume.
+
+    An ask with nothing in it fails here, so the loop never reports blocked
+    with no questions for the caller to answer.
     """
+    if not isinstance(questions, (str, list)) or not questions:
+        raise ValueError("ask needs at least one question")
     return "Questions recorded. The session is blocked pending answers."
 
 

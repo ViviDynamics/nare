@@ -159,6 +159,16 @@ async def test_an_ask_that_fails_never_blocks() -> None:
     assert session.messages[-1].content[0]["is_error"] is True
 
 
+async def test_an_ask_with_no_questions_never_blocks() -> None:
+    empties: list[list[str] | None] = [[], None]
+    for empty in empties:
+        session = new_session("go")
+        fake = FakeProvider([tool_reply("ask", {"questions": empty})])
+        await step(session, fake, approve_all, Policy())
+        assert session.status == "working"
+        assert session.messages[-1].content[0]["is_error"] is True
+
+
 async def test_an_unapproved_ask_never_blocks() -> None:
     session = new_session("go")
     fake = FakeProvider([tool_reply("ask", {"questions": ["which?"]})])
