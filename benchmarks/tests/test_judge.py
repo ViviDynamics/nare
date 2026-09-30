@@ -6,7 +6,15 @@ from typing import Any
 import pytest
 
 from benchmarks.runner.case import Case, Check, Judge
-from benchmarks.runner.judge import JudgeError, build_prompt, parse_reply, score
+from benchmarks.runner.judge import (
+    JUDGE_SYSTEM,
+    JudgeAttempt,
+    JudgeError,
+    build_prompt,
+    parse_reply,
+    render_attempts,
+    score,
+)
 from nare.session import Message, Usage
 from nare.transport import Reply
 
@@ -27,17 +35,24 @@ CASE = Case(
 
 
 class FakeJudge:
-    """A scripted transport, in the FakeProvider idiom the repo already uses."""
+    """A scripted transport, in the FakeProvider idiom the repo already uses.
 
-    def __init__(self, text: str) -> None:
-        self.text = text
+    Each call takes the next scripted reply, and the last one repeats. An
+    exception in the script is raised instead of answered.
+    """
+
+    def __init__(self, *script: str | Exception) -> None:
+        self.script = script
         self.calls: list[list[Message]] = []
 
     async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
         self.calls.append(messages)
         assert tools == [], "the judge asks for no tools"
+        step = self.script[min(len(self.calls), len(self.script)) - 1]
+        if isinstance(step, Exception):
+            raise step
         return Reply(
-            content=[{"type": "text", "text": self.text}],
+            content=[{"type": "text", "text": step}],
             tool_calls=[],
             usage=Usage(input=10, output=5),
             stop_reason="end_turn",
@@ -88,10 +103,66 @@ def test_non_boolean_entries_are_a_judge_failure() -> None:
 
 async def test_score_returns_the_booleans_and_the_reason() -> None:
     transport = FakeJudge('{"met": [true, false], "why": "the test was edited"}')
-    met, why = await score(CASE, "a diff", "final text", transport=transport)
+    met, why, attempts = await score(CASE, "a diff", "final text", transport=transport)
     assert met == [True, False]
     assert why == "the test was edited"
     assert len(transport.calls) == 1
+    assert len(attempts) == 1
+
+
+async def test_an_empty_reply_is_retried_once() -> None:
+    answer = '{"met": [true, true], "why": "ok"}'
+    transport = FakeJudge("", answer)
+    met, _, attempts = await score(CASE, "d", "f", transport=transport)
+    assert met == [True, True]
+    assert len(transport.calls) == 2
+    assert [a.text for a in attempts] == ["", answer]
+
+
+async def test_two_bad_replies_raise_carrying_both() -> None:
+    transport = FakeJudge("", "still not json")
+    with pytest.raises(JudgeError) as info:
+        await score(CASE, "d", "f", transport=transport)
+    assert len(transport.calls) == 2
+    assert [a.text for a in info.value.attempts] == ["", "still not json"]
+
+
+async def test_retries_are_bounded_by_calls_not_by_attempts_carried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A JudgeError carrying no attempts must not keep the retry loop going.
+    calls = 0
+
+    async def ask(*_: object) -> None:
+        nonlocal calls
+        calls += 1
+        if calls > 10:
+            raise RuntimeError("unbounded retry")
+        raise JudgeError("no attempt attached")
+
+    monkeypatch.setattr("benchmarks.runner.judge._ask", ask)
+    with pytest.raises(JudgeError):
+        await score(CASE, "d", "f", transport=FakeJudge("unused"))
+    assert calls == 2
+
+
+async def test_a_transport_failure_then_an_answer_scores() -> None:
+    transport = FakeJudge(
+        ConnectionError("reset"), '{"met": [true, false], "why": "x"}'
+    )
+    met, _, attempts = await score(CASE, "d", "f", transport=transport)
+    assert met == [True, False]
+    assert attempts[0].stop_reason == "transport error"
+    assert "reset" in attempts[0].text
+
+
+def test_judge_txt_holds_each_stop_reason_then_its_text() -> None:
+    text = render_attempts(
+        [JudgeAttempt("max_tokens", ""), JudgeAttempt("end_turn", "{}")]
+    )
+    assert text == (
+        "attempt 1: stop_reason=max_tokens\n\n\nattempt 2: stop_reason=end_turn\n{}\n"
+    )
 
 
 async def test_score_raises_on_an_unusable_reply() -> None:
@@ -107,3 +178,8 @@ class DeadJudge:
 async def test_a_transport_failure_is_a_judge_failure() -> None:
     with pytest.raises(JudgeError, match="rate limited"):
         await score(CASE, "d", "f", transport=DeadJudge())
+
+
+def test_the_diff_not_the_closing_message_decides_file_claims() -> None:
+    """Before #30 the judge credited a file claim the diff could not show."""
+    assert "true only if the diff shows it" in JUDGE_SYSTEM
