@@ -247,9 +247,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "ask",
         "description": (
-            "Stop and ask the caller for missing information. Use this when the "
-            "task cannot be completed without a decision only the caller can "
-            "make. This ends the session."
+            "Stop and ask the caller to resolve an ambiguous request. Use this "
+            "only when the request can reasonably be read more than one way and "
+            "the readings lead to different changes, and only after reading the "
+            "files involved. Do not use it for anything you can find out by "
+            "reading files or running commands, for details you can decide "
+            "yourself such as wording, style or names, to ask permission, or to "
+            "offer follow-up work. Call ask on its own, before making any "
+            "change. This ends the session."
         ),
         "input_schema": {
             "type": "object",
@@ -257,7 +262,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "questions": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "One question per item.",
+                    "description": (
+                        "One question per item, naming the readings you are "
+                        "choosing between, e.g. 'Raise TIMEOUT from 30 to what: "
+                        "60, 120, or another value?'"
+                    ),
                 }
             },
             "required": ["questions"],
