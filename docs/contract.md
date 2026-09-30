@@ -1,6 +1,6 @@
 # The machine contract
 
-This is contract version 1.
+This is contract version 2.
 
 A caller drives nare as a subprocess and turns three things into decisions: the
 JSONL event stream on stdout, the session file, and the exit code. This document
@@ -16,7 +16,7 @@ redaction rule set this build speaks.
 
 ## Refusing a contract you do not speak
 
-    nare run --contract 1 --yes "..."
+    nare run --contract 2 --yes "..."
 
 When the caller's number and nare's differ, nare exits 2 before starting and
 writes nothing to stdout. A caller that pins the version it understands never
@@ -53,7 +53,7 @@ redacted in milliseconds, not minutes.
 | Status | Exit | Meaning |
 | --- | --- | --- |
 | `done` | exit 0 | The run finished. `output` carries the answer when `--schema` was used. |
-| `blocked` | exit 0 | The model used `ask`. `questions` carries what it needs. This is an outcome, not a failure. |
+| `blocked` | exit 0 | The model used `ask` on its own, in a session whose policy allows it. `questions` carries what it needs. This is an outcome, not a failure. |
 | `error` | exit 1 | The run started and failed. `error` says how, `stop_reason` says what ended it. |
 | never started | exit 2 | No session existed: a bad invocation, an unreadable session file, or a refused contract. Nothing is written to stdout, so there is no `result` line. |
 
@@ -77,7 +77,7 @@ an unredacted event never exists.
 
 ## What changes the version
 
-Contract version 1 covers the event types and their fields, the `result`
+Contract version 2 covers the event types and their fields, the `result`
 object's fields, the session file's shape, the exit codes above, and the
 redaction rule set.
 
@@ -96,3 +96,17 @@ matches, bumps it too: the rule set is part of what an event's `text` means.
 nare speaks one contract version at a time. There is no negotiation and no
 compatibility mode: a caller pins a version, and a nare that speaks another one
 refuses to run.
+
+## Changes in version 2
+
+A turn that called `ask` alongside other tools ended `blocked` under version 1.
+It now keeps working: the other calls run, each `ask` gets an error result
+telling the model to ask on its own, and the loop takes another turn. A turn
+of only `ask` calls still ends `blocked`, but only when every one of them
+succeeded. An `ask` the policy refuses, or that fails, never blocks.
+
+This changes when `blocked` is reported, so the version moved. No field, event
+type or exit code changed.
+
+A session written under version 1 cannot be resumed by this nare. A caller
+holding a `blocked` version 1 session has to start that task again.

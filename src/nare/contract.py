@@ -20,7 +20,7 @@ from nare.events import REDACTION_RULES, REDACTION_VERSION, EventType
 if TYPE_CHECKING:
     from nare.session import Status
 
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2
 
 # The release that produced a run. Read from the installed distribution when
 # there is one, so a wheel's metadata and what nare reports can never disagree;
