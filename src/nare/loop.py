@@ -90,6 +90,14 @@ _UNFINISHED: dict[StopReason, str] = {
     "refusal": "the model refused to continue",
 }
 
+# An ask beside other calls is not a question about the request: the turn has
+# already acted on one reading of it. Honouring it told the caller that work
+# was waiting on them when it was finished.
+ASK_NOT_ALONE = (
+    "ask was not recorded: call ask on its own, before making any change. "
+    "The other calls in this turn ran."
+)
+
 
 def _final_text(content: list[dict[str, Any]]) -> str:
     return "\n".join(b.get("text", "") for b in content if b.get("type") == "text")
@@ -275,6 +283,7 @@ async def step(
     for call in reply.tool_calls:
         s.events.append(Event("tool_use", call.name, dict(call.args)))
 
+    only_asks = all(call.name == "ask" for call in reply.tool_calls)
     results: list[dict[str, Any]] = []
     try:
         if unfinished:
@@ -285,10 +294,16 @@ async def step(
                 for call in reply.tool_calls
             ]
         else:
+            # A refused ask (the policy excludes it) still goes to dispatch, so
+            # the model learns it cannot ask at all rather than being told to
+            # retry it alone.
             # ponytail: tool calls dispatch sequentially. Models do emit
             # parallel tool calls; asyncio.gather is the upgrade once a run is
             # measurably slow because of it, and not before.
             for call in reply.tool_calls:
+                if call.name == "ask" and not only_asks and "ask" in policy.tools:
+                    results.append(tool_result(call.id, ASK_NOT_ALONE, is_error=True))
+                    continue
                 result = await dispatch(call, policy, approve)
                 results.append(result)
                 if "image" in result:
@@ -330,7 +345,9 @@ async def step(
         s.status = "error"
         s.error = unfinished
         s.events.append(Event("error", unfinished))
-    elif any(call.name == "ask" for call in reply.tool_calls):
+    elif only_asks and not any(r["is_error"] for r in results):
+        # Blocked on what happened, not on what the model called: a refused,
+        # unapproved or malformed ask came back as an error and asked nothing.
         s.status = "blocked"
         s.questions = questions_from(reply.tool_calls)
     return s

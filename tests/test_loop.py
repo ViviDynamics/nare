@@ -4,11 +4,12 @@ import nare
 from fake_provider import (
     Exploding,
     FakeProvider,
+    calls_reply,
     text_reply,
     thinking_reply,
     tool_reply,
 )
-from nare.loop import MAX_TURNS_DEFAULT, run, step
+from nare.loop import ASK_NOT_ALONE, MAX_TURNS_DEFAULT, run, step
 from nare.session import (
     Session,
     Status,
@@ -67,6 +68,130 @@ async def test_ask_blocks_the_session_with_questions() -> None:
     # The tool_result is still appended, so a resume picks up from a
     # well-formed transcript rather than a dangling tool_use.
     assert session.messages[-1].content[0]["type"] == "tool_result"
+
+
+async def test_two_asks_alone_block_with_every_question() -> None:
+    session = new_session("do the thing")
+    fake = FakeProvider(
+        [
+            calls_reply(
+                ("ask", {"questions": ["which file?"]}),
+                ("ask", {"questions": ["which value?", "which branch?"]}),
+            )
+        ]
+    )
+    await step(session, fake, approve_all, Policy())
+    assert session.status == "blocked"
+    assert session.questions == ["which file?", "which value?", "which branch?"]
+
+
+async def test_an_ask_beside_an_edit_is_rejected_and_the_edit_runs(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "shape.py"
+    target.write_text("def calc_area(): ...\n")
+    session = new_session("rename calc_area")
+    fake = FakeProvider(
+        [
+            calls_reply(
+                ("edit", {"path": str(target), "old": "calc_area", "new": "area"}),
+                ("ask", {"questions": ["should I also run the tests?"]}),
+            ),
+            text_reply("renamed"),
+        ]
+    )
+    await step(session, fake, approve_all, Policy())
+
+    assert target.read_text() == "def area(): ...\n"
+    assert session.status == "working"
+    assert session.questions == []
+    edit_result, ask_result = session.messages[-1].content
+    assert [edit_result["tool_use_id"], ask_result["tool_use_id"]] == [
+        "call_1",
+        "call_2",
+    ]
+    assert edit_result["is_error"] is False
+    assert ask_result["is_error"] is True
+    assert ask_result["content"] == ASK_NOT_ALONE
+    # The rejected ask is still visible to a reader of the stream.
+    assert [e.text for e in session.events if e.type == "tool_use"] == ["edit", "ask"]
+
+    finished = await step(session, fake, approve_all, Policy())
+    assert finished.status == "done"
+
+
+async def test_an_ask_the_policy_refuses_never_blocks() -> None:
+    session = new_session("do the thing")
+    fake = FakeProvider([tool_reply("ask", {"questions": ["which file?"]})])
+    await step(session, fake, approve_all, Policy(tools=frozenset({"read"})))
+    assert session.status == "working"
+    assert session.questions == []
+    assert "not allowed" in session.messages[-1].content[0]["content"]
+
+
+async def test_a_refused_ask_beside_other_calls_gets_the_policy_refusal(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "a.txt"
+    target.write_text("hi")
+    session = new_session("go")
+    fake = FakeProvider(
+        [
+            calls_reply(
+                ("read", {"path": str(target)}),
+                ("ask", {"questions": ["which?"]}),
+            )
+        ]
+    )
+    await step(session, fake, approve_all, Policy(tools=frozenset({"read"})))
+    ask_result = session.messages[-1].content[1]
+    assert ask_result["is_error"] is True
+    assert "not allowed" in ask_result["content"]
+    assert session.status == "working"
+
+
+async def test_an_ask_that_fails_never_blocks() -> None:
+    # No questions argument: ask() raises, dispatch returns an error, and a
+    # blocked session with nothing to ask would tell the caller nothing.
+    session = new_session("go")
+    await step(session, FakeProvider([tool_reply("ask", {})]), approve_all, Policy())
+    assert session.status == "working"
+    assert session.messages[-1].content[0]["is_error"] is True
+
+
+async def test_an_unapproved_ask_never_blocks() -> None:
+    session = new_session("go")
+    fake = FakeProvider([tool_reply("ask", {"questions": ["which?"]})])
+    await step(session, fake, lambda tool, args: False, Policy())
+    assert session.status == "working"
+    assert session.questions == []
+
+
+async def test_an_ask_alone_after_changes_is_honoured(tmp_path: Path) -> None:
+    # A model may find the ambiguity while working; nothing here can tell that
+    # apart from a follow-up offer, so a later lone ask blocks.
+    target = tmp_path / "out.txt"
+    session = new_session("go")
+    fake = FakeProvider(
+        [
+            tool_reply("write", {"path": str(target), "content": "hi"}),
+            tool_reply("ask", {"questions": ["which format?"]}),
+        ]
+    )
+    await drain(session, fake)
+    assert target.read_text() == "hi"
+    assert session.status == "blocked"
+    assert session.questions == ["which format?"]
+
+
+async def test_a_truncated_ask_is_an_error_not_blocked() -> None:
+    session = new_session("go")
+    fake = FakeProvider(
+        [tool_reply("ask", {"questions": ["which"]}, stop_reason="max_tokens")]
+    )
+    await step(session, fake, approve_all, Policy())
+    assert session.status == "error"
+    assert session.questions == []
 
 
 async def test_a_failing_tool_keeps_the_session_working() -> None:

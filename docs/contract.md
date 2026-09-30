@@ -1,6 +1,6 @@
 # The machine contract
 
-This is contract version 1.
+This is contract version 2.
 
 A caller drives nare as a subprocess and turns three things into decisions: the
 JSONL event stream on stdout, the session file, and the exit code. This document
@@ -16,7 +16,7 @@ redaction rule set this build speaks.
 
 ## Refusing a contract you do not speak
 
-    nare run --contract 1 --yes "..."
+    nare run --contract 2 --yes "..."
 
 When the caller's number and nare's differ, nare exits 2 before starting and
 writes nothing to stdout. A caller that pins the version it understands never
@@ -30,7 +30,7 @@ different contract is refused for the same reason.
 
 Exactly one optional prompt source is accepted: positional text, `--prompt-file
 PATH`, or positional `-` for stdin. The `nare contract` object advertises these
-routes under `prompt_input`; they are additive in contract version 1.
+routes under `prompt_input`; they are additive and keep the contract version.
 
     nare run --yes --jsonl --prompt-file review-prompt.txt --session review.json
     nare run --yes --jsonl - --session review.json < review-prompt.txt
@@ -78,7 +78,7 @@ redacted in milliseconds, not minutes.
 | Status | Exit | Meaning |
 | --- | --- | --- |
 | `done` | exit 0 | The run finished. `output` carries the answer when `--schema` was used. |
-| `blocked` | exit 0 | The model used `ask`. `questions` carries what it needs. This is an outcome, not a failure. |
+| `blocked` | exit 0 | The model used `ask` on its own, in a session whose policy allows it. `questions` carries what it needs. This is an outcome, not a failure. |
 | `error` | exit 1 | The run started and failed. `error` says how, `stop_reason` says what ended it. |
 | never started | exit 2 | No session existed: a bad invocation, an unreadable session file, or a refused contract. Nothing is written to stdout, so there is no `result` line. |
 
@@ -102,7 +102,7 @@ an unredacted event never exists.
 
 ## What changes the version
 
-Contract version 1 covers the event types and their fields, the `result`
+Contract version 2 covers the event types and their fields, the `result`
 object's fields, the session file's shape, the exit codes above, and the
 redaction rule set.
 
@@ -122,6 +122,20 @@ nare speaks one contract version at a time. There is no negotiation and no
 compatibility mode: a caller pins a version, and a nare that speaks another one
 refuses to run.
 
+## Changes in version 2
+
+A turn that called `ask` alongside other tools ended `blocked` under version 1.
+It now keeps working: the other calls run, each `ask` gets an error result
+telling the model to ask on its own, and the loop takes another turn. A turn
+of only `ask` calls still ends `blocked`, but only when every one of them
+succeeded. An `ask` the policy refuses, or that fails, never blocks.
+
+This changes when `blocked` is reported, so the version moved. No field, event
+type or exit code changed.
+
+A session written under version 1 cannot be resumed by this nare. A caller
+holding a `blocked` version 1 session has to start that task again.
+
 ## Stop reasons
 
 | stop_reason | Meaning |
@@ -136,7 +150,7 @@ refuses to run.
 | `budget` | Session token/USD ceiling reached, or USD accounting is unknown |
 | null | No completed response for this failure, e.g. provider exception |
 
-New stop reasons and additive usage/result/session fields keep contract 1.
+New stop reasons and additive usage/result/session fields keep the contract version.
 
 ## Budgets and partial results
 
@@ -287,7 +301,7 @@ nare run --yes --jsonl --stream --provider openai \
 callers construct a transport with `streaming=True`; `run()` emits live
 `progress` and `thinking` events while the model turn is still running. Direct
 `transport.turn()` still returns the same completed `Reply` as nonstreaming.
-The additive flag and streaming event timing keep contract version 1.
+The additive flag and streaming event timing keep the contract version.
 
 Live text is buffered at word boundaries so a secret split across provider
 chunks reaches the same redactor as a whole secret. An unfinished word or
@@ -334,7 +348,7 @@ an assurance about every model/proxy combination.
 
 ## Read-only image input
 
-    nare run --yes --jsonl --contract 1 --provider openai --model VISION_MODEL \
+    nare run --yes --jsonl --contract 2 --provider openai --model VISION_MODEL \
       --image-input --tools read --root "$PWD/images" --session image.json \
       "Read chart.png and describe it."
 
@@ -362,7 +376,7 @@ truncated or resized. `nare contract` advertises the flag, formats and caps unde
 The saved `tool_result.content` remains a text string. An image adds an optional
 `image` field with `type=image`, `width`, `height`, and `source` containing
 `type=base64`, `media_type`, `data`. This new optional field, flag and discovery field
-keep contract version 1; existing text, event, result and exit-code meanings remain
+keep the contract version; existing text, event, result and exit-code meanings remain
 unchanged. Image progress includes dimensions and MIME type, never the binary
 payload. Image data is opaque base64 preserved exactly in saved sessions; text
 fields still use the same redaction rules. Text redaction does not inspect image
