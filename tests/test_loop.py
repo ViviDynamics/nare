@@ -9,7 +9,7 @@ from fake_provider import (
     thinking_reply,
     tool_reply,
 )
-from nare.loop import ASK_NOT_ALONE, MAX_TURNS_DEFAULT, run, step
+from nare.loop import ASK_NOT_ALONE, ASK_NOT_DELIVERED, MAX_TURNS_DEFAULT, run, step
 from nare.session import (
     Session,
     Status,
@@ -160,13 +160,36 @@ async def test_an_ask_that_fails_never_blocks() -> None:
 
 
 async def test_an_ask_with_no_questions_never_blocks() -> None:
-    empties: list[list[str] | None] = [[], None]
+    empties: list[list[str] | str | None] = [[], None, "", [""], ["  "], "  "]
     for empty in empties:
         session = new_session("go")
         fake = FakeProvider([tool_reply("ask", {"questions": empty})])
         await step(session, fake, approve_all, Policy())
         assert session.status == "working"
         assert session.messages[-1].content[0]["is_error"] is True
+
+
+async def test_a_blank_beside_a_real_question_is_dropped() -> None:
+    session = new_session("go")
+    fake = FakeProvider([tool_reply("ask", {"questions": ["which?", " "]})])
+    await step(session, fake, approve_all, Policy())
+    assert session.status == "blocked"
+    assert session.questions == ["which?"]
+
+
+async def test_a_good_ask_beside_a_failed_one_is_not_reported_recorded() -> None:
+    session = new_session("go")
+    fake = FakeProvider(
+        [calls_reply(("ask", {"questions": ["which?"]}), ("ask", {"questions": []}))]
+    )
+    await step(session, fake, approve_all, Policy())
+    assert session.status == "working"
+    assert session.questions == []
+    good, bad = session.messages[-1].content
+    assert good["is_error"] is True
+    assert good["content"] == ASK_NOT_DELIVERED
+    assert bad["is_error"] is True
+    assert bad["content"] != ASK_NOT_DELIVERED
 
 
 async def test_an_unapproved_ask_never_blocks() -> None:
