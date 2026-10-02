@@ -41,6 +41,10 @@ ASK_NOT_ALONE = (
     "ask was not recorded: call ask on its own, before making any change. "
     "The other calls in this turn ran."
 )
+ASK_NOT_DELIVERED = (
+    "ask was not recorded: another ask in this turn failed, so nothing was "
+    "sent. Call ask again, once, with all your questions."
+)
 
 
 def _final_text(content: list[dict[str, Any]]) -> str:
@@ -172,11 +176,22 @@ async def step(
         ]
         s.messages.append(Message(role="user", content=results))
 
+    failed = any(r["is_error"] for r in results)
+    if only_asks and failed and not unfinished:
+        # The turn won't block, so an ask that succeeded was never delivered.
+        # Left saying "recorded", the model may stop and its question is lost.
+        # Rewritten in place: `results` is the content just appended.
+        results[:] = [
+            r
+            if r["is_error"]
+            else tool_result(r["tool_use_id"], ASK_NOT_DELIVERED, is_error=True)
+            for r in results
+        ]
     if unfinished:
         s.status = "error"
         s.error = unfinished
         s.events.append(Event("error", unfinished))
-    elif only_asks and not any(r["is_error"] for r in results):
+    elif only_asks and not failed:
         # Blocked on what happened, not on what the model called: a refused,
         # unapproved or malformed ask came back as an error and asked nothing.
         s.status = "blocked"

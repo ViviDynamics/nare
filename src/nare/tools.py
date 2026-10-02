@@ -101,7 +101,10 @@ def ask(questions: list[str]) -> str:
     An ask with nothing in it fails here, so the loop never reports blocked
     with no questions for the caller to answer.
     """
-    if not isinstance(questions, (str, list)) or not questions:
+    items = [questions] if isinstance(questions, str) else questions
+    if not isinstance(items, list) or not any(
+        isinstance(q, str) and q.strip() for q in items
+    ):
         raise ValueError("ask needs at least one question")
     return "Questions recorded. The session is blocked pending answers."
 
@@ -327,7 +330,8 @@ def questions_from(calls: Iterable[ToolCall]) -> list[str]:
             continue
         raw = call.args.get("questions")
         if isinstance(raw, str):
-            questions.append(raw)
-        elif isinstance(raw, Iterable):
-            questions.extend(str(q) for q in raw)
+            raw = [raw]
+        if isinstance(raw, Iterable):
+            # A blank beside a real question is nothing for the caller to answer.
+            questions.extend(str(q) for q in raw if str(q).strip())
     return questions
