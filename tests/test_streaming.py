@@ -538,6 +538,7 @@ async def test_anthropic_thinking_and_split_tool_arguments() -> None:
         "OPENAI_API_KEY=" + "c" * 25,
         '"password": "privatevalue"',
         "Authorization: Bearer privatevalue",
+        'password: " privatevalue',
         "password: secretvalue",
         "Authorization: Bearer tokenvalue",
         "password: authvalue password: credentialvalue",

@@ -125,7 +125,7 @@ class Event:
 # next delta. Hold it, and every unfinished word (including key prefixes),
 # until the existing redactor has the complete unit to inspect.
 _MAYBE_CREDENTIAL = re.compile(
-    r"""(?i)["']?\s*(?:[:=]\s*["']?(?:(?:bearer|basic|token)\s*)?)?\Z"""
+    r"""(?i)["']?\s*(?:[:=]\s*["']?\s*(?:(?:bearer|basic|token)\s*)?)?\Z"""
 )
 
 
