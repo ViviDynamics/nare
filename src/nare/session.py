@@ -66,6 +66,7 @@ class Session:
     last_input_tokens: int = 0
     last_input_messages: int = 0
     last_input_chars: int = 0
+    last_input_image_input: bool | None = None
     policy: dict[str, Any] = field(default_factory=dict)
     budget: dict[str, Any] = field(default_factory=dict)
     output: Any = None

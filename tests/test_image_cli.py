@@ -132,7 +132,13 @@ def backend() -> Iterator[tuple[str, list[dict[str, Any]]]]:
 
 
 def invoke_image(
-    provider: str, url: str, root: Path, enabled: bool, resume: bool = False
+    provider: str,
+    url: str,
+    root: Path,
+    enabled: bool,
+    resume: bool = False,
+    budget: str | None = None,
+    window: str = "32000",
 ) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["OPENAI_API_KEY" if provider == "openai" else "ANTHROPIC_API_KEY"] = (
@@ -161,10 +167,12 @@ def invoke_image(
         "--root",
         str(root),
         "--context-window",
-        "32000",
+        window,
         "--session",
         str(root / "session.json"),
     ]
+    if budget is not None:
+        args += ["--budget-tokens", budget]
     if enabled:
         args.append("--image-input")
     if resume:
@@ -218,3 +226,26 @@ def test_actual_cli_read_only_image_roundtrip(
         resumed_saved = json.loads((tmp_path / "session.json").read_text())
         assert resumed_saved["messages"][2]["content"][0]["image"] == result["image"]
         (tmp_path / "resume-stdout.jsonl").write_text(resumed.stdout)
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+def test_cli_budget_resume_ignores_withheld_large_image_context(
+    tmp_path: Path, backend: tuple[str, list[dict[str, Any]]], provider: str
+) -> None:
+    url, requests = backend
+    picture(tmp_path / "chart.png", size=(2048, 2048))
+    stopped = invoke_image(provider, url, tmp_path, True, budget="15")
+    assert stopped.returncode == 1, stopped.stderr
+    assert json.loads(stopped.stdout.splitlines()[-1])["stop_reason"] == "budget"
+    assert len(requests) == 1
+    resumed = invoke_image(
+        provider, url, tmp_path, False, resume=True, budget="30", window="8192"
+    )
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    result = json.loads(resumed.stdout.splitlines()[-1])
+    assert result["status"] == "done" and result["budget"]["used_tokens"] == 30
+    assert len(requests) == 2 and "base64" not in str(requests[-1])
+    saved = json.loads((tmp_path / "session.json").read_text())
+    assert "image" in saved["messages"][2]["content"][0]
+    (tmp_path / "budget-stop.jsonl").write_text(stopped.stdout)
+    (tmp_path / "budget-resume.jsonl").write_text(resumed.stdout)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
+from typing import Any
 
 import pytest
 from PIL import Image
@@ -239,3 +240,57 @@ def test_context_uses_image_pixels_and_compacts_old_images() -> None:
     assert report is not None and report.elided == 1
     assert "image" not in session.messages[2].content[0]
     assert "Rerun the tool" in session.messages[2].content[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_custom_text_transport_never_receives_saved_image_bytes() -> None:
+    from dataclasses import asdict
+
+    from nare.loop import run
+    from nare.session import Message, Usage, new_session
+    from nare.transport import Reply
+
+    seen: list[dict[str, Any]] = []
+
+    class TextTransport:
+        model = "text-only"
+
+        async def context_window(self) -> int:
+            return 32000
+
+        async def turn(
+            self, messages: list[Message], tools: list[dict[str, Any]]
+        ) -> Reply:
+            seen.extend(asdict(message) for message in messages)
+            return Reply(
+                [{"type": "text", "text": "done"}],
+                [],
+                Usage(input=1, output=1),
+                "end_turn",
+            )
+
+    session = new_session("hi")
+    original = {
+        "type": "image",
+        "width": 16,
+        "height": 16,
+        "source": {"type": "base64", "media_type": "image/png", "data": "AAsecretAA=="},
+    }
+    session.messages.append(
+        Message(
+            "user",
+            [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "c1",
+                    "content": "image read",
+                    "image": original,
+                }
+            ],
+        )
+    )
+    async for _ in run(session, transport=TextTransport()):
+        pass
+    assert session.status == "done"
+    assert "base64" not in str(seen) and "image withheld" in str(seen)
+    assert session.messages[1].content[0]["image"] == original

@@ -369,7 +369,7 @@ fields still use the same redaction rules. Text redaction does not inspect image
 pixels or metadata embedded in the binary file.
 
 Resume with `--image-input` to resend saved images to a capable model. Without it,
-native serializers withhold historical image bytes and replace them with a named
+the loop and native serializers withhold historical image bytes and replace them with a named
 explanation; the saved originals remain available. No image file needs to remain
 on disk for those historical results. An older image can be elided by context
 compaction, preserving the tool pairing and instructing the model to rerun `read`.
@@ -377,7 +377,10 @@ compaction, preserving the tool pairing and instructing the model to rerun `read
 The context estimate excludes base64 string length and adds four estimated tokens
 per 32×32 image patch, rounded up on each edge. This is a heuristic, not a provider
 tokenizer or a universal upper bound. Later estimates calibrate to actual completed
-provider input usage. Cumulative budgets account for actual provider input/output
+provider input usage. Context estimation and compaction ignore withheld images;
+a change in image capability starts fresh context calibration. The optional
+`last_input_image_input` session field records that calibration capability.
+Cumulative budgets account for actual provider input/output
 and disjoint cache tokens, including image input, with the existing post-step
 crossing-turn overshoot and done-wins precedence.
 
