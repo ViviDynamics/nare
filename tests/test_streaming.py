@@ -538,11 +538,16 @@ async def test_anthropic_thinking_and_split_tool_arguments() -> None:
         "OPENAI_API_KEY=" + "c" * 25,
         '"password": "privatevalue"',
         "Authorization: Bearer privatevalue",
+        "password: secretvalue",
+        "Authorization: Bearer tokenvalue",
+        "password: authvalue password: credentialvalue",
     ],
 )
 def test_live_redaction_is_safe_at_every_chunk_boundary(credential: str) -> None:
     from nare.events import LiveText, redact
 
+    live = LiveText()
+    assert live.feed(credential + " ") + live.finish() == redact(credential + " ")
     for boundary in range(1, len(credential)):
         live = LiveText()
         output = (
@@ -611,3 +616,35 @@ async def test_incomplete_anthropic_tool_json_never_overwrites_file(
     assert session.messages[-1].content[0]["is_error"]
     assert "JSON" in session.messages[-1].content[0]["content"]
     assert session.usage.total_tokens == 15
+
+
+@pytest.mark.asyncio
+async def test_anthropic_initial_block_text_is_live() -> None:
+    from nare.transport import Delta
+
+    gate = asyncio.Event()
+    chunks = anthropic_chunks()
+    start = json.loads(chunks[1].decode().split("data: ")[1])
+    start["content_block"]["text"] = "hello "
+    data = Bytes([chunks[0] + sse(start, "content_block_start"), *chunks[3:]], gate)
+    transport = AnthropicTransport(
+        model="m",
+        api_key="test",
+        streaming=True,
+        http_client=httpx2.AsyncClient(
+            transport=httpx2.MockTransport(
+                lambda request: httpx2.Response(
+                    200, headers={"content-type": "text/event-stream"}, stream=data
+                )
+            )
+        ),
+    )
+    stream = transport.stream_turn([], [])
+    try:
+        delta = await asyncio.wait_for(anext(stream), 1)
+        assert isinstance(delta, Delta)
+        assert delta.text == "hello "
+        assert not gate.is_set()
+    finally:
+        await stream.aclose()
+    assert data.closed

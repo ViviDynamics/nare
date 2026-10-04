@@ -139,12 +139,21 @@ class LiveText:
         if not spaces:
             return ""
         boundary = spaces[-1].end()
-        for word in _CREDENTIAL_RUN.finditer(self.pending[:boundary]):
-            if _CREDENTIAL_KEYWORD.search(word.group()) and _MAYBE_CREDENTIAL.fullmatch(
-                self.pending[word.end() : boundary]
-            ):
-                boundary = min(boundary, word.start())
+        complete_value_end = 0
+        prefix = self.pending[:boundary]
+        for word in _CREDENTIAL_RUN.finditer(prefix):
+            if word.start() < complete_value_end:
+                continue
+            if not _CREDENTIAL_KEYWORD.search(word.group()):
+                continue
+            if _MAYBE_CREDENTIAL.fullmatch(prefix[word.end() :]):
+                boundary = word.start()
                 break
+            tail = _CREDENTIAL_TAIL.match(prefix, word.end())
+            if tail is not None:
+                # A keyword inside a completed value belongs to this assignment,
+                # so withholding it would split the value from its redaction rule.
+                complete_value_end = tail.end()
         output = redact(self.pending[:boundary])
         self.pending = self.pending[boundary:]
         return output

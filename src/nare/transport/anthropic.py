@@ -234,7 +234,15 @@ class AnthropicTransport:
             complete_usage = False
             fragments: dict[int, list[str]] = {}
             async for event in stream:
-                if event.type == "content_block_delta":
+                if event.type == "content_block_start":
+                    if event.content_block.type == "text" and event.content_block.text:
+                        yield Delta("progress", event.content_block.text)
+                    elif (
+                        event.content_block.type == "thinking"
+                        and event.content_block.thinking
+                    ):
+                        yield Delta("thinking", event.content_block.thinking)
+                elif event.type == "content_block_delta":
                     if event.delta.type == "text_delta":
                         yield Delta("progress", event.delta.text)
                     elif event.delta.type == "thinking_delta":
