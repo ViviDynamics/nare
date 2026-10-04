@@ -255,6 +255,22 @@ async def step(
             for call in reply.tool_calls:
                 result = await dispatch(call, policy, approve)
                 results.append(result)
+                if "image" in result:
+                    image = result["image"]
+                    s.events.append(
+                        Event(
+                            "progress",
+                            result["content"],
+                            {
+                                "tool": call.name,
+                                "image": {
+                                    "media_type": image["source"]["media_type"],
+                                    "width": image["width"],
+                                    "height": image["height"],
+                                },
+                            },
+                        )
+                    )
                 if call.name in policy.external:
                     s.events.append(
                         Event(
@@ -393,6 +409,17 @@ async def _run(
         )
     )
     policy = Policy() if policy is None else policy
+    policy = replace(
+        policy,
+        image_input=(
+            getattr(transport, "supports_image_input", False) is True
+            and getattr(transport, "image_input", False) is True
+        ),
+        image_model=(
+            f"{type(transport).__name__}/model="
+            f"{getattr(transport, 'model', 'unspecified')}"
+        ),
+    )
     if schema is not None and not session.schema_stated:
         # Said once, in the transcript rather than in a system prompt: a resume
         # carries it forward, and a reader can see exactly what the model was

@@ -310,6 +310,11 @@ class Policy:
     def recorded(self) -> dict[str, Any]:
         """What the session stores, so a run's permissions are readable after it."""
         return {
+            **(
+                {"image_input": True, "image_model": self.image_model}
+                if self.image_input
+                else {}
+            ),
             "tools": sorted(self.tools),
             "root": None if self.root is None else str(self.root),
         }

@@ -67,6 +67,10 @@ it needs one answer and no side effects. `--root DIR` confines `read`,
 including through a symlink. Both are recorded in the session, so a run's
 permissions can be read afterwards rather than inferred.
 
+`--image-input` declares that the selected model accepts PNG/JPEG input. It lets
+`read` return capped images under the same root and permissions; omitted, image
+reads return a named tool error. See [the image contract](docs/contract.md#read-only-image-input).
+
 `--root` gives `bash` that directory to start in. It is not a jail: a shell
 can still walk upward, so real confinement stays the sandbox's job.
 

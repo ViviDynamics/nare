@@ -12,12 +12,12 @@ Out: screenshots, image prompt arguments, writes, model selection or capability 
 - Read returns its existing text result plus an optional image field. Text tool content and event/result fields keep their meanings; contract1 gains this optional field and flag.
 - PNG/JPEG are validated with Pillow, limited to4MiB compressed bytes,20million pixels and8000pixels on either edge. No resizing/truncation changes the caller's image.
 - Image data is opaque base64 in saved sessions, preserved byte-for-byte across redaction; text fields still use the existing rules. JSONL contains image metadata, not binary payload.
-- Context estimate excludes base64 character length and uses a documented conservative image patch heuristic (4tokens per32x32patch), calibrated to actual final provider usage after a turn. Cumulative budgets still use actual provider tokens.
+- Context estimate excludes base64 character length and uses a documented image patch heuristic (4tokens per32x32patch), calibrated to actual final provider usage after a turn. Cumulative budgets still use actual provider tokens.
 
 ## Tasks
 - [x] 1. Failing read tests: PNG/JPEG blocks, unsupported named error, root/symlink, denied tool/approval, malformed/oversized images; implement bounded image reader.
 - [x] 2. Failing serializer/persistence/context tests: real native payloads on both rails; binary preserved, resumable, historical images withheld if disabled, compaction elides older images.
-- [ ] 3. Actual CLI two-turn HTTP fixtures validate image pixels and answer; disabled models complete with named error. Document contract and discovery.
+- [x] 3. Actual CLI two-turn HTTP fixtures validate image pixels and answer; disabled models complete with named error. Document contract and discovery.
 - [ ] 4. Preflight, independent review, CI, merge, usable release.
 
 ## Protocol references

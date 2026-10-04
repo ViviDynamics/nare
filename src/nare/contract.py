@@ -49,6 +49,7 @@ def describe() -> dict[str, Any]:
     the version is worth a function-level import.
     """
     from nare.session import Status
+    from nare.tools import MAX_IMAGE_BYTES, MAX_IMAGE_EDGE, MAX_IMAGE_PIXELS
 
     return {
         "contract": CONTRACT_VERSION,
@@ -57,6 +58,14 @@ def describe() -> dict[str, Any]:
         "never_started": NEVER_STARTED,
         "statuses": list(get_args(Status)),
         "event_types": list(get_args(EventType)),
+        "image_input": {
+            "flag": "--image-input",
+            "tool": "read",
+            "media_types": ["image/png", "image/jpeg"],
+            "max_bytes": MAX_IMAGE_BYTES,
+            "max_pixels": MAX_IMAGE_PIXELS,
+            "max_edge": MAX_IMAGE_EDGE,
+        },
         "prompt_input": {
             "file_flag": "--prompt-file",
             "stdin_positional": "-",

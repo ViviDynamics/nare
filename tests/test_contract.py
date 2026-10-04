@@ -198,3 +198,14 @@ def test_contract_describes_prompt_input_routes() -> None:
         "encoding": "utf-8",
         "exclusive": True,
     }
+
+
+def test_contract_describes_read_image_input() -> None:
+    assert describe()["image_input"] == {
+        "flag": "--image-input",
+        "tool": "read",
+        "media_types": ["image/png", "image/jpeg"],
+        "max_bytes": 4194304,
+        "max_pixels": 20000000,
+        "max_edge": 8000,
+    }
