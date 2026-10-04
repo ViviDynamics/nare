@@ -24,6 +24,24 @@ from nare.transport import StopReason, Transport
 
 MAX_TURNS_DEFAULT = 50
 
+
+def budget_record(s: Session) -> dict[str, Any]:
+    return {**s.budget, "used_tokens": s.usage.total_tokens}
+
+
+def _check_budget(s: Session) -> bool:
+    limit = s.budget.get("tokens")
+    if limit is None or s.usage.total_tokens < limit:
+        return False
+    s.status = "error"
+    s.stop_reason = "budget"
+    s.error = f"token budget exhausted: used {s.usage.total_tokens}, limit {limit}"
+    s.events.append(
+        Event("error", s.error, {"budget": budget_record(s), "usage": asdict(s.usage)})
+    )
+    return True
+
+
 # A turn the vendor cut off, or that the model refused, is not a finished one.
 # The conductor adapter maps done -> completed, so reporting either as done
 # would tell it the task succeeded. The transport already takes care to map
@@ -87,6 +105,13 @@ async def step(
             asdict(reply.usage),
         )
     )
+
+    # A tool turn can carry already valid findings alongside its calls. Keep
+    # the latest schema-valid document without claiming the task completed.
+    if schema is not None:
+        candidate = _final_text(reply.content)
+        if not _answer_errors(candidate, schema):
+            s.output = extract_json(candidate)
 
     unfinished = _UNFINISHED.get(reply.stop_reason)
     s.stop_reason = reply.stop_reason
@@ -175,12 +200,21 @@ async def run(
     policy: Policy | None = None,
     schema: dict[str, Any] | None = None,
     max_turns: int = MAX_TURNS_DEFAULT,
+    budget_tokens: int | None = None,
 ) -> AsyncIterator[Event]:
     """Advance the session to a terminal status, yielding events as they occur.
 
     The only place that catches broadly: a harness reports failures as events
     and a status, it does not hand a traceback to its caller.
     """
+    if budget_tokens is not None:
+        if (
+            isinstance(budget_tokens, bool)
+            or not isinstance(budget_tokens, int)
+            or budget_tokens <= 0
+        ):
+            raise ValueError("budget_tokens must be a positive integer")
+        session.budget["tokens"] = budget_tokens
     policy = Policy() if policy is None else policy
     if schema is not None and not session.schema_stated:
         # Said once, in the transcript rather than in a system prompt: a resume
@@ -197,7 +231,9 @@ async def run(
     # instantly with a message that reads like a runaway loop.
     budget_from = session.turns
     while session.status == "working":
-        if session.turns - budget_from >= max_turns:
+        if _check_budget(session):
+            pass
+        elif session.turns - budget_from >= max_turns:
             session.status = "error"
             session.stop_reason = "max_turns"
             session.error = f"stopped after {max_turns} turns"
@@ -205,6 +241,8 @@ async def run(
         else:
             try:
                 await step(session, transport, approve, policy, schema)
+                if session.status not in ("done", "blocked"):
+                    _check_budget(session)
             except Exception as exc:
                 session.status = "error"
                 # The last completed turn's reason describes that turn, not

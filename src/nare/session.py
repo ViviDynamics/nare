@@ -33,6 +33,11 @@ class Usage:
     cache_read: int = 0
     cache_write: int = 0
 
+    @property
+    def total_tokens(self) -> int:
+        """Disjoint provider-normalized categories, counted once."""
+        return self.input + self.output + self.cache_read + self.cache_write
+
     def __add__(self, other: Usage) -> Usage:
         return Usage(
             input=self.input + other.input,
@@ -53,6 +58,7 @@ class Session:
     error: str | None = None
     turns: int = 0
     policy: dict[str, Any] = field(default_factory=dict)
+    budget: dict[str, Any] = field(default_factory=dict)
     output: Any = None
     schema_retried: bool = False
     schema_stated: bool = False

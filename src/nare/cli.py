@@ -21,7 +21,7 @@ from typing import Any
 from nare import __version__
 from nare.contract import CONTRACT_VERSION, EXIT_CODES, NEVER_STARTED, describe
 from nare.events import Event, redact
-from nare.loop import MAX_TURNS_DEFAULT, run
+from nare.loop import MAX_TURNS_DEFAULT, budget_record, run
 from nare.schema import UnsupportedSchema, check_supported
 from nare.session import Session, append_user_text, dumps, loads, new_session
 from nare.tools import TOOLS, Policy, approve_all
@@ -80,6 +80,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument(
         "--max-tokens", type=int, help="output token cap (default 8192)"
+    )
+    run_parser.add_argument(
+        "--budget-tokens",
+        type=int,
+        default=os.environ.get("NARE_BUDGET_TOKENS"),
+        help="cumulative session token budget, including input, output and cache (env: NARE_BUDGET_TOKENS)",
     )
     run_parser.add_argument(
         "--effort",
@@ -197,7 +203,6 @@ def _load_or_new(args: argparse.Namespace) -> Session:
     # Per-run state, like the budget in run(): a resume that inherited the
     # spent correction round would end on its first imperfect answer.
     session.schema_retried = False
-    session.output = None
     session.error = None
     session.stop_reason = None
     return session
@@ -220,6 +225,7 @@ def _emit_result(session: Session, jsonl: bool) -> None:
                     "status": session.status,
                     "questions": session.questions,
                     "usage": asdict(session.usage),
+                    "budget": budget_record(session),
                     "stop_reason": session.stop_reason,
                     "turns": session.turns,
                     "contract": CONTRACT_VERSION,
@@ -278,6 +284,7 @@ async def _execute(
             policy=policy,
             schema=schema,
             max_turns=args.max_turns,
+            budget_tokens=args.budget_tokens,
         ):
             _emit(event, args.jsonl)
             # Saved per turn, not once at the end. SIGTERM's default handler
@@ -366,6 +373,8 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         args.session = args.resume
 
     try:
+        if args.budget_tokens is not None and args.budget_tokens <= 0:
+            raise ValueError("--budget-tokens must be a positive integer")
         policy = policy_from_args(args)
         schema = schema_from_args(args)
         session = _load_or_new(args)
