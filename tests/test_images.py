@@ -294,3 +294,40 @@ async def test_custom_text_transport_never_receives_saved_image_bytes() -> None:
     assert session.status == "done"
     assert "base64" not in str(seen) and "image withheld" in str(seen)
     assert session.messages[1].content[0]["image"] == original
+
+
+@pytest.mark.parametrize("long_text", [False, True])
+def test_disabled_compaction_preserves_withheld_image(long_text: bool) -> None:
+    from nare.compact import compact, estimate
+    from nare.session import Message, new_session
+
+    session = new_session("hi")
+    image = {
+        "type": "image",
+        "width": 2048,
+        "height": 2048,
+        "source": {"type": "base64", "media_type": "image/png", "data": "AAsecretAA=="},
+    }
+    session.messages += [
+        Message("assistant", [{"type": "tool_use", "name": "read", "id": "c1"}]),
+        Message(
+            "user",
+            [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "c1",
+                    "is_error": False,
+                    "content": "x" * 2000 if long_text else "image read",
+                    "image": image,
+                }
+            ],
+        ),
+        Message("assistant", [{"type": "text", "text": "first"}]),
+        Message("user", [{"type": "text", "text": "x" * 3200}]),
+        Message("assistant", [{"type": "text", "text": "second"}]),
+    ]
+    before = estimate(session, image_input=False)
+    report = compact(session, 1000, image_input=False)
+    assert session.messages[2].content[0]["image"] == image
+    assert (report is not None) == long_text
+    assert estimate(session, image_input=False) <= before

@@ -371,8 +371,10 @@ pixels or metadata embedded in the binary file.
 Resume with `--image-input` to resend saved images to a capable model. Without it,
 the loop and native serializers withhold historical image bytes and replace them with a named
 explanation; the saved originals remain available. No image file needs to remain
-on disk for those historical results. An older image can be elided by context
+on disk for those historical results. When images are enabled, an older image can be elided by context
 compaction, preserving the tool pairing and instructing the model to rerun `read`.
+
+Withheld images remain stored even if compaction elides accompanying text.
 
 The context estimate excludes base64 string length and adds four estimated tokens
 per 32×32 image patch, rounded up on each edge. This is a heuristic, not a provider

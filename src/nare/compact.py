@@ -98,10 +98,11 @@ def compact(
                 f"{PREFIX} {len(content)} chars of output from turn {turn}. "
                 "Rerun the tool if you need it.]"
             )
-            if len(stub) >= len(content) and "image" not in block:
+            if len(stub) >= len(content) and not (image_input and "image" in block):
                 continue
             block["content"] = stub
-            block.pop("image", None)
+            if image_input:
+                block.pop("image", None)
             elided += 1
     # ponytail: model-written summaries may follow elision if measured runs
     # keep reaching the context stop. No extra model call is made here.
