@@ -57,6 +57,12 @@ def describe() -> dict[str, Any]:
         "never_started": NEVER_STARTED,
         "statuses": list(get_args(Status)),
         "event_types": list(get_args(EventType)),
+        "prompt_input": {
+            "file_flag": "--prompt-file",
+            "stdin_positional": "-",
+            "encoding": "utf-8",
+            "exclusive": True,
+        },
         # The redaction is part of what a caller relies on: event `text` and
         # whatever a caller pipes through `nare redact` carry it, and a rule
         # change is a change to what those mean.
