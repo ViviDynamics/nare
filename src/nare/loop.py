@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator
 from dataclasses import asdict
 from typing import Any
 
+from nare.compact import compact, estimate
 from nare.events import Event
 from nare.schema import extract_json, validate
 from nare.session import Message, Session, append_user_text
@@ -87,8 +88,32 @@ async def step(
     approve: Approve,
     policy: Policy,
     schema: dict[str, Any] | None = None,
+    context_window: int = 32000,
 ) -> Session:
+    report = compact(s, context_window)
+    if report is not None:
+        s.events.append(
+            Event(
+                "progress",
+                f"compacted: elided {report.elided} tool results, ~{report.before:.0f} -> ~{report.after:.0f} tokens",
+                {"compaction": asdict(report)},
+            )
+        )
+    size = estimate(s)
+    if size >= context_window:
+        s.status = "error"
+        s.stop_reason = "context"
+        s.error = f"context estimate {size:.0f} reaches window {context_window}"
+        s.events.append(Event("error", s.error))
+        return s
+    input_messages = len(s.messages)
+    input_chars = len(json.dumps([asdict(m) for m in s.messages]))
     reply = await transport.turn(s.messages, policy.schemas())
+    s.last_input_tokens = (
+        reply.usage.input + reply.usage.cache_read + reply.usage.cache_write
+    )
+    s.last_input_messages = input_messages
+    s.last_input_chars = input_chars
     s.usage += reply.usage
     s.turns += 1
     s.messages.append(Message(role="assistant", content=reply.content))
@@ -201,6 +226,7 @@ async def run(
     schema: dict[str, Any] | None = None,
     max_turns: int = MAX_TURNS_DEFAULT,
     budget_tokens: int | None = None,
+    context_window: int | None = None,
 ) -> AsyncIterator[Event]:
     """Advance the session to a terminal status, yielding events as they occur.
 
@@ -215,6 +241,25 @@ async def run(
         ):
             raise ValueError("budget_tokens must be a positive integer")
         session.budget["tokens"] = budget_tokens
+    if context_window is not None and (
+        isinstance(context_window, bool)
+        or not isinstance(context_window, int)
+        or context_window <= 0
+    ):
+        raise ValueError("context_window must be a positive integer")
+    window = context_window or 32000
+    session.events.append(
+        Event(
+            "progress",
+            f"context window {window} ({'flag' if context_window else 'default'})",
+            {
+                "context_window": {
+                    "tokens": window,
+                    "source": "flag" if context_window else "default",
+                }
+            },
+        )
+    )
     policy = Policy() if policy is None else policy
     if schema is not None and not session.schema_stated:
         # Said once, in the transcript rather than in a system prompt: a resume
@@ -240,7 +285,7 @@ async def run(
             session.events.append(Event("error", session.error))
         else:
             try:
-                await step(session, transport, approve, policy, schema)
+                await step(session, transport, approve, policy, schema, window)
                 if session.status not in ("done", "blocked"):
                     _check_budget(session)
             except Exception as exc:

@@ -135,7 +135,7 @@ async def test_run_drives_to_done_and_yields_every_event(tmp_path: Path) -> None
         ]
     )
     kinds = await drain(session, fake)
-    assert kinds == ["cost", "tool_use", "progress", "cost", "output"]
+    assert kinds == ["progress", "cost", "tool_use", "progress", "cost", "output"]
     assert session.status == "done"
     assert session.turns == 2
     assert target.read_text() == "hi"
@@ -165,7 +165,7 @@ async def test_a_transport_failure_becomes_status_error() -> None:
     assert session.status == "error"
     assert session.error is not None
     assert "connection reset" in session.error
-    assert kinds == ["error"]
+    assert kinds == ["progress", "error"]
 
 
 async def test_events_are_drained_not_hoarded() -> None:

@@ -57,6 +57,9 @@ class Session:
     stop_reason: str | None = None
     error: str | None = None
     turns: int = 0
+    last_input_tokens: int = 0
+    last_input_messages: int = 0
+    last_input_chars: int = 0
     policy: dict[str, Any] = field(default_factory=dict)
     budget: dict[str, Any] = field(default_factory=dict)
     output: Any = None

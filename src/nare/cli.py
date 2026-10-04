@@ -82,6 +82,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-tokens", type=int, help="output token cap (default 8192)"
     )
     run_parser.add_argument(
+        "--context-window",
+        type=int,
+        default=os.environ.get("NARE_CONTEXT_WINDOW"),
+        help="context window for deterministic elision (env: NARE_CONTEXT_WINDOW; else backend or 32000)",
+    )
+    run_parser.add_argument(
         "--budget-tokens",
         type=int,
         default=os.environ.get("NARE_BUDGET_TOKENS"),
@@ -285,6 +291,7 @@ async def _execute(
             schema=schema,
             max_turns=args.max_turns,
             budget_tokens=args.budget_tokens,
+            context_window=args.context_window,
         ):
             _emit(event, args.jsonl)
             # Saved per turn, not once at the end. SIGTERM's default handler
@@ -375,6 +382,8 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     try:
         if args.budget_tokens is not None and args.budget_tokens <= 0:
             raise ValueError("--budget-tokens must be a positive integer")
+        if args.context_window is not None and args.context_window <= 0:
+            raise ValueError("--context-window must be a positive integer")
         policy = policy_from_args(args)
         schema = schema_from_args(args)
         session = _load_or_new(args)

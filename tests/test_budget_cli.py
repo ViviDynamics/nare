@@ -297,3 +297,31 @@ def test_blocked_wins_on_crossing_turn(tmp_path: Path) -> None:
     assert proc.returncode == 0
     assert lines[-1]["status"] == "blocked"
     assert lines[-1]["budget"]["used_tokens"] == 15
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "1.5", "bad"])
+def test_invalid_windows_never_start(tmp_path: Path, value: str) -> None:
+    proc, lines, calls = invoke(tmp_path, [text()], "go", f"--context-window={value}")
+    assert proc.returncode == 2
+    assert lines == []
+    assert calls == []
+
+
+def test_window_env_and_flag_precedence(tmp_path: Path) -> None:
+    proc, lines, calls = invoke(
+        tmp_path, [text()], "go", env={"NARE_CONTEXT_WINDOW": "1"}
+    )
+    assert proc.returncode == 1
+    assert calls == []
+    assert lines[-1]["stop_reason"] == "context"
+    proc, lines, calls = invoke(
+        tmp_path,
+        [text()],
+        "go",
+        "--context-window",
+        "1000",
+        env={"NARE_CONTEXT_WINDOW": "bad"},
+    )
+    assert proc.returncode == 0
+    assert len(calls) == 1
+    assert lines[0]["detail"]["context_window"]["tokens"] == 1000
