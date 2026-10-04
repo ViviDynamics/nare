@@ -5,13 +5,14 @@ an async generator: resumable by construction, deterministic under test.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
-from dataclasses import asdict
+from collections.abc import AsyncGenerator, AsyncIterator
+from dataclasses import asdict, replace
 from typing import Any
 
 from nare.accounting import Prices, finite_number, turn_usage
 from nare.compact import compact, estimate
 from nare.events import Event
+from nare.mcp import Server, connect
 from nare.schema import extract_json, validate
 from nare.session import Message, Session, append_user_text
 from nare.tools import (
@@ -232,7 +233,16 @@ async def step(
             # parallel tool calls; asyncio.gather is the upgrade once a run is
             # measurably slow because of it, and not before.
             for call in reply.tool_calls:
-                results.append(await dispatch(call, policy, approve))
+                result = await dispatch(call, policy, approve)
+                results.append(result)
+                if call.name in policy.external:
+                    s.events.append(
+                        Event(
+                            "progress",
+                            f"MCP result: {call.name}",
+                            {"tool": call.name, "tool_result": result},
+                        )
+                    )
     finally:
         # Every tool_use gets an answer even if dispatch dies mid-way. A
         # transcript ending in an unanswered tool_use is rejected by the
@@ -254,7 +264,7 @@ async def step(
     return s
 
 
-async def run(
+async def _run(
     session: Session,
     *,
     transport: Transport,
@@ -341,3 +351,60 @@ async def run(
                 session.events.append(Event("error", session.error))
         while session.events:
             yield session.events.pop(0)
+
+
+async def run(
+    session: Session,
+    *,
+    transport: Transport,
+    approve: Approve = approve_all,
+    policy: Policy | None = None,
+    schema: dict[str, Any] | None = None,
+    max_turns: int = MAX_TURNS_DEFAULT,
+    budget_tokens: int | None = None,
+    context_window: int | None = None,
+    budget_usd: float | None = None,
+    prices: Prices | None = None,
+    mcp_servers: dict[str, Server] | None = None,
+    mcp_allow_all: bool = False,
+) -> AsyncGenerator[Event, None]:
+    configure_budgets(session, budget_tokens, budget_usd)
+    if context_window is not None and (
+        isinstance(context_window, bool)
+        or not isinstance(context_window, int)
+        or context_window <= 0
+    ):
+        raise ValueError("context_window must be a positive integer")
+    if session.status == "working" and check_budget(session):
+        while session.events:
+            yield session.events.pop(0)
+        return
+    try:
+        async with connect(mcp_servers or {}) as external:
+            base = policy or Policy()
+            names = (
+                base.tools | external.keys()
+                if policy is None or mcp_allow_all
+                else base.tools
+            )
+            active = replace(
+                base, tools=frozenset(names), external=external, pending=frozenset()
+            )
+            async for event in _run(
+                session,
+                transport=transport,
+                approve=approve,
+                policy=active,
+                schema=schema,
+                max_turns=max_turns,
+                budget_tokens=budget_tokens,
+                context_window=context_window,
+                budget_usd=budget_usd,
+                prices=prices,
+            ):
+                yield event
+    except Exception as exc:
+        session.status = "error"
+        session.stop_reason = "mcp"
+        session.error = f"MCP connection failed: {exc}"
+        yield Event("error", session.error)
