@@ -78,6 +78,7 @@ def make_transport(
     effort: Literal["low", "medium", "high"] | None = None,
     system: str | None = None,
     streaming: bool = False,
+    image_input: bool = False,
 ) -> Transport:
     """Build a transport from configuration.
 
@@ -99,6 +100,7 @@ def make_transport(
                 effort=effort,
                 system=system,
                 streaming=streaming,
+                image_input=image_input,
             )
         case "openai":
             from nare.transport.openai import OpenAITransport
@@ -112,6 +114,7 @@ def make_transport(
                 effort=effort,
                 system=system,
                 streaming=streaming,
+                image_input=image_input,
             )
         case _:
             raise ValueError(

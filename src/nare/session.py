@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -64,6 +66,7 @@ class Session:
     last_input_tokens: int = 0
     last_input_messages: int = 0
     last_input_chars: int = 0
+    last_input_image_input: bool | None = None
     policy: dict[str, Any] = field(default_factory=dict)
     budget: dict[str, Any] = field(default_factory=dict)
     output: Any = None
@@ -106,7 +109,25 @@ def dumps(s: Session) -> str:
     """
     raw = asdict(s)
     raw.pop("events")
+    binary: list[tuple[int, int, str]] = []
+    for mi, message in enumerate(raw["messages"]):
+        for bi, block in enumerate(message["content"]):
+            image = block.get("image") if block.get("type") == "tool_result" else None
+            source = image.get("source", {}) if isinstance(image, dict) else {}
+            data = source.get("data")
+            if (
+                source.get("type") == "base64"
+                and source.get("media_type") in {"image/png", "image/jpeg"}
+                and isinstance(data, str)
+            ):
+                try:
+                    base64.b64decode(data, validate=True)
+                except (binascii.Error, ValueError):
+                    continue
+                binary.append((mi, bi, source.pop("data")))
     raw["messages"] = redact_value(raw["messages"])
+    for mi, bi, data in binary:
+        raw["messages"][mi]["content"][bi]["image"]["source"]["data"] = data
     return json.dumps(raw)
 
 

@@ -331,3 +331,63 @@ proxy that enforces a 0.3-second idle window: nonstreaming gets HTTP 524, while
 both streaming rails emit progress before finalization and survive a 0.75-second
 withheld completion with heartbeats. This is conditional traffic evidence, not
 an assurance about every model/proxy combination.
+
+## Read-only image input
+
+    nare run --yes --jsonl --contract 1 --provider openai --model VISION_MODEL \
+      --image-input --tools read --root "$PWD/images" --session image.json \
+      "Read chart.png and describe it."
+
+`read` recognizes PNG/JPEG image bytes (including extensionless files) and image
+file extensions. Text reads behave as before. Image reads return the whole image;
+text `offset`/`limit` do not slice images. The same allowlist, approval and root
+resolution checks run before opening the image. No write, edit, bash or screenshot
+permission is added by `--image-input`.
+
+The flag declares model capability; nare does not guess from model names or make
+a live capability probe. Both built-in transports implement the image wire format.
+Omit the flag for a text-only model. A disabled read returns `is_error=true`, naming
+the selected transport/model and image input, so the model can continue. A caller
+must select a capable model before enabling the flag; declaring a text-only model
+capable can still produce a provider error. Custom transports opt in with
+`supports_image_input=True` and `image_input=True`, implement native serialization,
+and expose `model` for diagnostics.
+
+Pillow validates PNG/JPEG decoding. Images are capped at 4,194,304 compressed bytes,
+20,000,000 pixels, and 8,000 pixels on either edge. Unsupported formats, invalid
+images and exceeded limits are ordinary named tool errors. Bytes are never
+truncated or resized. `nare contract` advertises the flag, formats and caps under
+`image_input`.
+
+The saved `tool_result.content` remains a text string. An image adds an optional
+`image` field with `type=image`, `width`, `height`, and `source` containing
+`type=base64`, `media_type`, `data`. This new optional field, flag and discovery field
+keep contract version 1; existing text, event, result and exit-code meanings remain
+unchanged. Image progress includes dimensions and MIME type, never the binary
+payload. Image data is opaque base64 preserved exactly in saved sessions; text
+fields still use the same redaction rules. Text redaction does not inspect image
+pixels or metadata embedded in the binary file.
+
+Resume with `--image-input` to resend saved images to a capable model. Without it,
+the loop and native serializers withhold historical image bytes and replace them with a named
+explanation; the saved originals remain available. No image file needs to remain
+on disk for those historical results. When images are enabled, an older image can be elided by context
+compaction, preserving the tool pairing and instructing the model to rerun `read`.
+
+Withheld images remain stored even if compaction elides accompanying text.
+
+The context estimate excludes base64 string length and adds four estimated tokens
+per 32×32 image patch, rounded up on each edge. This is a heuristic, not a provider
+tokenizer or a universal upper bound. Later estimates calibrate to actual completed
+provider input usage. Context estimation and compaction ignore withheld images;
+a change in image capability starts fresh context calibration. The optional
+`last_input_image_input` session field records that calibration capability.
+Cumulative budgets account for actual provider input/output
+and disjoint cache tokens, including image input, with the existing post-step
+crossing-turn overshoot and done-wins precedence.
+
+Anthropic sends the image inside native tool-result content; OpenAI-compatible
+Chat Completions keeps text tool messages and attaches image URLs in a subsequent
+user message after all tool results. See the provider protocols:
+[Anthropic tool results](https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls),
+[Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).

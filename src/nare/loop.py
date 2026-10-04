@@ -8,11 +8,12 @@ import asyncio
 import json
 from collections.abc import AsyncGenerator, Callable
 from contextlib import aclosing
+from copy import deepcopy
 from dataclasses import asdict, replace
 from typing import Any, Literal, cast
 
 from nare.accounting import Prices, finite_number, turn_usage
-from nare.compact import compact, estimate
+from nare.compact import compact, context_chars, estimate
 from nare.events import Event, LiveText
 from nare.mcp import Server, connect
 from nare.schema import extract_json, validate
@@ -118,6 +119,23 @@ def _answer_errors(text: str, schema: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _without_images(messages: list[Message], model: str) -> list[Message]:
+    if not any("image" in block for message in messages for block in message.content):
+        return messages
+    copied = deepcopy(messages)
+    for message in copied:
+        for block in message.content:
+            if (
+                block.get("type") == "tool_result"
+                and block.pop("image", None) is not None
+            ):
+                block["content"] = (
+                    f"{block.get('content', '')} [image withheld: "
+                    f"{model} does not accept image input]"
+                )
+    return copied
+
+
 async def step(
     s: Session,
     transport: Transport,
@@ -128,7 +146,7 @@ async def step(
     prices: Prices | None = None,
     on_delta: Callable[[Delta], None] | None = None,
 ) -> Session:
-    report = compact(s, context_window)
+    report = compact(s, context_window, image_input=policy.image_input)
     if report is not None:
         s.events.append(
             Event(
@@ -138,7 +156,7 @@ async def step(
                 {"compaction": asdict(report)},
             )
         )
-    size = estimate(s)
+    size = estimate(s, image_input=policy.image_input)
     if size >= context_window:
         s.status = "error"
         s.stop_reason = "context"
@@ -146,13 +164,18 @@ async def step(
         s.events.append(Event("error", s.error))
         return s
     input_messages = len(s.messages)
-    input_chars = len(json.dumps([asdict(m) for m in s.messages]))
+    input_chars = context_chars(s.messages, image_input=policy.image_input)
+    model_messages = (
+        s.messages
+        if policy.image_input
+        else _without_images(s.messages, policy.image_model)
+    )
     streamed = bool(getattr(transport, "streaming", False)) and on_delta is not None
     if streamed:
         reply = None
         async with aclosing(
             cast(StreamingTransport, transport).stream_turn(
-                s.messages, policy.schemas()
+                model_messages, policy.schemas()
             )
         ) as stream:
             async for item in stream:
@@ -164,12 +187,13 @@ async def step(
         if reply is None:
             raise RuntimeError("stream ended without a completed reply")
     else:
-        reply = await transport.turn(s.messages, policy.schemas())
+        reply = await transport.turn(model_messages, policy.schemas())
     s.last_input_tokens = (
         reply.usage.input + reply.usage.cache_read + reply.usage.cache_write
     )
     s.last_input_messages = input_messages
     s.last_input_chars = input_chars
+    s.last_input_image_input = policy.image_input
     usage = turn_usage(reply, prices)
     s.usage += usage
     s.turns += 1
@@ -255,6 +279,22 @@ async def step(
             for call in reply.tool_calls:
                 result = await dispatch(call, policy, approve)
                 results.append(result)
+                if "image" in result:
+                    image = result["image"]
+                    s.events.append(
+                        Event(
+                            "progress",
+                            result["content"],
+                            {
+                                "tool": call.name,
+                                "image": {
+                                    "media_type": image["source"]["media_type"],
+                                    "width": image["width"],
+                                    "height": image["height"],
+                                },
+                            },
+                        )
+                    )
                 if call.name in policy.external:
                     s.events.append(
                         Event(
@@ -393,6 +433,17 @@ async def _run(
         )
     )
     policy = Policy() if policy is None else policy
+    policy = replace(
+        policy,
+        image_input=(
+            getattr(transport, "supports_image_input", False) is True
+            and getattr(transport, "image_input", False) is True
+        ),
+        image_model=(
+            f"{type(transport).__name__}/model="
+            f"{getattr(transport, 'model', 'unspecified')}"
+        ),
+    )
     if schema is not None and not session.schema_stated:
         # Said once, in the transcript rather than in a system prompt: a resume
         # carries it forward, and a reader can see exactly what the model was
