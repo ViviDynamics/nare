@@ -1,0 +1,20 @@
+{
+  "argv": [
+    "nare",
+    "run",
+    "--yes",
+    "--jsonl",
+    "review",
+    "--max-tokens",
+    "5",
+    "--budget-tokens",
+    "31",
+    "--schema",
+    "docs/evidence/41/findings.schema.json",
+    "--session",
+    "docs/evidence/41/done-crossing/session.json"
+  ],
+  "offline_entrypoint": "uv run python tests/budget_probe.py docs/evidence/41/done-crossing/script.json",
+  "exit": 0,
+  "model_calls": 3
+}

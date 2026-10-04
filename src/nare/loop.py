@@ -9,6 +9,8 @@ from collections.abc import AsyncIterator
 from dataclasses import asdict
 from typing import Any
 
+from nare.accounting import Prices, finite_number, turn_usage
+from nare.compact import compact, estimate
 from nare.events import Event
 from nare.schema import extract_json, validate
 from nare.session import Message, Session, append_user_text
@@ -23,6 +25,56 @@ from nare.tools import (
 from nare.transport import StopReason, Transport
 
 MAX_TURNS_DEFAULT = 50
+
+
+def budget_record(s: Session) -> dict[str, Any]:
+    return {**s.budget, "used_tokens": s.usage.total_tokens, "used_usd": s.usage.cost}
+
+
+def configure_budgets(
+    s: Session,
+    tokens: int | None = None,
+    usd: float | None = None,
+) -> None:
+    """Resolve overrides over saved ceilings without resetting usage."""
+    tokens = tokens if tokens is not None else s.budget.get("tokens")
+    usd = usd if usd is not None else s.budget.get("usd")
+    if tokens is not None:
+        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
+            raise ValueError("budget_tokens must be a positive integer")
+        s.budget["tokens"] = tokens
+    if usd is not None:
+        s.budget["usd"] = finite_number(usd, "budget_usd")
+
+
+def check_budget(s: Session) -> bool:
+    token_limit = s.budget.get("tokens")
+    usd_limit = s.budget.get("usd")
+    reasons: list[str] = []
+    if token_limit is not None and s.usage.total_tokens >= token_limit:
+        reasons.append(
+            f"token budget exhausted: used {s.usage.total_tokens}, limit {token_limit}"
+        )
+    if usd_limit is not None:
+        if s.usage.cost is None:
+            reasons.append(
+                "--budget-usd cannot be enforced: cost for this backend is unknown; "
+                "set NARE_PRICE_IN and NARE_PRICE_OUT"
+            )
+        elif s.usage.cost >= usd_limit:
+            reasons.append(
+                f"USD budget exhausted: used {s.usage.cost}, limit {usd_limit}"
+            )
+    if not reasons:
+        return False
+    s.status = "error"
+    s.stop_reason = "budget"
+    s.error = "; ".join(reasons)
+    s.events.append(
+        Event("error", s.error, {"budget": budget_record(s), "usage": asdict(s.usage)})
+    )
+    return True
+
 
 # A turn the vendor cut off, or that the model refused, is not a finished one.
 # The conductor adapter maps done -> completed, so reporting either as done
@@ -69,9 +121,36 @@ async def step(
     approve: Approve,
     policy: Policy,
     schema: dict[str, Any] | None = None,
+    context_window: int = 32000,
+    prices: Prices | None = None,
 ) -> Session:
+    report = compact(s, context_window)
+    if report is not None:
+        s.events.append(
+            Event(
+                "progress",
+                f"compacted: elided {report.elided} tool results, "
+                f"~{report.before:.0f} -> ~{report.after:.0f} tokens",
+                {"compaction": asdict(report)},
+            )
+        )
+    size = estimate(s)
+    if size >= context_window:
+        s.status = "error"
+        s.stop_reason = "context"
+        s.error = f"context estimate {size:.0f} reaches window {context_window}"
+        s.events.append(Event("error", s.error))
+        return s
+    input_messages = len(s.messages)
+    input_chars = len(json.dumps([asdict(m) for m in s.messages]))
     reply = await transport.turn(s.messages, policy.schemas())
-    s.usage += reply.usage
+    s.last_input_tokens = (
+        reply.usage.input + reply.usage.cache_read + reply.usage.cache_write
+    )
+    s.last_input_messages = input_messages
+    s.last_input_chars = input_chars
+    usage = turn_usage(reply, prices)
+    s.usage += usage
     s.turns += 1
     s.messages.append(Message(role="assistant", content=reply.content))
 
@@ -83,10 +162,18 @@ async def step(
     s.events.append(
         Event(
             "cost",
-            f"{reply.usage.input} in / {reply.usage.output} out",
-            asdict(reply.usage),
+            f"{usage.input} in / {usage.output} out, "
+            + (f"${usage.cost:.6f}" if usage.cost is not None else "cost unknown"),
+            asdict(usage),
         )
     )
+
+    # A tool turn can carry already valid findings alongside its calls. Keep
+    # the latest schema-valid document without claiming the task completed.
+    if schema is not None:
+        candidate = _final_text(reply.content)
+        if not _answer_errors(candidate, schema):
+            s.output = extract_json(candidate)
 
     unfinished = _UNFINISHED.get(reply.stop_reason)
     s.stop_reason = reply.stop_reason
@@ -175,12 +262,48 @@ async def run(
     policy: Policy | None = None,
     schema: dict[str, Any] | None = None,
     max_turns: int = MAX_TURNS_DEFAULT,
+    budget_tokens: int | None = None,
+    context_window: int | None = None,
+    budget_usd: float | None = None,
+    prices: Prices | None = None,
 ) -> AsyncIterator[Event]:
     """Advance the session to a terminal status, yielding events as they occur.
 
     The only place that catches broadly: a harness reports failures as events
     and a status, it does not hand a traceback to its caller.
     """
+    configure_budgets(session, budget_tokens, budget_usd)
+    if context_window is not None and (
+        isinstance(context_window, bool)
+        or not isinstance(context_window, int)
+        or context_window <= 0
+    ):
+        raise ValueError("context_window must be a positive integer")
+    # A resumed exhausted session must not call the backend, even for metadata.
+    if session.status == "working" and check_budget(session):
+        while session.events:
+            yield session.events.pop(0)
+        return
+    window = context_window
+    source = "flag"
+    if window is None:
+        window = await transport.context_window()
+        source = "backend"
+    if window is None:
+        window = 32000
+        source = "default"
+    session.events.append(
+        Event(
+            "progress",
+            f"context window {window} ({source})",
+            {
+                "context_window": {
+                    "tokens": window,
+                    "source": source,
+                }
+            },
+        )
+    )
     policy = Policy() if policy is None else policy
     if schema is not None and not session.schema_stated:
         # Said once, in the transcript rather than in a system prompt: a resume
@@ -197,14 +320,18 @@ async def run(
     # instantly with a message that reads like a runaway loop.
     budget_from = session.turns
     while session.status == "working":
-        if session.turns - budget_from >= max_turns:
+        if check_budget(session):
+            pass
+        elif session.turns - budget_from >= max_turns:
             session.status = "error"
             session.stop_reason = "max_turns"
             session.error = f"stopped after {max_turns} turns"
             session.events.append(Event("error", session.error))
         else:
             try:
-                await step(session, transport, approve, policy, schema)
+                await step(session, transport, approve, policy, schema, window, prices)
+                if session.status not in ("done", "blocked"):
+                    check_budget(session)
             except Exception as exc:
                 session.status = "error"
                 # The last completed turn's reason describes that turn, not

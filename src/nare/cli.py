@@ -14,14 +14,22 @@ import logging
 import os
 import sys
 import tempfile
+from collections.abc import AsyncIterator
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from nare import __version__
+from nare.accounting import Prices, finite_number, prices_from_env
 from nare.contract import CONTRACT_VERSION, EXIT_CODES, NEVER_STARTED, describe
 from nare.events import Event, redact
-from nare.loop import MAX_TURNS_DEFAULT, run
+from nare.loop import (
+    MAX_TURNS_DEFAULT,
+    budget_record,
+    check_budget,
+    configure_budgets,
+    run,
+)
 from nare.schema import UnsupportedSchema, check_supported
 from nare.session import Session, append_user_text, dumps, loads, new_session
 from nare.tools import TOOLS, Policy, approve_all
@@ -80,6 +88,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument(
         "--max-tokens", type=int, help="output token cap (default 8192)"
+    )
+    run_parser.add_argument(
+        "--context-window",
+        type=int,
+        default=os.environ.get("NARE_CONTEXT_WINDOW"),
+        help="context window for elision (env: NARE_CONTEXT_WINDOW; "
+        "else backend or 32000)",
+    )
+    run_parser.add_argument(
+        "--budget-tokens",
+        type=int,
+        default=os.environ.get("NARE_BUDGET_TOKENS"),
+        help="session token budget, including input, output and cache "
+        "(env: NARE_BUDGET_TOKENS)",
+    )
+    run_parser.add_argument(
+        "--budget-usd",
+        type=float,
+        default=os.environ.get("NARE_BUDGET_USD"),
+        help="cumulative session dollar budget (env: NARE_BUDGET_USD)",
     )
     run_parser.add_argument(
         "--effort",
@@ -197,7 +225,6 @@ def _load_or_new(args: argparse.Namespace) -> Session:
     # Per-run state, like the budget in run(): a resume that inherited the
     # spent correction round would end on its first imperfect answer.
     session.schema_retried = False
-    session.output = None
     session.error = None
     session.stop_reason = None
     return session
@@ -220,6 +247,7 @@ def _emit_result(session: Session, jsonl: bool) -> None:
                     "status": session.status,
                     "questions": session.questions,
                     "usage": asdict(session.usage),
+                    "budget": budget_record(session),
                     "stop_reason": session.stop_reason,
                     "turns": session.turns,
                     "contract": CONTRACT_VERSION,
@@ -262,23 +290,39 @@ def _save(session: Session, path: str) -> None:
         raise
 
 
+async def _pending_events(session: Session) -> AsyncIterator[Event]:
+    """A budget refusal has events but needs no provider construction."""
+    while session.events:
+        yield session.events.pop(0)
+
+
 async def _execute(
     session: Session,
-    transport: Transport,
+    transport: Transport | None,
     args: argparse.Namespace,
     policy: Policy,
     schema: dict[str, Any] | None,
+    prices: Prices | None,
 ) -> int:
     saved_turns = -1
     try:
-        async for event in run(
-            session,
-            transport=transport,
-            approve=approve_all,
-            policy=policy,
-            schema=schema,
-            max_turns=args.max_turns,
-        ):
+        stream = (
+            run(
+                session,
+                transport=transport,
+                approve=approve_all,
+                policy=policy,
+                schema=schema,
+                max_turns=args.max_turns,
+                budget_tokens=args.budget_tokens,
+                context_window=args.context_window,
+                budget_usd=args.budget_usd,
+                prices=prices,
+            )
+            if transport is not None
+            else _pending_events(session)
+        )
+        async for event in stream:
             _emit(event, args.jsonl)
             # Saved per turn, not once at the end. SIGTERM's default handler
             # exits without unwinding, so `finally` never runs and a run
@@ -366,13 +410,25 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         args.session = args.resume
 
     try:
+        if args.budget_tokens is not None and args.budget_tokens <= 0:
+            raise ValueError("--budget-tokens must be a positive integer")
+        if args.context_window is not None and args.context_window <= 0:
+            raise ValueError("--context-window must be a positive integer")
+        if args.budget_usd is not None:
+            finite_number(args.budget_usd, "--budget-usd")
+        prices = prices_from_env()
         policy = policy_from_args(args)
         schema = schema_from_args(args)
         session = _load_or_new(args)
-        if transport is None:
+        configure_budgets(session, args.budget_tokens, args.budget_usd)
+        if check_budget(session):
+            # Already-spent sessions report their artifacts even when provider
+            # construction would fail (for example, credentials were removed).
+            transport = None
+        elif transport is None:
             transport = transport_from_args(args)
     except (ValueError, OSError, UnsupportedSchema) as exc:
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED
 
-    return asyncio.run(_execute(session, transport, args, policy, schema))
+    return asyncio.run(_execute(session, transport, args, policy, schema, prices))

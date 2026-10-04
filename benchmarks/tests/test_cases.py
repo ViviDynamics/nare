@@ -9,6 +9,7 @@ SEEDS = {
     "edit-docstring",
     "fix-failing-test",
     "multi-file-rename",
+    "context-overflow",
 }
 
 

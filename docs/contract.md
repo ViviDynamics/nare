@@ -69,7 +69,7 @@ constructor call rather than a mapping table.
 
 The last line is not an event. It is the `result` object, carrying
 `session_id`, `status`, `questions`, `usage`, `stop_reason`, `turns`,
-`contract`, `output` and `error`. A caller that reads only one line should read
+`contract`, `nare`, `output`, `budget` and `error`. A caller that reads only one line should read
 that one.
 
 Secrets are redacted when an event is constructed, not when it is written, so
@@ -96,3 +96,90 @@ matches, bumps it too: the rule set is part of what an event's `text` means.
 nare speaks one contract version at a time. There is no negotiation and no
 compatibility mode: a caller pins a version, and a nare that speaks another one
 refuses to run.
+
+## Stop reasons
+
+| stop_reason | Meaning |
+| --- | --- |
+| `end_turn`, `stop_sequence` | Provider ended the response; status determines completion |
+| `tool_use` | Provider requested tools; may be working or blocked on ask |
+| `max_tokens` | Provider truncated the response (including rejected context) |
+| `refusal` | Provider refused to continue |
+| `schema_violation` | Second invalid structured answer |
+| `max_turns` | Invocation's turn count limit reached |
+| `context` | Estimated context still exceeds the window after eligible elision |
+| `budget` | Session token/USD ceiling reached, or USD accounting is unknown |
+| null | No completed response for this failure, e.g. provider exception |
+
+New stop reasons and additive usage/result/session fields keep contract 1.
+
+## Budgets and partial results
+
+`usage` contains cumulative `input`, `output`, `cache_read`, `cache_write`, and
+`cost` (dollars or null). Token categories are disjoint. For OpenAI,
+`input=prompt_tokens-cached_tokens`, `cache_read=cached_tokens`, and cache_write
+is zero. Anthropic reports uncached input, cache reads and cache creation
+separately. Completion/reasoning tokens reported in output are not counted
+again as a separate category. The cumulative total is the sum of all four token
+fields, not the last turn and not the size of the stored transcript. Missing
+provider counters normalize to zero; this is reported accounting, not proof of
+a strict cap when a provider omits usage.
+
+Every result carries `budget`: configured `tokens` and/or `usd` limits (keys
+absent when unset), plus `used_tokens` and `used_usd` (null when cost is unknown).
+A budget `error` event has `detail.budget` with the same fields and `detail.usage`
+with actual cumulative counters. The result is authoritative for terminal
+status. In particular, done/blocked crossing a ceiling still exit 0 and retain
+actual usage, even above the limit.
+
+A nonterminal crossing step finishes tool dispatch before stopping. Its tool
+uses/results, progress, thinking and cost events remain in the emitted JSONL;
+the final error and result follow them. `--session` saves the transcript,
+usage, limits and output atomically. Events are not stored inside the session;
+the caller retains stdout. Context compaction replaces eligible old tool-result
+bodies with stubs, preserving pairs and assistant text; prior streamed events
+are unaffected.
+
+Budget exhaustion exits 1 with `status=error`, `stop_reason=budget`. Callers
+must branch on that pair, not on the free-text error or exit 1 alone. Provider
+exceptions also exit 1 but use null stop_reason. After exhaustion there is no
+further model call in that invocation.
+
+`--resume` reopens a session for work but does not reset usage. Flag overrides
+environment, environment overrides a persisted limit, and omission retains the
+persisted limit. There is no flag to clear a persisted budget. If already at or
+above a limit, resume emits a budget error/result and calls no model, including
+when no flag was supplied or provider construction would fail for lack of credentials. Raising one limit does not remove the other. All
+active limits must allow continuation. USD usage with a historical unknown
+cannot be repaired by adding prices later. `--max-turns` remains per invocation.
+A completed/blocked crossing result is successful; reopening it with resume
+still applies the cumulative pre-call guard.
+
+When a schema was supplied, nare retains the latest complete JSON document that
+passes that schema in `result.output` and session `output`, including a document
+emitted alongside tool calls. This represents available validated data, not a
+complete review when status is error. Invalid later text does not discard an
+earlier valid document. There is no invented empty findings list, automatic
+merging of separate documents, or promotion of incomplete JSON. Without a
+schema, output remains unset unless retained from a previously validated run;
+callers can recover raw assistant text from the transcript/progress events and
+validate it themselves. Pass the schema again on continuation. A caller retains
+all documents it wants to aggregate from its own event stream.
+
+For example:
+
+```python
+result = json.loads(events[-1])
+if result["status"] == "error" and result["stop_reason"] == "budget":
+    partial_findings = result["output"]  # may be None; already validated if present
+    actual_tokens = result["budget"]["used_tokens"]
+    effective_limit = result["budget"].get("tokens")
+    # Store available findings as partial and keep the session/JSONL artifacts.
+```
+
+The approved design enforces budgets after steps, so a crossing step can
+overshoot by its actual token/USD usage. `--max-tokens` bounds only response
+output, not input/cache spend. If Scrutare SPEC requires a strict whole-review
+ceiling, this remains a mismatch: Scrutare must account for overshoot and
+success on crossing turns in its own allocation policy. nare does not allocate
+budgets across personas or orchestrate reviews.

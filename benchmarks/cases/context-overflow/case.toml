@@ -1,0 +1,23 @@
+id = "context-overflow"
+tier = "full"
+prompt = """Run python log.py N separately for each N from 1 through 8. Each emits \
+a different diagnostic log. Record the SENTINEL line from every log in \
+findings.json as a JSON array of strings, in numeric order. Read all eight \
+logs before writing the answer. Do not combine the commands or redirect \
+their output: the task exercises a growing tool transcript."""
+max_turns = 16
+
+[[check]]
+kind = "bash"
+cmd = "python -c \"import json; assert json.load(open('findings.json')) == [f'SENTINEL_{n}=confirmed' for n in range(1,9)]\""
+
+[[check]]
+kind = "result"
+status = "done"
+
+[judge]
+assertions = [
+  "All eight logs were read in separate tool calls before writing findings.json.",
+  "The sentinel values came from the logs rather than being guessed.",
+]
+min_met = 2

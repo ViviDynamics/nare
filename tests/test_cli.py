@@ -134,9 +134,20 @@ def test_golden_jsonl(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Non
     assert target.read_text() == "hi"
 
     emitted = lines(capsys.readouterr().out)
-    usage = {"input": 10, "output": 5, "cache_read": 0, "cache_write": 0}
-    assert emitted[:5] == [
-        {"timestamp": "T", "type": "cost", "text": "10 in / 5 out", "detail": usage},
+    usage = {"input": 10, "output": 5, "cache_read": 0, "cache_write": 0, "cost": None}
+    assert emitted[0]["detail"] == {
+        "context_window": {
+            "tokens": 32000,
+            "source": "default",
+        }
+    }
+    assert emitted[1:6] == [
+        {
+            "timestamp": "T",
+            "type": "cost",
+            "text": "10 in / 5 out, cost unknown",
+            "detail": usage,
+        },
         {
             "timestamp": "T",
             "type": "tool_use",
@@ -144,10 +155,15 @@ def test_golden_jsonl(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Non
             "detail": {"path": str(target), "content": "hi"},
         },
         {"timestamp": "T", "type": "progress", "text": "finished", "detail": {}},
-        {"timestamp": "T", "type": "cost", "text": "10 in / 5 out", "detail": usage},
+        {
+            "timestamp": "T",
+            "type": "cost",
+            "text": "10 in / 5 out, cost unknown",
+            "detail": usage,
+        },
         {"timestamp": "T", "type": "output", "text": "finished", "detail": {}},
     ]
-    result = emitted[5]
+    result = emitted[6]
     assert result["type"] == "result"
     assert result["status"] == "done"
     assert result["stop_reason"] == "end_turn"
@@ -158,8 +174,9 @@ def test_golden_jsonl(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Non
         "output": 10,
         "cache_read": 0,
         "cache_write": 0,
+        "cost": None,
     }
-    assert len(emitted) == 6
+    assert len(emitted) == 7
 
 
 def test_every_line_is_json_and_the_result_is_last(
