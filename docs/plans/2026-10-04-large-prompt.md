@@ -14,6 +14,6 @@ Out: compression, truncation or changing context-window protection.
 - Contract version 1 gains additive input routes.
 
 ## Tasks
-- [ ] 1. Failing actual CLI tests for file/stdin 1 MiB prompts, exact saved content parity, resume and invalid/conflicting input; implement source resolution.
-- [ ] 2. Document invocation, UTF-8/exact text, failures, context guard and resume semantics.
+- [x] 1. Failing actual CLI tests for file/stdin 1 MiB prompts, exact saved content parity, resume and invalid/conflicting input; implement source resolution.
+- [x] 2. Document invocation, UTF-8/exact text, failures, context guard and resume semantics.
 - [ ] 3. Preflight, independent review, CI, merge and installed release proof.

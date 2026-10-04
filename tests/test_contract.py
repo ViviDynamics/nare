@@ -189,3 +189,12 @@ def test_the_contract_version_is_defined_once() -> None:
         if line.startswith("CONTRACT_VERSION") and "=" in line
     ]
     assert declarations == []
+
+
+def test_contract_describes_prompt_input_routes() -> None:
+    assert describe()["prompt_input"] == {
+        "file_flag": "--prompt-file",
+        "stdin_positional": "-",
+        "encoding": "utf-8",
+        "exclusive": True,
+    }
