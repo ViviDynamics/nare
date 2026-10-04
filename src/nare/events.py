@@ -119,3 +119,37 @@ class Event:
         # never exist, because every later surface trusts it.
         object.__setattr__(self, "text", redact(self.text))
         object.__setattr__(self, "detail", redact_value(self.detail))
+
+
+# A credential name/separator/scheme at the end may acquire its value in the
+# next delta. Hold it, and every unfinished word (including key prefixes),
+# until the existing redactor has the complete unit to inspect.
+_MAYBE_CREDENTIAL = re.compile(
+    r"""(?i)["']?\s*(?:[:=]\s*["']?(?:(?:bearer|basic|token)\s*)?)?\Z"""
+)
+
+
+class LiveText:
+    def __init__(self) -> None:
+        self.pending = ""
+
+    def feed(self, text: str) -> str:
+        self.pending += text
+        spaces = list(re.finditer(r"\s+", self.pending))
+        if not spaces:
+            return ""
+        boundary = spaces[-1].end()
+        for word in _CREDENTIAL_RUN.finditer(self.pending[:boundary]):
+            if _CREDENTIAL_KEYWORD.search(word.group()) and _MAYBE_CREDENTIAL.fullmatch(
+                self.pending[word.end() : boundary]
+            ):
+                boundary = min(boundary, word.start())
+                break
+        output = redact(self.pending[:boundary])
+        self.pending = self.pending[boundary:]
+        return output
+
+    def finish(self) -> str:
+        output = redact(self.pending)
+        self.pending = ""
+        return output
