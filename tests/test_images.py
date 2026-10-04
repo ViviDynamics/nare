@@ -331,3 +331,7 @@ def test_disabled_compaction_preserves_withheld_image(long_text: bool) -> None:
     assert session.messages[2].content[0]["image"] == image
     assert (report is not None) == long_text
     assert estimate(session, image_input=False) <= before
+    if long_text:
+        enabled_report = compact(session, 1000, image_input=True)
+        assert enabled_report is not None and enabled_report.elided == 1
+        assert "image" not in session.messages[2].content[0]

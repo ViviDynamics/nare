@@ -92,7 +92,9 @@ def compact(
             ):
                 continue
             content = block.get("content", "")
-            if not isinstance(content, str) or content.startswith(PREFIX):
+            if not isinstance(content, str) or (
+                content.startswith(PREFIX) and not (image_input and "image" in block)
+            ):
                 continue
             stub = (
                 f"{PREFIX} {len(content)} chars of output from turn {turn}. "
