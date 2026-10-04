@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from collections.abc import AsyncGenerator
 from dataclasses import asdict
 from typing import Any, Literal, cast
 
@@ -13,6 +15,7 @@ from anthropic.types import MessageParam, ToolParam
 
 from nare.session import Message, Usage
 from nare.transport import (
+    Delta,
     Reply,
     StopReason,
     ToolCall,
@@ -26,7 +29,7 @@ DEFAULT_MAX_TOKENS = 8192
 
 # Above this the SDK's own _calculate_nonstreaming_timeout raises, because
 # 3600 * max_tokens / 128000 exceeds its ten-minute non-streaming budget.
-# Streaming turn() is slice 3's, so the transport refuses rather than guessing.
+# Streaming removes this SDK-only ceiling; nonstreaming refuses explicitly.
 NONSTREAMING_MAX_TOKENS = 21333
 
 # Per-model output caps, which are lower than the global ceiling: every
@@ -120,6 +123,7 @@ class AnthropicTransport:
         effort: Effort | None = None,
         system: str | None = None,
         http_client: httpx2.AsyncClient | None = None,
+        streaming: bool = False,
     ) -> None:
         if api_key is None and not os.environ.get("ANTHROPIC_API_KEY"):
             raise ValueError(
@@ -133,6 +137,7 @@ class AnthropicTransport:
                 "silently dropping it. Omit --temperature for this provider."
             )
 
+        self.streaming = streaming
         self.thinking: dict[str, Any] | None = None
         budget = EFFORT_BUDGETS[effort] if effort is not None else None
         ceiling = min(
@@ -146,7 +151,11 @@ class AnthropicTransport:
             resolved = (
                 max_tokens
                 if max_tokens is not None
-                else min(budget + DEFAULT_MAX_TOKENS, ceiling)
+                else (
+                    budget + DEFAULT_MAX_TOKENS
+                    if streaming
+                    else min(budget + DEFAULT_MAX_TOKENS, ceiling)
+                )
             )
             if resolved <= budget:
                 raise ValueError(
@@ -155,7 +164,7 @@ class AnthropicTransport:
                 )
             self.thinking = {"type": "enabled", "budget_tokens": budget}
 
-        if resolved > ceiling:
+        if not streaming and resolved > ceiling:
             limit = (
                 f"{ceiling}, this model's non-streaming cap"
                 if ceiling < NONSTREAMING_MAX_TOKENS
@@ -163,7 +172,7 @@ class AnthropicTransport:
             )
             raise ValueError(
                 f"max_tokens {resolved} exceeds {limit}, above "
-                "which the SDK requires streaming; streaming turn() is slice 3's"
+                "which the SDK requires streaming; use --stream"
             )
 
         self.max_tokens = resolved
@@ -183,6 +192,11 @@ class AnthropicTransport:
         )
 
     async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
+        if self.streaming:
+            async for item in self.stream_turn(messages, tools):
+                if isinstance(item, Reply):
+                    return item
+            raise RuntimeError("stream ended without a reply")
         raw = await self._client.messages.with_raw_response.create(
             model=self.model,
             max_tokens=self.max_tokens,
@@ -204,3 +218,85 @@ class AnthropicTransport:
             stop_reason=stop_reason_from(response.stop_reason),
             cost=reported_cost(raw.headers),
         )
+
+    async def stream_turn(
+        self, messages: list[Message], tools: list[dict[str, Any]]
+    ) -> AsyncGenerator[Delta | Reply, None]:
+        async with self._client.messages.stream(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            messages=cast("list[MessageParam]", [asdict(m) for m in messages]),
+            tools=cast("list[ToolParam]", tools),
+            system=self.system if self.system is not None else omit,
+            thinking=cast(Any, self.thinking) if self.thinking else omit,
+        ) as stream:
+            finished = False
+            complete_usage = False
+            fragments: dict[int, list[str]] = {}
+            async for event in stream:
+                if event.type == "content_block_start":
+                    if event.content_block.type == "text" and event.content_block.text:
+                        yield Delta("progress", event.content_block.text)
+                    elif (
+                        event.content_block.type == "thinking"
+                        and event.content_block.thinking
+                    ):
+                        yield Delta("thinking", event.content_block.thinking)
+                elif event.type == "content_block_delta":
+                    if event.delta.type == "text_delta":
+                        yield Delta("progress", event.delta.text)
+                    elif event.delta.type == "thinking_delta":
+                        yield Delta("thinking", event.delta.thinking)
+                    elif event.delta.type == "input_json_delta":
+                        fragments.setdefault(event.index, []).append(
+                            event.delta.partial_json
+                        )
+                elif event.type == "message_delta":
+                    count = getattr(event.usage, "output_tokens", None)
+                    complete_usage = (
+                        isinstance(count, int)
+                        and not isinstance(count, bool)
+                        and count >= 0
+                    )
+                elif event.type == "message_stop":
+                    finished = True
+            if not finished:
+                raise RuntimeError("incomplete model stream: message_stop missing")
+            if not complete_usage:
+                raise RuntimeError("incomplete model stream: final usage missing")
+            response = await stream.get_final_message()
+            if response.stop_reason is None:
+                raise RuntimeError("incomplete model stream: stop reason missing")
+            content = [
+                block.model_dump(exclude_none=True) for block in response.content
+            ]
+            calls: list[ToolCall] = []
+            for index, block in enumerate(content):
+                if block.get("type") != "tool_use":
+                    continue
+                error = None
+                if index in fragments:
+                    try:
+                        args = json.loads("".join(fragments[index]))
+                        if not isinstance(args, dict):
+                            raise ValueError("arguments must be a JSON object")
+                        block["input"] = args
+                    except ValueError:
+                        block["input"] = {}
+                        error = "incomplete or nonobject JSON arguments; tool not run"
+                calls.append(
+                    ToolCall(
+                        id=block["id"],
+                        name=block["name"],
+                        args=block.get("input") or {},
+                        error=error,
+                    )
+                )
+            reply = Reply(
+                content=content,
+                tool_calls=calls,
+                usage=usage_from(response.usage),
+                stop_reason=stop_reason_from(response.stop_reason),
+                cost=reported_cost(stream.response.headers),
+            )
+        yield reply

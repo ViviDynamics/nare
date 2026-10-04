@@ -249,3 +249,60 @@ the SDK's minimal OS environment and configured `env` to stdio servers; model AP
 keys are not inherited. HTTP uses only explicitly configured headers. No model
 sampling callback or credential sharing is enabled. Remote servers remain owned
 by their hosts; nare terminates its connection, not their server process.
+
+## Streaming model turns
+
+```sh
+nare run --yes --jsonl --stream --provider openai \
+  --model YOUR_MODEL --base-url https://YOUR_PROXY/v1 \
+  --budget-tokens 50000 --session review.json "review the patch"
+```
+
+`--stream` is opt-in on both OpenAI-compatible and Anthropic transports. Library
+callers construct a transport with `streaming=True`; `run()` emits live
+`progress` and `thinking` events while the model turn is still running. Direct
+`transport.turn()` still returns the same completed `Reply` as nonstreaming.
+The additive flag and streaming event timing keep contract version 1.
+
+Live text is buffered at word boundaries so a secret split across provider
+chunks reaches the same redactor as a whole secret. An unfinished word or
+credential assignment can wait for another chunk or the end of the stream.
+Events carry sanitized text; raw provider deltas are not JSONL events.
+
+Tool calls are assembled from deltas and dispatched only after the reply is
+complete, using the existing allowlist and approval. Incomplete or nonobject
+JSON arguments return a named tool error without invoking the tool, even if
+a provider marks its stream complete; reported usage is retained. Usage is normalized once
+from final provider usage, including disjoint cache counts; repeated usage
+snapshots are not added together. Cost uses the same response headers or price
+configuration as nonstreaming. Session transcripts and final outcomes are the
+same for equivalent streamed and nonstreamed replies.
+
+OpenAI-compatible streaming requests ask for `stream_options.include_usage`.
+Missing/incomplete final usage, stop reason or stream completion marker is a
+provider failure, rather than a successful turn with invented zero usage.
+Anthropic streaming requires `message_stop` and final output usage. Streaming
+permits Anthropic output limits above the SDK's nonstreaming ceiling; retain
+provider/model output limits and require max output to exceed a thinking budget.
+
+Budget enforcement remains **after each complete step**, including tool
+results. Streaming does not make the cumulative ceiling strict: the crossing
+turn can overshoot, and done/blocked wins exactly as in nonstreaming. Actual
+usage remains visible on completion. After a budget stop there is no subsequent
+model call.
+
+A dropped stream is not retried or resumed mid-turn. Already emitted progress
+and completed transcript turns remain available; incomplete tool arguments
+are never dispatched, and an incomplete assistant turn is not saved as a
+completed turn. Usage that the provider did not report cannot be recovered or
+invented; the saved accounting includes completed replies only. Callers capture
+JSONL to retain live progress and can resume the completed transcript explicitly.
+Schema-valid output from previous completed replies remains available.
+
+Streaming helps an idle proxy only while the provider sends bytes frequently
+enough, including SSE heartbeats. A provider that sends nothing before the
+proxy's deadline can still time out. Offline actual-CLI tests use a loopback
+proxy that enforces a 0.3-second idle window: nonstreaming gets HTTP 524, while
+both streaming rails emit progress before finalization and survive a 0.75-second
+withheld completion with heartbeats. This is conditional traffic evidence, not
+an assurance about every model/proxy combination.

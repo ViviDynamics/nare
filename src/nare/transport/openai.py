@@ -8,8 +8,8 @@ translation: the reasoning and the answer arrive together there and only one
 survives. A caller whose model looks silent has no way to tell that apart from
 a model that said nothing.
 
-No SDK. nare carries one runtime dependency so it stays easy to vendor, and
-`httpx2` already arrives with `anthropic`, so this rail costs nothing new.
+No provider SDK on this rail. `httpx2` already arrives with `anthropic`,
+so this rail adds no dependency.
 """
 
 from __future__ import annotations
@@ -17,12 +17,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import AsyncGenerator
 from typing import Any, Literal
 
 import httpx2
 
 from nare.session import Message, Usage
 from nare.transport import (
+    Delta,
     Reply,
     StopReason,
     ToolCall,
@@ -157,6 +159,15 @@ def _arguments(raw: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _argument_error(raw: str) -> str | None:
+    try:
+        if isinstance(json.loads(raw or "{}"), dict):
+            return None
+    except ValueError:
+        pass
+    return "tool arguments are not a complete JSON object; tool not run"
+
+
 class OpenAITransport:
     def __init__(
         self,
@@ -169,6 +180,7 @@ class OpenAITransport:
         effort: Effort | None = None,
         system: str | None = None,
         http_client: httpx2.AsyncClient | None = None,
+        streaming: bool = False,
     ) -> None:
         key = api_key or os.environ.get("OPENAI_API_KEY")
         if not key:
@@ -176,6 +188,7 @@ class OpenAITransport:
                 "no API key: set OPENAI_API_KEY in the environment (there is no "
                 "--api-key flag; argv is world-readable)"
             )
+        self.streaming = streaming
         self._discovery_base = base_url
         self.model = model
         self.system = system
@@ -194,7 +207,9 @@ class OpenAITransport:
             {"authorization": f"Bearer {self._key}"},
         )
 
-    async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
+    def _payload(
+        self, messages: list[Message], tools: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages_from(messages),
@@ -215,6 +230,15 @@ class OpenAITransport:
         if self.effort is not None:
             payload["reasoning_effort"] = self.effort
 
+        return payload
+
+    async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
+        if self.streaming:
+            async for item in self.stream_turn(messages, tools):
+                if isinstance(item, Reply):
+                    return item
+            raise RuntimeError("stream ended without a reply")
+        payload = self._payload(messages, tools)
         response = await self._client.post(
             f"{self._base_url}/chat/completions",
             headers={"authorization": f"Bearer {self._key}"},
@@ -230,7 +254,106 @@ class OpenAITransport:
             )
         return self._reply(response.json(), cost=reported_cost(response.headers))
 
-    def _reply(self, payload: dict[str, Any], *, cost: float | None = None) -> Reply:
+    async def stream_turn(
+        self, messages: list[Message], tools: list[dict[str, Any]]
+    ) -> AsyncGenerator[Delta | Reply, None]:
+        payload = {
+            **self._payload(messages, tools),
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        async with self._client.stream(
+            "POST",
+            f"{self._base_url}/chat/completions",
+            headers={"authorization": f"Bearer {self._key}"},
+            json=payload,
+            timeout=DEFAULT_TIMEOUT,
+        ) as response:
+            if response.status_code >= 400:
+                await response.aread()
+                raise RuntimeError(
+                    f"chat completion failed with HTTP {response.status_code}: "
+                    f"{response.text}"
+                )
+            text: list[str] = []
+            reasoning: list[str] = []
+            calls: dict[int, dict[str, Any]] = {}
+            finish: str | None = None
+            usage: dict[str, Any] | None = None
+            done = False
+            data: list[str] = []
+            async for line in response.aiter_lines():
+                if line.startswith("data:"):
+                    data.append(line[5:].lstrip(" "))
+                    continue
+                if line or not data:
+                    continue
+                frame = "\n".join(data)
+                data = []
+                if frame == "[DONE]":
+                    done = True
+                    break
+                raw = json.loads(frame)
+                if raw.get("error"):
+                    raise RuntimeError(f"stream provider error: {raw['error']}")
+                if raw.get("usage") is not None:
+                    usage = raw["usage"]
+                for choice in raw.get("choices", []):
+                    if choice.get("index", 0) != 0:
+                        continue
+                    if choice.get("finish_reason") is not None:
+                        finish = choice["finish_reason"]
+                    delta = choice.get("delta") or {}
+                    value = delta.get("reasoning_content") or delta.get("reasoning")
+                    if value:
+                        reasoning.append(str(value))
+                        yield Delta("thinking", str(value))
+                    if delta.get("content"):
+                        text.append(str(delta["content"]))
+                        yield Delta("progress", str(delta["content"]))
+                    for part in delta.get("tool_calls") or []:
+                        index = part["index"]
+                        call = calls.setdefault(
+                            index, {"id": "", "function": {"name": "", "arguments": ""}}
+                        )
+                        call["id"] += part.get("id") or ""
+                        function = part.get("function") or {}
+                        for key in ("name", "arguments"):
+                            call["function"][key] += function.get(key) or ""
+            if not done or finish is None or usage is None:
+                raise RuntimeError(
+                    "incomplete model stream: "
+                    "final marker, stop reason or usage missing"
+                )
+            if not all(
+                isinstance(usage.get(key), int)
+                and not isinstance(usage.get(key), bool)
+                and usage[key] >= 0
+                for key in ("prompt_tokens", "completion_tokens")
+            ):
+                raise RuntimeError("incomplete model stream: invalid final usage")
+            message = {
+                "content": "".join(text),
+                "reasoning_content": "".join(reasoning),
+                "tool_calls": [calls[i] for i in sorted(calls)],
+            }
+            reply = self._reply(
+                {
+                    "choices": [{"message": message, "finish_reason": finish}],
+                    "usage": usage,
+                },
+                cost=reported_cost(response.headers),
+                strict_arguments=True,
+            )
+        yield reply
+
+    def _reply(
+        self,
+        payload: dict[str, Any],
+        *,
+        cost: float | None = None,
+        strict_arguments: bool = False,
+    ) -> Reply:
         choice = (payload.get("choices") or [{}])[0]
         message = choice.get("message") or {}
 
@@ -247,7 +370,14 @@ class OpenAITransport:
             function = raw.get("function") or {}
             args = _arguments(function.get("arguments", ""))
             calls.append(
-                ToolCall(id=raw.get("id", ""), name=function.get("name", ""), args=args)
+                ToolCall(
+                    id=raw.get("id", ""),
+                    name=function.get("name", ""),
+                    args=args,
+                    error=_argument_error(function.get("arguments", ""))
+                    if strict_arguments
+                    else None,
+                )
             )
             content.append(
                 {

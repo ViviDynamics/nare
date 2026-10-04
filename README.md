@@ -192,3 +192,9 @@ MCP tool sources are configured explicitly with `--mcp-config servers.json`.
 Both stdio child servers and remote Streamable HTTP servers use the normal tool
 allowlist and approval seam. For configuration, names (`server__tool`), errors,
 credential isolation and resume semantics, see [the MCP contract](docs/contract.md#mcp-tool-sources).
+
+Use `--stream` for live text and reasoning events while a model turn runs.
+It works on both providers and permits Anthropic outputs above the SDK's
+nonstreaming ceiling. Streaming can keep an idle proxy alive when the provider
+sends traffic; it cannot prevent a timeout before the first byte. See
+[streaming semantics](docs/contract.md#streaming-model-turns).
