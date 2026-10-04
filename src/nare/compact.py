@@ -5,24 +5,49 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 
-from nare.session import Session
+from nare.session import Message, Session
 
 PREFIX = "[elided by nare:"
 
 
-def _chars(s: Session, end: int | None = None) -> int:
-    return len(json.dumps([asdict(m) for m in s.messages[:end]]))
+def context_chars(messages: list[Message], *, image_input: bool = True) -> int:
+    raw = [asdict(m) for m in messages]
+    image_tokens = 0
+    for message in raw:
+        for block in message["content"]:
+            image = block.get("image") if block.get("type") == "tool_result" else None
+            if isinstance(image, dict):
+                if not image_input:
+                    block.pop("image")
+                    continue
+                image.get("source", {}).pop("data", None)
+                width, height = (
+                    int(image.get("width", 8000)),
+                    int(image.get("height", 8000)),
+                )
+                image_tokens += 4 * ((width + 31) // 32) * ((height + 31) // 32)
+    return len(json.dumps(raw)) + 4 * image_tokens
 
 
-def estimate(s: Session) -> float:
-    if s.last_input_tokens == 0:
-        return _chars(s) / 4
+def _chars(s: Session, end: int | None = None, *, image_input: bool = True) -> int:
+    return context_chars(s.messages[:end], image_input=image_input)
+
+
+def estimate(s: Session, *, image_input: bool = True) -> float:
+    if (
+        s.last_input_tokens == 0
+        or s.last_input_image_input is not None
+        and s.last_input_image_input != image_input
+    ):
+        return _chars(s, image_input=image_input) / 4
     # Include new messages and changes to a measured prefix (elision, or user
     # feedback merged into a trailing user message). Saved boundaries make
     # the estimate stable across resumes. This is a heuristic, not a tokenizer.
-    prefix_delta = _chars(s, s.last_input_messages) - s.last_input_chars
+    prefix_delta = (
+        _chars(s, s.last_input_messages, image_input=image_input) - s.last_input_chars
+    )
     appended = s.messages[s.last_input_messages :]
-    appended_chars = len(json.dumps([asdict(m) for m in appended])) if appended else 0
+    appended_chars = context_chars(appended, image_input=image_input) if appended else 0
     return max(0, s.last_input_tokens + (prefix_delta + appended_chars) / 4)
 
 
@@ -34,8 +59,10 @@ class CompactionReport:
     window: int
 
 
-def compact(s: Session, window: int) -> CompactionReport | None:
-    before = estimate(s)
+def compact(
+    s: Session, window: int, *, image_input: bool = True
+) -> CompactionReport | None:
+    before = estimate(s, image_input=image_input)
     if before < window * 0.8:
         return None
     assistant_indices = [i for i, m in enumerate(s.messages) if m.role == "assistant"]
@@ -56,7 +83,7 @@ def compact(s: Session, window: int) -> CompactionReport | None:
         if i == 0 or i >= protected_from:
             continue
         for block in message.content:
-            if estimate(s) <= window * 0.6:
+            if estimate(s, image_input=image_input) <= window * 0.6:
                 break
             if (
                 block.get("type") != "tool_result"
@@ -65,16 +92,24 @@ def compact(s: Session, window: int) -> CompactionReport | None:
             ):
                 continue
             content = block.get("content", "")
-            if not isinstance(content, str) or content.startswith(PREFIX):
+            if not isinstance(content, str) or (
+                content.startswith(PREFIX) and not (image_input and "image" in block)
+            ):
                 continue
             stub = (
                 f"{PREFIX} {len(content)} chars of output from turn {turn}. "
                 "Rerun the tool if you need it.]"
             )
-            if len(stub) >= len(content):
+            if len(stub) >= len(content) and not (image_input and "image" in block):
                 continue
             block["content"] = stub
+            if image_input:
+                block.pop("image", None)
             elided += 1
     # ponytail: model-written summaries may follow elision if measured runs
     # keep reaching the context stop. No extra model call is made here.
-    return CompactionReport(elided, before, estimate(s), window) if elided else None
+    return (
+        CompactionReport(elided, before, estimate(s, image_input=image_input), window)
+        if elided
+        else None
+    )

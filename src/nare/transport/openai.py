@@ -93,7 +93,12 @@ def tools_from(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def messages_from(messages: list[Message]) -> list[dict[str, Any]]:
+def messages_from(
+    messages: list[Message],
+    *,
+    image_input: bool = False,
+    image_model: str = "OpenAITransport/model unspecified",
+) -> list[dict[str, Any]]:
     """nare's transcript (Anthropic-shaped blocks) as Chat Completions messages.
 
     Three shapes differ and one is dropped:
@@ -108,16 +113,45 @@ def messages_from(messages: list[Message]) -> list[dict[str, Any]]:
     for message in messages:
         texts: list[str] = []
         calls: list[dict[str, Any]] = []
+        images: list[dict[str, Any]] = []
         for block in message.content:
             kind = block.get("type")
             if kind == "text":
                 texts.append(block.get("text", ""))
             elif kind == "tool_result":
+                text = str(block.get("content", ""))
+                image = block.get("image")
+                if image is not None:
+                    if image_input:
+                        source = image["source"]
+                        images += [
+                            {
+                                "type": "text",
+                                "text": (
+                                    f"Image from read tool result "
+                                    f"{block.get('tool_use_id')}: {text}"
+                                ),
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": (
+                                        f"data:{source['media_type']};base64,"
+                                        f"{source['data']}"
+                                    ),
+                                },
+                            },
+                        ]
+                    else:
+                        text += (
+                            f" [image withheld: {image_model} "
+                            "does not accept image input]"
+                        )
                 out.append(
                     {
                         "role": "tool",
                         "tool_call_id": block.get("tool_use_id", ""),
-                        "content": str(block.get("content", "")),
+                        "content": text,
                     }
                 )
             elif kind == "tool_use":
@@ -141,6 +175,8 @@ def messages_from(messages: list[Message]) -> list[dict[str, Any]]:
             )
         elif texts:
             out.append({"role": message.role, "content": "\n".join(texts)})
+        if images:
+            out.append({"role": "user", "content": images})
     return out
 
 
@@ -169,6 +205,8 @@ def _argument_error(raw: str) -> str | None:
 
 
 class OpenAITransport:
+    supports_image_input = True
+
     def __init__(
         self,
         *,
@@ -181,6 +219,7 @@ class OpenAITransport:
         system: str | None = None,
         http_client: httpx2.AsyncClient | None = None,
         streaming: bool = False,
+        image_input: bool = False,
     ) -> None:
         key = api_key or os.environ.get("OPENAI_API_KEY")
         if not key:
@@ -189,6 +228,7 @@ class OpenAITransport:
                 "--api-key flag; argv is world-readable)"
             )
         self.streaming = streaming
+        self.image_input = image_input
         self._discovery_base = base_url
         self.model = model
         self.system = system
@@ -212,7 +252,11 @@ class OpenAITransport:
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.model,
-            "messages": messages_from(messages),
+            "messages": messages_from(
+                messages,
+                image_input=self.image_input,
+                image_model=f"OpenAITransport/model={self.model}",
+            ),
         }
         if self.system is not None:
             payload["messages"] = [

@@ -7,18 +7,25 @@ fifteen tools. At five it is a dependency on cleverness for no gain.
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import signal
 import subprocess
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
 from typing import Any
+
+from PIL import Image
 
 from nare.mcp import ExternalTool
 from nare.transport import ToolCall
 
 MAX_TOOL_OUTPUT = 30_000
+MAX_IMAGE_BYTES = 4 * 1024 * 1024
+MAX_IMAGE_PIXELS = 20_000_000
+MAX_IMAGE_EDGE = 8000
 
 
 def _truncate(text: str) -> str:
@@ -28,6 +35,71 @@ def _truncate(text: str) -> str:
     if len(text) <= MAX_TOOL_OUTPUT:
         return text
     return text[:MAX_TOOL_OUTPUT] + f"\n[truncated at {MAX_TOOL_OUTPUT} chars]"
+
+
+def _read_with_image(
+    path: str,
+    offset: int = 0,
+    limit: int = 2000,
+    *,
+    image_input: bool = False,
+    image_model: str = "unconfigured transport/model",
+) -> str | dict[str, Any]:
+    target = Path(path)
+    with target.open("rb") as handle:
+        header = handle.read(16)
+        candidate = target.suffix.lower() in {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".webp",
+            ".bmp",
+            ".tif",
+            ".tiff",
+        } or header.startswith((b"\x89PNG", b"\xff\xd8", b"GIF8", b"RIFF"))
+        if candidate:
+            if not image_input:
+                raise ValueError(
+                    f"{image_model} does not accept image input; "
+                    "--image-input is required for a capable model"
+                )
+            handle.seek(0)
+            data = handle.read(MAX_IMAGE_BYTES + 1)
+            if len(data) > MAX_IMAGE_BYTES:
+                raise ValueError(f"image exceeds {MAX_IMAGE_BYTES} bytes")
+            try:
+                with Image.open(BytesIO(data)) as image:
+                    if image.format not in {"PNG", "JPEG"}:
+                        raise ValueError("only PNG/JPEG image input is supported")
+                    width, height = image.size
+                    if width * height > MAX_IMAGE_PIXELS:
+                        raise ValueError(f"image exceeds {MAX_IMAGE_PIXELS} pixels")
+                    if max(width, height) > MAX_IMAGE_EDGE:
+                        raise ValueError(f"image edge exceeds {MAX_IMAGE_EDGE} pixels")
+                    mime = "image/png" if image.format == "PNG" else "image/jpeg"
+                    image.load()
+            except ValueError:
+                raise
+            except Exception as exc:
+                raise ValueError(f"invalid image: {exc}") from exc
+            return {
+                "text": (
+                    f"Read image {target.name}: {width}x{height} {mime}, "
+                    f"{len(data)} bytes"
+                ),
+                "image": {
+                    "type": "image",
+                    "width": width,
+                    "height": height,
+                    "source": {
+                        "type": "base64",
+                        "media_type": mime,
+                        "data": base64.b64encode(data).decode("ascii"),
+                    },
+                },
+            }
+    return read_file(path, offset, limit)
 
 
 def read_file(path: str, offset: int = 0, limit: int = 2000) -> str:
@@ -102,7 +174,7 @@ def ask(questions: list[str]) -> str:
     return "Questions recorded. The session is blocked pending answers."
 
 
-TOOLS: dict[str, Callable[..., str]] = {
+TOOLS: dict[str, Callable[..., str | dict[str, Any]]] = {
     "read": read_file,
     "write": write_file,
     "edit": edit_file,
@@ -113,7 +185,9 @@ TOOLS: dict[str, Callable[..., str]] = {
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "read",
-        "description": "Read a UTF-8 text file and return its contents.",
+        "description": (
+            "Read a UTF-8 text file, or a PNG/JPEG image when image input is enabled."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -217,6 +291,8 @@ class Policy:
     root: Path | None = None
     external: dict[str, ExternalTool] = field(default_factory=dict)
     pending: frozenset[str] = frozenset()
+    image_input: bool = False
+    image_model: str = "unconfigured transport/model"
 
     def __post_init__(self) -> None:
         unknown = sorted(self.tools - set(TOOLS) - self.external.keys() - self.pending)
@@ -234,6 +310,11 @@ class Policy:
     def recorded(self) -> dict[str, Any]:
         """What the session stores, so a run's permissions are readable after it."""
         return {
+            **(
+                {"image_input": True, "image_model": self.image_model}
+                if self.image_input
+                else {}
+            ),
             "tools": sorted(self.tools),
             "root": None if self.root is None else str(self.root),
         }
@@ -305,7 +386,15 @@ async def dispatch(
             args["path"] = str(policy.resolve(str(args["path"])))
         if call.name == "bash" and policy.root is not None:
             args["cwd"] = str(policy.root.resolve())
-        return tool_result(call.id, await asyncio.to_thread(function, **args))
+        if call.name == "read":
+            args["image_input"] = policy.image_input
+            args["image_model"] = policy.image_model
+            output = await asyncio.to_thread(_read_with_image, **args)
+        else:
+            output = await asyncio.to_thread(function, **args)
+        if isinstance(output, dict):
+            return {**tool_result(call.id, output["text"]), "image": output["image"]}
+        return tool_result(call.id, output)
     except Exception as exc:
         return tool_result(call.id, f"{type(exc).__name__}: {exc}", is_error=True)
 

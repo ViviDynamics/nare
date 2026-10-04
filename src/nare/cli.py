@@ -175,6 +175,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--mcp-config", help="JSON file of named MCP stdio or Streamable HTTP servers"
     )
+    run_parser.add_argument(
+        "--image-input",
+        action="store_true",
+        help="declare that the selected model accepts PNG/JPEG image input",
+    )
     run_parser.add_argument("--session", help="write the session to this path")
     run_parser.add_argument(
         "--max-turns",
@@ -196,6 +201,7 @@ def transport_from_args(args: argparse.Namespace) -> Transport:
         effort=args.effort,
         system=args.system,
         streaming=args.stream,
+        image_input=args.image_input,
     )
 
 

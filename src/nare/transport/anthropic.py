@@ -111,7 +111,37 @@ def usage_from(raw: Any) -> Usage:
     )
 
 
+def messages_from(
+    messages: list[Message],
+    *,
+    image_input: bool = False,
+    image_model: str = "AnthropicTransport/model unspecified",
+) -> list[dict[str, Any]]:
+    output = [asdict(message) for message in messages]
+    for message in output:
+        for block in message["content"]:
+            image = (
+                block.pop("image", None) if block.get("type") == "tool_result" else None
+            )
+            if image is None:
+                continue
+            text = block.get("content", "")
+            if image_input:
+                block["content"] = [
+                    {"type": "text", "text": text},
+                    {"type": "image", "source": image["source"]},
+                ]
+            else:
+                block["content"] = (
+                    f"{text} [image withheld: {image_model} "
+                    "does not accept image input]"
+                )
+    return output
+
+
 class AnthropicTransport:
+    supports_image_input = True
+
     def __init__(
         self,
         *,
@@ -124,6 +154,7 @@ class AnthropicTransport:
         system: str | None = None,
         http_client: httpx2.AsyncClient | None = None,
         streaming: bool = False,
+        image_input: bool = False,
     ) -> None:
         if api_key is None and not os.environ.get("ANTHROPIC_API_KEY"):
             raise ValueError(
@@ -138,6 +169,7 @@ class AnthropicTransport:
             )
 
         self.streaming = streaming
+        self.image_input = image_input
         self.thinking: dict[str, Any] | None = None
         budget = EFFORT_BUDGETS[effort] if effort is not None else None
         ceiling = min(
@@ -200,7 +232,14 @@ class AnthropicTransport:
         raw = await self._client.messages.with_raw_response.create(
             model=self.model,
             max_tokens=self.max_tokens,
-            messages=cast("list[MessageParam]", [asdict(m) for m in messages]),
+            messages=cast(
+                "list[MessageParam]",
+                messages_from(
+                    messages,
+                    image_input=self.image_input,
+                    image_model=f"AnthropicTransport/model={self.model}",
+                ),
+            ),
             tools=cast("list[ToolParam]", tools),
             system=self.system if self.system is not None else omit,
             thinking=cast(Any, self.thinking) if self.thinking else omit,
@@ -225,7 +264,14 @@ class AnthropicTransport:
         async with self._client.messages.stream(
             model=self.model,
             max_tokens=self.max_tokens,
-            messages=cast("list[MessageParam]", [asdict(m) for m in messages]),
+            messages=cast(
+                "list[MessageParam]",
+                messages_from(
+                    messages,
+                    image_input=self.image_input,
+                    image_model=f"AnthropicTransport/model={self.model}",
+                ),
+            ),
             tools=cast("list[ToolParam]", tools),
             system=self.system if self.system is not None else omit,
             thinking=cast(Any, self.thinking) if self.thinking else omit,
