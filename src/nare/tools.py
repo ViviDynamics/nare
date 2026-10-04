@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from nare.mcp import ExternalTool
 from nare.transport import ToolCall
 
 MAX_TOOL_OUTPUT = 30_000
@@ -214,9 +215,11 @@ class Policy:
 
     tools: frozenset[str] = field(default_factory=lambda: frozenset(TOOLS))
     root: Path | None = None
+    external: dict[str, ExternalTool] = field(default_factory=dict)
+    pending: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
-        unknown = sorted(self.tools - set(TOOLS))
+        unknown = sorted(self.tools - set(TOOLS) - self.external.keys() - self.pending)
         if unknown:
             raise ValueError(
                 f"unknown tool {', '.join(unknown)}; "
@@ -224,7 +227,9 @@ class Policy:
             )
 
     def schemas(self) -> list[dict[str, Any]]:
-        return [s for s in TOOL_SCHEMAS if s["name"] in self.tools]
+        return [s for s in TOOL_SCHEMAS if s["name"] in self.tools] + [
+            t.schema for name, t in self.external.items() if name in self.tools
+        ]
 
     def recorded(self) -> dict[str, Any]:
         """What the session stores, so a run's permissions are readable after it."""
@@ -270,7 +275,7 @@ async def dispatch(
     instead of dying on the first attempt to leave its box.
     """
     function = TOOLS.get(call.name)
-    if function is None:
+    if function is None and call.name not in policy.external:
         return tool_result(
             call.id,
             f"unknown tool {call.name!r}; available: {', '.join(sorted(TOOLS))}",
@@ -289,6 +294,10 @@ async def dispatch(
         # leave the transcript with a tool_use and no tool_result.
         if not approve(call.name, call.args):
             return tool_result(call.id, f"{call.name} was not approved", is_error=True)
+        if call.name in policy.external:
+            text, failed = await policy.external[call.name].call(call.args)
+            return tool_result(call.id, _truncate(text), is_error=failed)
+        assert function is not None
         args = dict(call.args)
         if call.name in PATH_TOOLS and "path" in args:
             args["path"] = str(policy.resolve(str(args["path"])))

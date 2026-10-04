@@ -187,3 +187,8 @@ managed service.
 Issues yes, pull requests no. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
 policy and the reasoning behind it, and [SECURITY.md](SECURITY.md) for how to
 report a vulnerability.
+
+MCP tool sources are configured explicitly with `--mcp-config servers.json`.
+Both stdio child servers and remote Streamable HTTP servers use the normal tool
+allowlist and approval seam. For configuration, names (`server__tool`), errors,
+credential isolation and resume semantics, see [the MCP contract](docs/contract.md#mcp-tool-sources).
