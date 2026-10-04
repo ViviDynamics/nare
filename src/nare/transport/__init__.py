@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
@@ -25,6 +25,7 @@ class ToolCall:
     id: str
     name: str
     args: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,20 @@ class Reply:
     usage: Usage
     stop_reason: StopReason
     cost: float | None = None
+
+
+@dataclass(frozen=True)
+class Delta:
+    kind: Literal["progress", "thinking"]
+    text: str
+
+
+class StreamingTransport(Protocol):
+    streaming: bool
+
+    def stream_turn(
+        self, messages: list[Message], tools: list[dict[str, Any]]
+    ) -> AsyncGenerator[Delta | Reply, None]: ...
 
 
 class Transport(Protocol):
@@ -62,6 +77,7 @@ def make_transport(
     max_tokens: int | None = None,
     effort: Literal["low", "medium", "high"] | None = None,
     system: str | None = None,
+    streaming: bool = False,
 ) -> Transport:
     """Build a transport from configuration.
 
@@ -82,6 +98,7 @@ def make_transport(
                 max_tokens=max_tokens,
                 effort=effort,
                 system=system,
+                streaming=streaming,
             )
         case "openai":
             from nare.transport.openai import OpenAITransport
@@ -94,6 +111,7 @@ def make_transport(
                 max_tokens=max_tokens,
                 effort=effort,
                 system=system,
+                streaming=streaming,
             )
         case _:
             raise ValueError(

@@ -115,6 +115,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["low", "medium", "high"],
         help="reasoning effort",
     )
+    run_parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="stream text/reasoning while each model turn runs",
+    )
     run_parser.add_argument("--system", help="system prompt / persona text")
     run_parser.add_argument(
         "--jsonl", action="store_true", help="emit typed JSONL on stdout"
@@ -185,6 +190,7 @@ def transport_from_args(args: argparse.Namespace) -> Transport:
         max_tokens=args.max_tokens,
         effort=args.effort,
         system=args.system,
+        streaming=args.stream,
     )
 
 

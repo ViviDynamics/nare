@@ -4,14 +4,16 @@ an async generator: resumable by construction, deterministic under test.
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, Callable
+from contextlib import aclosing
 from dataclasses import asdict, replace
-from typing import Any
+from typing import Any, Literal, cast
 
 from nare.accounting import Prices, finite_number, turn_usage
 from nare.compact import compact, estimate
-from nare.events import Event
+from nare.events import Event, LiveText
 from nare.mcp import Server, connect
 from nare.schema import extract_json, validate
 from nare.session import Message, Session, append_user_text
@@ -23,7 +25,7 @@ from nare.tools import (
     questions_from,
     tool_result,
 )
-from nare.transport import StopReason, Transport
+from nare.transport import Delta, StopReason, StreamingTransport, Transport
 
 MAX_TURNS_DEFAULT = 50
 
@@ -124,6 +126,7 @@ async def step(
     schema: dict[str, Any] | None = None,
     context_window: int = 32000,
     prices: Prices | None = None,
+    on_delta: Callable[[Delta], None] | None = None,
 ) -> Session:
     report = compact(s, context_window)
     if report is not None:
@@ -144,7 +147,24 @@ async def step(
         return s
     input_messages = len(s.messages)
     input_chars = len(json.dumps([asdict(m) for m in s.messages]))
-    reply = await transport.turn(s.messages, policy.schemas())
+    streamed = bool(getattr(transport, "streaming", False)) and on_delta is not None
+    if streamed:
+        reply = None
+        async with aclosing(
+            cast(StreamingTransport, transport).stream_turn(
+                s.messages, policy.schemas()
+            )
+        ) as stream:
+            async for item in stream:
+                if isinstance(item, Delta):
+                    assert on_delta is not None
+                    on_delta(item)
+                else:
+                    reply = item
+        if reply is None:
+            raise RuntimeError("stream ended without a completed reply")
+    else:
+        reply = await transport.turn(s.messages, policy.schemas())
     s.last_input_tokens = (
         reply.usage.input + reply.usage.cache_read + reply.usage.cache_write
     )
@@ -155,7 +175,7 @@ async def step(
     s.turns += 1
     s.messages.append(Message(role="assistant", content=reply.content))
 
-    for block in reply.content:
+    for block in [] if streamed else reply.content:
         if block.get("type") == "text":
             s.events.append(Event("progress", block.get("text", "")))
         elif block.get("type") == "thinking":
@@ -264,6 +284,64 @@ async def step(
     return s
 
 
+async def _live_step(
+    s: Session,
+    transport: Transport,
+    approve: Approve,
+    policy: Policy,
+    schema: dict[str, Any] | None,
+    window: int,
+    prices: Prices | None,
+) -> AsyncGenerator[Event, None]:
+    queue: asyncio.Queue[Event] = asyncio.Queue()
+    buffers: dict[Literal["progress", "thinking"], LiveText] = {
+        "progress": LiveText(),
+        "thinking": LiveText(),
+    }
+
+    def receive(delta: Delta) -> None:
+        text = buffers[delta.kind].feed(delta.text)
+        if text:
+            queue.put_nowait(Event(delta.kind, text))
+
+    task = asyncio.create_task(
+        step(s, transport, approve, policy, schema, window, prices, receive)
+    )
+    waiter: asyncio.Task[Event] | None = None
+    try:
+        while not task.done() or not queue.empty():
+            if not queue.empty():
+                yield queue.get_nowait()
+                continue
+            waiter = asyncio.create_task(queue.get())
+            done, _ = await asyncio.wait(
+                {task, waiter}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if waiter in done:
+                yield waiter.result()
+            else:
+                waiter.cancel()
+                await asyncio.gather(waiter, return_exceptions=True)
+            waiter = None
+        # Flush unfinished words even when the provider failed; these are
+        # progress, never a completed assistant message or valid findings.
+        for kind, buffer in buffers.items():
+            text = buffer.finish()
+            if text:
+                queue.put_nowait(Event(kind, text))
+        while not queue.empty():
+            yield queue.get_nowait()
+        await task
+    finally:
+        if waiter is not None:
+            waiter.cancel()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(
+            task, *([waiter] if waiter is not None else []), return_exceptions=True
+        )
+
+
 async def _run(
     session: Session,
     *,
@@ -276,7 +354,7 @@ async def _run(
     context_window: int | None = None,
     budget_usd: float | None = None,
     prices: Prices | None = None,
-) -> AsyncIterator[Event]:
+) -> AsyncGenerator[Event, None]:
     """Advance the session to a terminal status, yielding events as they occur.
 
     The only place that catches broadly: a harness reports failures as events
@@ -339,7 +417,20 @@ async def _run(
             session.events.append(Event("error", session.error))
         else:
             try:
-                await step(session, transport, approve, policy, schema, window, prices)
+                if getattr(transport, "streaming", False):
+                    while session.events:
+                        yield session.events.pop(0)
+                    async with aclosing(
+                        _live_step(
+                            session, transport, approve, policy, schema, window, prices
+                        )
+                    ) as stream:
+                        async for event in stream:
+                            yield event
+                else:
+                    await step(
+                        session, transport, approve, policy, schema, window, prices
+                    )
                 if session.status not in ("done", "blocked"):
                     check_budget(session)
             except Exception as exc:
@@ -390,19 +481,22 @@ async def run(
             active = replace(
                 base, tools=frozenset(names), external=external, pending=frozenset()
             )
-            async for event in _run(
-                session,
-                transport=transport,
-                approve=approve,
-                policy=active,
-                schema=schema,
-                max_turns=max_turns,
-                budget_tokens=budget_tokens,
-                context_window=context_window,
-                budget_usd=budget_usd,
-                prices=prices,
-            ):
-                yield event
+            async with aclosing(
+                _run(
+                    session,
+                    transport=transport,
+                    approve=approve,
+                    policy=active,
+                    schema=schema,
+                    max_turns=max_turns,
+                    budget_tokens=budget_tokens,
+                    context_window=context_window,
+                    budget_usd=budget_usd,
+                    prices=prices,
+                )
+            ) as stream:
+                async for event in stream:
+                    yield event
     except Exception as exc:
         session.status = "error"
         session.stop_reason = "mcp"
