@@ -41,12 +41,20 @@ def main() -> None:
     ]
 
     def capture(
-        name: str, script: list[dict[str, Any]], *argv: str, measure_input: bool = False
+        name: str,
+        script: list[dict[str, Any]],
+        *argv: str,
+        measure_input: bool = False,
+        startup_error: str | None = None,
     ) -> None:
         directory = root / name
         directory.mkdir(exist_ok=True)
         proc, lines, calls = invoke(
-            directory, script, *argv, measure_input=measure_input
+            directory,
+            script,
+            *argv,
+            measure_input=measure_input,
+            startup_error=startup_error,
         )
         (directory / "stdout.jsonl").write_text(proc.stdout)
         (directory / "stderr.txt").write_text(proc.stderr)
@@ -146,6 +154,13 @@ def main() -> None:
         "15",
         "--session",
         str(partial_session),
+    )
+    capture(
+        "resume-no-provider",
+        [text()],
+        "--resume",
+        str(partial_session),
+        startup_error="no API key: set OPENAI_API_KEY in the environment",
     )
     # Use the new benchmark's real generator through real bash tool calls.
     overflow: list[dict[str, Any]] = []

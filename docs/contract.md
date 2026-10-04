@@ -149,7 +149,7 @@ further model call in that invocation.
 environment, environment overrides a persisted limit, and omission retains the
 persisted limit. There is no flag to clear a persisted budget. If already at or
 above a limit, resume emits a budget error/result and calls no model, including
-when no flag was supplied. Raising one limit does not remove the other. All
+when no flag was supplied or provider construction would fail for lack of credentials. Raising one limit does not remove the other. All
 active limits must allow continuation. USD usage with a historical unknown
 cannot be repaired by adding prices later. `--max-turns` remains per invocation.
 A completed/blocked crossing result is successful; reopening it with resume

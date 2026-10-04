@@ -31,7 +31,23 @@ def budget_record(s: Session) -> dict[str, Any]:
     return {**s.budget, "used_tokens": s.usage.total_tokens, "used_usd": s.usage.cost}
 
 
-def _check_budget(s: Session) -> bool:
+def configure_budgets(
+    s: Session,
+    tokens: int | None = None,
+    usd: float | None = None,
+) -> None:
+    """Resolve overrides over saved ceilings without resetting usage."""
+    tokens = tokens if tokens is not None else s.budget.get("tokens")
+    usd = usd if usd is not None else s.budget.get("usd")
+    if tokens is not None:
+        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
+            raise ValueError("budget_tokens must be a positive integer")
+        s.budget["tokens"] = tokens
+    if usd is not None:
+        s.budget["usd"] = finite_number(usd, "budget_usd")
+
+
+def check_budget(s: Session) -> bool:
     token_limit = s.budget.get("tokens")
     usd_limit = s.budget.get("usd")
     reasons: list[str] = []
@@ -256,24 +272,15 @@ async def run(
     The only place that catches broadly: a harness reports failures as events
     and a status, it does not hand a traceback to its caller.
     """
-    if budget_tokens is not None:
-        if (
-            isinstance(budget_tokens, bool)
-            or not isinstance(budget_tokens, int)
-            or budget_tokens <= 0
-        ):
-            raise ValueError("budget_tokens must be a positive integer")
-        session.budget["tokens"] = budget_tokens
+    configure_budgets(session, budget_tokens, budget_usd)
     if context_window is not None and (
         isinstance(context_window, bool)
         or not isinstance(context_window, int)
         or context_window <= 0
     ):
         raise ValueError("context_window must be a positive integer")
-    if budget_usd is not None:
-        session.budget["usd"] = finite_number(budget_usd, "budget_usd")
     # A resumed exhausted session must not call the backend, even for metadata.
-    if session.status == "working" and _check_budget(session):
+    if session.status == "working" and check_budget(session):
         while session.events:
             yield session.events.pop(0)
         return
@@ -313,7 +320,7 @@ async def run(
     # instantly with a message that reads like a runaway loop.
     budget_from = session.turns
     while session.status == "working":
-        if _check_budget(session):
+        if check_budget(session):
             pass
         elif session.turns - budget_from >= max_turns:
             session.status = "error"
@@ -324,7 +331,7 @@ async def run(
             try:
                 await step(session, transport, approve, policy, schema, window, prices)
                 if session.status not in ("done", "blocked"):
-                    _check_budget(session)
+                    check_budget(session)
             except Exception as exc:
                 session.status = "error"
                 # The last completed turn's reason describes that turn, not

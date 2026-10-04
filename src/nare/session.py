@@ -26,7 +26,7 @@ class Message:
 
 @dataclass(frozen=True)
 class Usage:
-    """Token counts. `input` EXCLUDES cache reads, following Anthropic."""
+    """Token counts. `input` EXCLUDES cache reads and writes, following Anthropic."""
 
     input: int = 0
     output: int = 0

@@ -43,11 +43,20 @@ def invoke(
     *args: str,
     env: dict[str, str] | None = None,
     measure_input: bool = False,
+    startup_error: str | None = None,
 ) -> tuple[
     subprocess.CompletedProcess[str], list[dict[str, Any]], list[dict[str, Any]]
 ]:
     script = tmp_path / "script.json"
-    script.write_text(json.dumps({"replies": replies, "measure_input": measure_input}))
+    script.write_text(
+        json.dumps(
+            {
+                "replies": replies,
+                "measure_input": measure_input,
+                "startup_error": startup_error,
+            }
+        )
+    )
     calls = script.with_suffix(".calls.json")
     calls.unlink(missing_ok=True)
     process_env = {
@@ -481,3 +490,52 @@ def test_eight_large_tool_results_compact_in_actual_cli(tmp_path: Path) -> None:
     assert any(block["content"].startswith("[elided by nare:") for block in results)
     assert sum(len(block["content"]) for block in results) < 128000
     assert max(call["input_chars"] for call in calls) < 128000
+
+
+def test_exhausted_resume_reports_budget_before_provider_construction(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "code.py"
+    source.write_text("evidence")
+    schema = tmp_path / "schema.json"
+    schema.write_text('{"type":"object","required":["findings"]}')
+    session = tmp_path / "s.json"
+    proc, _, _ = invoke(
+        tmp_path,
+        [read(source, "c1", '{"findings":["available"]}')],
+        "go",
+        "--schema",
+        str(schema),
+        "--budget-tokens",
+        "15",
+        "--session",
+        str(session),
+    )
+    assert proc.returncode == 1
+    proc, lines, calls = invoke(
+        tmp_path,
+        [text()],
+        "--resume",
+        str(session),
+        startup_error="no API key: set OPENAI_API_KEY in the environment",
+    )
+    assert proc.returncode == 1
+    assert calls == []
+    assert lines[-1]["stop_reason"] == "budget"
+    assert lines[-1]["usage"]["input"] == 10
+    assert lines[-1]["output"] == {"findings": ["available"]}
+    assert lines[-1]["budget"]["tokens"] == 15
+    # Raising the budget must still surface real provider setup errors.
+    proc, lines, calls = invoke(
+        tmp_path,
+        [text()],
+        "--resume",
+        str(session),
+        "--budget-tokens",
+        "50",
+        startup_error="no API key: set OPENAI_API_KEY in the environment",
+    )
+    assert proc.returncode == 2
+    assert calls == []
+    assert lines == []
+    assert "API key" in proc.stderr

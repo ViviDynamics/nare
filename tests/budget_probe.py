@@ -56,9 +56,16 @@ class ScriptedTransport:
 
 def main() -> int:
     path = Path(sys.argv[1])
+
     # Production parser, policy, loop, persistence, event/result rendering and
     # exit code run unchanged. Only vendor construction is replaced.
-    nare.cli.transport_from_args = lambda args: ScriptedTransport(path, args.max_tokens)
+    def factory(args: Any) -> ScriptedTransport:
+        error = json.loads(path.read_text()).get("startup_error")
+        if error:
+            raise ValueError(error)
+        return ScriptedTransport(path, args.max_tokens)
+
+    nare.cli.transport_from_args = factory
     return nare.cli.main(sys.argv[2:])
 
 

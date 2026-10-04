@@ -1,24 +1,24 @@
-{"type": "progress", "text": "context window 32000 (flag)", "detail": {"context_window": {"tokens": 32000, "source": "flag"}}, "timestamp": "2026-10-04T17:43:31.844620+00:00"}
-{"type": "cost", "text": "19 in / 5 out, cost unknown", "detail": {"input": 19, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:43:31.844876+00:00"}
-{"type": "tool_use", "text": "bash", "detail": {"command": "python benchmarks/cases/context-overflow/fixture/log.py 1"}, "timestamp": "2026-10-04T17:43:31.844894+00:00"}
-{"type": "cost", "text": "7349 in / 5 out, cost unknown", "detail": {"input": 7349, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:43:31.863655+00:00"}
-{"type": "tool_use", "text": "bash", "detail": {"command": "python benchmarks/cases/context-overflow/fixture/log.py 2"}, "timestamp": "2026-10-04T17:43:31.863694+00:00"}
-{"type": "cost", "text": "14679 in / 5 out, cost unknown", "detail": {"input": 14679, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:43:31.882291+00:00"}
-{"type": "tool_use", "text": "bash", "detail": {"command": "python benchmarks/cases/context-overflow/fixture/log.py 3"}, "timestamp": "2026-10-04T17:43:31.882323+00:00"}
-{"type": "cost", "text": "22009 in / 5 out, cost unknown", "detail": {"input": 22009, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:43:31.899754+00:00"}
-{"type": "tool_use", "text": "bash", "detail": {"command": "python benchmarks/cases/context-overflow/fixture/log.py 4"}, "timestamp": "2026-10-04T17:43:31.899786+00:00"}
-{"type": "progress", "text": "compacted: elided 2 tool results, ~29339 -> ~14862 tokens", "detail": {"compaction": {"elided": 2, "before": 29339.25, "after": 14862.25, "window": 32000}}, "timestamp": "2026-10-04T17:43:31.917356+00:00"}
-{"type": "cost", "text": "14863 in / 5 out, cost unknown", "detail": {"input": 14863, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:43:31.917926+00:00"}
-{"type": "tool_use", "text": "bash", "detail": {"command": "python benchmarks/cases/context-overflow/fixture/log.py 5"}, "timestamp": "2026-10-04T17:43:31.917946+00:00"}
-{"type": "cost", "text": "22193 in / 5 out, cost unknown", "detail": {"input": 22193, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:43:31.935176+00:00"}
-{"type": "tool_use", "text": "bash", "detail": {"command": "python benchmarks/cases/context-overflow/fixture/log.py 6"}, "timestamp": "2026-10-04T17:43:31.935213+00:00"}
-{"type": "progress", "text": "compacted: elided 2 tool results, ~29523 -> ~15046 tokens", "detail": {"compaction": {"elided": 2, "before": 29523.25, "after": 15046.25, "window": 32000}}, "timestamp": "2026-10-04T17:43:31.952476+00:00"}
-{"type": "cost", "text": "15046 in / 5 out, cost unknown", "detail": {"input": 15046, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:43:31.953050+00:00"}
-{"type": "tool_use", "text": "bash", "detail": {"command": "python benchmarks/cases/context-overflow/fixture/log.py 7"}, "timestamp": "2026-10-04T17:43:31.953066+00:00"}
-{"type": "cost", "text": "22376 in / 5 out, cost unknown", "detail": {"input": 22376, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:43:31.971065+00:00"}
-{"type": "tool_use", "text": "bash", "detail": {"command": "python benchmarks/cases/context-overflow/fixture/log.py 8"}, "timestamp": "2026-10-04T17:43:31.971138+00:00"}
-{"type": "progress", "text": "compacted: elided 2 tool results, ~29706 -> ~15229 tokens", "detail": {"compaction": {"elided": 2, "before": 29706.25, "after": 15229.25, "window": 32000}}, "timestamp": "2026-10-04T17:43:31.990342+00:00"}
-{"type": "progress", "text": "read all eight logs", "detail": {}, "timestamp": "2026-10-04T17:43:31.991059+00:00"}
-{"type": "cost", "text": "15230 in / 5 out, cost unknown", "detail": {"input": 15230, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:43:31.991079+00:00"}
-{"type": "output", "text": "read all eight logs", "detail": {}, "timestamp": "2026-10-04T17:43:31.991142+00:00"}
-{"type": "result", "session_id": "e08d008718134d21bbd6e47413f392a2", "status": "done", "questions": [], "usage": {"input": 133764, "output": 45, "cache_read": 0, "cache_write": 0, "cost": null}, "budget": {"used_tokens": 133809, "used_usd": null}, "stop_reason": "end_turn", "turns": 9, "contract": 1, "nare": "2026.9.19.dev4+g8b7b149c4.d20261004", "output": null, "error": null}
+{"type": "progress", "text": "context window 32000 (flag)", "detail": {"context_window": {"tokens": 32000, "source": "flag"}}, "timestamp": "2026-10-04T17:49:57.929415+00:00"}
+{"type": "cost", "text": "19 in / 5 out, cost unknown", "detail": {"input": 19, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:49:57.929626+00:00"}
+{"type": "tool_use", "text": "bash", "detail": {"command": "python benchmarks/cases/context-overflow/fixture/log.py 1"}, "timestamp": "2026-10-04T17:49:57.929642+00:00"}
+{"type": "cost", "text": "7349 in / 5 out, cost unknown", "detail": {"input": 7349, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:49:57.946472+00:00"}
+{"type": "tool_use", "text": "bash", "detail": {"command": "python benchmarks/cases/context-overflow/fixture/log.py 2"}, "timestamp": "2026-10-04T17:49:57.946502+00:00"}
+{"type": "cost", "text": "14679 in / 5 out, cost unknown", "detail": {"input": 14679, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:49:57.962932+00:00"}
+{"type": "tool_use", "text": "bash", "detail": {"command": "python benchmarks/cases/context-overflow/fixture/log.py 3"}, "timestamp": "2026-10-04T17:49:57.962961+00:00"}
+{"type": "cost", "text": "22009 in / 5 out, cost unknown", "detail": {"input": 22009, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:49:57.979633+00:00"}
+{"type": "tool_use", "text": "bash", "detail": {"command": "python benchmarks/cases/context-overflow/fixture/log.py 4"}, "timestamp": "2026-10-04T17:49:57.979664+00:00"}
+{"type": "progress", "text": "compacted: elided 2 tool results, ~29339 -> ~14862 tokens", "detail": {"compaction": {"elided": 2, "before": 29339.25, "after": 14862.25, "window": 32000}}, "timestamp": "2026-10-04T17:49:57.995679+00:00"}
+{"type": "cost", "text": "14863 in / 5 out, cost unknown", "detail": {"input": 14863, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:49:57.996218+00:00"}
+{"type": "tool_use", "text": "bash", "detail": {"command": "python benchmarks/cases/context-overflow/fixture/log.py 5"}, "timestamp": "2026-10-04T17:49:57.996234+00:00"}
+{"type": "cost", "text": "22193 in / 5 out, cost unknown", "detail": {"input": 22193, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:49:58.012481+00:00"}
+{"type": "tool_use", "text": "bash", "detail": {"command": "python benchmarks/cases/context-overflow/fixture/log.py 6"}, "timestamp": "2026-10-04T17:49:58.012506+00:00"}
+{"type": "progress", "text": "compacted: elided 2 tool results, ~29523 -> ~15046 tokens", "detail": {"compaction": {"elided": 2, "before": 29523.25, "after": 15046.25, "window": 32000}}, "timestamp": "2026-10-04T17:49:58.028818+00:00"}
+{"type": "cost", "text": "15046 in / 5 out, cost unknown", "detail": {"input": 15046, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:49:58.029388+00:00"}
+{"type": "tool_use", "text": "bash", "detail": {"command": "python benchmarks/cases/context-overflow/fixture/log.py 7"}, "timestamp": "2026-10-04T17:49:58.029409+00:00"}
+{"type": "cost", "text": "22376 in / 5 out, cost unknown", "detail": {"input": 22376, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:49:58.045772+00:00"}
+{"type": "tool_use", "text": "bash", "detail": {"command": "python benchmarks/cases/context-overflow/fixture/log.py 8"}, "timestamp": "2026-10-04T17:49:58.045799+00:00"}
+{"type": "progress", "text": "compacted: elided 2 tool results, ~29706 -> ~15229 tokens", "detail": {"compaction": {"elided": 2, "before": 29706.25, "after": 15229.25, "window": 32000}}, "timestamp": "2026-10-04T17:49:58.062501+00:00"}
+{"type": "progress", "text": "read all eight logs", "detail": {}, "timestamp": "2026-10-04T17:49:58.063126+00:00"}
+{"type": "cost", "text": "15230 in / 5 out, cost unknown", "detail": {"input": 15230, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:49:58.063147+00:00"}
+{"type": "output", "text": "read all eight logs", "detail": {}, "timestamp": "2026-10-04T17:49:58.063161+00:00"}
+{"type": "result", "session_id": "a3abe7ff9c0941c1889b9c19badeb8ee", "status": "done", "questions": [], "usage": {"input": 133764, "output": 45, "cache_read": 0, "cache_write": 0, "cost": null}, "budget": {"used_tokens": 133809, "used_usd": null}, "stop_reason": "end_turn", "turns": 9, "contract": 1, "nare": "2026.9.19.dev4+g8b7b149c4.d20261004", "output": null, "error": null}

@@ -14,6 +14,7 @@ import logging
 import os
 import sys
 import tempfile
+from collections.abc import AsyncIterator
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,13 @@ from nare import __version__
 from nare.accounting import Prices, finite_number, prices_from_env
 from nare.contract import CONTRACT_VERSION, EXIT_CODES, NEVER_STARTED, describe
 from nare.events import Event, redact
-from nare.loop import MAX_TURNS_DEFAULT, budget_record, run
+from nare.loop import (
+    MAX_TURNS_DEFAULT,
+    budget_record,
+    check_budget,
+    configure_budgets,
+    run,
+)
 from nare.schema import UnsupportedSchema, check_supported
 from nare.session import Session, append_user_text, dumps, loads, new_session
 from nare.tools import TOOLS, Policy, approve_all
@@ -283,9 +290,15 @@ def _save(session: Session, path: str) -> None:
         raise
 
 
+async def _pending_events(session: Session) -> AsyncIterator[Event]:
+    """A budget refusal has events but needs no provider construction."""
+    while session.events:
+        yield session.events.pop(0)
+
+
 async def _execute(
     session: Session,
-    transport: Transport,
+    transport: Transport | None,
     args: argparse.Namespace,
     policy: Policy,
     schema: dict[str, Any] | None,
@@ -293,18 +306,23 @@ async def _execute(
 ) -> int:
     saved_turns = -1
     try:
-        async for event in run(
-            session,
-            transport=transport,
-            approve=approve_all,
-            policy=policy,
-            schema=schema,
-            max_turns=args.max_turns,
-            budget_tokens=args.budget_tokens,
-            context_window=args.context_window,
-            budget_usd=args.budget_usd,
-            prices=prices,
-        ):
+        stream = (
+            run(
+                session,
+                transport=transport,
+                approve=approve_all,
+                policy=policy,
+                schema=schema,
+                max_turns=args.max_turns,
+                budget_tokens=args.budget_tokens,
+                context_window=args.context_window,
+                budget_usd=args.budget_usd,
+                prices=prices,
+            )
+            if transport is not None
+            else _pending_events(session)
+        )
+        async for event in stream:
             _emit(event, args.jsonl)
             # Saved per turn, not once at the end. SIGTERM's default handler
             # exits without unwinding, so `finally` never runs and a run
@@ -402,7 +420,12 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         policy = policy_from_args(args)
         schema = schema_from_args(args)
         session = _load_or_new(args)
-        if transport is None:
+        configure_budgets(session, args.budget_tokens, args.budget_usd)
+        if check_budget(session):
+            # Already-spent sessions report their artifacts even when provider
+            # construction would fail (for example, credentials were removed).
+            transport = None
+        elif transport is None:
             transport = transport_from_args(args)
     except (ValueError, OSError, UnsupportedSchema) as exc:
         print(f"nare: {exc}", file=sys.stderr)

@@ -37,7 +37,8 @@ class Reply:
 
 
 class Transport(Protocol):
-    """One method. Everything else is bound at construction, which keeps the
+    """A turn and optional backend window discovery. Configuration is bound at
+    construction, which keeps the
     loop free of vendor parameters entirely.
 
     Structural, not nominal: implementations inherit nothing and import nothing

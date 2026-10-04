@@ -59,5 +59,14 @@
 **Files:** README.md; docs/{contract,architecture}.md; docs/evidence/41/; benchmark overflow fixture/test.
 - [x] Capture actual CLI JSONL/session evidence with deterministic fake transports, including max-tokens baseline and cumulative budget stop, resume, done crossing, cache and context overflow.
 - [x] Document flags, token normalization, persisted usage, limit selection on resume, partial findings recovery, stop reasons and Scrutare strict-budget mismatch.
-- [ ] Run bin/build; review complete diff against approved scope and user requirements; fix findings with regression tests.
+- [x] Run bin/build; review complete diff against approved scope and user requirements; fix findings with regression tests.
 - [ ] Preflight and quality guard; open PR, link thread, CI, review gate, verified squash merge, automatic release read-back.
+
+## Review ledger
+
+Independent reviewer found an exhausted resume constructed the provider before
+reporting its budget stop. Fixed with a shared pre-construction budget check and
+a subprocess regression showing retained valid findings despite a provider
+constructor failure. Larger-budget continuation still reports setup errors.
+Full build: 512 passed. Live-model properties and strict Scrutare ceiling
+compliance remain explicitly outside the evidence.

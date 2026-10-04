@@ -19,6 +19,7 @@ assigned automatically after merge. UUIDs/timestamps change on regeneration.
 | [baseline](baseline/stdout.jsonl) | 3 | done, exit 0, only `--max-tokens 5` | input 30, output 15, total 45 |
 | [budget](budget/stdout.jsonl) | 2 | budget, exit 1, `--budget-tokens 25` | input 20, output 10, total 30; limit 25 |
 | [resume-exhausted](resume-exhausted/stdout.jsonl) | 0 | budget, exit 1; omitted flag inherits 25 | unchanged total 30 |
+| [resume-no-provider](resume-no-provider/stdout.jsonl) | 0 | budget, exit 1 even if provider construction would fail | total 15; valid partial findings retained |
 | [resume-raised](resume-raised/stdout.jsonl) | 1 | done, exit 0; new total ceiling 60 | total 45 |
 | [done-crossing](done-crossing/stdout.jsonl) | 3 | done, exit 0; ceiling 31 | total 45 and structured output retained |
 | [invalid](invalid/invocation.json) | 0 | exit 2, empty stdout | no session/result |
