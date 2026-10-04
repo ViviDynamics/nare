@@ -45,6 +45,9 @@ class FakeJudge:
         self.script = script
         self.calls: list[list[Message]] = []
 
+    async def context_window(self) -> int | None:
+        return None
+
     async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
         self.calls.append(messages)
         assert tools == [], "the judge asks for no tools"
@@ -171,6 +174,9 @@ async def test_score_raises_on_an_unusable_reply() -> None:
 
 
 class DeadJudge:
+    async def context_window(self) -> int | None:
+        return None
+
     async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
         raise ConnectionError("rate limited")
 

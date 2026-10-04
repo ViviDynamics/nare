@@ -22,7 +22,13 @@ from typing import Any, Literal
 import httpx2
 
 from nare.session import Message, Usage
-from nare.transport import Reply, StopReason, ToolCall
+from nare.transport import (
+    Reply,
+    StopReason,
+    ToolCall,
+    discover_context_window,
+    reported_cost,
+)
 
 log = logging.getLogger(__name__)
 
@@ -170,6 +176,7 @@ class OpenAITransport:
                 "no API key: set OPENAI_API_KEY in the environment (there is no "
                 "--api-key flag; argv is world-readable)"
             )
+        self._discovery_base = base_url
         self.model = model
         self.system = system
         self.temperature = temperature
@@ -178,6 +185,14 @@ class OpenAITransport:
         self._base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
         self._key = key
         self._client = http_client or httpx2.AsyncClient(timeout=DEFAULT_TIMEOUT)
+
+    async def context_window(self) -> int | None:
+        return await discover_context_window(
+            self._client,
+            self._discovery_base,
+            self.model,
+            {"authorization": f"Bearer {self._key}"},
+        )
 
     async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
         payload: dict[str, Any] = {
@@ -213,9 +228,9 @@ class OpenAITransport:
                 f"chat completion failed with HTTP {response.status_code}: "
                 f"{response.text}"
             )
-        return self._reply(response.json())
+        return self._reply(response.json(), cost=reported_cost(response.headers))
 
-    def _reply(self, payload: dict[str, Any]) -> Reply:
+    def _reply(self, payload: dict[str, Any], *, cost: float | None = None) -> Reply:
         choice = (payload.get("choices") or [{}])[0]
         message = choice.get("message") or {}
 
@@ -248,4 +263,5 @@ class OpenAITransport:
             tool_calls=calls,
             usage=usage_from(payload.get("usage")),
             stop_reason=stop_reason_from(choice.get("finish_reason")),
+            cost=cost,
         )

@@ -12,7 +12,13 @@ from anthropic import AsyncAnthropic, omit
 from anthropic.types import MessageParam, ToolParam
 
 from nare.session import Message, Usage
-from nare.transport import Reply, StopReason, ToolCall
+from nare.transport import (
+    Reply,
+    StopReason,
+    ToolCall,
+    discover_context_window,
+    reported_cost,
+)
 
 log = logging.getLogger(__name__)
 
@@ -161,14 +167,23 @@ class AnthropicTransport:
             )
 
         self.max_tokens = resolved
+        self._discovery_base = base_url
         self.model = model
         self.system = system
         self._client = AsyncAnthropic(
             api_key=api_key, base_url=base_url, http_client=http_client
         )
 
+    async def context_window(self) -> int | None:
+        return await discover_context_window(
+            self._client._client,
+            self._discovery_base,
+            self.model,
+            {"x-api-key": self._client.api_key or ""},
+        )
+
     async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
-        response = await self._client.messages.create(
+        raw = await self._client.messages.with_raw_response.create(
             model=self.model,
             max_tokens=self.max_tokens,
             messages=cast("list[MessageParam]", [asdict(m) for m in messages]),
@@ -176,6 +191,7 @@ class AnthropicTransport:
             system=self.system if self.system is not None else omit,
             thinking=cast(Any, self.thinking) if self.thinking else omit,
         )
+        response = await raw.parse()
         content = [block.model_dump(exclude_none=True) for block in response.content]
         return Reply(
             content=content,
@@ -186,4 +202,5 @@ class AnthropicTransport:
             ],
             usage=usage_from(response.usage),
             stop_reason=stop_reason_from(response.stop_reason),
+            cost=reported_cost(raw.headers),
         )

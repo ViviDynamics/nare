@@ -15,6 +15,9 @@ class FakeProvider:
         self._replies = list(replies)
         self.calls: list[tuple[list[Message], list[dict[str, Any]]]] = []
 
+    async def context_window(self) -> int | None:
+        return None
+
     async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
         self.calls.append(
             ([Message(m.role, list(m.content)) for m in messages], list(tools))
@@ -40,6 +43,9 @@ def text_reply(text: str, *, stop_reason: StopReason = "end_turn") -> Reply:
 
 class Exploding:
     """A Transport whose turn() always fails, for exercising the error path."""
+
+    async def context_window(self) -> int | None:
+        return None
 
     async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
         raise RuntimeError("connection reset")

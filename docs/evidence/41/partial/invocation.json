@@ -1,0 +1,18 @@
+{
+  "argv": [
+    "nare",
+    "run",
+    "--yes",
+    "--jsonl",
+    "review",
+    "--schema",
+    "docs/evidence/41/findings.schema.json",
+    "--budget-tokens",
+    "15",
+    "--session",
+    "docs/evidence/41/partial/session.json"
+  ],
+  "offline_entrypoint": "uv run python tests/budget_probe.py docs/evidence/41/partial/script.json",
+  "exit": 1,
+  "model_calls": 1
+}

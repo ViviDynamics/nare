@@ -69,8 +69,74 @@ can still walk upward, so real confinement stays the sandbox's job.
 `--schema FILE` makes the answer data rather than prose. The final answer must
 satisfy the JSON Schema in that file; a violation is reported back to the model
 once, and a second violation ends the run with `stop_reason=schema_violation`
-and no partial object. A validating answer is parsed onto the session, carried
+without promoting the invalid object. Any earlier schema-valid output remains
+available. A validating answer is parsed onto the session, carried
 in the `output` event's detail, and included in the final `result` line.
+
+## Session budgets, cost and context
+
+    nare run --yes --jsonl --contract 1 --provider openai --model YOUR_MODEL \
+      --max-tokens 8192 --budget-tokens 50000 --tools read --root "$PWD" \
+      --schema findings.schema.json --session persona.session.json \
+      "Review this checkout" > persona.events.jsonl
+
+`--max-tokens` caps output for each response. `--budget-tokens` counts the whole
+session: `input + output + cache_read + cache_write`, including turns before a
+resume. Categories are disjoint: Anthropic input excludes cache reads and writes;
+OpenAI cached prompt tokens are subtracted from input and counted in cache_read.
+Repeated context sent on later turns consumes tokens again. Counts come from
+provider usage, not a local estimate; absent usage cannot be reconstructed.
+
+Budgets are checked after a complete step, including its tool results. The
+crossing turn can overshoot the limit; there is no strict no-overspending
+guarantee. `done` and `blocked` win on that turn, with actual usage still visible.
+Otherwise exhaustion exits 1 with `status=error`, `stop_reason=budget`, and the
+actual counters and effective limits in `result.usage` and `result.budget`.
+No subsequent model call is made. A provider failure has a different stop reason
+(or null), not `budget`.
+
+The session saves cumulative usage and effective limits. On resume, explicit
+flags override environment settings, which override saved limits. Omitted
+limits retain the saved ceiling; they do not reset spending. An exhausted
+session refuses another model call. Raise the total ceiling to continue:
+
+    nare run --yes --jsonl --resume persona.session.json \
+      --budget-tokens 100000 --schema findings.schema.json > persona.resume.jsonl
+
+For partial findings, read `result.output` or the saved session's `output`: with
+`--schema`, nare retains the latest schema-valid JSON document even from a tool
+turn. It can be partial and is not a claim of completion. Invalid or incomplete
+JSON is never promoted. Keep the JSONL files for completed events and the session
+for the redacted transcript and matched tool results. Resumes preserve existing
+valid output; pass the schema again for continued validation. See the
+[termination and recovery contract](docs/contract.md#budgets-and-partial-results)
+and [offline CLI evidence](docs/evidence/41/README.md).
+
+| Setting | Environment | Meaning |
+| --- | --- | --- |
+| `--budget-tokens N` | `NARE_BUDGET_TOKENS` | Positive integer cumulative token limit |
+| `--budget-usd X` | `NARE_BUDGET_USD` | Finite positive cumulative dollar limit |
+| `--context-window N` | `NARE_CONTEXT_WINDOW` | Positive integer context window; otherwise backend, otherwise 32000 |
+| Input/output prices | `NARE_PRICE_IN`, `NARE_PRICE_OUT` | Both needed, dollars per million tokens |
+| Cache prices | `NARE_PRICE_CACHE_READ`, `NARE_PRICE_CACHE_WRITE` | Optional dollars per million tokens |
+
+Invalid settings exit 2 before transport construction, with no result on stdout.
+Prices must be finite and non-negative. The backend's reported dollar cost wins
+(`x-litellm-response-cost`, then `x-litellm-response-cost-original`), then
+configured prices, then unknown (`usage.cost=null`). Cache prices default to the
+input price, which can overstate cache cost. An unknown turn makes cumulative
+cost unknown. A USD budget stops after the first unknown-cost nonterminal turn
+and names `NARE_PRICE_IN` and `NARE_PRICE_OUT`; done/blocked still win. Legacy
+nonempty sessions without dollar accounting load with unknown cost.
+
+Before each model call, old tool output is elided if estimated context reaches
+80% of the window, stopping at 60% where possible. The task, assistant messages,
+last two turns, error results and ask results are protected. Every tool call
+keeps its result. If estimated context still reaches the window, nare stops
+with `stop_reason=context` without calling the model. This character-based
+estimate can undercount; a provider can still reject context as `max_tokens`.
+With a configured base URL, window discovery uses `/v1/model/info` with a
+5 second timeout; failures use 32000. Direct endpoints make no discovery request.
 
 nare validates a subset of JSON Schema: `type`, `properties`, `required`,
 `items`, `enum`, and `additionalProperties`. A schema using anything else is

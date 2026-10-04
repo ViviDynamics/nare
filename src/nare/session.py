@@ -26,12 +26,18 @@ class Message:
 
 @dataclass(frozen=True)
 class Usage:
-    """Token counts. `input` EXCLUDES cache reads, following Anthropic."""
+    """Token counts. `input` EXCLUDES cache reads and writes, following Anthropic."""
 
     input: int = 0
     output: int = 0
     cache_read: int = 0
     cache_write: int = 0
+    cost: float | None = 0.0
+
+    @property
+    def total_tokens(self) -> int:
+        """Disjoint provider-normalized categories, counted once."""
+        return self.input + self.output + self.cache_read + self.cache_write
 
     def __add__(self, other: Usage) -> Usage:
         return Usage(
@@ -39,6 +45,9 @@ class Usage:
             output=self.output + other.output,
             cache_read=self.cache_read + other.cache_read,
             cache_write=self.cache_write + other.cache_write,
+            cost=(self.cost + other.cost)
+            if self.cost is not None and other.cost is not None
+            else None,
         )
 
 
@@ -52,7 +61,11 @@ class Session:
     stop_reason: str | None = None
     error: str | None = None
     turns: int = 0
+    last_input_tokens: int = 0
+    last_input_messages: int = 0
+    last_input_chars: int = 0
     policy: dict[str, Any] = field(default_factory=dict)
+    budget: dict[str, Any] = field(default_factory=dict)
     output: Any = None
     schema_retried: bool = False
     schema_stated: bool = False
@@ -116,6 +129,10 @@ def loads(text: str) -> Session:
             "nare does not define."
         )
     try:
+        if "cost" not in raw["usage"]:
+            raw["usage"]["cost"] = (
+                None if raw.get("turns", 0) or any(raw["usage"].values()) else 0.0
+            )
         raw["usage"] = Usage(**raw["usage"])
         raw["messages"] = [Message(**m) for m in raw["messages"]]
         return Session(**raw)
