@@ -26,6 +26,31 @@ both numbers named on stderr.
 The session file carries the same number. Resuming a session written under a
 different contract is refused for the same reason.
 
+## Prompt input
+
+Exactly one optional prompt source is accepted: positional text, `--prompt-file
+PATH`, or positional `-` for stdin. The `nare contract` object advertises these
+routes under `prompt_input`; they are additive in contract version 1.
+
+    nare run --yes --jsonl --prompt-file review-prompt.txt --session review.json
+    nare run --yes --jsonl - --session review.json < review-prompt.txt
+
+File/stdin content must be UTF-8. Decoding preserves CRLF, trailing newlines and
+Unicode exactly; no trimming, compression or truncation occurs. An explicitly
+empty source is valid. These prompts enter the same user message as positional
+text, and saved sessions apply the same redaction rules to all input routes.
+With `--resume PATH`, a nonempty prompt from any route is appended as a follow-up;
+no source (or an empty source) resumes the existing transcript without new text.
+
+Combining positional text or stdin with `--prompt-file` exits 2, naming both
+sources on stderr before reading them. Unreadable files or invalid UTF-8 in
+file/stdin also exit 2 with their source named. These errors produce no stdout,
+model call or new session file. stdin is read through EOF; callers close the pipe
+when finished. Source routes bypass argv's operating-system size limit and keep
+prompt text out of argv. Model context limits still apply: a large prompt needs
+an appropriate `--context-window`, rather than disabling or claiming to bypass
+the context guard.
+
 ## The redaction rule set
 
 Every event's `text`, and whatever text a caller pipes through:

@@ -44,6 +44,7 @@ def invoke(
     env: dict[str, str] | None = None,
     measure_input: bool = False,
     startup_error: str | None = None,
+    stdin: str | None = None,
 ) -> tuple[
     subprocess.CompletedProcess[str], list[dict[str, Any]], list[dict[str, Any]]
 ]:
@@ -69,6 +70,7 @@ def invoke(
         [sys.executable, str(PROBE), str(script), "run", "--yes", "--jsonl", *args],
         capture_output=True,
         text=True,
+        input=stdin,
         env=process_env,
     )
     return (

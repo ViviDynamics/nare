@@ -63,7 +63,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser = sub.add_parser("run", help="run a task headlessly")
 
-    run_parser.add_argument("prompt", nargs="?", help="the task, as plain text")
+    run_parser.add_argument(
+        "prompt", nargs="?", help="the task, as plain text; - reads UTF-8 stdin"
+    )
+    run_parser.add_argument(
+        "--prompt-file", metavar="PATH", help="read the UTF-8 task file"
+    )
     run_parser.add_argument(
         "--provider",
         choices=["anthropic", "openai"],
@@ -418,7 +423,11 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     if not args.yes:
         print("nare run refuses to start unattended without --yes", file=sys.stderr)
         return NEVER_STARTED
-    if not args.prompt and not args.resume:
+    if args.prompt is not None and args.prompt_file is not None:
+        source = "stdin (-)" if args.prompt == "-" else "positional prompt"
+        print(f"nare: {source} conflicts with --prompt-file", file=sys.stderr)
+        return NEVER_STARTED
+    if args.prompt is None and args.prompt_file is None and not args.resume:
         print("nare run needs a prompt, or --resume PATH", file=sys.stderr)
         return NEVER_STARTED
     # A resume with nowhere to write back silently throws the run away and
@@ -433,6 +442,16 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
             raise ValueError("--context-window must be a positive integer")
         if args.budget_usd is not None:
             finite_number(args.budget_usd, "--budget-usd")
+        if args.prompt_file is not None:
+            try:
+                args.prompt = Path(args.prompt_file).read_bytes().decode("utf-8")
+            except (OSError, UnicodeError) as exc:
+                raise ValueError(f"--prompt-file {args.prompt_file}: {exc}") from exc
+        elif args.prompt == "-":
+            try:
+                args.prompt = sys.stdin.buffer.read().decode("utf-8")
+            except (OSError, UnicodeError) as exc:
+                raise ValueError(f"stdin (-): {exc}") from exc
         prices = prices_from_env()
         args.mcp_servers = (
             parse_servers(json.loads(Path(args.mcp_config).read_text(encoding="utf-8")))
