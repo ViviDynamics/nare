@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -29,16 +30,27 @@ class ScriptedTransport:
         return int(value) if value is not None else None
 
     async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
-        self.calls.append({"max_tokens": self.max_tokens, "messages": len(messages)})
+        input_chars = len(json.dumps([asdict(m) for m in messages]))
+        self.calls.append(
+            {
+                "max_tokens": self.max_tokens,
+                "messages": len(messages),
+                "input_chars": input_chars,
+            }
+        )
         self.path.with_suffix(".calls.json").write_text(json.dumps(self.calls))
         raw = self.script["replies"][len(self.calls) - 1]
         if "error" in raw:
             raise RuntimeError(raw["error"])
+        usage = raw.get("usage", {"input": 10, "output": 5})
+        if self.script.get("measure_input"):
+            usage = {**usage, "input": input_chars // 4}
         return Reply(
             content=raw["content"],
             tool_calls=[ToolCall(**call) for call in raw.get("tool_calls", [])],
-            usage=Usage(**raw.get("usage", {"input": 10, "output": 5})),
+            usage=Usage(**usage),
             stop_reason=raw.get("stop_reason", "end_turn"),
+            cost=raw.get("cost"),
         )
 
 

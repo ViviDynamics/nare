@@ -67,7 +67,10 @@ def compact(s: Session, window: int) -> CompactionReport | None:
             content = block.get("content", "")
             if not isinstance(content, str) or content.startswith(PREFIX):
                 continue
-            stub = f"{PREFIX} {len(content)} chars of output from turn {turn}. Rerun the tool if you need it.]"
+            stub = (
+                f"{PREFIX} {len(content)} chars of output from turn {turn}. "
+                "Rerun the tool if you need it.]"
+            )
             if len(stub) >= len(content):
                 continue
             block["content"] = stub

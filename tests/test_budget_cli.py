@@ -42,11 +42,12 @@ def invoke(
     replies: list[dict[str, Any]],
     *args: str,
     env: dict[str, str] | None = None,
+    measure_input: bool = False,
 ) -> tuple[
     subprocess.CompletedProcess[str], list[dict[str, Any]], list[dict[str, Any]]
 ]:
     script = tmp_path / "script.json"
-    script.write_text(json.dumps({"replies": replies}))
+    script.write_text(json.dumps({"replies": replies, "measure_input": measure_input}))
     calls = script.with_suffix(".calls.json")
     calls.unlink(missing_ok=True)
     process_env = {
@@ -325,3 +326,158 @@ def test_window_env_and_flag_precedence(tmp_path: Path) -> None:
     assert proc.returncode == 0
     assert len(calls) == 1
     assert lines[0]["detail"]["context_window"]["tokens"] == 1000
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "bad"])
+def test_invalid_usd_budgets_never_start(tmp_path: Path, value: str) -> None:
+    proc, lines, calls = invoke(tmp_path, [text()], "go", f"--budget-usd={value}")
+    assert proc.returncode == 2
+    assert lines == []
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "NARE_PRICE_IN",
+        "NARE_PRICE_OUT",
+        "NARE_PRICE_CACHE_READ",
+        "NARE_PRICE_CACHE_WRITE",
+    ],
+)
+@pytest.mark.parametrize("value", ["-1", "nan", "inf", "bad"])
+def test_invalid_prices_never_start(tmp_path: Path, name: str, value: str) -> None:
+    proc, lines, calls = invoke(tmp_path, [text()], "go", env={name: value})
+    assert proc.returncode == 2
+    assert lines == []
+    assert calls == []
+    assert name in proc.stderr
+
+
+def test_usd_budget_unknown_stops_after_first_complete_tool_turn(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "code.py"
+    source.write_text("evidence")
+    proc, lines, calls = invoke(
+        tmp_path, [read(source, "c1"), text()], "go", "--budget-usd", "1"
+    )
+    assert proc.returncode == 1
+    assert len(calls) == 1
+    assert lines[-1]["stop_reason"] == "budget"
+    assert lines[-1]["usage"]["cost"] is None
+    assert "NARE_PRICE_IN" in lines[-1]["error"]
+    assert lines[-1]["budget"]["usd"] == 1
+
+
+def test_priced_budget_persists_and_resume_can_raise_usd_limit(tmp_path: Path) -> None:
+    source = tmp_path / "code.py"
+    source.write_text("evidence")
+    session = tmp_path / "s.json"
+    env = {
+        "NARE_PRICE_IN": "1000000",
+        "NARE_PRICE_OUT": "1000000",
+        "NARE_BUDGET_USD": "15",
+    }
+    proc, lines, calls = invoke(
+        tmp_path, [read(source, "c1"), text()], "go", "--session", str(session), env=env
+    )
+    assert proc.returncode == 1
+    assert len(calls) == 1
+    assert lines[-1]["usage"]["cost"] == 15
+    proc, lines, calls = invoke(tmp_path, [text()], "--resume", str(session), env=env)
+    assert proc.returncode == 1
+    assert calls == []
+    proc, lines, calls = invoke(
+        tmp_path, [text()], "--resume", str(session), "--budget-usd", "50", env=env
+    )
+    assert proc.returncode == 0
+    assert len(calls) == 1
+    assert lines[-1]["usage"]["cost"] == 30
+    assert lines[-1]["budget"]["usd"] == 50
+
+
+def test_done_wins_even_when_usd_cost_is_unknown(tmp_path: Path) -> None:
+    proc, lines, _ = invoke(tmp_path, [text()], "go", "--budget-usd", "1")
+    assert proc.returncode == 0
+    assert lines[-1]["status"] == "done"
+    assert lines[-1]["usage"]["cost"] is None
+
+
+def test_usd_flag_overrides_invalid_environment(tmp_path: Path) -> None:
+    proc, lines, _ = invoke(
+        tmp_path, [text()], "go", "--budget-usd", "1", env={"NARE_BUDGET_USD": "bad"}
+    )
+    assert proc.returncode == 0
+    assert lines[-1]["budget"]["usd"] == 1
+
+
+def test_schema_valid_done_crosses_budget_after_two_tool_turns(tmp_path: Path) -> None:
+    schema = tmp_path / "schema.json"
+    schema.write_text('{"type":"object","required":["findings"]}')
+    source = tmp_path / "code.py"
+    source.write_text("evidence")
+    proc, lines, calls = invoke(
+        tmp_path,
+        [read(source, "c1"), read(source, "c2"), text('{"findings":["confirmed"]}')],
+        "go",
+        "--budget-tokens",
+        "31",
+        "--schema",
+        str(schema),
+    )
+    assert proc.returncode == 0
+    assert len(calls) == 3
+    assert lines[-1]["status"] == "done"
+    assert lines[-1]["output"] == {"findings": ["confirmed"]}
+    assert lines[-1]["budget"]["used_tokens"] == 45
+    assert lines[-1]["budget"]["tokens"] == 31
+
+
+def test_exact_budget_boundary_stops_before_next_call(tmp_path: Path) -> None:
+    source = tmp_path / "code.py"
+    source.write_text("evidence")
+    proc, lines, calls = invoke(
+        tmp_path,
+        [read(source, "c1"), read(source, "c2"), text()],
+        "go",
+        "--budget-tokens",
+        "30",
+    )
+    assert proc.returncode == 1
+    assert len(calls) == 2
+    assert lines[-1]["budget"]["used_tokens"] == 30
+
+
+def test_eight_large_tool_results_compact_in_actual_cli(tmp_path: Path) -> None:
+    source = tmp_path / "evidence.txt"
+    source.write_text("evidence " * 4000)  # read caps each result at 30000 chars
+    session = tmp_path / "s.json"
+    replies = [read(source, f"c{i}") for i in range(8)] + [
+        text("all eight reads finished")
+    ]
+    proc, lines, calls = invoke(
+        tmp_path,
+        replies,
+        "go",
+        "--context-window",
+        "32000",
+        "--session",
+        str(session),
+        measure_input=True,
+    )
+    assert proc.returncode == 0
+    assert len(calls) == 9
+    assert lines[-1]["status"] == "done"
+    assert any("compaction" in event.get("detail", {}) for event in lines)
+    saved = json.loads(session.read_text())
+    results = [
+        block
+        for message in saved["messages"]
+        for block in message["content"]
+        if block["type"] == "tool_result"
+    ]
+    assert len(results) == 8
+    assert any(block["content"].startswith("[elided by nare:") for block in results)
+    assert sum(len(block["content"]) for block in results) < 128000
+    assert max(call["input_chars"] for call in calls) < 128000

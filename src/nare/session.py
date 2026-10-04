@@ -32,6 +32,7 @@ class Usage:
     output: int = 0
     cache_read: int = 0
     cache_write: int = 0
+    cost: float | None = 0.0
 
     @property
     def total_tokens(self) -> int:
@@ -44,6 +45,9 @@ class Usage:
             output=self.output + other.output,
             cache_read=self.cache_read + other.cache_read,
             cache_write=self.cache_write + other.cache_write,
+            cost=(self.cost + other.cost)
+            if self.cost is not None and other.cost is not None
+            else None,
         )
 
 
@@ -125,6 +129,10 @@ def loads(text: str) -> Session:
             "nare does not define."
         )
     try:
+        if "cost" not in raw["usage"]:
+            raw["usage"]["cost"] = (
+                None if raw.get("turns", 0) or any(raw["usage"].values()) else 0.0
+            )
         raw["usage"] = Usage(**raw["usage"])
         raw["messages"] = [Message(**m) for m in raw["messages"]]
         return Session(**raw)

@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator
 from dataclasses import asdict
 from typing import Any
 
+from nare.accounting import Prices, finite_number, turn_usage
 from nare.compact import compact, estimate
 from nare.events import Event
 from nare.schema import extract_json, validate
@@ -27,16 +28,32 @@ MAX_TURNS_DEFAULT = 50
 
 
 def budget_record(s: Session) -> dict[str, Any]:
-    return {**s.budget, "used_tokens": s.usage.total_tokens}
+    return {**s.budget, "used_tokens": s.usage.total_tokens, "used_usd": s.usage.cost}
 
 
 def _check_budget(s: Session) -> bool:
-    limit = s.budget.get("tokens")
-    if limit is None or s.usage.total_tokens < limit:
+    token_limit = s.budget.get("tokens")
+    usd_limit = s.budget.get("usd")
+    reasons: list[str] = []
+    if token_limit is not None and s.usage.total_tokens >= token_limit:
+        reasons.append(
+            f"token budget exhausted: used {s.usage.total_tokens}, limit {token_limit}"
+        )
+    if usd_limit is not None:
+        if s.usage.cost is None:
+            reasons.append(
+                "--budget-usd cannot be enforced: cost for this backend is unknown; "
+                "set NARE_PRICE_IN and NARE_PRICE_OUT"
+            )
+        elif s.usage.cost >= usd_limit:
+            reasons.append(
+                f"USD budget exhausted: used {s.usage.cost}, limit {usd_limit}"
+            )
+    if not reasons:
         return False
     s.status = "error"
     s.stop_reason = "budget"
-    s.error = f"token budget exhausted: used {s.usage.total_tokens}, limit {limit}"
+    s.error = "; ".join(reasons)
     s.events.append(
         Event("error", s.error, {"budget": budget_record(s), "usage": asdict(s.usage)})
     )
@@ -89,13 +106,15 @@ async def step(
     policy: Policy,
     schema: dict[str, Any] | None = None,
     context_window: int = 32000,
+    prices: Prices | None = None,
 ) -> Session:
     report = compact(s, context_window)
     if report is not None:
         s.events.append(
             Event(
                 "progress",
-                f"compacted: elided {report.elided} tool results, ~{report.before:.0f} -> ~{report.after:.0f} tokens",
+                f"compacted: elided {report.elided} tool results, "
+                f"~{report.before:.0f} -> ~{report.after:.0f} tokens",
                 {"compaction": asdict(report)},
             )
         )
@@ -114,7 +133,8 @@ async def step(
     )
     s.last_input_messages = input_messages
     s.last_input_chars = input_chars
-    s.usage += reply.usage
+    usage = turn_usage(reply, prices)
+    s.usage += usage
     s.turns += 1
     s.messages.append(Message(role="assistant", content=reply.content))
 
@@ -126,8 +146,9 @@ async def step(
     s.events.append(
         Event(
             "cost",
-            f"{reply.usage.input} in / {reply.usage.output} out",
-            asdict(reply.usage),
+            f"{usage.input} in / {usage.output} out, "
+            + (f"${usage.cost:.6f}" if usage.cost is not None else "cost unknown"),
+            asdict(usage),
         )
     )
 
@@ -227,6 +248,8 @@ async def run(
     max_turns: int = MAX_TURNS_DEFAULT,
     budget_tokens: int | None = None,
     context_window: int | None = None,
+    budget_usd: float | None = None,
+    prices: Prices | None = None,
 ) -> AsyncIterator[Event]:
     """Advance the session to a terminal status, yielding events as they occur.
 
@@ -247,15 +270,29 @@ async def run(
         or context_window <= 0
     ):
         raise ValueError("context_window must be a positive integer")
-    window = context_window or 32000
+    if budget_usd is not None:
+        session.budget["usd"] = finite_number(budget_usd, "budget_usd")
+    # A resumed exhausted session must not call the backend, even for metadata.
+    if session.status == "working" and _check_budget(session):
+        while session.events:
+            yield session.events.pop(0)
+        return
+    window = context_window
+    source = "flag"
+    if window is None:
+        window = await transport.context_window()
+        source = "backend"
+    if window is None:
+        window = 32000
+        source = "default"
     session.events.append(
         Event(
             "progress",
-            f"context window {window} ({'flag' if context_window else 'default'})",
+            f"context window {window} ({source})",
             {
                 "context_window": {
                     "tokens": window,
-                    "source": "flag" if context_window else "default",
+                    "source": source,
                 }
             },
         )
@@ -285,7 +322,7 @@ async def run(
             session.events.append(Event("error", session.error))
         else:
             try:
-                await step(session, transport, approve, policy, schema, window)
+                await step(session, transport, approve, policy, schema, window, prices)
                 if session.status not in ("done", "blocked"):
                     _check_budget(session)
             except Exception as exc:

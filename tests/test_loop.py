@@ -30,7 +30,7 @@ async def test_usage_accumulates_across_steps() -> None:
     await step(session, fake, approve_all, Policy())
     session.status = "working"
     await step(session, fake, approve_all, Policy())
-    assert session.usage == Usage(input=20, output=10)
+    assert session.usage == Usage(input=20, output=10, cost=None)
     assert session.turns == 2
 
 
@@ -82,6 +82,7 @@ async def test_step_emits_progress_and_cost_events() -> None:
         "output": 5,
         "cache_read": 0,
         "cache_write": 0,
+        "cost": None,
     }
     assert session.events[2].text == "all done"
 

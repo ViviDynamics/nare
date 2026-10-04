@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from nare import __version__
+from nare.accounting import Prices, finite_number, prices_from_env
 from nare.contract import CONTRACT_VERSION, EXIT_CODES, NEVER_STARTED, describe
 from nare.events import Event, redact
 from nare.loop import MAX_TURNS_DEFAULT, budget_record, run
@@ -85,13 +86,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--context-window",
         type=int,
         default=os.environ.get("NARE_CONTEXT_WINDOW"),
-        help="context window for deterministic elision (env: NARE_CONTEXT_WINDOW; else backend or 32000)",
+        help="context window for elision (env: NARE_CONTEXT_WINDOW; "
+        "else backend or 32000)",
     )
     run_parser.add_argument(
         "--budget-tokens",
         type=int,
         default=os.environ.get("NARE_BUDGET_TOKENS"),
-        help="cumulative session token budget, including input, output and cache (env: NARE_BUDGET_TOKENS)",
+        help="session token budget, including input, output and cache "
+        "(env: NARE_BUDGET_TOKENS)",
+    )
+    run_parser.add_argument(
+        "--budget-usd",
+        type=float,
+        default=os.environ.get("NARE_BUDGET_USD"),
+        help="cumulative session dollar budget (env: NARE_BUDGET_USD)",
     )
     run_parser.add_argument(
         "--effort",
@@ -280,6 +289,7 @@ async def _execute(
     args: argparse.Namespace,
     policy: Policy,
     schema: dict[str, Any] | None,
+    prices: Prices | None,
 ) -> int:
     saved_turns = -1
     try:
@@ -292,6 +302,8 @@ async def _execute(
             max_turns=args.max_turns,
             budget_tokens=args.budget_tokens,
             context_window=args.context_window,
+            budget_usd=args.budget_usd,
+            prices=prices,
         ):
             _emit(event, args.jsonl)
             # Saved per turn, not once at the end. SIGTERM's default handler
@@ -384,6 +396,9 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
             raise ValueError("--budget-tokens must be a positive integer")
         if args.context_window is not None and args.context_window <= 0:
             raise ValueError("--context-window must be a positive integer")
+        if args.budget_usd is not None:
+            finite_number(args.budget_usd, "--budget-usd")
+        prices = prices_from_env()
         policy = policy_from_args(args)
         schema = schema_from_args(args)
         session = _load_or_new(args)
@@ -393,4 +408,4 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED
 
-    return asyncio.run(_execute(session, transport, args, policy, schema))
+    return asyncio.run(_execute(session, transport, args, policy, schema, prices))
