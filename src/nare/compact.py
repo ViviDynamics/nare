@@ -5,13 +5,29 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 
-from nare.session import Session
+from nare.session import Message, Session
 
 PREFIX = "[elided by nare:"
 
 
+def context_chars(messages: list[Message]) -> int:
+    raw = [asdict(m) for m in messages]
+    image_tokens = 0
+    for message in raw:
+        for block in message["content"]:
+            image = block.get("image") if block.get("type") == "tool_result" else None
+            if isinstance(image, dict):
+                image.get("source", {}).pop("data", None)
+                width, height = (
+                    int(image.get("width", 8000)),
+                    int(image.get("height", 8000)),
+                )
+                image_tokens += 4 * ((width + 31) // 32) * ((height + 31) // 32)
+    return len(json.dumps(raw)) + 4 * image_tokens
+
+
 def _chars(s: Session, end: int | None = None) -> int:
-    return len(json.dumps([asdict(m) for m in s.messages[:end]]))
+    return context_chars(s.messages[:end])
 
 
 def estimate(s: Session) -> float:
@@ -22,7 +38,7 @@ def estimate(s: Session) -> float:
     # the estimate stable across resumes. This is a heuristic, not a tokenizer.
     prefix_delta = _chars(s, s.last_input_messages) - s.last_input_chars
     appended = s.messages[s.last_input_messages :]
-    appended_chars = len(json.dumps([asdict(m) for m in appended])) if appended else 0
+    appended_chars = context_chars(appended) if appended else 0
     return max(0, s.last_input_tokens + (prefix_delta + appended_chars) / 4)
 
 
@@ -71,9 +87,10 @@ def compact(s: Session, window: int) -> CompactionReport | None:
                 f"{PREFIX} {len(content)} chars of output from turn {turn}. "
                 "Rerun the tool if you need it.]"
             )
-            if len(stub) >= len(content):
+            if len(stub) >= len(content) and "image" not in block:
                 continue
             block["content"] = stub
+            block.pop("image", None)
             elided += 1
     # ponytail: model-written summaries may follow elision if measured runs
     # keep reaching the context stop. No extra model call is made here.

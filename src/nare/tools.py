@@ -382,10 +382,11 @@ async def dispatch(
         if call.name == "bash" and policy.root is not None:
             args["cwd"] = str(policy.root.resolve())
         if call.name == "read":
-            function = _read_with_image
             args["image_input"] = policy.image_input
             args["image_model"] = policy.image_model
-        output = await asyncio.to_thread(function, **args)
+            output = await asyncio.to_thread(_read_with_image, **args)
+        else:
+            output = await asyncio.to_thread(function, **args)
         if isinstance(output, dict):
             return {**tool_result(call.id, output["text"]), "image": output["image"]}
         return tool_result(call.id, output)

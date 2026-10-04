@@ -16,7 +16,7 @@ Out: screenshots, image prompt arguments, writes, model selection or capability 
 
 ## Tasks
 - [x] 1. Failing read tests: PNG/JPEG blocks, unsupported named error, root/symlink, denied tool/approval, malformed/oversized images; implement bounded image reader.
-- [ ] 2. Failing serializer/persistence/context tests: real native payloads on both rails; binary preserved, resumable, historical images withheld if disabled, compaction elides older images.
+- [x] 2. Failing serializer/persistence/context tests: real native payloads on both rails; binary preserved, resumable, historical images withheld if disabled, compaction elides older images.
 - [ ] 3. Actual CLI two-turn HTTP fixtures validate image pixels and answer; disabled models complete with named error. Document contract and discovery.
 - [ ] 4. Preflight, independent review, CI, merge, usable release.
 

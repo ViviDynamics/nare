@@ -12,7 +12,7 @@ from dataclasses import asdict, replace
 from typing import Any, Literal, cast
 
 from nare.accounting import Prices, finite_number, turn_usage
-from nare.compact import compact, estimate
+from nare.compact import compact, context_chars, estimate
 from nare.events import Event, LiveText
 from nare.mcp import Server, connect
 from nare.schema import extract_json, validate
@@ -146,7 +146,7 @@ async def step(
         s.events.append(Event("error", s.error))
         return s
     input_messages = len(s.messages)
-    input_chars = len(json.dumps([asdict(m) for m in s.messages]))
+    input_chars = context_chars(s.messages)
     streamed = bool(getattr(transport, "streaming", False)) and on_delta is not None
     if streamed:
         reply = None
