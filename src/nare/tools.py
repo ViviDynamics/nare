@@ -274,6 +274,8 @@ async def dispatch(
     refusal is one of those failures, so a narrowed session keeps working
     instead of dying on the first attempt to leave its box.
     """
+    if call.error is not None:
+        return tool_result(call.id, call.error, is_error=True)
     function = TOOLS.get(call.name)
     if function is None and call.name not in policy.external:
         return tool_result(
