@@ -214,12 +214,12 @@ def policy_from_args(args: argparse.Namespace) -> Policy:
         root = Path(args.root)
         if not root.is_dir():
             raise ValueError(f"--root {args.root} is not a directory")
-    pending = frozenset(
+    unresolved_names = frozenset(
         name
         for name in tools
         if any(name.startswith(alias + "__") for alias in args.mcp_servers)
     )
-    return Policy(tools=tools, root=root, pending=pending)
+    return Policy(tools=tools, root=root, pending=unresolved_names)
 
 
 def _load_or_new(args: argparse.Namespace) -> Session:
