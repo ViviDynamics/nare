@@ -400,3 +400,55 @@ async def test_partial_startup_failure_closes_opened_child(tmp_path: Path) -> No
     assert events[-1].type == "error"
     with pytest.raises(ProcessLookupError):
         os.kill(int(pid.read_text()), 0)
+
+
+@pytest.mark.asyncio
+async def test_blocked_stdio_write_obeys_call_deadline(tmp_path: Path) -> None:
+    import asyncio
+
+    from nare.mcp import connect, parse_servers
+    from nare.tools import Policy, dispatch
+
+    path, _ = config(tmp_path)
+    payload = json.loads(path.read_text())
+    payload["local"]["args"].append("--stall")
+    payload["local"]["timeout"] = 0.1
+    async with connect(parse_servers(payload)) as external:
+        policy = Policy(tools=frozenset({"local__echo"}), external=external)
+        async with asyncio.timeout(2):
+            result = await dispatch(
+                ToolCall("c", "local__echo", {"text": "x" * 2_000_000}), policy
+            )
+        assert result["is_error"]
+        assert "TimeoutError" in result["content"]
+
+
+def test_endless_discovery_obeys_startup_deadline(tmp_path: Path) -> None:
+    import time
+
+    path, _ = config(tmp_path)
+    payload = json.loads(path.read_text())
+    payload["local"]["args"].append("--endless-pages")
+    payload["local"]["timeout"] = 0.1
+    path.write_text(json.dumps(payload))
+    model = MCPModel()
+    before = time.monotonic()
+    assert (
+        main(["run", "echo", "--yes", "--mcp-config", str(path)], transport=model) == 1
+    )
+    assert time.monotonic() - before < 5
+    assert model.calls == 0
+
+
+@pytest.mark.parametrize(
+    "server",
+    [
+        {"command": "", "url": "http://localhost/mcp"},
+        {"command": "x", "timeout": 10**400},
+    ],
+)
+def test_malformed_values_rejected(tmp_path: Path, server: Any) -> None:
+    from nare.mcp import parse_servers
+
+    with pytest.raises(ValueError):
+        parse_servers({"x": server})

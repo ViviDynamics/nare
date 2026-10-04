@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 
@@ -20,6 +21,9 @@ def main() -> None:
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "fixture", "version": "1"},
             }
+        elif method == "tools/list" and "--endless-pages" in sys.argv:
+            cursor = int(request.get("params", {}).get("cursor") or 0)
+            result = {"tools": [], "nextCursor": str(cursor + 1)}
         elif method == "tools/list":
             result = {
                 "tools": [
@@ -47,6 +51,8 @@ def main() -> None:
             json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}),
             flush=True,
         )
+        if method == "tools/list" and "--stall" in sys.argv:
+            time.sleep(30)
 
 
 if __name__ == "__main__":

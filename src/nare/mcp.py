@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -29,17 +30,24 @@ class Server:
     timeout: float = 30
 
     def __post_init__(self) -> None:
-        if bool(self.command) == bool(self.url):
+        if (self.command is None) == (self.url is None):
             raise ValueError("MCP server needs exactly one of command or url")
         if (
             not isinstance(self.timeout, (int, float))
             or isinstance(self.timeout, bool)
-            or not math.isfinite(self.timeout)
             or self.timeout <= 0
         ):
             raise ValueError("MCP timeout must be a positive finite number")
-        if self.command is not None and not isinstance(self.command, str):
-            raise ValueError("MCP command must be a string")
+        try:
+            finite = math.isfinite(self.timeout)
+        except OverflowError:
+            finite = False
+        if not finite:
+            raise ValueError("MCP timeout must be a positive finite number")
+        if self.command is not None and (
+            not isinstance(self.command, str) or not self.command
+        ):
+            raise ValueError("MCP command must be a nonempty string")
         if not isinstance(self.args, list) or not all(
             isinstance(a, str) for a in self.args
         ):
@@ -94,9 +102,36 @@ class ExternalTool:
     call: Callable[[dict[str, Any]], Awaitable[tuple[str, bool]]]
 
 
-def _tool(session: ClientSession, name: str, schema: dict[str, Any]) -> ExternalTool:
+async def _bounded[Result](
+    request: Coroutine[Any, Any, Result], timeout: float
+) -> Result:
+    """Own the write/read deadline, including SDK cancellation backpressure."""
+    task = asyncio.create_task(request)
+    try:
+        done, _ = await asyncio.wait({task}, timeout=timeout)
+        if not done:
+            raise TimeoutError(f"MCP request exceeded {timeout}s")
+        return task.result()
+    finally:
+        if not task.done():
+            task.cancel()
+            # The SDK tries a courtesy cancellation on the same transport.
+            # Give it a short grace, then interrupt that write too: a wedged
+            # server must not turn timeout handling into another stalled call.
+            await asyncio.wait({task}, timeout=0.1)
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+
+def _tool(
+    session: ClientSession, name: str, schema: dict[str, Any], timeout: float
+) -> ExternalTool:
     async def call(args: dict[str, Any]) -> tuple[str, bool]:
-        result = await session.call_tool(name, args)
+        result = await _bounded(session.call_tool(name, args), timeout)
         if not isinstance(result, types.CallToolResult):
             raise ValueError("MCP tool did not return a completed tool result")
         parts = [
@@ -143,36 +178,43 @@ async def connect(
             session = await stack.enter_async_context(
                 ClientSession(*streams, read_timeout_seconds=config.timeout)
             )
-            await session.initialize()
-            cursor: str | None = None
-            seen: set[str] = set()
-            while True:
-                page = await session.list_tools(
-                    params=types.PaginatedRequestParams(cursor=cursor)
-                )
-                for item in page.tools:
-                    name = f"{alias}__{item.name}"
-                    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name) or name in tools:
-                        raise ValueError(
-                            f"duplicate or provider-incompatible MCP tool name: {name}"
-                        )
-                    tools[name] = _tool(
-                        session,
-                        item.name,
-                        {
-                            "name": name,
-                            "description": item.description or "",
-                            "input_schema": item.input_schema,
-                        },
-                    )
-                cursor = page.next_cursor
-                if cursor is None:
-                    break
-                if cursor in seen:
-                    raise ValueError(f"MCP tools/list repeats cursor for {alias}")
-                seen.add(cursor)
+            await _bounded(
+                _discover(session, alias, config.timeout, tools), config.timeout
+            )
         yield tools
     finally:
         # Close normally: passing GeneratorExit through SDK task groups wraps
         # an ordinary early close into an exception group.
         await stack.aclose()
+
+
+async def _discover(
+    session: ClientSession, alias: str, timeout: float, tools: dict[str, ExternalTool]
+) -> None:
+    await session.initialize()
+    cursor: str | None = None
+    seen: set[str] = set()
+    while True:
+        page = await session.list_tools(
+            params=types.PaginatedRequestParams(cursor=cursor)
+        )
+        for item in page.tools:
+            name = f"{alias}__{item.name}"
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name) or name in tools:
+                raise ValueError(f"invalid or duplicate MCP tool name: {name}")
+            tools[name] = _tool(
+                session,
+                item.name,
+                {
+                    "name": name,
+                    "description": item.description or "",
+                    "input_schema": item.input_schema,
+                },
+                timeout,
+            )
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+        if cursor in seen:
+            raise ValueError(f"MCP tools/list repeats cursor for {alias}")
+        seen.add(cursor)

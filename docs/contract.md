@@ -201,7 +201,9 @@ Remote sources use Streamable HTTP; stdio sources are child processes. Each
 source specifies exactly one of `command` or `url`. Optional `headers` apply
 only to HTTP; `args` and `env` apply only to stdio. Unknown fields and invalid
 values exit 2 before starting. `timeout` is a positive finite number of seconds,
-default 30, bounding each initialization, discovery and tool request.
+default 30, bounding the complete initialization/discovery phase per server and each
+complete tool call, including blocked transport writes. Cancellation may add up
+to 0.1 seconds of courtesy-cancel grace; connection/process cleanup follows.
 
 Model-facing tool names are `alias__tool`, not `alias.tool`. Names must fit the
 providers' 64-character ASCII letters/digits/underscore/hyphen restriction.
