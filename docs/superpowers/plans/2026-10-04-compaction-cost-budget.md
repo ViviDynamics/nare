@@ -31,33 +31,33 @@
 
 **Files:** src/nare/{session,loop,cli}.py; tests/test_budget_cli.py; tests/budget_probe.py.
 **Interfaces:** Usage.total_tokens; run(..., budget_tokens: int | None); Session.budget dict; result.budget and error detail.budget.
-- [ ] Write actual CLI tests for the three-turn max-tokens probe, exhaustion after two tool turns, cache accounting, invalid values, env precedence, exhausted resume and larger-budget continuation, done/blocked precedence, valid structured text on tool turns.
-- [ ] Run uv run pytest -q tests/test_budget_cli.py; observe missing flag failures.
-- [ ] Implement validation, persisted effective limits, pre-call guard, post-step check and schema-valid partial output retention.
-- [ ] Run the new tests and existing CLI/loop/schema tests; commit.
+- [x] Write actual CLI tests for the three-turn max-tokens probe, exhaustion after two tool turns, cache accounting, invalid values, env precedence, exhausted resume and larger-budget continuation, done/blocked precedence, valid structured text on tool turns.
+- [x] Run uv run pytest -q tests/test_budget_cli.py; observe missing flag failures.
+- [x] Implement validation, persisted effective limits, pre-call guard, post-step check and schema-valid partial output retention.
+- [x] Run the new tests and existing CLI/loop/schema tests; commit.
 
 ### Task 2: Context compaction
 
 **Files:** src/nare/compact.py; src/nare/{session,loop,cli}.py; tests/test_compact.py; tests/fake_provider.py.
 **Interfaces:** compact(Session, int) -> CompactionReport | None; estimate(Session) -> float; Session.last_input_tokens and last_input_messages.
-- [ ] Write tests for 80/60 thresholds, oldest-first elision, protected two turns/task/assistant/error/ask, pairs, fresh and measured estimates, exhausted context without a call and resume compaction.
-- [ ] Run tests and observe missing module/flag failures.
-- [ ] Implement compaction and explicit/default window handling, recording measured input prefix boundaries.
-- [ ] Run relevant suites; commit.
+- [x] Write tests for 80/60 thresholds, oldest-first elision, protected two turns/task/assistant/error/ask, pairs, fresh and measured estimates, exhausted context without a call and resume compaction.
+- [x] Run tests and observe missing module/flag failures.
+- [x] Implement compaction and explicit/default window handling, recording measured input prefix boundaries.
+- [x] Run relevant suites; commit.
 
 ### Task 3: Cost, USD budgets and backend discovery
 
 **Files:** src/nare/accounting.py; src/nare/transport/{__init__,openai,anthropic}.py; src/nare/{session,loop,cli}.py; tests/test_accounting.py; tests/test_budget_cli.py; tests/test_transport_metadata.py.
 **Interfaces:** Reply.cost; Usage.cost; Prices; transport.context_window(); reported_cost(headers); discover_context_window(client, base, model, headers).
-- [ ] Write deterministic tests for reported/priced/unknown precedence, unknown totals, USD stop, finite validation, legacy sessions, both rails' raw headers and model-info success/failure/timeout/no-direct-request.
-- [ ] Run tests and observe failures.
-- [ ] Implement cost helpers, validated env prices/USD budget, raw Anthropic response and backend window discovery.
-- [ ] Run suites; commit.
+- [x] Write deterministic tests for reported/priced/unknown precedence, unknown totals, USD stop, finite validation, legacy sessions, both rails' raw headers and model-info success/failure/timeout/no-direct-request.
+- [x] Run tests and observe failures.
+- [x] Implement cost helpers, validated env prices/USD budget, raw Anthropic response and backend window discovery.
+- [x] Run suites; commit.
 
 ### Task 4: Documentation, review and shipping
 
 **Files:** README.md; docs/{contract,architecture}.md; docs/evidence/41/; benchmark overflow fixture/test.
-- [ ] Capture actual CLI JSONL/session evidence with deterministic fake transports, including max-tokens baseline and cumulative budget stop, resume, done crossing, cache and context overflow.
-- [ ] Document flags, token normalization, persisted usage, limit selection on resume, partial findings recovery, stop reasons and Scrutare strict-budget mismatch.
+- [x] Capture actual CLI JSONL/session evidence with deterministic fake transports, including max-tokens baseline and cumulative budget stop, resume, done crossing, cache and context overflow.
+- [x] Document flags, token normalization, persisted usage, limit selection on resume, partial findings recovery, stop reasons and Scrutare strict-budget mismatch.
 - [ ] Run bin/build; review complete diff against approved scope and user requirements; fix findings with regression tests.
 - [ ] Preflight and quality guard; open PR, link thread, CI, review gate, verified squash merge, automatic release read-back.

@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "nare",
+    "run",
+    "--yes",
+    "--jsonl",
+    "review",
+    "--budget-tokens",
+    "0"
+  ],
+  "offline_entrypoint": "uv run python tests/budget_probe.py docs/evidence/41/invalid/script.json",
+  "exit": 2,
+  "model_calls": 0
+}

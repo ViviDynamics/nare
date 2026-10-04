@@ -1,0 +1,9 @@
+{"type": "progress", "text": "context window 32000 (default)", "detail": {"context_window": {"tokens": 32000, "source": "default"}}, "timestamp": "2026-10-04T17:43:31.349931+00:00"}
+{"type": "cost", "text": "10 in / 5 out, cost unknown", "detail": {"input": 10, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:43:31.350375+00:00"}
+{"type": "tool_use", "text": "read", "detail": {"path": "docs/evidence/41/source.txt"}, "timestamp": "2026-10-04T17:43:31.350409+00:00"}
+{"type": "cost", "text": "10 in / 5 out, cost unknown", "detail": {"input": 10, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:43:31.352655+00:00"}
+{"type": "tool_use", "text": "read", "detail": {"path": "docs/evidence/41/source.txt"}, "timestamp": "2026-10-04T17:43:31.352693+00:00"}
+{"type": "progress", "text": "{\"findings\":[\"confirmed\"]}", "detail": {}, "timestamp": "2026-10-04T17:43:31.353625+00:00"}
+{"type": "cost", "text": "10 in / 5 out, cost unknown", "detail": {"input": 10, "output": 5, "cache_read": 0, "cache_write": 0, "cost": null}, "timestamp": "2026-10-04T17:43:31.353648+00:00"}
+{"type": "output", "text": "{\"findings\":[\"confirmed\"]}", "detail": {"output": {"findings": ["confirmed"]}}, "timestamp": "2026-10-04T17:43:31.353703+00:00"}
+{"type": "result", "session_id": "afb82f89ee5a4873acc8d5d7c47e4148", "status": "done", "questions": [], "usage": {"input": 30, "output": 15, "cache_read": 0, "cache_write": 0, "cost": null}, "budget": {"tokens": 31, "used_tokens": 45, "used_usd": null}, "stop_reason": "end_turn", "turns": 3, "contract": 1, "nare": "2026.9.19.dev4+g8b7b149c4.d20261004", "output": {"findings": ["confirmed"]}, "error": null}
