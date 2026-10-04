@@ -183,3 +183,69 @@ output, not input/cache spend. If Scrutare SPEC requires a strict whole-review
 ceiling, this remains a mismatch: Scrutare must account for overshoot and
 success on crossing turns in its own allocation policy. nare does not allocate
 budgets across personas or orchestrate reviews.
+
+## MCP tool sources
+
+`nare run --mcp-config servers.json --yes --jsonl "inspect the application"`
+connects explicit MCP sources for the duration of the invocation. The JSON file
+is an object keyed by server alias:
+
+```json
+{
+  "browser": {"url": "http://sandbox:8080/mcp", "timeout": 30},
+  "local": {"command": "python", "args": ["server.py"], "env": {"APP_MODE": "read-only"}}
+}
+```
+
+Remote sources use Streamable HTTP; stdio sources are child processes. Each
+source specifies exactly one of `command` or `url`. Optional `headers` apply
+only to HTTP; `args` and `env` apply only to stdio. Unknown fields and invalid
+values exit 2 before starting. `timeout` is a positive finite number of seconds,
+default 30, bounding the complete initialization/discovery phase per server and each
+complete tool call, including blocked transport writes. Cancellation may add up
+to 0.1 seconds of courtesy-cancel grace; connection/process cleanup follows.
+
+Model-facing tool names are `alias__tool`, not `alias.tool`. Names must fit the
+providers' 64-character ASCII letters/digits/underscore/hyphen restriction.
+Aliases start with a letter and cannot contain `__`. Discovery fails on duplicate
+or incompatible names. Paginated `tools/list` is supported.
+
+Omitting `--tools` permits built-ins and all configured MCP tools. An explicit
+allowlist permits only its named tools:
+
+```sh
+nare run --yes --jsonl --mcp-config servers.json \
+  --tools browser__observe,browser__navigate "inspect the application"
+```
+
+`--tools none` excludes everything. All external calls pass through the same
+approval callback as built-ins. `--root` confines built-in file operations; an
+MCP server enforces its own filesystem/application boundaries. A CLI caller
+approves calls through `--yes`; library callers supply `approve` to `run`.
+
+Library callers pass `mcp_servers={"browser": Server(url="http://sandbox:8080/mcp")}`
+to `nare.loop.run`, importing `Server` from `nare.mcp`. A supplied `Policy` keeps
+its explicit allowlist; `Policy(pending=frozenset({"browser__observe"}),
+tools=frozenset({"browser__observe"}))` allows a name awaiting discovery.
+Without a policy all discovered tools are allowed. Each invocation rediscovers
+schemas; supply configuration and policy again on resume.
+
+Startup/discovery/connection cleanup failure emits an error and final result
+with `status=error`, `stop_reason=mcp`, exit 1. No model call occurs on startup
+failure. A failing tool call returns an ordinary `is_error` tool result so the
+model can adapt. `tool_use` events identify calls and redacted arguments;
+`progress` events carry redacted `detail.tool` and `detail.tool_result`, including
+content and error status. Text and structured MCP results are retained; other
+content blocks are represented as JSON, rather than interpreted as model images.
+The standard tool output cap applies. Session transcripts preserve results in
+the same way as built-ins; raw transcripts can contain secrets and should be
+handled as private artifacts.
+
+Connections and child processes are closed on completion, error, cancellation
+or explicit generator close. Library consumers that stop iteration early must
+`await stream.aclose()` in the same task that began iteration. Configuration,
+headers and environment values are not saved in the session. nare passes only
+the SDK's minimal OS environment and configured `env` to stdio servers; model API
+keys are not inherited. HTTP uses only explicitly configured headers. No model
+sampling callback or credential sharing is enabled. Remote servers remain owned
+by their hosts; nare terminates its connection, not their server process.

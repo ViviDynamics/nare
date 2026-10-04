@@ -30,6 +30,7 @@ from nare.loop import (
     configure_budgets,
     run,
 )
+from nare.mcp import parse_servers
 from nare.schema import UnsupportedSchema, check_supported
 from nare.session import Session, append_user_text, dumps, loads, new_session
 from nare.tools import TOOLS, Policy, approve_all
@@ -161,6 +162,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="continue the session at this path, writing it back unless "
         "--session says otherwise",
     )
+    run_parser.add_argument(
+        "--mcp-config", help="JSON file of named MCP stdio or Streamable HTTP servers"
+    )
     run_parser.add_argument("--session", help="write the session to this path")
     run_parser.add_argument(
         "--max-turns",
@@ -210,7 +214,12 @@ def policy_from_args(args: argparse.Namespace) -> Policy:
         root = Path(args.root)
         if not root.is_dir():
             raise ValueError(f"--root {args.root} is not a directory")
-    return Policy(tools=tools, root=root)
+    unresolved_names = frozenset(
+        name
+        for name in tools
+        if any(name.startswith(alias + "__") for alias in args.mcp_servers)
+    )
+    return Policy(tools=tools, root=root, pending=unresolved_names)
 
 
 def _load_or_new(args: argparse.Namespace) -> Session:
@@ -318,6 +327,8 @@ async def _execute(
                 context_window=args.context_window,
                 budget_usd=args.budget_usd,
                 prices=prices,
+                mcp_servers=args.mcp_servers,
+                mcp_allow_all=args.tools is None,
             )
             if transport is not None
             else _pending_events(session)
@@ -417,6 +428,11 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         if args.budget_usd is not None:
             finite_number(args.budget_usd, "--budget-usd")
         prices = prices_from_env()
+        args.mcp_servers = (
+            parse_servers(json.loads(Path(args.mcp_config).read_text(encoding="utf-8")))
+            if args.mcp_config
+            else {}
+        )
         policy = policy_from_args(args)
         schema = schema_from_args(args)
         session = _load_or_new(args)
