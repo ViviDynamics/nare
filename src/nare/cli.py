@@ -123,7 +123,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--stream",
         action="store_true",
-        default=os.environ.get("NARE_STREAM", "").strip().lower() in ("1", "true", "yes"),
+        default=os.environ.get("NARE_STREAM", "").strip().lower()
+        in ("1", "true", "yes"),
         help="stream text/reasoning while each model turn runs (env: NARE_STREAM)",
     )
     run_parser.add_argument("--system", help="system prompt / persona text")
