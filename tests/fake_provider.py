@@ -41,6 +41,15 @@ def text_reply(text: str, *, stop_reason: StopReason = "end_turn") -> Reply:
     )
 
 
+def thinking_reply() -> Reply:
+    return Reply(
+        content=[{"type": "thinking", "thinking": "the answer should be..."}],
+        tool_calls=[],
+        usage=Usage(input=10, output=5),
+        stop_reason="end_turn",
+    )
+
+
 class Exploding:
     """A Transport whose turn() always fails, for exercising the error path."""
 

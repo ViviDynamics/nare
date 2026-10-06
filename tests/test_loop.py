@@ -1,7 +1,13 @@
 from pathlib import Path
 
 import nare
-from fake_provider import Exploding, FakeProvider, text_reply, tool_reply
+from fake_provider import (
+    Exploding,
+    FakeProvider,
+    text_reply,
+    thinking_reply,
+    tool_reply,
+)
 from nare.loop import MAX_TURNS_DEFAULT, run, step
 from nare.session import (
     Session,
@@ -256,6 +262,18 @@ async def test_a_refusal_is_an_error_not_a_finished_one() -> None:
     await step(session, fake, approve_all, Policy())
     assert session.status == "error"
     assert session.stop_reason == "refusal"
+
+
+async def test_a_thinking_only_reply_is_an_error_not_a_silent_done() -> None:
+    # Reasoning with no answer is what a proxy translation failure looks
+    # like; reporting done would read as a successful, silent completion.
+    session = new_session("write an essay")
+    fake = FakeProvider([thinking_reply()])
+    await step(session, fake, approve_all, Policy())
+    assert session.status == "error"
+    assert "reasoning" in (session.error or "")
+    assert session.output is None
+    assert session.events[-1].type == "error"
 
 
 async def test_a_truncated_tool_call_is_answered_but_never_run(tmp_path: Path) -> None:
