@@ -230,6 +230,18 @@ async def step(
             s.events.append(Event("error", unfinished))
             return s
         text = _final_text(reply.content)
+        if not text and any(block.get("type") == "thinking" for block in reply.content):
+            # Reasoning with no answer is what a translation to Anthropic's
+            # shape can produce when a proxy drops it: the reasoning and the
+            # answer arrive together and only one survives. Reporting done
+            # here would read as a successful, silent completion.
+            s.error = (
+                "model emitted reasoning but no answer; a proxy translation "
+                "may have dropped it"
+            )
+            s.status = "error"
+            s.events.append(Event("error", s.error))
+            return s
         if schema is None:
             s.status = "done"
             s.events.append(Event("output", text))
