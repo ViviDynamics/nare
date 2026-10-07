@@ -22,7 +22,7 @@ def test_defaults_match_the_spec(monkeypatch: pytest.MonkeyPatch) -> None:
     # what it means by "default". Without this, anyone with NARE_MODEL
     # exported -- which a .env for a LiteLLM proxy does -- fails here, and
     # the failure reads like a code defect rather than their own shell.
-    for var in ("NARE_PROVIDER", "NARE_MODEL", "NARE_BASE_URL"):
+    for var in ("NARE_PROVIDER", "NARE_MODEL", "NARE_BASE_URL", "NARE_STREAM"):
         monkeypatch.delenv(var, raising=False)
     args = parse("do a thing")
     assert args.prompt == "do a thing"
@@ -36,20 +36,25 @@ def test_defaults_match_the_spec(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.max_turns == 50
     assert args.jsonl is False
     assert args.yes is False
+    assert args.stream is False
 
 
 def test_environment_supplies_the_fallbacks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NARE_MODEL", "claude-opus-5")
     monkeypatch.setenv("NARE_BASE_URL", "http://localhost:11434")
     monkeypatch.setenv("NARE_PROVIDER", "anthropic")
+    monkeypatch.setenv("NARE_STREAM", "true")
     args = parse("go")
     assert args.model == "claude-opus-5"
     assert args.base_url == "http://localhost:11434"
+    assert args.stream is True
 
 
 def test_a_flag_beats_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NARE_MODEL", "claude-opus-5")
     assert parse("go", "--model", "claude-sonnet-5").model == "claude-sonnet-5"
+    monkeypatch.setenv("NARE_STREAM", "false")
+    assert parse("go", "--stream").stream is True
 
 
 def test_there_is_no_api_key_flag() -> None:
