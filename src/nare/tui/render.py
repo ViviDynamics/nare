@@ -10,6 +10,7 @@ from __future__ import annotations
 import difflib
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from rich.console import Group, RenderableType
@@ -17,7 +18,7 @@ from rich.markdown import Markdown
 from rich.syntax import Syntax
 from rich.text import Text
 
-from nare.session import Message, Session, Usage
+from nare.session import Message, Session, Usage, unanswered
 from nare.tools import Policy
 
 RESULT_LINES = 5
@@ -33,13 +34,10 @@ class Block:
 
 def settled(messages: list[Message]) -> int:
     """How many messages can be drawn. A call is drawn with its result, so an
-    assistant turn whose calls are unanswered waits. `nare run --stream` saves
-    in exactly that state, and the attach view reads it.
+    assistant turn whose calls are unanswered waits: mid-dispatch, and in a
+    file an older `nare run --stream` saved there.
     """
-    if messages and messages[-1].role == "assistant":
-        if any(b.get("type") == "tool_use" for b in messages[-1].content):
-            return len(messages) - 1
-    return len(messages)
+    return len(messages) - 1 if unanswered(messages) else len(messages)
 
 
 def render_user(text: str) -> list[Block]:
@@ -140,22 +138,30 @@ def approval_text(tool: str, args: dict[str, Any], policy: Policy) -> tuple[str,
             content = str(args["content"])
             if not path.exists():
                 return f"new file {path}\n\n{content}", "text"
-            # Bytes, not read_text: universal newlines would hide a CRLF to
-            # LF rewrite, and splitlines() a dropped final newline.
-            before = path.read_bytes().decode("utf-8")
-            if before == content:
-                return f"{path}: no change", "diff"
-            diff = unified(before, content, str(path))
-            return diff or f"{path}: line endings or trailing newline change", "diff"
-        before = path.read_text(encoding="utf-8")
+            return _rewrite(path.read_bytes().decode("utf-8"), content, path)
+        # Bytes, not read_text: universal newlines would hide the CRLF to LF
+        # rewrite edit_file makes. Its match is on the translated text.
+        before = path.read_bytes().decode("utf-8")
+        text = before.replace("\r\n", "\n").replace("\r", "\n")
         old = str(args["old"])
-        if not old or before.count(old) != 1:
+        if not old or text.count(old) != 1:
             return raw
-        after = before.replace(old, str(args["new"]))
-        return unified(before, after, str(path)), "diff"
+        return _rewrite(before, text.replace(old, str(args["new"])), path)
     except (KeyError, ValueError, OSError):
         # ValueError covers a path outside --root and a file that is not UTF-8.
         return raw
+
+
+def _rewrite(before: str, after: str, path: Path) -> tuple[str, str]:
+    """The diff of a file's exact contents. splitlines() treats CRLF and LF
+    alike and drops a final newline, so a change to those is named instead.
+    """
+    if before == after:
+        return f"{path}: no change", "diff"
+    diff = unified(before, after, str(path))
+    if "\r" in before and "\r" not in after:
+        return f"{path}: line endings change to LF\n{diff}".rstrip(), "diff"
+    return diff or f"{path}: line endings or trailing newline change", "diff"
 
 
 def _tokens(n: int) -> str:

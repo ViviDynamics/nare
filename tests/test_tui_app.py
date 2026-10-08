@@ -13,11 +13,11 @@ from textual.app import App
 from textual.pilot import Pilot
 from textual.widgets import Input, Static
 
-from fake_provider import FakeProvider, text_reply, tool_reply
+from fake_provider import FakeProvider, StreamingProvider, text_reply, tool_reply
 from nare.cli import build_parser, main
 from nare.events import Event
 from nare.loop import INTERRUPTED
-from nare.session import Message, new_session, save
+from nare.session import Message, loads, new_session, save
 from nare.transport import Delta, Reply, Transport
 from nare.tui.app import ApprovalScreen, AttachApp, TuiApp, logs_as_notices, prepare
 
@@ -183,7 +183,6 @@ async def test_ctrl_c_during_approval_interrupts_then_follow_up(tmp_path: Path) 
         assert not isinstance(app.screen, ApprovalScreen)
         assert app.session is not None
         assert app.session.messages[-1].content[0]["content"] == INTERRUPTED
-        assert "may still be running" in text_of(app, "#status")
         await submit(pilot, app, "go on")
         await until(pilot, lambda: app.run_state == "done")
         assert "> go on" in shown(app)
@@ -191,6 +190,58 @@ async def test_ctrl_c_during_approval_interrupts_then_follow_up(tmp_path: Path) 
     # The follow-up merged into the trailing tool-result message.
     sent = fake.calls[-1][0]
     assert sent[-1].content[-1] == {"type": "text", "text": "go on"}
+
+
+async def test_a_streamed_turn_is_not_saved_while_its_call_awaits_approval(
+    tmp_path: Path,
+) -> None:
+    replies = [
+        tool_reply("write", {"path": "a.txt", "content": "hi"}),
+        text_reply("ok"),
+    ]
+    app = make(tmp_path, StreamingProvider(replies), prompt="go")
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
+        # What a closed terminal leaves while the modal waits on a person.
+        saved = tmp_path / "s.json"
+        assert (
+            not saved.exists() or loads(saved.read_text()).messages[-1].role == "user"
+        )
+        await pilot.press("y")
+        await until(pilot, lambda: app.run_state == "done")
+
+
+async def test_a_follow_up_on_a_file_that_ends_in_an_unanswered_call(
+    tmp_path: Path,
+) -> None:
+    # An older nare saved mid-dispatch, so a file can end in a call with no
+    # result. The follow-up must answer it, and draw the turn it held back.
+    s = new_session("go")
+    s.messages.append(
+        Message(
+            "assistant",
+            [
+                {"type": "text", "text": "ASSISTANT-TEXT"},
+                {
+                    "type": "tool_use",
+                    "id": "c1",
+                    "name": "bash",
+                    "input": {"command": "ls"},
+                },
+            ],
+        )
+    )
+    save(s, tmp_path / "s.json")
+    fake = FakeProvider([text_reply("ok")])
+    app = make(tmp_path, fake, "--resume", str(tmp_path / "s.json"))
+    async with app.run_test() as pilot:
+        assert app.run_state == "interrupted"
+        await submit(pilot, app, "continue")
+        await until(pilot, lambda: app.run_state == "done")
+        assert "ASSISTANT-TEXT" in shown(app)
+    result, text = fake.calls[-1][0][-1].content
+    assert result["tool_use_id"] == "c1" and result["is_error"] is True
+    assert text == {"type": "text", "text": "continue"}
 
 
 async def test_esc_interrupts_a_model_call(tmp_path: Path) -> None:
@@ -206,25 +257,6 @@ async def test_esc_interrupts_a_model_call(tmp_path: Path) -> None:
         await submit(pilot, app, "again")
         await until(pilot, lambda: app.run_state == "done")
         assert "second try" in shown(app)
-
-
-async def test_no_bash_note_when_a_later_interrupt_ran_nothing(tmp_path: Path) -> None:
-    transport = Stalled(
-        tool_reply("bash", {"command": "echo hi"}), text_reply("ok"), stall=2
-    )
-    app = make(tmp_path, transport, prompt="go")
-    async with app.run_test() as pilot:
-        await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
-        await pilot.press("ctrl+c")
-        await until(pilot, lambda: app.run_state == "interrupted")
-        assert "may still be running" in text_of(app, "#status")
-        await submit(pilot, app, "go on")
-        await until(pilot, lambda: transport.calls == 2)
-        await pilot.press("escape")
-        await until(pilot, lambda: app.run_state == "interrupted")
-        # The interrupted bash result is still the last call in the session,
-        # but this interrupt stopped a model call: nothing ran.
-        assert "may still be running" not in text_of(app, "#status")
 
 
 async def test_a_second_interrupt_lets_the_first_finish(tmp_path: Path) -> None:

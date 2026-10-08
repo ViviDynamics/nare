@@ -187,11 +187,8 @@ the task driving `run()`. **Ctrl-Q** quits.
   approval modal closes.
 - In both cases the state becomes `interrupted` and the input is live.
 
-Known ceiling: a `bash` command already running in its worker thread keeps
-running until it exits or reaches its timeout, because `asyncio.to_thread`
-cannot stop it. The status bar says so while it may still be running. This
-is marked with a `ponytail:` comment; running `bash` in its own process group
-and killing the group on cancel is the upgrade, when it bites.
+A `bash` command still running when the run is cancelled is killed with its
+process group, so an interrupt stops it and Ctrl-Q never waits on it.
 
 ### 5.5 Follow-ups and `ask` answers
 

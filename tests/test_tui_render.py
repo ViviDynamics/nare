@@ -51,7 +51,7 @@ def answer(text: str, *, call_id: str = "c1", error: bool = False) -> Message:
 
 def test_settled_waits_for_unanswered_calls() -> None:
     messages = new_session("go").messages + [call("bash", {"command": "ls"})]
-    # nare run --stream saves here: the call is committed, its result is not.
+    # Mid-dispatch: the call is committed, its result is not.
     assert settled(messages) == 1
     messages.append(answer("exit 0"))
     assert settled(messages) == 3
@@ -149,7 +149,25 @@ def test_preview_of_write_names_a_line_ending_change(
         "write", {"path": "a.txt", "content": after}, Policy(root=tmp_path)
     )
     assert "no change" not in text
-    assert "line endings or trailing newline" in text
+    assert "line endings" in text
+
+
+@pytest.mark.parametrize(
+    "tool, args",
+    [
+        ("edit", {"path": "a.txt", "old": "two", "new": "TWO"}),
+        ("write", {"path": "a.txt", "content": "one\nTWO\nthree\n"}),
+    ],
+)
+def test_preview_names_a_crlf_rewrite_beside_the_change(
+    tmp_path: Path, tool: str, args: dict[str, Any]
+) -> None:
+    # edit_file rewrites every CRLF as LF, and splitlines() treats the two
+    # alike, so the diff alone showed a one-line change.
+    (tmp_path / "a.txt").write_bytes(b"one\r\ntwo\r\nthree\r\n")
+    text, _ = approval_text(tool, args, Policy(root=tmp_path))
+    assert "line endings change to LF" in text
+    assert "-two" in text and "+TWO" in text
 
 
 def test_preview_of_write_names_a_new_file(tmp_path: Path) -> None:

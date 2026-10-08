@@ -32,7 +32,7 @@ from nare.loop import (
 )
 from nare.mcp import parse_servers
 from nare.schema import UnsupportedSchema, check_supported
-from nare.session import Session, loads, new_session, reopen, save
+from nare.session import Session, loads, new_session, reopen, save, unanswered
 from nare.tools import TOOLS, Policy, approve_all
 from nare.transport import Transport, make_transport
 
@@ -365,10 +365,15 @@ async def _execute(
             # Saved per turn, not once at the end. SIGTERM's default handler
             # exits without unwinding, so `finally` never runs and a run
             # persisted only at the end is not resumable after a kill --
-            # which is how conductor ends a slow run. run() drains events
-            # only after step() returns, so the first event of a turn means
-            # that turn is already committed to the session.
-            if args.session and session.turns != saved_turns:
+            # which is how conductor ends a slow run. A streamed turn yields
+            # events after step() commits its calls and before they have
+            # results; a file saved then is one vendors reject on resume, so
+            # the save waits for the results.
+            if (
+                args.session
+                and session.turns != saved_turns
+                and not unanswered(session.messages)
+            ):
                 # Advanced before the attempt, not after: a turn yields several
                 # events, and a failure that left this behind would retry --
                 # and log -- once per event rather than once per turn.

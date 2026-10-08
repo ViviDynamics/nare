@@ -32,8 +32,8 @@ from nare.accounting import Prices
 from nare.cli import policy_from_args, transport_from_args, validate_run_args
 from nare.contract import NEVER_STARTED
 from nare.events import Event
-from nare.loop import INTERRUPTED, configure_budgets, run
-from nare.session import Session, Usage, loads, new_session, reopen, save
+from nare.loop import configure_budgets, run
+from nare.session import Session, Usage, loads, new_session, reopen, save, unanswered
 from nare.tools import Policy
 from nare.transport import Transport
 from nare.tui.approve import Approver
@@ -100,20 +100,6 @@ class ApprovalScreen(ModalScreen[str]):
                 )
             )
             yield Static(Syntax(self.text, self.lexer, word_wrap=True), id="preview")
-
-
-def _interrupted_bash(session: Session) -> bool:
-    if len(session.messages) < 2:
-        return False
-    bash = {
-        b.get("id")
-        for b in session.messages[-2].content
-        if b.get("type") == "tool_use" and b.get("name") == "bash"
-    }
-    return any(
-        b.get("tool_use_id") in bash and b.get("content") == INTERRUPTED
-        for b in session.messages[-1].content
-    )
 
 
 class TuiApp(App[None]):
@@ -208,10 +194,15 @@ class TuiApp(App[None]):
             self.session = new_session(text)
         else:
             reopen(self.session, text)
+        messages = self.session.messages
+        transcript = self.query_one(Transcript)
+        # A turn held back for its results first: reopen just answered it.
+        if self.drawn < len(messages) - 1:
+            transcript.add(render_messages(messages, self.drawn, len(messages) - 1))
         # Drawn from the text, not from the session: reopen merges it into a
         # trailing user message the transcript has already drawn.
-        self.query_one(Transcript).add(render_user(text))
-        self.drawn = len(self.session.messages)
+        transcript.add(render_user(text))
+        self.drawn = len(messages)
         self.query_one(Input).value = ""
         self.note = None
         self.worker = self.run_worker(self._drive(self.session), exclusive=True)
@@ -235,19 +226,12 @@ class TuiApp(App[None]):
                 mcp_allow_all=self.args.tools is None,
             ):
                 self._event(event)
-                if session.turns != saved:
+                # As in nare run: not while a streamed turn's calls wait.
+                if session.turns != saved and not unanswered(session.messages):
                     saved = session.turns
                     self._save()
             self._set_state(session.status)
         except asyncio.CancelledError:
-            # Only a turn this drive committed: after a follow-up, an older
-            # interrupted bash is still the last call in the session.
-            if session.turns != self.turns_from and _interrupted_bash(session):
-                # ponytail: a bash command already in its worker thread runs
-                # on until it exits or times out; asyncio.to_thread cannot stop
-                # it. Running bash in its own process group and killing the
-                # group on cancel is the upgrade, when it bites.
-                self.note = "an interrupted bash command may still be running"
             self._set_state("interrupted")
             raise
         finally:

@@ -87,23 +87,21 @@ def test_edit_refuses_a_missing_string(tmp_path: Path) -> None:
         edit_file(str(target), "zzz", "y")
 
 
-def test_bash_reports_stdout_and_exit_code() -> None:
-    assert run_bash("echo hi") == "exit 0\nhi"
+async def test_bash_reports_stdout_and_exit_code() -> None:
+    assert await run_bash("echo hi") == "exit 0\nhi"
 
 
-def test_bash_reports_a_failure_without_raising() -> None:
-    assert run_bash("exit 3").startswith("exit 3")
+async def test_bash_reports_a_failure_without_raising() -> None:
+    assert (await run_bash("exit 3")).startswith("exit 3")
 
 
-def test_bash_captures_stderr() -> None:
-    assert "boom" in run_bash("echo boom >&2")
+async def test_bash_captures_stderr() -> None:
+    assert "boom" in await run_bash("echo boom >&2")
 
 
-def test_bash_times_out() -> None:
-    import subprocess
-
+async def test_bash_times_out() -> None:
     with pytest.raises(subprocess.TimeoutExpired):
-        run_bash("sleep 5", timeout=1)
+        await run_bash("sleep 5", timeout=1)
 
 
 def test_ask_returns_an_acknowledgement() -> None:
@@ -250,23 +248,40 @@ def test_the_file_tools_pin_utf8_regardless_of_locale(tmp_path: Path) -> None:
     assert target.read_bytes() == "héllo = 2\n".encode()
 
 
-def test_a_timeout_kills_the_whole_process_group(tmp_path: Path) -> None:
-    # subprocess.run's timeout kills the shell and nothing the shell started,
-    # so `sleep 41 & sleep 42` left both sleeps running. In a real run that is
-    # an orphaned dev server or test watcher per timed-out command.
-    pidfile = tmp_path / "pid"
-    with pytest.raises(subprocess.TimeoutExpired):
-        run_bash(f"sleep 30 & echo $! > {pidfile}; wait", timeout=1)
-
-    pid = int(pidfile.read_text())
+def _gone(pid: int) -> bool:
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         try:
             os.kill(pid, 0)
         except (ProcessLookupError, PermissionError):
-            return
+            return True
         time.sleep(0.02)
-    pytest.fail(f"pid {pid} outlived the timeout that was supposed to kill it")
+    return False
+
+
+async def test_a_timeout_kills_the_whole_process_group(tmp_path: Path) -> None:
+    # subprocess.run's timeout kills the shell and nothing the shell started,
+    # so `sleep 41 & sleep 42` left both sleeps running. In a real run that is
+    # an orphaned dev server or test watcher per timed-out command.
+    pidfile = tmp_path / "pid"
+    with pytest.raises(subprocess.TimeoutExpired):
+        await run_bash(f"sleep 30 & echo $! > {pidfile}; wait", timeout=1)
+    assert _gone(int(pidfile.read_text()))
+
+
+async def test_a_cancel_kills_the_whole_process_group(tmp_path: Path) -> None:
+    # In a worker thread, communicate() could not be stopped: quitting the
+    # TUI mid-command waited out the command, or its timeout.
+    pidfile = tmp_path / "pid"
+    task = asyncio.create_task(run_bash(f"sleep 30 & echo $! > {pidfile}; wait"))
+    for _ in range(500):
+        if pidfile.exists() and pidfile.read_text().strip():
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5)
+    assert _gone(int(pidfile.read_text()))
 
 
 def test_commands_do_not_inherit_nares_stdin(
@@ -285,7 +300,7 @@ def test_commands_do_not_inherit_nares_stdin(
         return real(*args, **kwargs)  # type: ignore[call-overload]
 
     monkeypatch.setattr(subprocess, "Popen", spy)
-    run_bash("true")
+    asyncio.run(run_bash("true"))
     assert seen["stdin"] is subprocess.DEVNULL
     assert seen["start_new_session"] is True
 

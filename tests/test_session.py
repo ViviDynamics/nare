@@ -135,6 +135,20 @@ def test_reopen_appends_text_and_resets_per_run_state() -> None:
     assert s.messages[-1] == Message("user", [{"type": "text", "text": "bar.py"}])
 
 
+def test_reopen_answers_calls_left_without_a_result() -> None:
+    # Vendors reject a call with no result, so a follow-up on a file that
+    # ends mid-dispatch killed every later turn.
+    s = new_session("go")
+    s.messages.append(
+        Message("assistant", [{"type": "tool_use", "id": "c1", "name": "bash"}])
+    )
+    reopen(s, "continue")
+    result, text = s.messages[-1].content
+    assert result["type"] == "tool_result" and result["tool_use_id"] == "c1"
+    assert result["is_error"] is True
+    assert text == {"type": "text", "text": "continue"}
+
+
 def test_reopen_without_text_leaves_the_transcript() -> None:
     s = new_session("go")
     s.status = "error"

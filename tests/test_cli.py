@@ -7,9 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from fake_provider import Exploding, FakeProvider, text_reply, tool_reply
+from fake_provider import (
+    Exploding,
+    FakeProvider,
+    StreamingProvider,
+    text_reply,
+    tool_reply,
+)
 from nare.cli import build_parser, main, transport_from_args
 from nare.events import Event
+from nare.session import loads
 from nare.transport.anthropic import AnthropicTransport
 
 
@@ -546,3 +553,25 @@ def test_tui_without_the_extra_exits_two(
     assert captured.err.strip() == (
         "nare tui needs the tui extra: uv tool install 'nare[tui]'"
     )
+
+
+def test_a_streamed_turn_is_saved_only_once_its_calls_have_results(
+    tmp_path: Path,
+) -> None:
+    # A streamed turn yields events after step() commits its calls, and each
+    # saved the file mid-dispatch. The command copies the file at that moment:
+    # it is what a SIGTERM leaves, and vendors reject a call with no result.
+    fake = StreamingProvider(
+        [
+            tool_reply("bash", {"command": "true"}, call_id="c1"),
+            tool_reply(
+                "bash", {"command": "sleep 0.2; cp s.json snap.json"}, call_id="c2"
+            ),
+            text_reply("ok"),
+        ]
+    )
+    session = str(tmp_path / "s.json")
+    argv = ["run", "--yes", "--root", str(tmp_path), "--session", session, "go"]
+    assert main(argv, transport=fake) == 0
+    snap = loads((tmp_path / "snap.json").read_text())
+    assert [m.role for m in snap.messages] == ["user", "assistant", "user"]

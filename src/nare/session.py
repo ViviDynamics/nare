@@ -101,6 +101,18 @@ def append_user_text(s: Session, text: str) -> None:
         s.messages.append(Message(role="user", content=[block]))
 
 
+def unanswered(messages: list[Message]) -> list[dict[str, Any]]:
+    """The calls of a final assistant turn, which have no results yet.
+
+    Only true mid-dispatch, or in a file an older nare saved there. Vendors
+    reject a transcript that ends like this, so it is never saved mid-run,
+    and reopen() answers the calls before anything follows them.
+    """
+    if not messages or messages[-1].role != "assistant":
+        return []
+    return [b for b in messages[-1].content if b.get("type") == "tool_use"]
+
+
 def dumps(s: Session) -> str:
     """Serialize. Events are drained by `run()` each step and are never state.
 
@@ -171,6 +183,24 @@ def reopen(s: Session, text: str | None = None) -> None:
     `ask` or follows up in the TUI. `output` is kept: an exhausted resume still
     reports the partial findings it already holds.
     """
+    calls = unanswered(s.messages)
+    if calls:
+        # Whether the call ran is unknown: the model is told so, and checks.
+        stopped = "no result: the run stopped before this call returned"
+        s.messages.append(
+            Message(
+                role="user",
+                content=[
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": call.get("id"),
+                        "content": stopped,
+                        "is_error": True,
+                    }
+                    for call in calls
+                ],
+            )
+        )
     if text:
         append_user_text(s, text)
     s.status = "working"

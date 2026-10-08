@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import inspect
 import os
 import signal
@@ -130,38 +131,42 @@ def edit_file(path: str, old: str, new: str) -> str:
     return f"edited {path}"
 
 
-def run_bash(command: str, timeout: int = 120, *, cwd: str | None = None) -> str:
+async def run_bash(command: str, timeout: int = 120, *, cwd: str | None = None) -> str:
     """Run a shell command in its own process group, with no stdin.
 
     `subprocess.run(timeout=...)` kills the shell and nothing the shell started,
     so `make dev &` outlives the call and the run leaks a server. The group is
-    what makes the timeout mean what it says.
+    what makes the timeout mean what it says, and a cancel too.
+
+    Async, not a worker thread: a thread in communicate() cannot be cancelled,
+    so an interrupted command ran on and quitting the TUI waited for it.
 
     stdin is DEVNULL because nare's own stdin belongs to conductor: a command
     that reads would either eat conductor's pipe or block until the timeout.
     """
-    proc = subprocess.Popen(
+    proc = await asyncio.create_subprocess_shell(
         command,
-        shell=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL,
-        text=True,
         start_new_session=True,
         cwd=cwd,
     )
     try:
-        out, err = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout)
+    except BaseException as exc:
         # ponytail: killpg reaches the group the shell leads. A grandchild that
         # calls setsid itself escapes it; a pid-tree walk is the upgrade, and
         # not before something actually escapes.
-        os.killpg(proc.pid, signal.SIGKILL)
-        proc.communicate()
-        # Raised, not returned: dispatch turns it into an is_error result, so
-        # the model still sees the timeout and can adapt.
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        await proc.wait()
+        if isinstance(exc, TimeoutError):
+            # Raised, not returned: dispatch turns it into an is_error result,
+            # so the model still sees the timeout and can adapt.
+            raise subprocess.TimeoutExpired(command, timeout) from None
         raise
-    output = (out + err).strip()
+    output = (out + err).decode(errors="replace").strip()
     return f"exit {proc.returncode}\n{_truncate(output)}".rstrip()
 
 
@@ -183,7 +188,8 @@ def ask(questions: list[str]) -> str:
     return "Questions recorded. The session is blocked pending answers."
 
 
-TOOLS: dict[str, Callable[..., str | dict[str, Any]]] = {
+# bash is the async one: dispatch awaits it, and runs the rest in a thread.
+TOOLS: dict[str, Callable[..., Any]] = {
     "read": read_file,
     "write": write_file,
     "edit": edit_file,
@@ -408,10 +414,13 @@ async def dispatch(
             args["path"] = str(policy.resolve(str(args["path"])))
         if call.name == "bash" and policy.root is not None:
             args["cwd"] = str(policy.root.resolve())
+        output: str | dict[str, Any]
         if call.name == "read":
             args["image_input"] = policy.image_input
             args["image_model"] = policy.image_model
             output = await asyncio.to_thread(_read_with_image, **args)
+        elif call.name == "bash":
+            output = await run_bash(**args)
         else:
             output = await asyncio.to_thread(function, **args)
         if isinstance(output, dict):
