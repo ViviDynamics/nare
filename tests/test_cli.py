@@ -394,7 +394,7 @@ def test_a_failed_session_write_leaves_the_previous_file_intact(
     def boom(src: object, dst: object) -> None:
         raise OSError("no space left on device")
 
-    monkeypatch.setattr("nare.cli.os.replace", boom)
+    monkeypatch.setattr("nare.session.os.replace", boom)
     code = main(
         ["run", "--yes", "--resume", str(path), "keep going"],
         transport=FakeProvider([text_reply("finished")]),
@@ -503,3 +503,46 @@ def test_unreadable_stdin_exits_nonzero_writing_nothing_to_stdout(
     assert main(["redact"]) == 1
     assert stdout.buffer.getvalue() == b""
     assert "utf-8" in capsys.readouterr().err.lower()
+
+
+SHARED = [
+    "--provider", "openai", "--model", "m", "--base-url", "http://x",
+    "--temperature", "0.5", "--max-tokens", "100", "--context-window", "9000",
+    "--budget-tokens", "500", "--budget-usd", "1.5", "--effort", "low",
+    "--system", "be brief", "--tools", "read,bash", "--root", ".",
+    "--resume", "r.json", "--mcp-config", "m.json", "--image-input",
+    "--session", "s.json", "--max-turns", "7",
+]  # fmt: skip
+
+
+def test_tui_takes_the_same_run_flags() -> None:
+    run_args = vars(build_parser().parse_args(["run", *SHARED, "go"]))
+    tui_args = vars(build_parser().parse_args(["tui", *SHARED, "go"]))
+    for name in (
+        "provider", "model", "base_url", "temperature", "max_tokens",
+        "context_window", "budget_tokens", "budget_usd", "effort", "system",
+        "tools", "root", "resume", "mcp_config", "image_input", "session",
+        "max_turns", "prompt",
+    ):  # fmt: skip
+        assert tui_args[name] == run_args[name], name
+    assert tui_args["attach"] is None
+
+
+@pytest.mark.parametrize(
+    "flag", ["--yes", "--jsonl", "--stream", "--contract=1", "--schema=x"]
+)
+def test_tui_refuses_machine_flags(flag: str) -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["tui", flag])
+
+
+def test_tui_without_the_extra_exits_two(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("importlib.util.find_spec", lambda name: None)
+    assert main(["tui"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.strip() == (
+        "nare tui needs the tui extra: uv tool install 'nare[tui]'"
+    )

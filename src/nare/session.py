@@ -5,8 +5,11 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import os
+import tempfile
 import uuid
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 from nare.contract import CONTRACT_VERSION, NARE_VERSION
@@ -159,3 +162,45 @@ def loads(text: str) -> Session:
         return Session(**raw)
     except (KeyError, TypeError) as exc:
         raise ValueError(f"malformed session file: {exc}") from exc
+
+
+def reopen(s: Session, text: str | None = None) -> None:
+    """Make a finished session runnable again, with the caller's text if any.
+
+    Resuming is how conductor's relay_feedback works, and how a person answers
+    `ask` or follows up in the TUI. `output` is kept: an exhausted resume still
+    reports the partial findings it already holds.
+    """
+    if text:
+        append_user_text(s, text)
+    s.status = "working"
+    s.questions = []
+    # Per-run state, like the budget in run(): a resume that inherited the
+    # spent correction round would end on its first imperfect answer.
+    s.schema_retried = False
+    s.error = None
+    s.stop_reason = None
+
+
+def save(s: Session, path: str | Path) -> None:
+    """Write the session atomically, readable only by its owner.
+
+    NamedTemporaryFile has mkstemp semantics: mode 0600 and a unique name. The
+    mode matters because the transcript holds whatever the tools read, and the
+    file lands in the workdir, which is a git checkout. The unique name matters
+    because a fixed `.tmp` collides when two runs share one session path.
+
+    The rename is what survives a kill: conductor SIGTERMs a run and then
+    resumes the same path, and a plain write truncates before it writes, so a
+    signal in that window leaves a partial file and no backup.
+    """
+    directory = Path(path).parent
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=directory, delete=False
+    ) as handle:
+        handle.write(dumps(s))
+    try:
+        os.replace(handle.name, path)
+    except OSError:
+        os.unlink(handle.name)
+        raise

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from nare.events import Event
@@ -9,6 +11,8 @@ from nare.session import (
     dumps,
     loads,
     new_session,
+    reopen,
+    save,
 )
 
 
@@ -109,3 +113,40 @@ def test_dumps_redacts_the_transcript() -> None:
     assert "sk-ant-" not in text
     assert "[redacted]" in text
     assert loads(text).status == "working"
+
+
+def test_reopen_appends_text_and_resets_per_run_state() -> None:
+    s = new_session("go")
+    s.messages.append(Message("assistant", [{"type": "text", "text": "which?"}]))
+    s.status = "blocked"
+    s.questions = ["which?"]
+    s.schema_retried = True
+    s.error = "x"
+    s.stop_reason = "tool_use"
+    s.output = {"found": 1}
+    reopen(s, "bar.py")
+    assert s.status == "working"  # type: ignore[comparison-overlap]
+    assert s.questions == []
+    assert s.schema_retried is False
+    assert s.error is None
+    assert s.stop_reason is None
+    # Partial findings survive a resume, as they did in cli._load_or_new.
+    assert s.output == {"found": 1}
+    assert s.messages[-1] == Message("user", [{"type": "text", "text": "bar.py"}])
+
+
+def test_reopen_without_text_leaves_the_transcript() -> None:
+    s = new_session("go")
+    s.status = "error"
+    reopen(s)
+    assert s.status == "working"  # type: ignore[comparison-overlap]
+    assert len(s.messages) == 1
+
+
+def test_save_is_atomic_and_owner_only(tmp_path: Path) -> None:
+    s = new_session("go")
+    path = tmp_path / "s.json"
+    save(s, path)
+    assert loads(path.read_text()) == s
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert [f.name for f in tmp_path.iterdir()] == ["s.json"]
