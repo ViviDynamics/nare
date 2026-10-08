@@ -43,7 +43,6 @@ Out, each until it is asked for:
 - Approval rules that persist beyond one TUI process.
 - Token-level live view of another process's run. It needs a new output
   channel from `nare run`; see section 9.
-- Killing a running `bash` command on interrupt (section 5.4).
 - `--schema` in the TUI. Schema-constrained answers are for programs.
 - Themes, config files, key remapping.
 
@@ -93,7 +92,7 @@ exits 2.
 ### 4.1 Changes to the core
 
 All four are additive. None changes the event stream, the `result` line, the
-session file's shape, or an exit code, so contract version 1 stands.
+session file's shape, or an exit code, so the contract version stands.
 
 1. **`Approve` may be async.** `tools.Approve` becomes
    `Callable[[str, dict[str, Any]], bool | Awaitable[bool]]`. `dispatch()`
@@ -104,7 +103,9 @@ session file's shape, or an exit code, so contract version 1 stands.
    `session.py`.** `reopen` is the reset `cli._load_or_new` performs on
    resume today (append user text; reset `status` to `working` and clear
    `questions`, `schema_retried`, `error`, `stop_reason`). `output` is kept:
-   an exhausted resume still reports its partial findings. `save` is
+   an exhausted resume still reports its partial findings. A transcript that
+   ends in calls without results, which an older `nare run --stream` could
+   save, has them answered first, since a vendor rejects it. `save` is
    `cli._save`, the atomic owner-only write. The CLI calls both; the TUI
    uses both. One copy of each.
 3. **Run flags are shared.** The arguments `nare run` and `nare tui` have in
@@ -113,7 +114,8 @@ session file's shape, or an exit code, so contract version 1 stands.
    session, resume) are added by one helper both subparsers call, and turned
    into a transport and policy by the existing `transport_from_args` and
    `policy_from_args`. `nare tui` does not take `--yes`, `--jsonl`,
-   `--contract`, or `--schema`.
+   `--contract`, `--schema`, `--prompt-file`, or `--stream`; it always
+   streams.
 4. **An interrupted dispatch says so.** `step()`'s `finally` answers every
    unanswered tool call with `tool dispatch failed`. When the cause is
    cancellation, that text becomes `interrupted by the user`, so the model is
@@ -151,8 +153,9 @@ prompt (5.3) shows the full-file diff instead.
 While a turn is in flight, a live block below the transcript shows
 `progress` and `thinking` events as they stream. `tool_use` events arrive
 only after `step()` returns, so the live block shows streamed text and
-thinking only. When the turn commits (`session.turns` changes), the live
-block is replaced by the rendered new messages.
+thinking only. When the turn's messages can be drawn, the live block is
+replaced by them. A tool call is drawn with its result, so a turn with calls
+waits for its dispatch.
 
 ### 5.3 Approvals
 
@@ -200,8 +203,10 @@ is working the input is disabled.
 
 ### 5.6 Persistence
 
-With `--session`, the session is saved after every committed turn, as
-`nare run` does, and once more on quit. Quitting while a run is working
+With `--session`, the session is saved after every turn once its calls have
+results, as `nare run` does, and once more on quit. A file is never saved
+mid-dispatch, while an approval waits: a kill then would leave calls without
+results, which a vendor rejects on resume. Quitting while a run is working
 cancels it first, then saves.
 
 ## 6. Attach
@@ -243,8 +248,8 @@ flags, no API key.
 
 ## 8. Packaging and testing
 
-**Packaging.** `[project.optional-dependencies] tui = ["textual>=X"]`, with
-`X` set to the current release when the plan is written. Textual is also
+**Packaging.** `[project.optional-dependencies] tui = ["textual>=8.2,<9"]`.
+Textual is also
 added to the dev group, so `bin/build` and CI run the TUI tests. No change to
 `Dockerfile` or the benchmark images.
 
@@ -268,7 +273,6 @@ the suite does.
 ## 9. Later
 
 - **Token-level attach.** A `--events FILE` flag on `nare run` that tees the
-  JSONL stream to a file the viewer tails. Additive under contract 1, but
+  JSONL stream to a file the viewer tails. Additive to the contract, but
   Conductor and the benchmark runner would have to pass it.
 - **Session picker.** List recent session files in a directory.
-- **Killing `bash` on interrupt.** Section 5.4.

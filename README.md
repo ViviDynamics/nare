@@ -96,9 +96,8 @@ session). `edit` and `write` show a diff first. `read` and `ask` never prompt.
 
 **Esc** or **Ctrl-C** stops the current turn without losing the session; type
 a follow-up to keep going. When nare asks a question, the answer is the next
-thing you type. **Ctrl-Q** quits, saving to `--session` if given. A `bash`
-command already running when you interrupt keeps running until it exits or
-times out.
+thing you type. **Ctrl-Q** quits, saving to `--session` if given. An
+interrupt or a quit kills a `bash` command that is still running.
 
 `nare tui` takes the same provider, model, budget, tool, root, MCP, session
 and resume flags as `nare run`, and not `--yes`, `--jsonl`, `--contract`,
