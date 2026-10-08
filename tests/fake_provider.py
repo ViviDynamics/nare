@@ -73,3 +73,22 @@ def tool_reply(
         usage=Usage(input=10, output=5),
         stop_reason=stop_reason,
     )
+
+
+def calls_reply(
+    *calls: tuple[str, dict[str, Any]], stop_reason: StopReason = "tool_use"
+) -> Reply:
+    """One turn carrying several tool calls, with ids call_1, call_2, ..."""
+    tool_calls = [
+        ToolCall(id=f"call_{n}", name=name, args=args)
+        for n, (name, args) in enumerate(calls, start=1)
+    ]
+    return Reply(
+        content=[
+            {"type": "tool_use", "id": c.id, "name": c.name, "input": c.args}
+            for c in tool_calls
+        ],
+        tool_calls=tool_calls,
+        usage=Usage(input=10, output=5),
+        stop_reason=stop_reason,
+    )

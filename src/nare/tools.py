@@ -170,7 +170,15 @@ def ask(questions: list[str]) -> str:
     Tool calls are the only structured channel a model has, so asking is a tool.
     The loop reads the questions off the call and sets status=blocked; this
     result exists so the transcript stays well-formed for a resume.
+
+    An ask with nothing in it fails here, so the loop never reports blocked
+    with no questions for the caller to answer.
     """
+    items = [questions] if isinstance(questions, str) else questions
+    if not isinstance(items, list) or not any(
+        isinstance(q, str) and q.strip() for q in items
+    ):
+        raise ValueError("ask needs at least one question")
     return "Questions recorded. The session is blocked pending answers."
 
 
@@ -247,9 +255,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "ask",
         "description": (
-            "Stop and ask the caller for missing information. Use this when the "
-            "task cannot be completed without a decision only the caller can "
-            "make. This ends the session."
+            "Stop and ask the caller to resolve an ambiguous request. Use this "
+            "only when the request can reasonably be read more than one way and "
+            "the readings lead to different changes, and only after reading the "
+            "files involved. Do not use it for anything you can find out by "
+            "reading files or running commands, for details you can decide "
+            "yourself such as wording, style or names, to ask permission, or to "
+            "offer follow-up work. Call ask on its own, before making any "
+            "change. This ends the session."
         ),
         "input_schema": {
             "type": "object",
@@ -257,7 +270,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "questions": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "One question per item.",
+                    "description": (
+                        "One question per item, naming the readings you are "
+                        "choosing between, e.g. 'Raise TIMEOUT from 30 to what: "
+                        "60, 120, or another value?'"
+                    ),
                 }
             },
             "required": ["questions"],
@@ -413,7 +430,8 @@ def questions_from(calls: Iterable[ToolCall]) -> list[str]:
             continue
         raw = call.args.get("questions")
         if isinstance(raw, str):
-            questions.append(raw)
-        elif isinstance(raw, Iterable):
-            questions.extend(str(q) for q in raw)
+            raw = [raw]
+        if isinstance(raw, Iterable):
+            # A blank beside a real question is nothing for the caller to answer.
+            questions.extend(str(q) for q in raw if str(q).strip())
     return questions
