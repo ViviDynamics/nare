@@ -93,7 +93,7 @@ exits 2.
 ### 4.1 Changes to the core
 
 All four are additive. None changes the event stream, the `result` line, the
-session file's shape, or an exit code, so contract version 2 stands.
+session file's shape, or an exit code, so contract version 1 stands.
 
 1. **`Approve` may be async.** `tools.Approve` becomes
    `Callable[[str, dict[str, Any]], bool | Awaitable[bool]]`. `dispatch()`
@@ -103,8 +103,9 @@ session file's shape, or an exit code, so contract version 2 stands.
 2. **`reopen(session, text)` and `save(session, path)` move into
    `session.py`.** `reopen` is the reset `cli._load_or_new` performs on
    resume today (append user text; reset `status` to `working` and clear
-   `questions`, `schema_retried`, `output`, `error`, `stop_reason`). `save`
-   is `cli._save`, the atomic owner-only write. The CLI calls both; the TUI
+   `questions`, `schema_retried`, `error`, `stop_reason`). `output` is kept:
+   an exhausted resume still reports its partial findings. `save` is
+   `cli._save`, the atomic owner-only write. The CLI calls both; the TUI
    uses both. One copy of each.
 3. **Run flags are shared.** The arguments `nare run` and `nare tui` have in
    common (provider, model, base-url, temperature, max-tokens, effort,
@@ -143,13 +144,15 @@ value comes from `Session` and `cost` events. There is no new accounting.
 
 Drawn from `session.messages`: user text; assistant text as Markdown;
 thinking dimmed and folded; each tool call as a one-line header with its
-result folded to its first few lines; `edit` and `write` calls with their
-diff; errors in red.
+result folded to its first few lines; errors in red. `write` shows the head
+of its content and `edit` a diff of `old` against `new`; the approval
+prompt (5.3) shows the full-file diff instead.
 
 While a turn is in flight, a live block below the transcript shows
-`progress` and `thinking` events as they stream, and a `running <tool>: ...`
-line per `tool_use` event. When the turn commits (`session.turns` changes),
-the live block is replaced by the rendered new messages.
+`progress` and `thinking` events as they stream. `tool_use` events arrive
+only after `step()` returns, so the live block shows streamed text and
+thinking only. When the turn commits (`session.turns` changes), the live
+block is replaced by the rendered new messages.
 
 ### 5.3 Approvals
 
@@ -268,7 +271,7 @@ the suite does.
 ## 9. Later
 
 - **Token-level attach.** A `--events FILE` flag on `nare run` that tees the
-  JSONL stream to a file the viewer tails. Additive under contract 2, but
+  JSONL stream to a file the viewer tails. Additive under contract 1, but
   Conductor and the benchmark runner would have to pass it.
 - **Session picker.** List recent session files in a directory.
 - **Killing `bash` on interrupt.** Section 5.4.
