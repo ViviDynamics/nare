@@ -52,6 +52,12 @@ class Watcher:
             self._stamp = None
             self.problem = f"waiting for {self.path}"
             return None
+        except OSError as exc:
+            # Permission, or a path through a regular file. Forget the stamp,
+            # so the problem clears once the file can be read again.
+            self._stamp = None
+            self.problem = f"{self.path}: {exc}"
+            return None
         stamp = (stat.st_mtime_ns, stat.st_size)
         if stamp == self._stamp:
             return None

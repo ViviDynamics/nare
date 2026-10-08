@@ -89,8 +89,8 @@ in the `output` event's detail, and included in the final `result` line.
 
 `nare tui` is the same loop for a person. Type a task, watch it stream, and
 approve each tool call: **y** allows, **n** or **Esc** denies, **a** allows
-that tool for the rest of the session. `edit` and `write` show a diff first.
-`read` and `ask` never prompt.
+that tool for as long as this `nare tui` runs (it is not saved to the
+session). `edit` and `write` show a diff first. `read` and `ask` never prompt.
 
     nare tui "add a docstring to foo() in bar.py" --root . --session s.json
 
@@ -101,8 +101,9 @@ command already running when you interrupt keeps running until it exits or
 times out.
 
 `nare tui` takes the same provider, model, budget, tool, root, MCP, session
-and resume flags as `nare run`, and not `--yes`, `--jsonl`, `--contract` or
-`--schema`.
+and resume flags as `nare run`, and not `--yes`, `--jsonl`, `--contract`,
+`--schema`, `--prompt-file` or `--stream`. An MCP server that writes to stderr
+can leave text on the screen until it is redrawn.
 
 To watch a run something else started, point it at the run's session file:
 

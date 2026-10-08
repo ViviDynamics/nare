@@ -102,3 +102,13 @@ def test_a_version_mismatch_stops_polling(tmp_path: Path) -> None:
     assert watcher.problem is not None and "contract 99" in watcher.problem
     write(path, dumps(new_session("go")))
     assert watcher.poll() is None  # permanent: shown once, never re-read
+
+
+def test_an_unreadable_path_is_a_problem_not_a_crash(tmp_path: Path) -> None:
+    (tmp_path / "out.json").write_text("{}")
+    path = tmp_path / "out.json" / "s.json"  # under a regular file
+    watcher = Watcher(path)
+    assert watcher.poll() is None
+    assert watcher.problem is not None
+    assert watcher.problem.startswith(f"{path}: ")
+    assert watcher.fatal is False

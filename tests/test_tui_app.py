@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import logging
 import sys
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
@@ -18,7 +19,7 @@ from nare.events import Event
 from nare.loop import INTERRUPTED
 from nare.session import Message, new_session, save
 from nare.transport import Delta, Reply, Transport
-from nare.tui.app import ApprovalScreen, AttachApp, TuiApp, prepare
+from nare.tui.app import ApprovalScreen, AttachApp, TuiApp, logs_as_notices, prepare
 
 
 async def until(pilot: Pilot[None], condition: Callable[[], bool]) -> None:
@@ -58,10 +59,11 @@ async def submit(pilot: Pilot[None], app: TuiApp, text: str) -> None:
 
 
 class Stalled:
-    """The first model call never returns; later ones answer from replies."""
+    """Model call number `stall` never returns; the others answer from replies."""
 
-    def __init__(self, *replies: Reply) -> None:
+    def __init__(self, *replies: Reply, stall: int = 1) -> None:
         self.replies = list(replies)
+        self.stall = stall
         self.calls = 0
 
     async def context_window(self) -> int | None:
@@ -69,7 +71,7 @@ class Stalled:
 
     async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
         self.calls += 1
-        if self.calls == 1:
+        if self.calls == self.stall:
             await asyncio.Event().wait()
         return self.replies.pop(0)
 
@@ -141,6 +143,20 @@ async def test_n_denies_and_the_run_continues(tmp_path: Path) -> None:
     assert not (tmp_path / "a.txt").exists()
 
 
+async def test_esc_in_the_approval_modal_denies(tmp_path: Path) -> None:
+    replies = [
+        tool_reply("write", {"path": "a.txt", "content": "hi\n"}),
+        text_reply("ok"),
+    ]
+    app = make(tmp_path, FakeProvider(replies), prompt="go")
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
+        await pilot.press("escape")
+        await until(pilot, lambda: app.run_state == "done")
+        assert "write was not approved" in shown(app)
+    assert not (tmp_path / "a.txt").exists()
+
+
 async def test_a_allows_the_tool_for_the_rest_of_the_process(tmp_path: Path) -> None:
     replies = [
         tool_reply("write", {"path": "a.txt", "content": "a"}, call_id="c1"),
@@ -192,6 +208,38 @@ async def test_esc_interrupts_a_model_call(tmp_path: Path) -> None:
         assert "second try" in shown(app)
 
 
+async def test_no_bash_note_when_a_later_interrupt_ran_nothing(tmp_path: Path) -> None:
+    transport = Stalled(
+        tool_reply("bash", {"command": "echo hi"}), text_reply("ok"), stall=2
+    )
+    app = make(tmp_path, transport, prompt="go")
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
+        await pilot.press("ctrl+c")
+        await until(pilot, lambda: app.run_state == "interrupted")
+        assert "may still be running" in text_of(app, "#status")
+        await submit(pilot, app, "go on")
+        await until(pilot, lambda: transport.calls == 2)
+        await pilot.press("escape")
+        await until(pilot, lambda: app.run_state == "interrupted")
+        # The interrupted bash result is still the last call in the session,
+        # but this interrupt stopped a model call: nothing ran.
+        assert "may still be running" not in text_of(app, "#status")
+
+
+async def test_a_second_interrupt_lets_the_first_finish(tmp_path: Path) -> None:
+    transport = Stalled()
+    app = make(tmp_path, transport, prompt="go")
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: transport.calls == 1)
+        assert app.check_action("interrupt", ()) is True
+        app.action_interrupt()
+        # Cancelled but still unwinding: another Esc must not cut that short.
+        assert app.worker is not None and app.worker.is_running
+        assert app.check_action("interrupt", ()) is False
+        await until(pilot, lambda: app.run_state == "interrupted")
+
+
 async def test_blocked_then_answer_then_done(tmp_path: Path) -> None:
     replies = [tool_reply("ask", {"questions": ["which file?"]}), text_reply("thanks")]
     app = make(tmp_path, FakeProvider(replies), prompt="fix it")
@@ -226,6 +274,29 @@ async def test_a_failed_save_is_a_warning_not_fatal(
     async with app.run_test() as pilot:
         await until(pilot, lambda: app.run_state == "done")
         assert "could not write" in text_of(app, "#status")
+
+
+async def test_a_log_warning_is_a_notification_not_stderr(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # What cli.main's basicConfig gives nare run.
+    stderr = logging.StreamHandler(sys.stderr)
+    logging.getLogger().addHandler(stderr)
+    try:
+        app = make(tmp_path, FakeProvider([]))
+        with logs_as_notices(app):
+            async with app.run_test() as pilot:
+                logging.getLogger("nare.transport").warning("discovery [failed]")
+                await until(
+                    pilot,
+                    lambda: any(
+                        n.message == "discovery [failed]" for n in app._notifications
+                    ),
+                )
+        assert stderr in logging.getLogger().handlers  # put back for nare run
+    finally:
+        logging.getLogger().removeHandler(stderr)
+    assert "discovery" not in capsys.readouterr().err
 
 
 def test_a_notice_gets_its_own_line_in_the_live_area(tmp_path: Path) -> None:
@@ -282,6 +353,19 @@ def test_an_unreadable_resume_exits_two(
 ) -> None:
     assert main(["tui", "--resume", str(tmp_path / "missing.json")]) == 2
     assert capsys.readouterr().err.startswith("nare: ")
+
+
+def test_a_resume_with_a_bad_saved_budget_exits_two(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    session = new_session("go")
+    session.budget["tokens"] = -5
+    path = tmp_path / "old.json"
+    save(session, path)
+    argv = ["tui", "--model", "fake", "--resume", str(path)]
+    assert main(argv, transport=FakeProvider([])) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("nare: ") and "budget_tokens" in err
 
 
 async def test_attach_waits_then_draws(tmp_path: Path) -> None:

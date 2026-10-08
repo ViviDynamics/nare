@@ -10,8 +10,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import logging
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -30,7 +32,7 @@ from nare.accounting import Prices
 from nare.cli import policy_from_args, transport_from_args, validate_run_args
 from nare.contract import NEVER_STARTED
 from nare.events import Event
-from nare.loop import INTERRUPTED, run
+from nare.loop import INTERRUPTED, configure_budgets, run
 from nare.session import Session, Usage, loads, new_session, reopen, save
 from nare.tools import Policy
 from nare.transport import Transport
@@ -172,8 +174,14 @@ class TuiApp(App[None]):
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         # Off when nothing runs, so Ctrl-C still copies in the input box.
+        # A cancelled worker still unwinds (MCP, stream cleanup): a second
+        # cancel would cut that short.
         if action == "interrupt":
-            return self.worker is not None and self.worker.is_running
+            return (
+                self.worker is not None
+                and self.worker.is_running
+                and not self.worker.is_cancelled
+            )
         return True
 
     def action_interrupt(self) -> None:
@@ -184,7 +192,8 @@ class TuiApp(App[None]):
         # Cancel and wait while the widgets still exist, so the run's own
         # `finally` can draw and save; main() saves once more after exit.
         if self.worker is not None and self.worker.is_running:
-            self.worker.cancel()
+            if not self.worker.is_cancelled:
+                self.worker.cancel()
             with contextlib.suppress(WorkerCancelled):
                 await self.worker.wait()
         self.exit()
@@ -231,7 +240,9 @@ class TuiApp(App[None]):
                     self._save()
             self._set_state(session.status)
         except asyncio.CancelledError:
-            if _interrupted_bash(session):
+            # Only a turn this drive committed: after a follow-up, an older
+            # interrupted bash is still the last call in the session.
+            if session.turns != self.turns_from and _interrupted_bash(session):
                 # ponytail: a bash command already in its worker thread runs
                 # on until it exits or times out; asyncio.to_thread cannot stop
                 # it. Running bash in its own process group and killing the
@@ -369,13 +380,43 @@ class AttachApp(App[None]):
         self.query_one("#status", Static).update(status)
 
 
+class _Notices(logging.Handler):
+    def __init__(self, app: App[None]) -> None:
+        super().__init__()
+        self.app = app
+
+    def emit(self, record: logging.LogRecord) -> None:
+        # notify() is thread-safe, so a record from asyncio.to_thread is fine.
+        self.app.notify(
+            self.format(record),
+            severity="error" if record.levelno >= logging.ERROR else "warning",
+            markup=False,
+        )
+
+
+@contextlib.contextmanager
+def logs_as_notices(app: App[None]) -> Iterator[None]:
+    """Textual draws on the real stderr, and a handler already holding that
+    stream (nare run's basicConfig) would paint over the screen. Records
+    become notifications instead, and the old handlers come back after.
+    """
+    root = logging.getLogger()
+    saved, root.handlers = root.handlers, [_Notices(app)]
+    try:
+        yield
+    finally:
+        root.handlers = saved
+
+
 def prepare(args: argparse.Namespace, transport: Transport | None = None) -> TuiApp:
     """Everything that can fail at startup, before Textual takes the screen."""
     prices = validate_run_args(args)
     policy = policy_from_args(args)
-    session = (
-        loads(Path(args.resume).read_text(encoding="utf-8")) if args.resume else None
-    )
+    session = None
+    if args.resume:
+        session = loads(Path(args.resume).read_text(encoding="utf-8"))
+        # As in nare run: a bad saved budget exits 2, not in the worker.
+        configure_budgets(session, args.budget_tokens, args.budget_usd)
     if transport is None:
         args.stream = True  # a person watches the turn arrive
         transport = transport_from_args(args)
@@ -397,7 +438,8 @@ def main(args: argparse.Namespace, transport: Transport | None = None) -> int:
         # A missing or malformed file is a state the view shows, never a
         # startup failure.
         attach_app = AttachApp(Path(args.attach))
-        attach_app.run()
+        with logs_as_notices(attach_app):
+            attach_app.run()
         return attach_app.return_code or 0
     try:
         app = prepare(args, transport)
@@ -405,7 +447,8 @@ def main(args: argparse.Namespace, transport: Transport | None = None) -> int:
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED
     try:
-        app.run()
+        with logs_as_notices(app):
+            app.run()
     finally:
         # Also after a crash in the TUI's own code: the transcript is kept.
         if app.session is not None and args.session:

@@ -136,6 +136,22 @@ def test_preview_of_write_diffs_an_existing_file(tmp_path: Path) -> None:
     assert "-old" in text and "+new" in text
 
 
+@pytest.mark.parametrize(
+    "before, after",
+    [("one\r\ntwo\r\n", "one\ntwo\n"), ("one\ntwo\n", "one\ntwo")],
+)
+def test_preview_of_write_names_a_line_ending_change(
+    tmp_path: Path, before: str, after: str
+) -> None:
+    # The line diff is empty, but the write still rewrites the file.
+    (tmp_path / "a.txt").write_bytes(before.encode())
+    text, _ = approval_text(
+        "write", {"path": "a.txt", "content": after}, Policy(root=tmp_path)
+    )
+    assert "no change" not in text
+    assert "line endings or trailing newline" in text
+
+
 def test_preview_of_write_names_a_new_file(tmp_path: Path) -> None:
     text, lexer = approval_text(
         "write", {"path": "n.txt", "content": "hello\n"}, Policy(root=tmp_path)
@@ -166,6 +182,7 @@ def test_preview_of_another_tool_is_indented_json() -> None:
         ("edit", {"path": "../outside.py", "old": "a", "new": "b"}),
         ("write", {"path": "../outside.py", "content": "x"}),
         ("write", {"content": "no path"}),
+        ("write", {"path": "bin.dat", "content": "x"}),  # not UTF-8
     ],
 )
 def test_preview_falls_back_to_raw_arguments(

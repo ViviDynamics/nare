@@ -140,8 +140,13 @@ def approval_text(tool: str, args: dict[str, Any], policy: Policy) -> tuple[str,
             content = str(args["content"])
             if not path.exists():
                 return f"new file {path}\n\n{content}", "text"
-            before = path.read_text(encoding="utf-8")
-            return unified(before, content, str(path)) or f"{path}: no change", "diff"
+            # Bytes, not read_text: universal newlines would hide a CRLF to
+            # LF rewrite, and splitlines() a dropped final newline.
+            before = path.read_bytes().decode("utf-8")
+            if before == content:
+                return f"{path}: no change", "diff"
+            diff = unified(before, content, str(path))
+            return diff or f"{path}: line endings or trailing newline change", "diff"
         before = path.read_text(encoding="utf-8")
         old = str(args["old"])
         if not old or before.count(old) != 1:
