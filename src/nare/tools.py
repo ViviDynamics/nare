@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import os
 import signal
 import subprocess
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -282,7 +283,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
 ]
 
-Approve = Callable[[str, dict[str, Any]], bool]
+# Async so a person can answer: the TUI's approver awaits a key press.
+Approve = Callable[[str, dict[str, Any]], bool | Awaitable[bool]]
 
 
 def approve_all(tool: str, args: dict[str, Any]) -> bool:
@@ -392,7 +394,10 @@ async def dispatch(
         # approve() is inside the try on purpose: a real approval seam prompts
         # a human or calls a service, so it can raise. Escaping here would
         # leave the transcript with a tool_use and no tool_result.
-        if not approve(call.name, call.args):
+        approved = approve(call.name, call.args)
+        if inspect.isawaitable(approved):
+            approved = await approved
+        if not approved:
             return tool_result(call.id, f"{call.name} was not approved", is_error=True)
         if call.name in policy.external:
             text, failed = await policy.external[call.name].call(call.args)

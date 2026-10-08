@@ -1,8 +1,10 @@
+import asyncio
 import os
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -307,3 +309,31 @@ def test_a_missing_edit_target_names_the_parameter_the_model_sees(
     target.write_text("hello")
     with pytest.raises(ValueError, match=r"\bold not found\b"):
         edit_file(str(target), "nope", "x")
+
+
+async def test_an_async_approver_is_awaited(tmp_path: Path) -> None:
+    async def allow(tool: str, args: dict[str, Any]) -> bool:
+        await asyncio.sleep(0)
+        return True
+
+    target = tmp_path / "a.txt"
+    call = ToolCall(id="c1", name="write", args={"path": str(target), "content": "hi"})
+    result = await dispatch(call, Policy(), allow)
+    assert result["is_error"] is False
+    assert target.read_text() == "hi"
+
+
+async def test_an_async_denial_refuses_the_call(tmp_path: Path) -> None:
+    async def deny(tool: str, args: dict[str, Any]) -> bool:
+        return False
+
+    target = tmp_path / "a.txt"
+    call = ToolCall(id="c1", name="write", args={"path": str(target), "content": "hi"})
+    result = await dispatch(call, Policy(), deny)
+    assert result == {
+        "type": "tool_result",
+        "tool_use_id": "c1",
+        "content": "write was not approved",
+        "is_error": True,
+    }
+    assert not target.exists()
