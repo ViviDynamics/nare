@@ -1,3 +1,6 @@
+from dataclasses import replace
+from pathlib import Path
+
 import pytest
 
 from nare.events import Event
@@ -9,6 +12,8 @@ from nare.session import (
     dumps,
     loads,
     new_session,
+    reopen,
+    save,
 )
 
 
@@ -109,3 +114,57 @@ def test_dumps_redacts_the_transcript() -> None:
     assert "sk-ant-" not in text
     assert "[redacted]" in text
     assert loads(text).status == "working"
+
+
+def test_reopen_appends_text_and_resets_per_run_state() -> None:
+    # Built with replace(), not assigned: an assignment narrows the field's
+    # type, and mypy would call the status check below impossible.
+    s = replace(
+        new_session("go"),
+        status="blocked",
+        questions=["which?"],
+        schema_retried=True,
+        error="x",
+        stop_reason="tool_use",
+        output={"found": 1},
+    )
+    s.messages.append(Message("assistant", [{"type": "text", "text": "which?"}]))
+    reopen(s, "bar.py")
+    assert s.status == "working"
+    assert s.questions == []
+    assert s.schema_retried is False
+    assert s.error is None
+    assert s.stop_reason is None
+    # Partial findings survive a resume, as they did in cli._load_or_new.
+    assert s.output == {"found": 1}
+    assert s.messages[-1] == Message("user", [{"type": "text", "text": "bar.py"}])
+
+
+def test_reopen_answers_calls_left_without_a_result() -> None:
+    # Vendors reject a call with no result, so a follow-up on a file that
+    # ends mid-dispatch killed every later turn.
+    s = new_session("go")
+    s.messages.append(
+        Message("assistant", [{"type": "tool_use", "id": "c1", "name": "bash"}])
+    )
+    reopen(s, "continue")
+    result, text = s.messages[-1].content
+    assert result["type"] == "tool_result" and result["tool_use_id"] == "c1"
+    assert result["is_error"] is True
+    assert text == {"type": "text", "text": "continue"}
+
+
+def test_reopen_without_text_leaves_the_transcript() -> None:
+    s = replace(new_session("go"), status="error")
+    reopen(s)
+    assert s.status == "working"
+    assert len(s.messages) == 1
+
+
+def test_save_is_atomic_and_owner_only(tmp_path: Path) -> None:
+    s = new_session("go")
+    path = tmp_path / "s.json"
+    save(s, path)
+    assert loads(path.read_text()) == s
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert [f.name for f in tmp_path.iterdir()] == ["s.json"]

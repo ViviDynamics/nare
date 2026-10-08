@@ -156,6 +156,10 @@ async def connect(
         tools: dict[str, ExternalTool] = {}
         for alias, config in servers.items():
             if config.command is not None:
+                # ponytail: no errlog, so a server's stderr goes to fd 2 and
+                # can paint over `nare tui` until it redraws. An errlog
+                # parameter threaded through connect() and run(), which the
+                # TUI points at a file, is the upgrade when a server is chatty.
                 streams = await stack.enter_async_context(
                     stdio_client(
                         StdioServerParameters(
