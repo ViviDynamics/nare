@@ -4,10 +4,11 @@ what keeps the seam honestly duck-typed.
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from nare.session import Message, Usage
-from nare.transport import Reply, StopReason, ToolCall, Transport
+from nare.transport import Delta, Reply, StopReason, ToolCall, Transport
 
 
 class FakeProvider:
@@ -25,6 +26,18 @@ class FakeProvider:
         if not self._replies:
             raise AssertionError("FakeProvider ran out of scripted replies")
         return self._replies.pop(0)
+
+
+class StreamingProvider(FakeProvider):
+    """Streams a word before each scripted reply, as a streaming backend does."""
+
+    streaming = True
+
+    async def stream_turn(
+        self, messages: list[Message], tools: list[dict[str, Any]]
+    ) -> AsyncGenerator[Delta | Reply, None]:
+        yield Delta("progress", "on it ")
+        yield await self.turn(messages, tools)
 
 
 # The whole cost of keeping the double and the protocol honest: mypy fails here

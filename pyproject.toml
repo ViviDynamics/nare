@@ -16,11 +16,16 @@ dependencies = [
     "pillow>=12,<13",
 ]
 
+[project.optional-dependencies]
+# The terminal UI. Optional so the base install, the container image and the
+# bench images stay free of it.
+tui = ["textual>=8.2,<9"]
+
 [project.scripts]
 nare = "nare.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6", "mypy>=1.11"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6", "mypy>=1.11", "textual>=8.2,<9"]
 
 # The version comes from the git tag the release workflow minted, so a wheel's
 # metadata cannot drift from the release it was built at. A caller pins that

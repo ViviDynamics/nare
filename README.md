@@ -25,6 +25,10 @@ records what produced a result:
 `nare`, and so does the session file. A caller records the version that
 produced a result rather than whatever main was that day.
 
+For the terminal UI, install the extra:
+
+    uv tool install 'nare[tui]'
+
 ## Providers
 
 Two rails. `--provider anthropic` (the default) speaks Anthropic's API and
@@ -80,6 +84,32 @@ once, and a second violation ends the run with `stop_reason=schema_violation`
 without promoting the invalid object. Any earlier schema-valid output remains
 available. A validating answer is parsed onto the session, carried
 in the `output` event's detail, and included in the final `result` line.
+
+## Terminal UI
+
+`nare tui` is the same loop for a person. Type a task, watch it stream, and
+approve each tool call: **y** allows, **n** or **Esc** denies, **a** allows
+that tool for as long as this `nare tui` runs (it is not saved to the
+session). `edit` and `write` show a diff first. `read` and `ask` never prompt.
+
+    nare tui "add a docstring to foo() in bar.py" --root . --session s.json
+
+**Esc** or **Ctrl-C** stops the current turn without losing the session; type
+a follow-up to keep going. When nare asks a question, the answer is the next
+thing you type. **Ctrl-Q** quits, saving to `--session` if given. An
+interrupt or a quit kills a `bash` command that is still running.
+
+`nare tui` takes the same provider, model, budget, tool, root, MCP, session
+and resume flags as `nare run`, and not `--yes`, `--jsonl`, `--contract`,
+`--schema`, `--prompt-file` or `--stream`. An MCP server that writes to stderr
+can leave text on the screen until it is redrawn.
+
+To watch a run something else started, point it at the run's session file:
+
+    nare tui --attach path/to/session.json
+
+The view is read-only and updates once per turn. It shows how long ago the
+file was written, since `working` in a file can also mean the process died.
 
 ## Session budgets, cost and context
 

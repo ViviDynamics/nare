@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.util
 import json
 import logging
 import os
 import sys
-import tempfile
 from collections.abc import AsyncIterator
 from dataclasses import asdict
 from pathlib import Path
@@ -32,7 +32,7 @@ from nare.loop import (
 )
 from nare.mcp import parse_servers
 from nare.schema import UnsupportedSchema, check_supported
-from nare.session import Session, append_user_text, dumps, loads, new_session
+from nare.session import Session, loads, new_session, reopen, save, unanswered
 from nare.tools import TOOLS, Policy, approve_all
 from nare.transport import Transport, make_transport
 
@@ -70,64 +70,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--prompt-file", metavar="PATH", help="read the UTF-8 task file"
     )
     run_parser.add_argument(
-        "--provider",
-        choices=["anthropic", "openai"],
-        default=os.environ.get("NARE_PROVIDER", "anthropic"),
-        help="model provider: anthropic, or openai for anything speaking Chat "
-        "Completions, including a proxy or a local server via --base-url "
-        "(env: NARE_PROVIDER)",
-    )
-    run_parser.add_argument(
-        "--model",
-        default=os.environ.get("NARE_MODEL", "claude-sonnet-5"),
-        help="model name (env: NARE_MODEL)",
-    )
-    run_parser.add_argument(
-        "--base-url",
-        default=os.environ.get("NARE_BASE_URL"),
-        help="override the vendor endpoint (env: NARE_BASE_URL)",
-    )
-    run_parser.add_argument(
-        "--temperature",
-        type=float,
-        help="sampling temperature; not accepted by the anthropic provider",
-    )
-    run_parser.add_argument(
-        "--max-tokens", type=int, help="output token cap (default 8192)"
-    )
-    run_parser.add_argument(
-        "--context-window",
-        type=int,
-        default=os.environ.get("NARE_CONTEXT_WINDOW"),
-        help="context window for elision (env: NARE_CONTEXT_WINDOW; "
-        "else backend or 32000)",
-    )
-    run_parser.add_argument(
-        "--budget-tokens",
-        type=int,
-        default=os.environ.get("NARE_BUDGET_TOKENS"),
-        help="session token budget, including input, output and cache "
-        "(env: NARE_BUDGET_TOKENS)",
-    )
-    run_parser.add_argument(
-        "--budget-usd",
-        type=float,
-        default=os.environ.get("NARE_BUDGET_USD"),
-        help="cumulative session dollar budget (env: NARE_BUDGET_USD)",
-    )
-    run_parser.add_argument(
-        "--effort",
-        choices=["low", "medium", "high"],
-        help="reasoning effort",
-    )
-    run_parser.add_argument(
         "--stream",
         action="store_true",
         default=os.environ.get("NARE_STREAM", "").strip().lower()
         in ("1", "true", "yes"),
         help="stream text/reasoning while each model turn runs (env: NARE_STREAM)",
     )
-    run_parser.add_argument("--system", help="system prompt / persona text")
     run_parser.add_argument(
         "--jsonl", action="store_true", help="emit typed JSONL on stdout"
     )
@@ -154,14 +102,85 @@ def build_parser() -> argparse.ArgumentParser:
             "rather than validating it only in part"
         ),
     )
-    run_parser.add_argument(
+    add_run_flags(run_parser)
+
+    tui_parser = sub.add_parser(
+        "tui", help="work with nare in a terminal UI, or watch a run with --attach"
+    )
+    tui_parser.add_argument(
+        "prompt", nargs="?", help="the task to start with; without one, type it"
+    )
+    tui_parser.add_argument(
+        "--attach",
+        metavar="PATH",
+        help="watch the session file at PATH, read-only; other flags are ignored",
+    )
+    add_run_flags(tui_parser)
+    return parser
+
+
+def add_run_flags(parser: argparse.ArgumentParser) -> None:
+    """The flags nare run and nare tui share, so the two cannot drift."""
+    parser.add_argument(
+        "--provider",
+        choices=["anthropic", "openai"],
+        default=os.environ.get("NARE_PROVIDER", "anthropic"),
+        help="model provider: anthropic, or openai for anything speaking Chat "
+        "Completions, including a proxy or a local server via --base-url "
+        "(env: NARE_PROVIDER)",
+    )
+    parser.add_argument(
+        "--model",
+        default=os.environ.get("NARE_MODEL", "claude-sonnet-5"),
+        help="model name (env: NARE_MODEL)",
+    )
+    parser.add_argument(
+        "--base-url",
+        default=os.environ.get("NARE_BASE_URL"),
+        help="override the vendor endpoint (env: NARE_BASE_URL)",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        help="sampling temperature; not accepted by the anthropic provider",
+    )
+    parser.add_argument(
+        "--max-tokens", type=int, help="output token cap (default 8192)"
+    )
+    parser.add_argument(
+        "--context-window",
+        type=int,
+        default=os.environ.get("NARE_CONTEXT_WINDOW"),
+        help="context window for elision (env: NARE_CONTEXT_WINDOW; "
+        "else backend or 32000)",
+    )
+    parser.add_argument(
+        "--budget-tokens",
+        type=int,
+        default=os.environ.get("NARE_BUDGET_TOKENS"),
+        help="session token budget, including input, output and cache "
+        "(env: NARE_BUDGET_TOKENS)",
+    )
+    parser.add_argument(
+        "--budget-usd",
+        type=float,
+        default=os.environ.get("NARE_BUDGET_USD"),
+        help="cumulative session dollar budget (env: NARE_BUDGET_USD)",
+    )
+    parser.add_argument(
+        "--effort",
+        choices=["low", "medium", "high"],
+        help="reasoning effort",
+    )
+    parser.add_argument("--system", help="system prompt / persona text")
+    parser.add_argument(
         "--tools",
         help=(
             "comma-separated tools this run may call "
             f"(default all: {','.join(sorted(TOOLS))}; 'none' allows no tool)"
         ),
     )
-    run_parser.add_argument(
+    parser.add_argument(
         "--root",
         help=(
             "confine read, write and edit to this directory, and run bash in "
@@ -169,27 +188,26 @@ def build_parser() -> argparse.ArgumentParser:
             "can still walk upward, and confining it is the sandbox's job"
         ),
     )
-    run_parser.add_argument(
+    parser.add_argument(
         "--resume",
         help="continue the session at this path, writing it back unless "
         "--session says otherwise",
     )
-    run_parser.add_argument(
+    parser.add_argument(
         "--mcp-config", help="JSON file of named MCP stdio or Streamable HTTP servers"
     )
-    run_parser.add_argument(
+    parser.add_argument(
         "--image-input",
         action="store_true",
         help="declare that the selected model accepts PNG/JPEG image input",
     )
-    run_parser.add_argument("--session", help="write the session to this path")
-    run_parser.add_argument(
+    parser.add_argument("--session", help="write the session to this path")
+    parser.add_argument(
         "--max-turns",
         type=int,
         default=MAX_TURNS_DEFAULT,
         help=f"stop after this many turns (default {MAX_TURNS_DEFAULT})",
     )
-    return parser
 
 
 def transport_from_args(args: argparse.Namespace) -> Transport:
@@ -241,20 +259,34 @@ def policy_from_args(args: argparse.Namespace) -> Policy:
     return Policy(tools=tools, root=root, pending=unresolved_names)
 
 
+def validate_run_args(args: argparse.Namespace) -> Prices | None:
+    """The startup checks nare run and nare tui share. Raises ValueError or
+    OSError, which each caller turns into exit 2 before anything starts.
+    """
+    # A resume with nowhere to write back silently throws the run away and
+    # replays the stale prefix next time. Resuming a file means updating it.
+    if args.resume and not args.session:
+        args.session = args.resume
+    if args.budget_tokens is not None and args.budget_tokens <= 0:
+        raise ValueError("--budget-tokens must be a positive integer")
+    if args.context_window is not None and args.context_window <= 0:
+        raise ValueError("--context-window must be a positive integer")
+    if args.budget_usd is not None:
+        finite_number(args.budget_usd, "--budget-usd")
+    args.mcp_servers = (
+        parse_servers(json.loads(Path(args.mcp_config).read_text(encoding="utf-8")))
+        if args.mcp_config
+        else {}
+    )
+    return prices_from_env()
+
+
 def _load_or_new(args: argparse.Namespace) -> Session:
     if not args.resume:
         return new_session(args.prompt)
     session = loads(Path(args.resume).read_text(encoding="utf-8"))
-    if args.prompt:
-        append_user_text(session, args.prompt)
     # Resuming is how conductor's relay_feedback works: reopen and keep going.
-    session.status = "working"
-    session.questions = []
-    # Per-run state, like the budget in run(): a resume that inherited the
-    # spent correction round would end on its first imperfect answer.
-    session.schema_retried = False
-    session.error = None
-    session.stop_reason = None
+    reopen(session, args.prompt)
     return session
 
 
@@ -292,30 +324,6 @@ def _emit_result(session: Session, jsonl: bool) -> None:
             f"({session.usage.input} in / {session.usage.output} out)",
             flush=True,
         )
-
-
-def _save(session: Session, path: str) -> None:
-    """Write the session atomically, readable only by its owner.
-
-    NamedTemporaryFile has mkstemp semantics: mode 0600 and a unique name. The
-    mode matters because the transcript holds whatever the tools read, and the
-    file lands in the workdir, which is a git checkout. The unique name matters
-    because a fixed `.tmp` collides when two runs share one session path.
-
-    The rename is what survives a kill: conductor SIGTERMs a run and then
-    resumes the same path, and a plain write truncates before it writes, so a
-    signal in that window leaves a partial file and no backup.
-    """
-    directory = Path(path).parent
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=directory, delete=False
-    ) as handle:
-        handle.write(dumps(session))
-    try:
-        os.replace(handle.name, path)
-    except OSError:
-        os.unlink(handle.name)
-        raise
 
 
 async def _pending_events(session: Session) -> AsyncIterator[Event]:
@@ -357,23 +365,28 @@ async def _execute(
             # Saved per turn, not once at the end. SIGTERM's default handler
             # exits without unwinding, so `finally` never runs and a run
             # persisted only at the end is not resumable after a kill --
-            # which is how conductor ends a slow run. run() drains events
-            # only after step() returns, so the first event of a turn means
-            # that turn is already committed to the session.
-            if args.session and session.turns != saved_turns:
+            # which is how conductor ends a slow run. A streamed turn yields
+            # events after step() commits its calls and before they have
+            # results; a file saved then is one vendors reject on resume, so
+            # the save waits for the results.
+            if (
+                args.session
+                and session.turns != saved_turns
+                and not unanswered(session.messages)
+            ):
                 # Advanced before the attempt, not after: a turn yields several
                 # events, and a failure that left this behind would retry --
                 # and log -- once per event rather than once per turn.
                 saved_turns = session.turns
                 try:
-                    _save(session, args.session)
+                    save(session, args.session)
                 except OSError as exc:
                     # Transient here: only the final write decides the run.
                     log.warning("could not write --session %s: %s", args.session, exc)
     finally:
         if args.session:
             try:
-                _save(session, args.session)
+                save(session, args.session)
             except OSError as exc:
                 # Not just a non-zero exit: conductor derives everything from
                 # the four-value status, so a `done` result line beside exit 1
@@ -418,6 +431,17 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     if args.command == "redact":
         return _redact_stdin()
 
+    if args.command == "tui":
+        if importlib.util.find_spec("textual") is None:
+            print(
+                "nare tui needs the tui extra: uv tool install 'nare[tui]'",
+                file=sys.stderr,
+            )
+            return NEVER_STARTED
+        from nare.tui.app import main as tui_main
+
+        return tui_main(args, transport=transport)
+
     # Everything below exits 2 and emits nothing on stdout: the result line
     # implies a session existed, so a run that never started does not emit one.
     if args.contract is not None and args.contract != CONTRACT_VERSION:
@@ -438,18 +462,9 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     if args.prompt is None and args.prompt_file is None and not args.resume:
         print("nare run needs a prompt, or --resume PATH", file=sys.stderr)
         return NEVER_STARTED
-    # A resume with nowhere to write back silently throws the run away and
-    # replays the stale prefix next time. Resuming a file means updating it.
-    if args.resume and not args.session:
-        args.session = args.resume
 
     try:
-        if args.budget_tokens is not None and args.budget_tokens <= 0:
-            raise ValueError("--budget-tokens must be a positive integer")
-        if args.context_window is not None and args.context_window <= 0:
-            raise ValueError("--context-window must be a positive integer")
-        if args.budget_usd is not None:
-            finite_number(args.budget_usd, "--budget-usd")
+        prices = validate_run_args(args)
         if args.prompt_file is not None:
             try:
                 args.prompt = Path(args.prompt_file).read_bytes().decode("utf-8")
@@ -460,12 +475,6 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
                 args.prompt = sys.stdin.buffer.read().decode("utf-8")
             except (OSError, UnicodeError) as exc:
                 raise ValueError(f"stdin (-): {exc}") from exc
-        prices = prices_from_env()
-        args.mcp_servers = (
-            parse_servers(json.loads(Path(args.mcp_config).read_text(encoding="utf-8")))
-            if args.mcp_config
-            else {}
-        )
         policy = policy_from_args(args)
         schema = schema_from_args(args)
         session = _load_or_new(args)
