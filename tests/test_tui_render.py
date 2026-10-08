@@ -1,0 +1,212 @@
+import io
+from pathlib import Path
+from typing import Any
+
+import pytest
+from rich.console import Console, RenderableType
+
+from nare.session import Message, Usage, new_session
+from nare.tools import Policy
+from nare.tui.render import (
+    Block,
+    approval_text,
+    attach_status,
+    render_messages,
+    render_outcome,
+    settled,
+    status_line,
+    unified,
+)
+
+
+def plain(blocks: list[Block]) -> str:
+    console = Console(width=100, file=io.StringIO(), record=True)
+    for block in blocks:
+        if block.title is not None:
+            console.print(block.title, markup=False)
+        content: RenderableType = block.content
+        console.print(content, markup=False)
+    return console.export_text()
+
+
+def call(name: str, args: dict[str, Any], call_id: str = "c1") -> Message:
+    return Message(
+        "assistant", [{"type": "tool_use", "id": call_id, "name": name, "input": args}]
+    )
+
+
+def answer(text: str, *, call_id: str = "c1", error: bool = False) -> Message:
+    return Message(
+        "user",
+        [
+            {
+                "type": "tool_result",
+                "tool_use_id": call_id,
+                "content": text,
+                "is_error": error,
+            }
+        ],
+    )
+
+
+def test_settled_waits_for_unanswered_calls() -> None:
+    messages = new_session("go").messages + [call("bash", {"command": "ls"})]
+    # nare run --stream saves here: the call is committed, its result is not.
+    assert settled(messages) == 1
+    messages.append(answer("exit 0"))
+    assert settled(messages) == 3
+    messages.append(Message("assistant", [{"type": "text", "text": "done"}]))
+    assert settled(messages) == 4
+
+
+def test_user_text_assistant_markdown_and_folded_thinking() -> None:
+    messages = [
+        Message("user", [{"type": "text", "text": "fix [redacted] bug"}]),
+        Message(
+            "assistant",
+            [
+                {"type": "thinking", "thinking": "look at foo"},
+                {"type": "text", "text": "**Fixed** it"},
+            ],
+        ),
+    ]
+    blocks = render_messages(messages, 0, 2)
+    assert [b.title for b in blocks] == [None, "thinking", None]
+    text = plain(blocks)
+    assert "> fix [redacted] bug" in text
+    assert "look at foo" in text
+    assert "Fixed it" in text
+
+
+def test_a_tool_call_shows_its_folded_result() -> None:
+    long = "\n".join(f"line {n}" for n in range(12))
+    messages = [call("bash", {"command": "seq 12"}), answer(long)]
+    text = plain(render_messages(messages, 0, 2))
+    assert "bash seq 12" in text
+    assert "line 4" in text
+    assert "line 5" not in text
+    assert "7 more lines" in text
+
+
+def test_a_tool_result_only_user_message_draws_nothing_itself() -> None:
+    messages = [call("bash", {"command": "true"}), answer("exit 0")]
+    assert len(render_messages(messages, 1, 2)) == 0
+
+
+def test_an_error_result_is_shown() -> None:
+    messages = [call("write", {"path": "a", "content": "x"}), answer(
+        "write was not approved", error=True
+    )]  # fmt: skip
+    assert "write was not approved" in plain(render_messages(messages, 0, 2))
+
+
+def test_edit_in_the_transcript_is_a_diff_of_old_and_new() -> None:
+    messages = [
+        call("edit", {"path": "bar.py", "old": "x = 1", "new": "x = 2"}),
+        answer("edited bar.py"),
+    ]
+    text = plain(render_messages(messages, 0, 2))
+    assert "-x = 1" in text
+    assert "+x = 2" in text
+
+
+def test_unified_has_headers_and_no_glued_lines() -> None:
+    diff = unified("a\nb", "a\nc", "f.py")
+    assert diff.splitlines() == [
+        "--- a/f.py", "+++ b/f.py", "@@ -1,2 +1,2 @@", " a", "-b", "+c",
+    ]  # fmt: skip
+
+
+def test_preview_of_edit_is_a_whole_file_diff(tmp_path: Path) -> None:
+    (tmp_path / "bar.py").write_text("one\nx = 1\nthree\n")
+    text, lexer = approval_text(
+        "edit", {"path": "bar.py", "old": "x = 1", "new": "x = 2"},
+        Policy(root=tmp_path),
+    )  # fmt: skip
+    assert lexer == "diff"
+    assert "-x = 1" in text and "+x = 2" in text and " one" in text
+
+
+def test_preview_of_write_diffs_an_existing_file(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("old\n")
+    text, lexer = approval_text(
+        "write", {"path": "a.txt", "content": "new\n"}, Policy(root=tmp_path)
+    )
+    assert lexer == "diff"
+    assert "-old" in text and "+new" in text
+
+
+def test_preview_of_write_names_a_new_file(tmp_path: Path) -> None:
+    text, lexer = approval_text(
+        "write", {"path": "n.txt", "content": "hello\n"}, Policy(root=tmp_path)
+    )
+    assert text.startswith("new file ")
+    assert "hello" in text
+
+
+def test_preview_of_bash_is_the_command() -> None:
+    assert approval_text("bash", {"command": "ls -la"}, Policy()) == (
+        "ls -la",
+        "bash",
+    )
+
+
+def test_preview_of_another_tool_is_indented_json() -> None:
+    text, lexer = approval_text("srv__q", {"q": 1}, Policy())
+    assert (text, lexer) == ('{\n  "q": 1\n}', "json")
+
+
+@pytest.mark.parametrize(
+    "tool, args",
+    [
+        ("edit", {"path": "bar.py", "old": "missing", "new": "y"}),
+        ("edit", {"path": "bar.py", "old": "x", "new": "y"}),  # appears twice
+        ("edit", {"path": "bar.py", "old": "", "new": "y"}),
+        ("edit", {"path": "bin.dat", "old": "a", "new": "b"}),  # not UTF-8
+        ("edit", {"path": "../outside.py", "old": "a", "new": "b"}),
+        ("write", {"path": "../outside.py", "content": "x"}),
+        ("write", {"content": "no path"}),
+    ],
+)
+def test_preview_falls_back_to_raw_arguments(
+    tmp_path: Path, tool: str, args: dict[str, Any]
+) -> None:
+    (tmp_path / "bar.py").write_text("x\nx\n")
+    (tmp_path / "bin.dat").write_bytes(b"\xff\xfe\x00a")
+    text, lexer = approval_text(tool, args, Policy(root=tmp_path))
+    assert lexer == "json"
+    assert text.startswith("{")
+
+
+def test_status_line() -> None:
+    usage = Usage(input=40_000, output=1_200, cost=0.31)
+    line = status_line("claude-sonnet-5", 7, 50, usage, 2.0, "working")
+    assert line.plain == (
+        "claude-sonnet-5 · turn 7/50 · 41.2k tok · $0.31 / $2.00 · working"
+    )
+    unpriced = Usage(input=10, output=5, cost=None)
+    line = status_line("m", 1, 50, unpriced, None, "done", note="could not write s")
+    assert line.plain == (
+        "m · turn 1/50 · 15 tok · cost unknown · done · could not write s"
+    )
+
+
+def test_outcome_shows_questions_or_the_error() -> None:
+    s = new_session("go")
+    assert render_outcome(s).plain == ""
+    s.status = "blocked"
+    s.questions = ["which file?", "which test?"]
+    assert "1. which file?" in render_outcome(s).plain
+    assert "2. which test?" in render_outcome(s).plain
+    s.status = "error"
+    s.error = "stopped after 50 turns"
+    assert render_outcome(s).plain == "stopped after 50 turns"
+
+
+def test_attach_status_carries_the_file_age() -> None:
+    s = new_session("go")
+    assert attach_status(s, None, 185).plain == (
+        "turn 0 · 0 tok · $0.00 · working · last write 3m ago"
+    )
+    waiting = attach_status(None, "waiting for s.json", None)
+    assert waiting.plain == "waiting for s.json"
