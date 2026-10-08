@@ -238,9 +238,10 @@ class TuiApp(App[None]):
 
     def _event(self, event: Event) -> None:
         if event.type in ("progress", "thinking"):
-            self.live.append(
-                event.text, style="dim" if event.type == "thinking" else ""
-            )
+            # A notice (context window, compaction, image, MCP result) carries
+            # detail and gets its own line; a streamed delta does not.
+            text = f"{event.text}\n" if event.detail else event.text
+            self.live.append(text, style="dim" if event.type == "thinking" else "")
         self._draw()
 
     def _draw(self) -> None:
@@ -346,4 +347,5 @@ def main(args: argparse.Namespace, transport: Transport | None = None) -> int:
                 save(app.session, args.session)
             except OSError as exc:
                 print(f"nare: could not write {args.session}: {exc}", file=sys.stderr)
-    return 0
+    # Textual reports a crash in its own code as return_code 1, not a raise.
+    return app.return_code or 0

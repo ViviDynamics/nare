@@ -13,6 +13,7 @@ from textual.widgets import Input, Static
 
 from fake_provider import FakeProvider, text_reply, tool_reply
 from nare.cli import build_parser, main
+from nare.events import Event
 from nare.loop import INTERRUPTED
 from nare.session import Message
 from nare.transport import Reply, Transport
@@ -200,6 +201,14 @@ async def test_a_failed_save_is_a_warning_not_fatal(
     async with app.run_test() as pilot:
         await until(pilot, lambda: app.run_state == "done")
         assert "could not write" in text_of(app, "#status")
+
+
+def test_a_notice_gets_its_own_line_in_the_live_area(tmp_path: Path) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    notice = {"context_window": {"tokens": 32000, "source": "default"}}
+    app._event(Event("progress", "context window 32000 (default)", notice))
+    app._event(Event("progress", "hello"))
+    assert app.live.plain == "context window 32000 (default)\nhello"
 
 
 def test_startup_failure_exits_two_before_the_screen(
