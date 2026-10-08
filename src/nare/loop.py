@@ -30,6 +30,10 @@ from nare.transport import Delta, StopReason, StreamingTransport, Transport
 
 MAX_TURNS_DEFAULT = 50
 
+# What an unanswered call says when a person stopped the turn, so the model is
+# told what happened instead of that a tool broke.
+INTERRUPTED = "interrupted by the user"
+
 
 def budget_record(s: Session) -> dict[str, Any]:
     return {**s.budget, "used_tokens": s.usage.total_tokens, "used_usd": s.usage.cost}
@@ -289,6 +293,7 @@ async def step(
 
     only_asks = all(call.name == "ask" for call in reply.tool_calls)
     results: list[dict[str, Any]] = []
+    unanswered = "tool dispatch failed"
     try:
         if unfinished:
             # Don't run a call from a truncated turn: its arguments may be cut
@@ -334,13 +339,16 @@ async def step(
                             {"tool": call.name, "tool_result": result},
                         )
                     )
+    except asyncio.CancelledError:
+        unanswered = INTERRUPTED
+        raise
     finally:
         # Every tool_use gets an answer even if dispatch dies mid-way. A
         # transcript ending in an unanswered tool_use is rejected by the
         # vendor on every future resume, so the session would be dead for
         # good — an unwritable turn is worth more than an unusable file.
         results += [
-            tool_result(call.id, "tool dispatch failed", is_error=True)
+            tool_result(call.id, unanswered, is_error=True)
             for call in reply.tool_calls[len(results) :]
         ]
         s.messages.append(Message(role="user", content=results))

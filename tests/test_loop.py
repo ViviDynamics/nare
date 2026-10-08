@@ -1,4 +1,8 @@
+import asyncio
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 import nare
 from fake_provider import (
@@ -9,7 +13,14 @@ from fake_provider import (
     thinking_reply,
     tool_reply,
 )
-from nare.loop import ASK_NOT_ALONE, ASK_NOT_DELIVERED, MAX_TURNS_DEFAULT, run, step
+from nare.loop import (
+    ASK_NOT_ALONE,
+    ASK_NOT_DELIVERED,
+    INTERRUPTED,
+    MAX_TURNS_DEFAULT,
+    run,
+    step,
+)
 from nare.session import (
     Session,
     Status,
@@ -20,7 +31,7 @@ from nare.session import (
     new_session,
 )
 from nare.tools import Policy, approve_all
-from nare.transport import Transport
+from nare.transport import Reply, ToolCall, Transport
 
 
 async def test_a_reply_without_tool_calls_finishes_the_session() -> None:
@@ -483,3 +494,46 @@ async def test_a_transport_failure_does_not_inherit_the_last_turns_stop_reason()
     await drain(session, Exploding())
     assert session.status == "error"
     assert session.stop_reason is None
+
+
+async def test_cancelling_dispatch_answers_the_rest_as_interrupted() -> None:
+    session = new_session("go")
+    calls = [
+        ToolCall(id="c1", name="bash", args={"command": "true"}),
+        ToolCall(id="c2", name="bash", args={"command": "true"}),
+    ]
+    reply = Reply(
+        content=[
+            {"type": "tool_use", "id": c.id, "name": c.name, "input": c.args}
+            for c in calls
+        ],
+        tool_calls=calls,
+        usage=Usage(input=10, output=5),
+        stop_reason="tool_use",
+    )
+    asked = asyncio.Event()
+    seen: list[str] = []
+
+    async def first_only(tool: str, args: dict[str, Any]) -> bool:
+        seen.append(tool)
+        if len(seen) == 1:
+            return True
+        asked.set()
+        await asyncio.Event().wait()  # a person who never answers
+        return True
+
+    task = asyncio.create_task(
+        step(session, FakeProvider([reply]), first_only, Policy())
+    )
+    await asked.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Still a transcript a vendor accepts: every tool_use answered, roles alternate.
+    assert [m.role for m in session.messages] == ["user", "assistant", "user"]
+    answers = session.messages[-1].content
+    assert [b["tool_use_id"] for b in answers] == ["c1", "c2"]
+    assert answers[0]["content"].startswith("exit 0")
+    assert answers[1]["content"] == INTERRUPTED
+    assert answers[1]["is_error"] is True
