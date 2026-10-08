@@ -83,7 +83,7 @@ in the `output` event's detail, and included in the final `result` line.
 
 ## Session budgets, cost and context
 
-    nare run --yes --jsonl --contract 1 --provider openai --model YOUR_MODEL \
+    nare run --yes --jsonl --contract 2 --provider openai --model YOUR_MODEL \
       --max-tokens 8192 --budget-tokens 50000 --tools read --root "$PWD" \
       --schema findings.schema.json --session persona.session.json \
       "Review this checkout" > persona.events.jsonl
