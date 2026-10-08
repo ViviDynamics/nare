@@ -404,3 +404,15 @@ async def test_attach_stops_on_a_contract_mismatch(tmp_path: Path) -> None:
 def test_attach_refuses_a_prompt(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["tui", "--attach", "s.json", "do it"]) == 2
     assert "--attach" in capsys.readouterr().err
+
+
+async def test_attach_polling_stops_with_its_screen(tmp_path: Path) -> None:
+    path = tmp_path / "s.json"
+    save(new_session("go"), path)
+    app = AttachApp(path, interval=0.001)
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: "> go" in shown(app))
+        # The first step of App._shutdown: the screens and their widgets go.
+        # A poll after this raises NoMatches, which run_test re-raises.
+        await app._close_all()
+        await asyncio.sleep(0.05)  # about fifty ticks at this interval

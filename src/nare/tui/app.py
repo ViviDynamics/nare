@@ -354,8 +354,11 @@ class AttachApp(App[None]):
     async def on_mount(self) -> None:
         await self.poll()
         # Polling continues after done or blocked: Conductor resumes the same
-        # path for its next round.
-        self.timer = self.set_interval(self.interval, self.poll)
+        # path for its next round. The screen owns the timer: a pruned screen
+        # stops its timers before it prunes its children, while the App's
+        # own timers outlive the widgets during shutdown, and a tick there
+        # finds no #status.
+        self.timer = self.screen.set_interval(self.interval, self.poll)
 
     async def poll(self) -> None:
         update = self.watcher.poll()
