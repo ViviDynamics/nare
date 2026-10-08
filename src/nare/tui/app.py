@@ -11,15 +11,18 @@ import argparse
 import asyncio
 import contextlib
 import sys
+import time
 from pathlib import Path
 from typing import Any, ClassVar
 
 from rich.syntax import Syntax
 from rich.text import Text
 from textual.app import App, ComposeResult
+from textual.await_remove import AwaitRemove
 from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
 from textual.screen import ModalScreen
+from textual.timer import Timer
 from textual.widgets import Collapsible, Input, Static
 from textual.worker import Worker, WorkerCancelled
 
@@ -32,9 +35,11 @@ from nare.session import Session, Usage, loads, new_session, reopen, save
 from nare.tools import Policy
 from nare.transport import Transport
 from nare.tui.approve import Approver
+from nare.tui.attach import Watcher
 from nare.tui.render import (
     Block,
     approval_text,
+    attach_status,
     render_messages,
     render_outcome,
     render_user,
@@ -66,8 +71,8 @@ class Transcript(VerticalScroll):
                 self.mount(Collapsible(Static(block.content), title=block.title))
         self.scroll_end(animate=False)
 
-    def reset(self) -> None:
-        self.remove_children()
+    def reset(self) -> AwaitRemove:
+        return self.remove_children()
 
 
 class ApprovalScreen(ModalScreen[str]):
@@ -315,6 +320,55 @@ class TuiApp(App[None]):
             self._set_state("working")
 
 
+class AttachApp(App[None]):
+    """Read-only: no input, no approvals, no provider, no API key."""
+
+    CSS = CSS
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("ctrl+q", "quit", "quit", priority=True),
+    ]
+
+    def __init__(self, path: Path, interval: float = 1.0) -> None:
+        super().__init__()
+        self.watcher = Watcher(path)
+        self.interval = interval
+        self.drawn = 0
+        self.timer: Timer | None = None
+
+    def compose(self) -> ComposeResult:
+        yield Transcript(id="transcript")
+        yield Static(id="outcome")
+        yield Static(id="status")
+
+    async def on_mount(self) -> None:
+        await self.poll()
+        # Polling continues after done or blocked: Conductor resumes the same
+        # path for its next round.
+        self.timer = self.set_interval(self.interval, self.poll)
+
+    async def poll(self) -> None:
+        update = self.watcher.poll()
+        if update is not None:
+            transcript = self.query_one(Transcript)
+            if update.redraw:
+                # Awaited: a mount right after a sync remove_children() can
+                # race its own removal (still in the DOM, just marked to
+                # prune), so the old content and the new would briefly both
+                # show. Awaiting it lets the prune finish first.
+                await transcript.reset()
+                self.drawn = 0
+            end = settled(update.session.messages)
+            transcript.add(render_messages(update.session.messages, self.drawn, end))
+            self.drawn = end
+            self.query_one("#outcome", Static).update(render_outcome(update.session))
+        if self.watcher.fatal and self.timer is not None:
+            self.timer.stop()
+        mtime = self.watcher.mtime
+        age = None if mtime is None else time.time() - mtime
+        status = attach_status(self.watcher.session, self.watcher.problem, age)
+        self.query_one("#status", Static).update(status)
+
+
 def prepare(args: argparse.Namespace, transport: Transport | None = None) -> TuiApp:
     """Everything that can fail at startup, before Textual takes the screen."""
     prices = validate_run_args(args)
@@ -336,6 +390,15 @@ def prepare(args: argparse.Namespace, transport: Transport | None = None) -> Tui
 
 
 def main(args: argparse.Namespace, transport: Transport | None = None) -> int:
+    if args.attach:
+        if args.prompt:
+            print("nare: --attach watches a run; it takes no prompt", file=sys.stderr)
+            return NEVER_STARTED
+        # A missing or malformed file is a state the view shows, never a
+        # startup failure.
+        attach_app = AttachApp(Path(args.attach))
+        attach_app.run()
+        return attach_app.return_code or 0
     try:
         app = prepare(args, transport)
     except (ValueError, OSError) as exc:

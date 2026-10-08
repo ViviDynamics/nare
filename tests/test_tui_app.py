@@ -16,9 +16,9 @@ from fake_provider import FakeProvider, text_reply, tool_reply
 from nare.cli import build_parser, main
 from nare.events import Event
 from nare.loop import INTERRUPTED
-from nare.session import Message
+from nare.session import Message, new_session, save
 from nare.transport import Delta, Reply, Transport
-from nare.tui.app import ApprovalScreen, TuiApp, prepare
+from nare.tui.app import ApprovalScreen, AttachApp, TuiApp, prepare
 
 
 async def until(pilot: Pilot[None], condition: Callable[[], bool]) -> None:
@@ -282,3 +282,41 @@ def test_an_unreadable_resume_exits_two(
 ) -> None:
     assert main(["tui", "--resume", str(tmp_path / "missing.json")]) == 2
     assert capsys.readouterr().err.startswith("nare: ")
+
+
+async def test_attach_waits_then_draws(tmp_path: Path) -> None:
+    path = tmp_path / "s.json"
+    app = AttachApp(path, interval=0.02)
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: "waiting for" in text_of(app, "#status"))
+        save(new_session("late task"), path)
+        await until(pilot, lambda: "late task" in shown(app))
+        assert "last write" in text_of(app, "#status")
+
+
+async def test_attach_redraws_when_the_file_is_replaced(tmp_path: Path) -> None:
+    path = tmp_path / "s.json"
+    save(new_session("first task"), path)
+    app = AttachApp(path, interval=0.02)
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: "first task" in shown(app))
+        save(new_session("second task!"), path)  # different size, new stamp
+        await until(pilot, lambda: "second task!" in shown(app))
+        assert "first task" not in shown(app)
+
+
+async def test_attach_stops_on_a_contract_mismatch(tmp_path: Path) -> None:
+    path = tmp_path / "s.json"
+    save(new_session("go"), path)
+    raw = json.loads(path.read_text())
+    raw["contract"] = 99
+    path.write_text(json.dumps(raw))
+    app = AttachApp(path, interval=0.02)
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: "contract 99" in text_of(app, "#status"))
+        assert app.watcher.fatal is True
+
+
+def test_attach_refuses_a_prompt(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["tui", "--attach", "s.json", "do it"]) == 2
+    assert "--attach" in capsys.readouterr().err
