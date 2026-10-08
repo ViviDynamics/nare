@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -116,16 +117,20 @@ def test_dumps_redacts_the_transcript() -> None:
 
 
 def test_reopen_appends_text_and_resets_per_run_state() -> None:
-    s = new_session("go")
+    # Built with replace(), not assigned: an assignment narrows the field's
+    # type, and mypy would call the status check below impossible.
+    s = replace(
+        new_session("go"),
+        status="blocked",
+        questions=["which?"],
+        schema_retried=True,
+        error="x",
+        stop_reason="tool_use",
+        output={"found": 1},
+    )
     s.messages.append(Message("assistant", [{"type": "text", "text": "which?"}]))
-    s.status = "blocked"
-    s.questions = ["which?"]
-    s.schema_retried = True
-    s.error = "x"
-    s.stop_reason = "tool_use"
-    s.output = {"found": 1}
     reopen(s, "bar.py")
-    assert s.status == "working"  # type: ignore[comparison-overlap]
+    assert s.status == "working"
     assert s.questions == []
     assert s.schema_retried is False
     assert s.error is None
@@ -150,10 +155,9 @@ def test_reopen_answers_calls_left_without_a_result() -> None:
 
 
 def test_reopen_without_text_leaves_the_transcript() -> None:
-    s = new_session("go")
-    s.status = "error"
+    s = replace(new_session("go"), status="error")
     reopen(s)
-    assert s.status == "working"  # type: ignore[comparison-overlap]
+    assert s.status == "working"
     assert len(s.messages) == 1
 
 
