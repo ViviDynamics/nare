@@ -1,7 +1,8 @@
 import asyncio
 import io
 import json
-from collections.abc import Callable
+import sys
+from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from typing import Any, cast
 
@@ -16,7 +17,7 @@ from nare.cli import build_parser, main
 from nare.events import Event
 from nare.loop import INTERRUPTED
 from nare.session import Message
-from nare.transport import Reply, Transport
+from nare.transport import Delta, Reply, Transport
 from nare.tui.app import ApprovalScreen, TuiApp, prepare
 
 
@@ -71,6 +72,30 @@ class Stalled:
         if self.calls == 1:
             await asyncio.Event().wait()
         return self.replies.pop(0)
+
+
+class Streaming:
+    """Streams its deltas, then holds the turn open until released."""
+
+    streaming = True
+
+    def __init__(self, *deltas: str) -> None:
+        self.deltas = deltas
+        self.release = asyncio.Event()
+
+    async def context_window(self) -> int | None:
+        return None
+
+    async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
+        raise AssertionError("a streaming run never calls turn()")
+
+    async def stream_turn(
+        self, messages: list[Message], tools: list[dict[str, Any]]
+    ) -> AsyncGenerator[Delta | Reply, None]:
+        for text in self.deltas:
+            yield Delta("progress", text)
+        await self.release.wait()
+        yield text_reply("".join(self.deltas))
 
 
 async def test_prompt_to_done(tmp_path: Path) -> None:
@@ -209,6 +234,40 @@ def test_a_notice_gets_its_own_line_in_the_live_area(tmp_path: Path) -> None:
     app._event(Event("progress", "context window 32000 (default)", notice))
     app._event(Event("progress", "hello"))
     assert app.live.plain == "context window 32000 (default)\nhello"
+
+
+async def test_the_live_block_shows_the_newest_streamed_text(tmp_path: Path) -> None:
+    # Each line wraps on the 80-column test screen and ends with its label, so
+    # the newest text is the last label: it must be on screen, the first not.
+    lines = ["pad " * 40 + f"L{n:02d}x\n" for n in range(30)]
+    transport = Streaming(*lines)
+    app = make(tmp_path, transport, prompt="go")
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: "L29x" in app.export_screenshot())
+        assert "L00x" not in app.export_screenshot()
+        transport.release.set()
+        await until(pilot, lambda: app.run_state == "done")
+
+
+async def test_an_interrupt_with_an_mcp_server_connected(tmp_path: Path) -> None:
+    server = Path(__file__).with_name("mcp_server.py")
+    config = tmp_path / "mcp.json"
+    config.write_text(
+        json.dumps(
+            {"local": {"command": sys.executable, "args": [str(server)], "timeout": 10}}
+        )
+    )
+    transport = Stalled(text_reply("after"))
+    app = make(tmp_path, transport, "--mcp-config", str(config), prompt="go")
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: transport.calls == 1)
+        await pilot.press("escape")
+        await until(pilot, lambda: app.run_state == "interrupted")
+        assert app.session is not None
+        assert app.session.error is None
+        await submit(pilot, app, "again")
+        await until(pilot, lambda: app.run_state == "done")
+        assert "after" in shown(app)
 
 
 def test_startup_failure_exits_two_before_the_screen(

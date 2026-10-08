@@ -150,12 +150,15 @@ class TuiApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Transcript(id="transcript")
-        yield Static(id="live")
+        # Anchored to its end, so the newest streamed text stays in view.
+        with VerticalScroll(id="live"):
+            yield Static(id="live-text")
         yield Static(id="outcome")
         yield Input(id="input")
         yield Static(id="status")
 
     def on_mount(self) -> None:
+        self.query_one("#live", VerticalScroll).anchor()
         if self.session is not None:
             self._draw()
         self._set_state(self.run_state)
@@ -253,7 +256,7 @@ class TuiApp(App[None]):
             self.query_one(Transcript).add(blocks)
             self.drawn = end
             self.live = Text()
-        self.query_one("#live", Static).update(self.live)
+        self.query_one("#live-text", Static).update(self.live)
         self.query_one("#outcome", Static).update(render_outcome(self.session))
         self._status()
 
