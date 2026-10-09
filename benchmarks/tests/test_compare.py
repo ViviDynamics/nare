@@ -10,6 +10,7 @@ import pytest
 
 from benchmarks.runner.__main__ import main, write_results
 from benchmarks.runner.agreement import TOO_LARGE, Row, Skip
+from benchmarks.runner.case import load_cases
 from benchmarks.runner.compare import (
     CLAIM_RULES,
     Evidence,
@@ -201,14 +202,19 @@ def reply(text: str, cost: float | None) -> Reply:
 
 
 class Replies:
-    def __init__(self, *replies: Reply) -> None:
+    """Each call takes the next one. An exception is raised instead of answered."""
+
+    def __init__(self, *replies: Reply | Exception) -> None:
         self.replies = list(replies)
 
     async def context_window(self) -> int | None:
         return None
 
     async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
-        return self.replies.pop(0)
+        step = self.replies.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return step
 
 
 async def test_the_recording_transport_sums_usage_and_forgets_on_take() -> None:
@@ -226,6 +232,34 @@ async def test_one_reply_without_a_cost_makes_the_cost_unknown() -> None:
     await recording.turn([], [])
     await recording.turn([], [])
     assert recording.take() == (36, None)
+
+
+async def test_a_call_that_raised_makes_the_cost_unknown() -> None:
+    # The reply that did arrive is not the whole bill: the call that timed out
+    # may have been charged too.
+    recording = RecordingTransport(Replies(TimeoutError("slow"), reply("b", 0.01)))
+    with pytest.raises(TimeoutError):
+        await recording.turn([], [])
+    await recording.turn([], [])
+    assert recording.take() == (18, None)
+    assert recording.take() == (0, 0)
+
+
+async def test_every_call_raising_is_an_unknown_cost_not_zero() -> None:
+    recording = RecordingTransport(Replies(TimeoutError("a"), OSError("b")))
+    with pytest.raises(TimeoutError):
+        await recording.turn([], [])
+    with pytest.raises(OSError, match="b"):
+        await recording.turn([], [])
+    assert recording.take() == (0, None)
+
+
+async def test_a_judge_whose_every_attempt_raised_has_an_unknown_cost() -> None:
+    down = RecordingTransport(FakeJudge(TimeoutError("timed out")))
+    rows = await compare_rep(CASE, rec(), EVIDENCE, replace(judges(), reference=down))
+    reference = rows[2]
+    assert reference.error is not None
+    assert (reference.attempts, reference.tokens, reference.cost) == (2, 0, None)
 
 
 async def test_a_judged_pass_gets_three_claim_rows_in_order() -> None:
@@ -504,10 +538,47 @@ def test_records_from_two_models_exit_two(
 
 
 def test_results_without_evidence_exit_one(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     built = bench_root(tmp_path, monkeypatch, [run_record("edit-docstring", 0)])
     assert main(["compare-judges"]) == 1
+    assert built.jev.calls == []
+    err = capsys.readouterr().err
+    assert "no evidence files 1" in err
+    assert "runs keep diff.patch and closing.txt from this version on" in err
+
+
+def test_a_case_with_no_records_is_named_not_blamed_on_the_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    built = bench_root(tmp_path, monkeypatch, [run_record("edit-docstring", 0)])
+    kept_evidence(tmp_path, "edit-docstring", 0)
+    assert main(["compare-judges", "--case", "edit-docstrng"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("bench: ")
+    assert "edit-docstrng" in err
+    assert "diff.patch" not in err
+    assert built.jev.calls == []
+
+
+def test_a_run_with_nothing_to_judge_says_so_not_that_evidence_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import benchmarks.runner.__main__ as bench
+
+    built = bench_root(tmp_path, monkeypatch, [run_record("edit-docstring", 0)])
+    kept_evidence(tmp_path, "edit-docstring", 0)
+    # Every case in benchmarks/cases has a [judge] table, so strip it.
+    monkeypatch.setattr(
+        bench,
+        "load_cases",
+        lambda path: [replace(c, judge=None) for c in load_cases(path)],
+    )
+    assert main(["compare-judges"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("bench: ")
+    assert "nothing to compare" in err
+    assert "diff.patch" not in err
     assert built.jev.calls == []
 
 

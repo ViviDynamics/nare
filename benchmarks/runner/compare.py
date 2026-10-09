@@ -151,28 +151,37 @@ def too_large(state: Any, questions: Mapping[str, Mapping[str, Any]]) -> bool:
 
 
 class RecordingTransport:
-    """Keeps each reply's usage, which score() does not return. judge.py is
-    not changed to make room for it."""
+    """Keeps each reply's usage, which score() does not return, and counts the
+    calls that raised, which score() swallows. judge.py is not changed to make
+    room for either."""
 
     def __init__(self, inner: Transport) -> None:
         self.inner = inner
         self.replies: list[Reply] = []
+        self.raised = 0
 
     async def context_window(self) -> int | None:
         return await self.inner.context_window()
 
     async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
-        reply = await self.inner.turn(messages, tools)
+        try:
+            reply = await self.inner.turn(messages, tools)
+        except Exception:
+            self.raised += 1
+            raise
         self.replies.append(reply)
         return reply
 
     def take(self) -> tuple[int, float | None]:
-        """Tokens and cost since the last take. Cost is None when any reply
-        had none: a partial sum would read as the whole."""
+        """Tokens and cost since the last take. Cost is None when any call
+        raised or any reply had none: a call that timed out may still have been
+        billed, and a partial sum would read as the whole. No calls at all is a
+        true zero."""
         replies, self.replies = self.replies, []
+        raised, self.raised = self.raised, 0
         tokens = sum(r.usage.total_tokens for r in replies)
         costs = [r.cost for r in replies]
-        if any(c is None for c in costs):
+        if raised or any(c is None for c in costs):
             return tokens, None
         return tokens, sum(c for c in costs if c is not None)
 
@@ -429,8 +438,8 @@ async def run_comparison(
     work: Sequence[tuple[Case, RepRecord, Evidence]], judges: Judges, out: Path
 ) -> list[Row]:
     """Sequential, as run_case is, so latency is measured without contention.
-    Each row is written as it arrives: an interrupted comparison keeps what
-    it already paid for."""
+    Rows are written and flushed as each repetition finishes: an interrupted
+    comparison keeps every finished repetition."""
     rows: list[Row] = []
     with out.open("w", encoding="utf-8") as handle:
         for case, rec, evidence in work:

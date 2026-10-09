@@ -13,12 +13,13 @@ import os
 import shutil
 import subprocess
 import sys
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from benchmarks.runner.agreement import Header, render_summary
+from benchmarks.runner.agreement import Header, Skip, render_summary
 from benchmarks.runner.case import Case, CaseError, load_cases
 from benchmarks.runner.compare import (
     Judges,
@@ -431,6 +432,29 @@ def merge_baseline(
     return [merged[name] for name in sorted(merged)]
 
 
+def nothing_to_compare(
+    results_file: Path,
+    records: Sequence[RepRecord],
+    skips: Sequence[Skip],
+    only: Sequence[str] | None,
+) -> str:
+    """Why select_work found no work: the cause the user can act on."""
+    name = results_file.name
+    if only and not any(r.case in only for r in records):
+        return f"bench: no repetition in {name} is of {', '.join(only)}"
+    if skips:
+        counts = Counter(s.reason for s in skips)
+        listed = ", ".join(f"{reason} {n}" for reason, n in sorted(counts.items()))
+        message = f"bench: nothing in {name} could be compared ({listed})"
+        if "no evidence files" in counts:
+            message += "; runs keep diff.patch and closing.txt from this version on"
+        return message
+    return (
+        f"bench: {name} has no judged repetition and no failure, "
+        "so there is nothing to compare"
+    )
+
+
 def compare_judges(args: argparse.Namespace, root: Path) -> int:
     """Run Jev, the llm judge and the reference over one run's kept evidence.
 
@@ -493,9 +517,7 @@ def compare_judges(args: argparse.Namespace, root: Path) -> int:
     work, skips = select_work(records, cases, results_file.parent, args.case)
     if not work:
         print(
-            f"bench: no repetition in {results_file.name} kept diff.patch and "
-            "closing.txt; runs keep them from this version on",
-            file=sys.stderr,
+            nothing_to_compare(results_file, records, skips, args.case), file=sys.stderr
         )
         return 1
 
