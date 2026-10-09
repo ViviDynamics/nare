@@ -92,12 +92,19 @@ approve each tool call: **y** allows, **n** or **Esc** denies, **a** allows
 that tool for as long as this `nare tui` runs (it is not saved to the
 session). `edit` and `write` show a diff first. `read` and `ask` never prompt.
 
-    nare tui "add a docstring to foo() in bar.py" --root . --session s.json
+    nare tui "add a docstring to foo() in bar.py" --root .
 
 **Esc** or **Ctrl-C** stops the current turn without losing the session; type
 a follow-up to keep going. When nare asks a question, the answer is the next
-thing you type. **Ctrl-Q** quits, saving to `--session` if given. An
-interrupt or a quit kills a `bash` command that is still running.
+thing you type. **Ctrl-Q** quits and leaves the last answer and a
+`nare tui --resume` command on the terminal. An interrupt or a quit kills a
+`bash` command that is still running.
+
+Every run is saved. Without `--session`, the file goes to
+`$XDG_STATE_HOME/nare/sessions/<id>.json` (`~/.local/state/...` when
+`XDG_STATE_HOME` is unset), outside the project. A `--session` path inside
+`--root` or the current directory gets a warning, since `git add -A` would
+commit it.
 
 `nare tui` takes the same provider, model, budget, tool, root, MCP, session
 and resume flags as `nare run`, and not `--yes`, `--jsonl`, `--contract`,
@@ -110,6 +117,7 @@ To watch a run something else started, point it at the run's session file:
 
 The view is read-only and updates once per turn. It shows how long ago the
 file was written, since `working` in a file can also mean the process died.
+A run that was interrupted shows as `interrupted`, with how long ago.
 
 ## Session budgets, cost and context
 

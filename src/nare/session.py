@@ -75,14 +75,17 @@ class Session:
     output: Any = None
     schema_retried: bool = False
     schema_stated: bool = False
+    # Set when a person interrupts a run, so a file left `working` reads as
+    # stopped, not as running. reopen() clears it.
+    interrupted_at: str | None = None
     contract: int = CONTRACT_VERSION
     nare: str = NARE_VERSION
     events: list[Event] = field(default_factory=list, compare=False)
     version: int = SESSION_VERSION
 
 
-def new_session(prompt: str) -> Session:
-    s = Session(id=uuid.uuid4().hex)
+def new_session(prompt: str, session_id: str | None = None) -> Session:
+    s = Session(id=session_id or uuid.uuid4().hex)
     append_user_text(s, prompt)
     return s
 
@@ -210,6 +213,7 @@ def reopen(s: Session, text: str | None = None) -> None:
     s.schema_retried = False
     s.error = None
     s.stop_reason = None
+    s.interrupted_at = None
 
 
 def save(s: Session, path: str | Path) -> None:

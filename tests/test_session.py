@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -127,10 +128,12 @@ def test_reopen_appends_text_and_resets_per_run_state() -> None:
         error="x",
         stop_reason="tool_use",
         output={"found": 1},
+        interrupted_at="2026-10-08T12:00:00+00:00",
     )
     s.messages.append(Message("assistant", [{"type": "text", "text": "which?"}]))
     reopen(s, "bar.py")
     assert s.status == "working"
+    assert s.interrupted_at is None
     assert s.questions == []
     assert s.schema_retried is False
     assert s.error is None
@@ -138,6 +141,12 @@ def test_reopen_appends_text_and_resets_per_run_state() -> None:
     # Partial findings survive a resume, as they did in cli._load_or_new.
     assert s.output == {"found": 1}
     assert s.messages[-1] == Message("user", [{"type": "text", "text": "bar.py"}])
+
+
+def test_a_file_from_before_interrupted_at_still_loads() -> None:
+    raw = json.loads(dumps(new_session("go")))
+    del raw["interrupted_at"]
+    assert loads(json.dumps(raw)).interrupted_at is None
 
 
 def test_reopen_answers_calls_left_without_a_result() -> None:

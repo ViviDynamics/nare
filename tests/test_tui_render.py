@@ -1,11 +1,13 @@
 import io
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 from rich.console import Console, RenderableType
 
-from nare.session import Message, Usage, new_session
+from nare.session import Message, Usage, dumps, loads, new_session
 from nare.tools import Policy
 from nare.tui.render import (
     Block,
@@ -245,3 +247,17 @@ def test_attach_status_carries_the_file_age() -> None:
     )
     waiting = attach_status(None, "waiting for s.json", None)
     assert waiting.plain == "waiting for s.json"
+
+
+def test_attach_status_shows_an_interrupted_file_as_interrupted() -> None:
+    s = new_session("go")
+    s.interrupted_at = (datetime.now(UTC) - timedelta(seconds=125)).isoformat()
+    assert attach_status(s, None, 5).plain == (
+        "turn 0 · 0 tok · $0.00 · interrupted 2m ago · last write 5s ago"
+    )
+    # Hand-edited or foreign: still not `working`, and no crash.
+    s.interrupted_at = "yesterday"
+    assert "· interrupted ·" in attach_status(s, None, 5).plain
+    raw = json.loads(dumps(s))
+    raw["interrupted_at"] = 1700000000
+    assert "· interrupted ·" in attach_status(loads(json.dumps(raw)), None, 5).plain
