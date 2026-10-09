@@ -11,9 +11,13 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import os
+import shlex
 import sys
 import time
+import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -30,7 +34,7 @@ from textual.worker import Worker, WorkerCancelled
 
 from nare.accounting import Prices
 from nare.cli import policy_from_args, transport_from_args, validate_run_args
-from nare.contract import NEVER_STARTED
+from nare.contract import NARE_VERSION, NEVER_STARTED
 from nare.events import Event
 from nare.loop import configure_budgets, run
 from nare.session import Session, Usage, loads, new_session, reopen, save, unanswered
@@ -120,9 +124,13 @@ class TuiApp(App[None]):
         args: argparse.Namespace,
         prices: Prices | None,
         prompt: str | None,
+        session_id: str | None = None,
+        warning: str | None = None,
     ) -> None:
         super().__init__()
         self.session = session
+        self.session_id = session_id
+        self.warning = warning
         self.transport = transport
         self.policy = policy
         self.args = args
@@ -152,6 +160,15 @@ class TuiApp(App[None]):
 
     def on_mount(self) -> None:
         self.query_one("#live", VerticalScroll).anchor()
+        root = Path(self.args.root or ".").resolve()
+        start = (
+            f"nare {NARE_VERSION} · {self.args.model} · root {root} · "
+            f"session {Path(self.args.session).resolve()}"
+        )
+        blocks = [Block(Text(start, style="dim"))]
+        if self.warning:
+            blocks.append(Block(Text(self.warning, style="yellow")))
+        self.query_one(Transcript).add(blocks)
         if self.session is not None:
             self._draw()
         self._set_state(self.run_state)
@@ -191,7 +208,7 @@ class TuiApp(App[None]):
 
     def _submit(self, text: str) -> None:
         if self.session is None:
-            self.session = new_session(text)
+            self.session = new_session(text, self.session_id)
         else:
             reopen(self.session, text)
         messages = self.session.messages
@@ -233,6 +250,9 @@ class TuiApp(App[None]):
             self._set_state(session.status)
         except asyncio.CancelledError:
             self._set_state("interrupted")
+            # Saved by the finally below: a file left `working` reads as a
+            # live run in --attach.
+            session.interrupted_at = datetime.now(UTC).isoformat(timespec="seconds")
             raise
         finally:
             self.live = Text()
@@ -274,7 +294,10 @@ class TuiApp(App[None]):
         self._status()
 
     def _status(self) -> None:
-        line = status_line(
+        self.query_one("#status", Static).update(self.status_text())
+
+    def status_text(self) -> Text:
+        return status_line(
             self.args.model,
             0 if self.session is None else self.session.turns - self.turns_from,
             self.args.max_turns,
@@ -283,7 +306,6 @@ class TuiApp(App[None]):
             self.run_state,
             self.note,
         )
-        self.query_one("#status", Static).update(line)
 
     def _save(self) -> None:
         if self.session is None or not self.args.session:
@@ -399,6 +421,24 @@ def prepare(args: argparse.Namespace, transport: Transport | None = None) -> Tui
     """Everything that can fail at startup, before Textual takes the screen."""
     prices = validate_run_args(args)
     policy = policy_from_args(args)
+    session_id: str | None = None
+    warning: str | None = None
+    if not args.session:
+        # Every run is saved, outside the project.
+        session_id = uuid.uuid4().hex
+        state = os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state"
+        directory = Path(state) / "nare" / "sessions"
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        args.session = str(directory / f"{session_id}.json")
+    else:
+        path = Path(args.session).resolve()
+        root = Path(args.root or ".").resolve()
+        if path.is_relative_to(root) or path.is_relative_to(Path.cwd()):
+            # The practice run's `git add -A` committed one.
+            warning = (
+                f"session file {path} is inside the project: git add -A would commit it"
+            )
+            print(f"nare: {warning}", file=sys.stderr)
     session = None
     if args.resume:
         session = loads(Path(args.resume).read_text(encoding="utf-8"))
@@ -414,6 +454,36 @@ def prepare(args: argparse.Namespace, transport: Transport | None = None) -> Tui
         args=args,
         prices=prices,
         prompt=args.prompt,
+        session_id=session_id,
+        warning=warning,
+    )
+
+
+def exit_summary(app: TuiApp, keep: int = 20) -> str:
+    """What stays on the terminal once the screen closes: the answer, where
+    things stand, and how to pick the run up again. Empty if nothing ran.
+    """
+    if app.session is None:
+        return ""
+    lines: list[str] = []
+    for message in reversed(app.session.messages):
+        texts = [
+            str(b.get("text", ""))
+            for b in message.content
+            if b.get("type") == "text" and b.get("text")
+        ]
+        if message.role == "assistant" and texts:
+            lines = "\n".join(texts).splitlines()
+            break
+    if len(lines) > keep:
+        lines = lines[:keep] + [f"... {len(lines) - keep} more lines"]
+    path = shlex.quote(str(Path(app.args.session).resolve()))
+    return "\n".join(
+        [
+            *lines,
+            app.status_text().plain,
+            f"session: {path} · resume: nare tui --resume {path}",
+        ]
     )
 
 
@@ -443,5 +513,8 @@ def main(args: argparse.Namespace, transport: Transport | None = None) -> int:
                 save(app.session, args.session)
             except OSError as exc:
                 print(f"nare: could not write {args.session}: {exc}", file=sys.stderr)
+    summary = exit_summary(app)
+    if summary:
+        print(summary)
     # Textual reports a crash in its own code as return_code 1, not a raise.
     return app.return_code or 0

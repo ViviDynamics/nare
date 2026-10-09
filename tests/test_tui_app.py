@@ -19,7 +19,14 @@ from nare.events import Event
 from nare.loop import INTERRUPTED
 from nare.session import Message, loads, new_session, save
 from nare.transport import Delta, Reply, Transport
-from nare.tui.app import ApprovalScreen, AttachApp, TuiApp, logs_as_notices, prepare
+from nare.tui.app import (
+    ApprovalScreen,
+    AttachApp,
+    TuiApp,
+    exit_summary,
+    logs_as_notices,
+    prepare,
+)
 
 
 async def until(pilot: Pilot[None], condition: Callable[[], bool]) -> None:
@@ -448,3 +455,78 @@ async def test_attach_polling_stops_with_its_screen(tmp_path: Path) -> None:
         # A poll after this raises NoMatches, which run_test re-raises.
         await app._close_all()
         await asyncio.sleep(0.05)  # about fifty ticks at this interval
+
+
+async def test_the_first_line_names_model_root_and_session(tmp_path: Path) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    async with app.run_test():
+        first = str(app.query(Static).first().content)
+    assert first.startswith("nare ")
+    assert f"fake · root {tmp_path} · session {tmp_path / 's.json'}" in first
+
+
+async def test_a_session_file_inside_the_project_warns(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    assert "inside the project" in capsys.readouterr().err
+    async with app.run_test():
+        assert "inside the project" in shown(app)
+    project = tmp_path / "proj"
+    project.mkdir()
+    args = build_parser().parse_args(
+        ["tui", "--model", "fake", "--root", str(project),
+         "--session", str(tmp_path / "s.json")]
+    )  # fmt: skip
+    prepare(args, FakeProvider([]))
+    assert capsys.readouterr().err == ""
+
+
+async def test_without_session_the_run_is_saved_under_xdg_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    args = build_parser().parse_args(["tui", "--model", "fake", "go"])
+    app = prepare(args, FakeProvider([text_reply("all done")]))
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: app.run_state == "done")
+    assert app.session is not None
+    path = tmp_path / "state" / "nare" / "sessions" / f"{app.session.id}.json"
+    assert json.loads(path.read_text())["status"] == "done"
+    assert f"resume: nare tui --resume {path}" in exit_summary(app)
+
+
+async def test_esc_then_quit_records_the_interrupt_and_resume_clears_it(
+    tmp_path: Path,
+) -> None:
+    transport = Stalled()
+    app = make(tmp_path, transport, prompt="go")
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: transport.calls == 1)
+        await pilot.press("escape")
+        await until(pilot, lambda: app.run_state == "interrupted")
+        await pilot.press("ctrl+q")
+    path = tmp_path / "s.json"
+    assert loads(path.read_text()).interrupted_at is not None
+    app = make(tmp_path, FakeProvider([text_reply("ok")]), "--resume", str(path))
+    async with app.run_test() as pilot:
+        await submit(pilot, app, "again")
+        await until(pilot, lambda: app.run_state == "done")
+    assert loads(path.read_text()).interrupted_at is None
+
+
+async def test_the_exit_summary_keeps_the_answer_and_the_resume_command(
+    tmp_path: Path,
+) -> None:
+    answer = "\n".join(f"line {n}" for n in range(1, 31))
+    app = make(tmp_path, FakeProvider([text_reply(answer)]))
+    assert exit_summary(app) == ""  # nothing typed, nothing saved
+    async with app.run_test() as pilot:
+        await submit(pilot, app, "go")
+        await until(pilot, lambda: app.run_state == "done")
+    summary = exit_summary(app).splitlines()
+    path = tmp_path / "s.json"
+    assert summary[:2] == ["line 1", "line 2"]
+    assert summary[19:21] == ["line 20", "... 10 more lines"]
+    assert summary[-2].startswith("fake · turn 1/50") and summary[-2].endswith("done")
+    assert summary[-1] == f"session: {path} · resume: nare tui --resume {path}"
