@@ -18,7 +18,14 @@ from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+from benchmarks.runner.agreement import Header, render_summary
 from benchmarks.runner.case import Case, CaseError, load_cases
+from benchmarks.runner.compare import (
+    Judges,
+    RecordingTransport,
+    run_comparison,
+    select_work,
+)
 from benchmarks.runner.config import Config, ConfigError, resolve_config
 from benchmarks.runner.grade import (
     CheckResult,
@@ -28,6 +35,7 @@ from benchmarks.runner.grade import (
     parse_stdout,
     rep_outcome,
 )
+from benchmarks.runner.jev import JevClient
 from benchmarks.runner.judge import (
     JudgeAttempt,
     JudgeError,
@@ -61,6 +69,7 @@ from benchmarks.runner.sandbox import (
     run_check,
     sandbox,
 )
+from benchmarks.runner.triage import triage_transport
 from nare.transport import Transport
 
 CheckRunner = Callable[[Case, str, int], tuple[int, str]]
@@ -106,6 +115,19 @@ def build_parser() -> argparse.ArgumentParser:
             help="compare against a baseline blessed on a different model or "
             "output cap",
         )
+    judges = sub.add_parser(
+        "compare-judges",
+        help="measure Jev and the llm judge against a reference model",
+    )
+    judges.add_argument("--results", help="results file (default: the newest)")
+    judges.add_argument("--case", action="append", help="limit to this case id")
+    judges.add_argument("--provider", help="provider (env: NARE_PROVIDER)")
+    judges.add_argument("--base-url", help="the proxy (env: NARE_BASE_URL)")
+    judges.add_argument("--judge-model", help="judge (env: NARE_BENCH_JUDGE_MODEL)")
+    judges.add_argument("--jev-model", help="Jev (env: NARE_BENCH_JEV_MODEL)")
+    judges.add_argument(
+        "--reference-model", help="reference (env: NARE_BENCH_REFERENCE_MODEL)"
+    )
     return parser
 
 
@@ -409,15 +431,117 @@ def merge_baseline(
     return [merged[name] for name in sorted(merged)]
 
 
+def compare_judges(args: argparse.Namespace, root: Path) -> int:
+    """Run Jev, the llm judge and the reference over one run's kept evidence.
+
+    Every configuration error exits 2 before any model is called. Nothing to
+    compare exits 1. A judge failing on some repetitions still exits 0: those
+    failures are in the report.
+    """
+    env = os.environ
+    base_url = args.base_url or env.get("NARE_BASE_URL")
+    if not base_url:
+        print(
+            "bench: compare-judges reaches Jev only through the proxy; "
+            "pass --base-url or set NARE_BASE_URL",
+            file=sys.stderr,
+        )
+        return 2
+    reference = args.reference_model or env.get("NARE_BENCH_REFERENCE_MODEL")
+    if not reference:
+        print(
+            "bench: no reference model: pass --reference-model or set "
+            "NARE_BENCH_REFERENCE_MODEL (its alias depends on the proxy)",
+            file=sys.stderr,
+        )
+        return 2
+    jev_model = args.jev_model or env.get("NARE_BENCH_JEV_MODEL") or "jev-latest"
+
+    results_file = Path(args.results) if args.results else latest_results(root)
+    records = (
+        read_results(results_file)
+        if results_file is not None and results_file.is_file()
+        else []
+    )
+    if results_file is None or not records:
+        print("bench: no results to compare", file=sys.stderr)
+        return 1
+    models = sorted({r.model for r in records})
+    if len(models) > 1:
+        print(
+            f"bench: {results_file.name} names {len(models)} models "
+            f"({', '.join(models)}); compare-judges reads one run's model",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        config = resolve_config(
+            # The model under test comes from the records, so NARE_MODEL is
+            # not needed.
+            model=models[0],
+            provider=args.provider,
+            base_url=base_url,
+            judge_model=args.judge_model,
+            env=env,
+        )
+        cases = {c.id: c for c in load_cases(root / "benchmarks" / "cases")}
+    except (ConfigError, CaseError) as exc:
+        print(f"bench: {exc}", file=sys.stderr)
+        return 2
+    assert config.api_key is not None, "resolve_config demands a key by default"
+
+    work, skips = select_work(records, cases, results_file.parent, args.case)
+    if not work:
+        print(
+            f"bench: no repetition in {results_file.name} kept diff.patch and "
+            "closing.txt; runs keep them from this version on",
+            file=sys.stderr,
+        )
+        return 1
+
+    judges = Judges(
+        jev=JevClient(base_url=base_url, api_key=config.api_key, model=jev_model),
+        llm=RecordingTransport(judge_transport(config)),
+        llm_model=config.judge_model,
+        reference=RecordingTransport(
+            judge_transport(replace(config, judge_model=reference))
+        ),
+        reference_triage=RecordingTransport(triage_transport(config, reference)),
+        reference_model=reference,
+    )
+    # Beside the compared run's evidence, under the comparison's own stamp,
+    # so a second comparison never overwrites a first.
+    evidence = results_file.parent / results_file.stem
+    evidence.mkdir(parents=True, exist_ok=True)
+    cstamp = new_stamp()
+    rows = asyncio.run(
+        run_comparison(work, judges, evidence / f"compare-{cstamp}.jsonl")
+    )
+    summary = render_summary(
+        Header(results_file.stem, config.model, config.judge_model, reference),
+        rows,
+        skips,
+        cases,
+        records,
+    )
+    (evidence / f"compare-{cstamp}.txt").write_text(summary + "\n", encoding="utf-8")
+    print(summary)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command is None:
         print(
-            "bench needs a subcommand: run, compare, bless, or verify", file=sys.stderr
+            "bench needs a subcommand: run, compare, bless, verify, or compare-judges",
+            file=sys.stderr,
         )
         return 2
 
     root = repo_root()
+    if args.command == "compare-judges":
+        # No tier: it compares whatever cases the results file holds.
+        return compare_judges(args, root)
     try:
         cases = _select(root, args.tier, args.case)
     except CaseError as exc:

@@ -6,6 +6,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from benchmarks.runner.__main__ import main, write_results
 from benchmarks.runner.agreement import TOO_LARGE, Row, Skip
 from benchmarks.runner.compare import (
     CLAIM_RULES,
@@ -20,6 +23,7 @@ from benchmarks.runner.compare import (
     select_work,
     too_large,
 )
+from benchmarks.runner.config import Config
 from benchmarks.runner.grade import CheckResult
 from benchmarks.runner.jev import (
     JEV_STATE_LIMIT,
@@ -325,3 +329,192 @@ async def test_rows_are_written_one_json_line_each(tmp_path: Path) -> None:
         "attempts",
         "error",
     }
+
+
+ENV_VARS = (
+    "NARE_PROVIDER",
+    "NARE_MODEL",
+    "NARE_BENCH_JUDGE_MODEL",
+    "NARE_BENCH_JEV_MODEL",
+    "NARE_BENCH_REFERENCE_MODEL",
+    "NARE_BASE_URL",
+)
+
+
+class Built:
+    """What compare-judges built, in place of a proxy."""
+
+    def __init__(self) -> None:
+        self.jev = FakeJev(fail_on=2)
+        self.transports: dict[str, FakeJudge] = {}
+
+
+def bench_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, records: list[RepRecord]
+) -> Built:
+    import benchmarks.runner.__main__ as bench
+    from benchmarks.runner.sandbox import repo_root
+
+    (tmp_path / "benchmarks").mkdir()
+    (tmp_path / "benchmarks" / "cases").symlink_to(repo_root() / "benchmarks" / "cases")
+    write_results(tmp_path, records, "2026-10-08T00-00-00Z")
+    built = Built()
+
+    def jev(*, base_url: str, api_key: str, model: str) -> FakeJev:
+        assert (base_url, api_key, model) == ("https://proxy.example/v1", "k", "jev-x")
+        return built.jev
+
+    def judge(config: Config) -> FakeJudge:
+        verdicts = "[true, false, true]" if config.judge_model == "opus" else "[true]"
+        built.transports[config.judge_model] = FakeJudge(
+            f'{{"met": {verdicts}, "why": "x"}}'
+        )
+        return built.transports[config.judge_model]
+
+    def triage(config: Config, model: str) -> FakeJudge:
+        built.transports[f"triage:{model}"] = FakeJudge('{"cause": "wrong_change"}')
+        return built.transports[f"triage:{model}"]
+
+    monkeypatch.setattr(bench, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(bench, "JevClient", jev)
+    monkeypatch.setattr(bench, "judge_transport", judge)
+    monkeypatch.setattr(bench, "triage_transport", triage)
+    monkeypatch.setattr(bench, "new_stamp", lambda: "2026-10-09T00-00-00Z")
+    for var in ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("NARE_BASE_URL", "https://proxy.example/v1")
+    monkeypatch.setenv("NARE_BENCH_REFERENCE_MODEL", "opus")
+    monkeypatch.setenv("NARE_BENCH_JEV_MODEL", "jev-x")
+    return built
+
+
+def run_record(case: str, rep: int, **changes: Any) -> RepRecord:
+    return replace(
+        rec(rep, case=case, artifacts=f"2026-10-08T00-00-00Z/{case}-{rep}"), **changes
+    )
+
+
+def kept_evidence(tmp_path: Path, case: str, rep: int) -> None:
+    kept = (
+        tmp_path / "benchmarks" / "results" / "2026-10-08T00-00-00Z" / f"{case}-{rep}"
+    )
+    kept.mkdir(parents=True)
+    (kept / "diff.patch").write_text('+    """Return 42."""\n')
+    (kept / "closing.txt").write_text("Added the docstring.")
+    session = {
+        "messages": [{"role": "user", "content": [{"type": "text", "text": "go"}]}]
+    }
+    (kept / "session.json").write_text(json.dumps(session))
+
+
+def test_compare_judges_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    records = [
+        run_record("edit-docstring", 0),
+        run_record("edit-docstring", 1, outcome="fail", checks=(FAILED,), judge_met=1),
+        run_record("edit-docstring", 2, outcome="error", artifacts=""),
+    ]
+    built = bench_root(tmp_path, monkeypatch, records)
+    for rep in (0, 1):
+        kept_evidence(tmp_path, "edit-docstring", rep)
+
+    assert main(["compare-judges", "--judge-model", "qwen"]) == 0
+
+    out = tmp_path / "benchmarks" / "results" / "2026-10-08T00-00-00Z"
+    rows = [
+        json.loads(line)
+        for line in (out / "compare-2026-10-09T00-00-00Z.jsonl")
+        .read_text()
+        .splitlines()
+    ]
+    assert [(r["rep"], r["task"], r["judge"]) for r in rows] == [
+        (0, "claims", "jev"),
+        (0, "claims", "llm"),
+        (0, "claims", "reference"),
+        (1, "claims", "jev"),
+        (1, "claims", "llm"),
+        (1, "claims", "reference"),
+        (1, "triage", "jev"),
+        (1, "triage", "reference"),
+    ]
+    # Jev's second call failed; the comparison carried on past it.
+    assert rows[3]["error"] == "jev returned HTTP 500: upstream down"
+    assert rows[6]["cause"] == "no_change"
+    assert rows[7]["cause"] == "wrong_change"
+    # The llm judge answered one verdict for three claims: an error, not a zero.
+    assert rows[1]["error"].startswith("judge failed")
+    assert rows[2]["verdicts"] == [True, False, True]
+    assert set(built.transports) == {"qwen", "opus", "triage:opus"}
+
+    summary = (out / "compare-2026-10-09T00-00-00Z.txt").read_text()
+    assert summary == capsys.readouterr().out
+    assert "compare-judges over results 2026-10-08T00-00-00Z" in summary
+    assert "skipped, errored before its diff was taken: 1" in summary
+    assert "judge errors: jev claims 1, llm claims 2" in summary
+    assert "Agreement is with the reference model, not ground truth." in summary
+    assert "jev, P(yes) >= 0.5                 67% (2/3)" in summary
+
+
+def test_a_second_comparison_does_not_overwrite_the_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import benchmarks.runner.__main__ as bench
+
+    bench_root(tmp_path, monkeypatch, [run_record("edit-docstring", 0)])
+    kept_evidence(tmp_path, "edit-docstring", 0)
+    stamps = iter(["2026-10-09T00-00-00Z", "2026-10-09T00-00-01Z"])
+    monkeypatch.setattr(bench, "new_stamp", lambda: next(stamps))
+    assert main(["compare-judges"]) == 0
+    assert main(["compare-judges"]) == 0
+    out = tmp_path / "benchmarks" / "results" / "2026-10-08T00-00-00Z"
+    assert len(list(out.glob("compare-*.jsonl"))) == 2
+
+
+@pytest.mark.parametrize("unset", ["NARE_BASE_URL", "NARE_BENCH_REFERENCE_MODEL"])
+def test_missing_configuration_exits_two_before_any_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unset: str
+) -> None:
+    built = bench_root(tmp_path, monkeypatch, [run_record("edit-docstring", 0)])
+    kept_evidence(tmp_path, "edit-docstring", 0)
+    monkeypatch.delenv(unset)
+    assert main(["compare-judges"]) == 2
+    assert built.jev.calls == []
+    assert built.transports == {}
+
+
+def test_a_missing_key_exits_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bench_root(tmp_path, monkeypatch, [run_record("edit-docstring", 0)])
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    assert main(["compare-judges"]) == 2
+
+
+def test_records_from_two_models_exit_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    records = [
+        run_record("edit-docstring", 0),
+        run_record("edit-docstring", 1, model="other"),
+    ]
+    bench_root(tmp_path, monkeypatch, records)
+    assert main(["compare-judges"]) == 2
+
+
+def test_results_without_evidence_exit_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built = bench_root(tmp_path, monkeypatch, [run_record("edit-docstring", 0)])
+    assert main(["compare-judges"]) == 1
+    assert built.jev.calls == []
+
+
+def test_no_results_at_all_exit_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bench_root(tmp_path, monkeypatch, [])
+    assert main(["compare-judges"]) == 1  # the newest results file is empty
+    missing = tmp_path / "nowhere.jsonl"
+    assert main(["compare-judges", "--results", str(missing)]) == 1

@@ -57,6 +57,77 @@ The stamp is taken when a run starts, and `compare` and `bless` read the
 newest stamp. If two runs overlap, that is the one that started last, not
 the one that finished last, so let one run finish before starting another.
 
+## Comparing judges
+
+`compare-judges` measures how TypeSafe's Jev and the benchmark's own LLM judge
+each agree with a stronger reference model, on the evidence a past run kept.
+It changes no grade, gate or baseline. It produces the numbers for deciding
+whether Jev should judge benchmark runs (#46).
+
+**Agreement is with the reference model, not ground truth.** Nobody labels
+anything by hand, so every figure says how close a judge gets to the
+reference, never whether either is right.
+
+Jev is reached only through the LiteLLM proxy's TypeSafe pass-through, so
+`NARE_BASE_URL` must name the proxy. The proxy holds the TypeSafe key; the
+benchmark sends the same proxy key it uses for `run`.
+
+    export ANTHROPIC_API_KEY=...        # OPENAI_API_KEY for NARE_PROVIDER=openai
+    export NARE_BASE_URL=https://...    # the proxy; required
+    export NARE_BENCH_REFERENCE_MODEL=claude-opus-5-5   # the proxy's alias; required
+    export NARE_BENCH_JUDGE_MODEL=...   # optional: defaults to the model under test
+    export NARE_BENCH_JEV_MODEL=...     # optional: defaults to jev-latest
+
+    bin/bench compare-judges                       # the newest results
+    bin/bench compare-judges --results benchmarks/results/<stamp>.jsonl \
+        --case edit-docstring
+
+The model under test is read from the results file, so `NARE_MODEL` is not
+needed. Only runs that kept `diff.patch` and `closing.txt` can be compared.
+The reference has no default because its alias depends on the proxy.
+
+Two jobs are measured:
+
+- **Claims.** Each judged repetition's claims, judged by Jev (one yes or no
+  question per claim, answered as P(yes)), by the LLM judge, and by the
+  reference.
+- **Triage.** Why each failed repetition failed. `ran_out` and `judge_gate`
+  are decided by code; every other failure is labelled by Jev and by the
+  reference, from the same seven labels.
+
+It writes two files into the compared run's evidence directory, under the
+comparison's own stamp, so a second comparison never overwrites a first:
+
+    benchmarks/results/<stamp>/
+      compare-<cstamp>.jsonl      one line per repetition, task and judge
+      compare-<cstamp>.txt        the summary, as printed
+
+Reading the summary:
+
+- **Claim agreement.** The LLM judge's, and Jev's at each cutoff, where
+  P(yes) at or above the cutoff reads as true. Each band leaves claims
+  between `1 - t` and `t` unanswered and reports coverage, the share
+  answered, and agreement on the rest: the numbers a confidence gate needs.
+  Per-claim lines show a claim Jev handles badly instead of averaging it away.
+- **Outcome flips.** Gated repetitions whose pass or fail would change if
+  that judge replaced the reference. This is the number that changes what
+  the benchmark reports.
+- **Triage.** The code-labelled counts, a confusion table of Jev against the
+  reference in counts, and Jev's median confidence where it agreed and where
+  it did not.
+- **Cost and speed.** Calls, tokens, dollars, and median and p95 latency per
+  judge. `~` marks a cost estimated from Jev's input tokens because the proxy
+  reported none.
+
+Every percentage carries its n. A judge that could not answer is never
+counted as wrong: it drops out of its own figures, and a reference that could
+not answer drops the repetition from every judge's. Jev gives no reason for a
+verdict, and that is not counted against it.
+
+It exits 0 when the comparison finished, even if some judges failed on some
+repetitions, since those failures are in the report; 1 when there is nothing
+to compare; and 2 for a configuration error, before any model is called.
+
 ## Writing a case
 
 A case is a directory: `case.toml` plus a `fixture/` tree that becomes the
