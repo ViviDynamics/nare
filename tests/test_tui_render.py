@@ -1,4 +1,5 @@
 import io
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -6,7 +7,7 @@ from typing import Any
 import pytest
 from rich.console import Console, RenderableType
 
-from nare.session import Message, Usage, new_session
+from nare.session import Message, Usage, dumps, loads, new_session
 from nare.tools import Policy
 from nare.tui.render import (
     Block,
@@ -257,5 +258,6 @@ def test_attach_status_shows_an_interrupted_file_as_interrupted() -> None:
     # Hand-edited or foreign: still not `working`, and no crash.
     s.interrupted_at = "yesterday"
     assert "· interrupted ·" in attach_status(s, None, 5).plain
-    s.interrupted_at = 1700000000  # type: ignore[assignment]
-    assert "· interrupted ·" in attach_status(s, None, 5).plain
+    raw = json.loads(dumps(s))
+    raw["interrupted_at"] = 1700000000
+    assert "· interrupted ·" in attach_status(loads(json.dumps(raw)), None, 5).plain
