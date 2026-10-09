@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from rich.console import Console, RenderableType
+from rich.console import Console, Group, RenderableType
+from rich.text import Text
 
 from nare.session import Message, Usage, dumps, loads, new_session
 from nare.tools import Policy
@@ -15,6 +16,7 @@ from nare.tui.render import (
     attach_status,
     render_messages,
     render_outcome,
+    render_user,
     settled,
     status_line,
     unified,
@@ -261,3 +263,83 @@ def test_attach_status_shows_an_interrupted_file_as_interrupted() -> None:
     raw = json.loads(dumps(s))
     raw["interrupted_at"] = 1700000000
     assert "· interrupted ·" in attach_status(loads(json.dumps(raw)), None, 5).plain
+
+
+def result_style(messages: list[Message], root: str | None = None) -> str:
+    group = render_messages(messages, 0, 2, root)[0].content
+    assert isinstance(group, Group)
+    last = group.renderables[-1]
+    assert isinstance(last, Text)
+    return str(last.style)
+
+
+def test_a_nonzero_exit_is_a_failure() -> None:
+    bash = call("bash", {"command": "python x.py"})
+    assert result_style([bash, answer("exit 127\npython: not found")]) == "red"
+    assert result_style([bash, answer("exit -9")]) == "red"  # a signal
+    assert result_style([bash, answer("exit 0\nok")]) == "dim"
+
+
+def test_the_bash_header_drops_cd_root_and_folds_a_heredoc() -> None:
+    def header(command: str) -> str:
+        messages = [call("bash", {"command": command}), answer("exit 0")]
+        return plain(render_messages(messages, 0, 2, "/r")).splitlines()[0]
+
+    assert header("cd /r && python3 -m unittest") == "● bash python3 -m unittest"
+    assert header("cd . && ls") == "● bash ls"
+    assert header("cd /elsewhere && ls") == "● bash cd /elsewhere && ls"
+    heredoc = "cat > a.py <<'EOF'\n" + "x = 1\n" * 11 + "EOF"
+    assert header(heredoc) == "● bash cat > a.py <<'EOF' (+12 lines)"
+
+
+def test_a_long_edit_diff_is_capped_at_twenty_lines() -> None:
+    old = "\n".join(f"a{n}" for n in range(28))
+    new = "\n".join(f"b{n}" for n in range(29))
+    assert len(unified(old, new, "f.py").splitlines()) == 60
+    edit = call("edit", {"path": "f.py", "old": old, "new": new})
+    text = plain(render_messages([edit, answer("edited f.py")], 0, 2))
+    assert "-a16" in text and "-a17" not in text
+    assert "… 40 more lines" in text
+
+
+def test_results_are_one_line_with_paths_relative_to_the_root() -> None:
+    write = call("write", {"path": "/r/app.py", "content": "a\nb\nc\n"})
+    text = plain(render_messages([write, answer("wrote 6 characters to /r/app.py")],
+                                 0, 2, "/r"))  # fmt: skip
+    assert "● write app.py" in text
+    assert "wrote app.py (3 lines)" in text
+    read = call("read", {"path": "/r/app.py"})
+    text = plain(render_messages([read, answer("secret\ncontent")], 0, 2, "/r"))
+    assert "read app.py (2 lines)" in text
+    assert "secret" not in text
+    edit = call("edit", {"path": "/r/app.py", "old": "a", "new": "b"})
+    text = plain(render_messages([edit, answer("edited /r/app.py")], 0, 2, "/r"))
+    assert "--- a/app.py" in text and "edited app.py" in text
+
+
+def test_ask_is_a_count_and_its_success_is_hidden() -> None:
+    ask = call("ask", {"questions": ["which file?", "which test?"]})
+    text = plain(render_messages([ask, answer("questions sent")], 0, 2))
+    assert text.strip() == "? asked 2 questions"
+    text = plain(render_messages([ask, answer("no questions", error=True)], 0, 2))
+    assert "no questions" in text
+
+
+def test_single_newlines_are_kept_outside_code_fences() -> None:
+    reply = "one\ntwo\n\n```\nx = 1\ny = 2\n```"
+    lines = plain(render_messages([Message("assistant", [{"type": "text",
+                                   "text": reply}])], 0, 1)).splitlines()  # fmt: skip
+    assert [line.strip() for line in lines if line.strip()] == [
+        "one", "two", "x = 1", "y = 2",
+    ]  # fmt: skip
+
+
+def test_a_blank_line_before_text_and_a_rule_before_a_prompt() -> None:
+    messages = [call("bash", {"command": "ls"}), answer("exit 0"),
+                Message("assistant", [{"type": "text", "text": "done"}])]  # fmt: skip
+    lines = [
+        line.rstrip() for line in plain(render_messages(messages, 0, 3)).splitlines()
+    ]
+    assert lines[lines.index("done") - 1] == ""
+    rule, prompt = plain(render_user("next")).splitlines()
+    assert set(rule) == {"─"} and prompt == "> next"
