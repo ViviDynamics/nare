@@ -68,7 +68,7 @@ whether Jev should judge benchmark runs (#46).
 anything by hand, so every figure says how close a judge gets to the
 reference, never whether either is right.
 
-Jev is reached only through the LiteLLM proxy's TypeSafe pass-through, so
+Jev is reached only through the LiteLLM proxy's `/jev/decisions` route, so
 `NARE_BASE_URL` must name the proxy. The proxy holds the TypeSafe key; the
 benchmark sends the same proxy key it uses for `run`.
 
@@ -116,8 +116,8 @@ Reading the summary:
   reference in counts, and Jev's median confidence where it agreed and where
   it did not.
 - **Cost and speed.** Calls, tokens, dollars, and median and p95 latency per
-  judge. `~` marks a cost estimated from Jev's input tokens because the proxy
-  reported none.
+  judge. `~` marks a cost estimated from Jev's input tokens because neither
+  the proxy's header nor Jev's reply reported one.
 
 Every percentage carries its n. A judge that could not answer is never
 counted as wrong: it drops out of its own figures, and a reference that could

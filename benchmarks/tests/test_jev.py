@@ -81,11 +81,11 @@ class Script:
 _check: Jev = Script().client()
 
 
-async def test_posts_to_the_pass_through_with_the_proxy_key() -> None:
+async def test_posts_to_the_proxys_jev_route_with_the_proxy_key() -> None:
     script = Script(ok())
     await script.client().ask("def add(a, b): ...", QUESTIONS)
     (request,) = script.requests
-    assert str(request.url) == "https://proxy.example/typesafe/v1/systemone"
+    assert str(request.url) == "https://proxy.example/jev/decisions"
     assert request.headers["authorization"] == "Bearer sk-proxy"
     assert json.loads(request.content) == {
         "model": "jev-latest",
@@ -97,7 +97,7 @@ async def test_posts_to_the_pass_through_with_the_proxy_key() -> None:
 async def test_a_base_url_without_v1_is_used_as_it_is() -> None:
     script = Script(ok())
     await script.client("https://proxy.example/").ask("s", QUESTIONS)
-    assert str(script.requests[0].url) == "https://proxy.example/typesafe/v1/systemone"
+    assert str(script.requests[0].url) == "https://proxy.example/jev/decisions"
 
 
 async def test_parses_noul_and_choice_answers() -> None:
@@ -195,6 +195,34 @@ async def test_cost_comes_from_the_proxy_header() -> None:
     reply = await script.client().ask("s", QUESTIONS)
     assert reply.cost == pytest.approx(0.0000131)
     assert not reply.cost_estimated
+
+
+def priced(cost: Any) -> httpx2.Response:
+    """A reply whose body reports `usage.cost`, as the proxy's does."""
+    usage = {"input_tokens": 312, "output_tokens": 48, "cost": cost}
+    body = {"model": "jev-1.13.0", "answers": ANSWERS, "usage": usage}
+    return httpx2.Response(200, json=body)
+
+
+async def test_cost_comes_from_the_body_without_the_header() -> None:
+    reply = await Script(priced(0.0000119)).client().ask("s", QUESTIONS)
+    assert reply.cost == pytest.approx(0.0000119)
+    assert not reply.cost_estimated
+
+
+async def test_the_header_wins_over_the_body_cost() -> None:
+    response = priced(0.0000119)
+    response.headers["x-litellm-response-cost"] = "0.0000131"
+    reply = await Script(response).client().ask("s", QUESTIONS)
+    assert reply.cost == pytest.approx(0.0000131)
+    assert not reply.cost_estimated
+
+
+@pytest.mark.parametrize("cost", [-0.5, "0.0000119", True, None])
+async def test_an_unusable_body_cost_falls_back_to_the_estimate(cost: Any) -> None:
+    reply = await Script(priced(cost)).client().ask("s", QUESTIONS)
+    assert reply.cost == pytest.approx(312 * JEV_PRICE_IN / 1e6)
+    assert reply.cost_estimated
 
 
 async def test_cost_is_estimated_from_tokens_without_the_header() -> None:

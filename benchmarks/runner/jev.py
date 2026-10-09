@@ -4,9 +4,10 @@ A second client, which judge.py exists to avoid: it runs through nare's own
 transport so judging reaches every provider nare reaches, with no second
 credential path. Jev is not a nare provider and has no Chat Completions form,
 so there is nothing to reuse. This client stays in benchmarks/, is reached only
-through the proxy's TypeSafe pass-through, and sends the run's own proxy key;
-the TypeSafe key never leaves the proxy. Like the openai rail, it uses httpx2,
-which already arrives with anthropic, so it adds no dependency.
+through the proxy's /jev/decisions route (LiteLLM forwards it to the TypeSafe
+provider), and sends the run's own proxy key; the TypeSafe key never leaves
+the proxy. Like the openai rail, it uses httpx2, which already arrives with
+anthropic, so it adds no dependency.
 """
 
 from __future__ import annotations
@@ -92,9 +93,9 @@ class Jev(Protocol):
 
 
 def endpoint(base_url: str) -> str:
-    """The pass-through hangs off the proxy root, not off its /v1."""
+    """The Jev route hangs off the proxy root, not off its /v1."""
     root = base_url.rstrip("/").removesuffix("/v1")
-    return f"{root}/typesafe/v1/systemone"
+    return f"{root}/jev/decisions"
 
 
 def retry_after(headers: Mapping[str, str]) -> float:
@@ -121,6 +122,13 @@ def _input_tokens(usage: Any) -> int | None:
     if isinstance(raw, bool) or not isinstance(raw, int):
         return None
     return raw
+
+
+def _body_cost(usage: Any) -> float | None:
+    raw = usage.get("cost") if isinstance(usage, dict) else None
+    if isinstance(raw, bool) or not isinstance(raw, int | float):
+        return None
+    return float(raw) if math.isfinite(raw) and raw >= 0 else None
 
 
 def parse_answer(qid: str, question: Mapping[str, Any], raw: Any) -> Answer:
@@ -230,9 +238,13 @@ class JevClient:
         except JevError as exc:
             exc.body = response.text
             raise
-        counted = _input_tokens(payload.get("usage"))
-        # Unknown, not zero, when there is neither a header nor a count.
+        usage = payload.get("usage")
+        counted = _input_tokens(usage)
+        # The proxy's header, else the cost in Jev's own body; neither is an
+        # estimate. Unknown, not zero, when there is no cost and no count.
         cost = reported_cost(response.headers)
+        if cost is None:
+            cost = _body_cost(usage)
         estimated = cost is None and counted is not None
         if cost is None and counted is not None:
             cost = counted * JEV_PRICE_IN / 1e6
