@@ -35,7 +35,7 @@ from textual.worker import Worker, WorkerCancelled
 from nare.accounting import Prices
 from nare.cli import policy_from_args, transport_from_args, validate_run_args
 from nare.contract import NARE_VERSION, NEVER_STARTED
-from nare.events import Event
+from nare.events import Event, redact
 from nare.loop import configure_budgets, run
 from nare.session import Session, Usage, loads, new_session, reopen, save, unanswered
 from nare.tools import Policy
@@ -220,6 +220,9 @@ class TuiApp(App[None]):
         # trailing user message the transcript has already drawn.
         transcript.add(render_user(text))
         self.drawn = len(messages)
+        # Now, not after the first turn: reopen cleared interrupted_at, and
+        # --attach would read the live run as interrupted until then.
+        self._save()
         self.query_one(Input).value = ""
         self.note = None
         self.worker = self.run_worker(self._drive(self.session), exclusive=True)
@@ -417,23 +420,38 @@ def logs_as_notices(app: App[None]) -> Iterator[None]:
         root.handlers = saved
 
 
+def _sessions_dir() -> Path | None:
+    """$XDG_STATE_HOME/nare/sessions. A relative XDG_STATE_HOME is ignored,
+    as the XDG spec says; None when there is no home directory either.
+    """
+    state = os.environ.get("XDG_STATE_HOME", "")
+    if not os.path.isabs(state):
+        try:
+            state = str(Path.home() / ".local" / "state")
+        except RuntimeError:  # no HOME and no passwd entry
+            return None
+    return Path(state) / "nare" / "sessions"
+
+
 def prepare(args: argparse.Namespace, transport: Transport | None = None) -> TuiApp:
     """Everything that can fail at startup, before Textual takes the screen."""
     prices = validate_run_args(args)
     policy = policy_from_args(args)
     session_id: str | None = None
     warning: str | None = None
+    sessions = _sessions_dir()
     if not args.session:
         # Every run is saved, outside the project.
+        if sessions is None:
+            raise ValueError("no home directory to save the session in: pass --session")
         session_id = uuid.uuid4().hex
-        state = os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state"
-        directory = Path(state) / "nare" / "sessions"
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        args.session = str(directory / f"{session_id}.json")
+        sessions.mkdir(mode=0o700, parents=True, exist_ok=True)
+        args.session = str(sessions / f"{session_id}.json")
     else:
         path = Path(args.session).resolve()
         root = Path(args.root or ".").resolve()
-        if path.is_relative_to(root) or path.is_relative_to(Path.cwd()):
+        ours = sessions is not None and path.is_relative_to(sessions.resolve())
+        if not ours and (path.is_relative_to(root) or path.is_relative_to(Path.cwd())):
             # The practice run's `git add -A` committed one.
             warning = (
                 f"session file {path} is inside the project: git add -A would commit it"
@@ -465,22 +483,23 @@ def exit_summary(app: TuiApp, keep: int = 20) -> str:
     """
     if app.session is None:
         return ""
-    lines: list[str] = []
-    for message in reversed(app.session.messages):
-        texts = [
-            str(b.get("text", ""))
-            for b in message.content
-            if b.get("type") == "text" and b.get("text")
-        ]
-        if message.role == "assistant" and texts:
-            lines = "\n".join(texts).splitlines()
-            break
+    # The final turn only: an earlier run's answer is not this run's.
+    replies = [m for m in app.session.messages if m.role == "assistant"]
+    texts = [
+        str(b.get("text", ""))
+        for b in (replies[-1].content if replies else [])
+        if b.get("type") == "text"
+    ]
+    # Redacted, as the session file is: scrollback outlives the screen.
+    lines = redact("\n".join(texts)).splitlines()
     if len(lines) > keep:
         lines = lines[:keep] + [f"... {len(lines) - keep} more lines"]
+    outcome = render_outcome(app.session).plain  # the question, or the error
     path = shlex.quote(str(Path(app.args.session).resolve()))
     return "\n".join(
         [
             *lines,
+            *([outcome] if outcome else []),
             app.status_text().plain,
             f"session: {path} · resume: nare tui --resume {path}",
         ]

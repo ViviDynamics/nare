@@ -257,3 +257,5 @@ def test_attach_status_shows_an_interrupted_file_as_interrupted() -> None:
     # Hand-edited or foreign: still not `working`, and no crash.
     s.interrupted_at = "yesterday"
     assert "· interrupted ·" in attach_status(s, None, 5).plain
+    s.interrupted_at = 1700000000  # type: ignore[assignment]
+    assert "· interrupted ·" in attach_status(s, None, 5).plain

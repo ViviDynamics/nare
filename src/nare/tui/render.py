@@ -220,7 +220,7 @@ def _interrupted(stamp: str | None) -> str | None:
         return None
     try:
         when = datetime.fromisoformat(stamp)
-    except ValueError:
+    except (TypeError, ValueError):  # hand-edited or foreign
         return "interrupted"
     return f"interrupted {_ago(time.time() - when.timestamp())}"
 

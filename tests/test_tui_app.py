@@ -466,7 +466,7 @@ async def test_the_first_line_names_model_root_and_session(tmp_path: Path) -> No
 
 
 async def test_a_session_file_inside_the_project_warns(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     app = make(tmp_path, FakeProvider([]))
     assert "inside the project" in capsys.readouterr().err
@@ -480,20 +480,63 @@ async def test_a_session_file_inside_the_project_warns(
     )  # fmt: skip
     prepare(args, FakeProvider([]))
     assert capsys.readouterr().err == ""
+    monkeypatch.chdir(tmp_path)  # under the cwd, though not under --root
+    prepare(args, FakeProvider([]))
+    assert "inside the project" in capsys.readouterr().err
+
+
+def test_no_warning_for_a_file_in_nares_own_state_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Resuming the printed path from $HOME, which holds the state dir.
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    home.mkdir()
+    monkeypatch.chdir(home)
+    path = home / ".local" / "state" / "nare" / "sessions" / "x.json"
+    args = build_parser().parse_args(["tui", "--model", "fake", "--session", str(path)])
+    prepare(args, FakeProvider([]))
+    assert capsys.readouterr().err == ""
 
 
 async def test_without_session_the_run_is_saved_under_xdg_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "st ate"))
     args = build_parser().parse_args(["tui", "--model", "fake", "go"])
     app = prepare(args, FakeProvider([text_reply("all done")]))
     async with app.run_test() as pilot:
         await until(pilot, lambda: app.run_state == "done")
     assert app.session is not None
-    path = tmp_path / "state" / "nare" / "sessions" / f"{app.session.id}.json"
+    path = tmp_path / "st ate" / "nare" / "sessions" / f"{app.session.id}.json"
     assert json.loads(path.read_text())["status"] == "done"
-    assert f"resume: nare tui --resume {path}" in exit_summary(app)
+    assert f"resume: nare tui --resume '{path}'" in exit_summary(app)
+
+
+def test_a_relative_xdg_state_home_is_ignored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The XDG spec says so, and here it would put the file in the project.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_STATE_HOME", "state")
+    monkeypatch.chdir(tmp_path)
+    args = build_parser().parse_args(["tui", "--model", "fake"])
+    prepare(args, FakeProvider([]))
+    sessions = tmp_path / "home" / ".local" / "state" / "nare" / "sessions"
+    assert Path(args.session).parent == sessions
+
+
+def test_no_home_directory_exits_two(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def no_home() -> Path:
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", no_home)
+    assert main(["tui", "--model", "fake"], transport=FakeProvider([])) == 2
+    assert "--session" in capsys.readouterr().err
 
 
 async def test_esc_then_quit_records_the_interrupt_and_resume_clears_it(
@@ -508,11 +551,14 @@ async def test_esc_then_quit_records_the_interrupt_and_resume_clears_it(
         await pilot.press("ctrl+q")
     path = tmp_path / "s.json"
     assert loads(path.read_text()).interrupted_at is not None
-    app = make(tmp_path, FakeProvider([text_reply("ok")]), "--resume", str(path))
+    transport = Stalled()
+    app = make(tmp_path, transport, "--resume", str(path))
     async with app.run_test() as pilot:
         await submit(pilot, app, "again")
-        await until(pilot, lambda: app.run_state == "done")
-    assert loads(path.read_text()).interrupted_at is None
+        await until(pilot, lambda: transport.calls == 1)
+        # Mid-turn: --attach must not read the live run as interrupted.
+        assert loads(path.read_text()).interrupted_at is None
+        await pilot.press("ctrl+q")
 
 
 async def test_the_exit_summary_keeps_the_answer_and_the_resume_command(
@@ -530,3 +576,30 @@ async def test_the_exit_summary_keeps_the_answer_and_the_resume_command(
     assert summary[19:21] == ["line 20", "... 10 more lines"]
     assert summary[-2].startswith("fake · turn 1/50") and summary[-2].endswith("done")
     assert summary[-1] == f"session: {path} · resume: nare tui --resume {path}"
+
+
+def test_the_exit_summary_names_the_question_or_the_error(tmp_path: Path) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    session = new_session("go")
+    session.messages += [
+        Message("assistant", [{"type": "text", "text": "I looked at foo.py"}]),
+        Message("user", [{"type": "text", "text": "now bar"}]),
+        Message("assistant", [{"type": "tool_use", "id": "c1", "name": "ask",
+                               "input": {"questions": ["which file?"]}}]),
+    ]  # fmt: skip
+    session.status, session.questions = "blocked", ["which file?"]
+    app.session = session
+    summary = exit_summary(app)
+    assert "foo.py" not in summary  # an earlier run's answer
+    assert "1. which file?" in summary
+    session.status, session.error = "error", "RuntimeError: connection reset"
+    assert "RuntimeError: connection reset" in exit_summary(app)
+
+
+def test_the_exit_summary_is_redacted(tmp_path: Path) -> None:
+    key = "sk-ant-" + "a" * 30
+    app = make(tmp_path, FakeProvider([]))
+    app.session = new_session("go")
+    app.session.messages.append(Message("assistant", [{"type": "text", "text": key}]))
+    summary = exit_summary(app)
+    assert key not in summary and "[redacted]" in summary
