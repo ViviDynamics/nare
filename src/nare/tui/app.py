@@ -200,11 +200,17 @@ class TuiApp(App[None]):
         return True
 
     def action_page(self, direction: int) -> None:
+        # A scroll that does not move still releases the anchor, and Textual
+        # only re-checks it when the offset changes: the view would stop
+        # following. So a page that reaches the bottom re-anchors instead.
         transcript = self.query_one(Transcript)
-        if direction < 0:
-            transcript.scroll_page_up()
-        else:
+        page = transcript.scrollable_content_region.height
+        if direction > 0 and transcript.scroll_y + page >= transcript.max_scroll_y:
+            transcript.anchor()
+        elif direction > 0:
             transcript.scroll_page_down()
+        elif transcript.scroll_y > 0:
+            transcript.scroll_page_up()
 
     def action_interrupt(self) -> None:
         if self.worker is not None:
@@ -286,7 +292,10 @@ class TuiApp(App[None]):
             self._save()
 
     def _event(self, event: Event) -> None:
-        if "compaction" in event.detail or "context_window" in event.detail:
+        notice = event.type == "progress" and (
+            "compaction" in event.detail or "context_window" in event.detail
+        )
+        if notice:
             # Kept: the live area clears when the turn settles. The window is
             # announced on every follow-up, so only a change is news.
             if event.text != self.window:
@@ -415,7 +424,8 @@ class AttachApp(App[None]):
                 self.drawn = 0
             messages = update.session.messages
             end = settled(messages)
-            root = update.session.policy.get("root")
+            policy = update.session.policy
+            root = policy.get("root") if isinstance(policy, dict) else None
             transcript.add(render_messages(messages, self.drawn, end, root))
             self.drawn = end
             self.query_one("#outcome", Static).update(render_outcome(update.session))
@@ -454,7 +464,7 @@ class _Notices(logging.Handler):
 def logs_as_notices(app: App[None]) -> Iterator[None]:
     """Textual draws on the real stderr, and a handler already holding that
     stream (nare run's basicConfig) would paint over the screen. Records
-    become notifications instead, and the old handlers come back after.
+    become transcript lines instead, and the old handlers come back after.
     """
     root = logging.getLogger()
     saved, root.handlers = root.handlers, [_Notices(app)]

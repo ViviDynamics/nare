@@ -302,6 +302,14 @@ def test_a_long_edit_diff_is_capped_at_twenty_lines() -> None:
     assert "… 40 more lines" in text
 
 
+def test_a_root_that_is_not_an_absolute_string_is_ignored() -> None:
+    messages = [call("bash", {"command": "cd /r && ls"}), answer("exit 0")]
+    roots: list[Any] = ["r", 5]  # relative, and a hand-edited file's number
+    for root in roots:
+        text = plain(render_messages(messages, 0, 2, root))
+        assert "cd /r && ls" in text
+
+
 def test_results_are_one_line_with_paths_relative_to_the_root() -> None:
     write = call("write", {"path": "/r/app.py", "content": "a\nb\nc\n"})
     text = plain(render_messages([write, answer("wrote 6 characters to /r/app.py")],
@@ -318,9 +326,14 @@ def test_results_are_one_line_with_paths_relative_to_the_root() -> None:
 
 
 def test_ask_is_a_count_and_its_success_is_hidden() -> None:
-    ask = call("ask", {"questions": ["which file?", "which test?"]})
+    ask = call("ask", {"questions": ["which file?", " ", "which test?"]})
     text = plain(render_messages([ask, answer("questions sent")], 0, 2))
-    assert text.strip() == "? asked 2 questions"
+    # The questions stay listed: the panel goes once they are answered.
+    assert [line.strip() for line in text.strip().splitlines()] == [
+        "? asked 2 questions", "1. which file?", "2. which test?",
+    ]  # fmt: skip
+    one = call("ask", {"questions": "which file?"})  # as questions_from reads it
+    assert "? asked 1 question\n" in plain(render_messages([one, answer("ok")], 0, 2))
     text = plain(render_messages([ask, answer("no questions", error=True)], 0, 2))
     assert "no questions" in text
 

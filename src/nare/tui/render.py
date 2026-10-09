@@ -24,7 +24,8 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from nare.session import Message, Session, Usage, unanswered
-from nare.tools import Policy
+from nare.tools import Policy, questions_from
+from nare.transport import ToolCall
 
 RESULT_LINES = 5
 DIFF_LINES = 20
@@ -58,7 +59,7 @@ def render_messages(
     """`root` is the run's --root: commands and paths are shown relative to it.
     A relative one is ignored: a saved session can be watched from anywhere.
     """
-    if root is not None and not os.path.isabs(root):
+    if not isinstance(root, str) or not os.path.isabs(root):
         root = None
     blocks: list[Block] = []
     for index in range(start, end):
@@ -177,14 +178,15 @@ def _call(
     args = block.get("input") or {}
     failed = answer is not None and _failed(name, answer)
     if name == "ask":
-        # The questions are in the outcome panel; a success says nothing more.
-        questions = args.get("questions")
-        n = len(questions) if isinstance(questions, list) else 0
+        # Listed, not left to the outcome panel: it goes once they are answered.
+        questions = questions_from([ToolCall("", name, args)])
+        n = len(questions)
         header = Text(
             f"? asked {n} question{'' if n == 1 else 's'}", style="bold yellow"
         )
+        listed = [f"  {i}. {q}" for i, q in enumerate(questions, 1)]
         if not failed:
-            return header
+            return Group(header, Text("\n".join(listed), style="yellow"))
     else:
         header = Text(f"● {name} {_summary(name, args, root)}", style="bold cyan")
     parts: list[RenderableType] = [header]

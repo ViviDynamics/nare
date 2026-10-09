@@ -414,6 +414,28 @@ async def test_page_keys_scroll_the_transcript_while_you_type(tmp_path: Path) ->
         transcript.add([Block(Text("newest"))])
         await pilot.pause()
         assert transcript.scroll_y == transcript.max_scroll_y
+        # A page key with nowhere to go must not let go of the bottom either.
+        await pilot.press("pagedown")
+        transcript.add([Block(Text(f"C{n:02d}x")) for n in range(30)])
+        await pilot.pause()
+        assert "C29x" in app.export_screenshot()
+
+
+async def test_pageup_on_a_short_transcript_keeps_following(tmp_path: Path) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    async with app.run_test() as pilot:
+        await pilot.press("pageup")
+        app.query_one(Transcript).add([Block(Text(f"B{n:02d}x")) for n in range(60)])
+        await pilot.pause()
+        assert "B59x" in app.export_screenshot()
+
+
+def test_a_tool_call_with_a_notice_shaped_argument_is_not_a_notice(
+    tmp_path: Path,
+) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    app._event(Event("tool_use", "mcp_llm_query", {"context_window": 8000}))
+    assert app.window is None
 
 
 async def test_esc_during_a_streamed_turn_leaves_a_mark(tmp_path: Path) -> None:
