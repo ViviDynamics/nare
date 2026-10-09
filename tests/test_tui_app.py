@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 from rich.console import Console, RenderableType
+from rich.text import Text
 from textual.app import App
 from textual.pilot import Pilot
 from textual.widgets import Input, Static
@@ -22,11 +23,13 @@ from nare.transport import Delta, Reply, Transport
 from nare.tui.app import (
     ApprovalScreen,
     AttachApp,
+    Transcript,
     TuiApp,
     exit_summary,
     logs_as_notices,
     prepare,
 )
+from nare.tui.render import Block
 
 
 async def until(pilot: Pilot[None], condition: Callable[[], bool]) -> None:
@@ -315,7 +318,7 @@ async def test_a_failed_save_is_a_warning_not_fatal(
         assert "could not write" in text_of(app, "#status")
 
 
-async def test_a_log_warning_is_a_notification_not_stderr(
+async def test_a_log_warning_is_a_transcript_line_not_stderr(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # What cli.main's basicConfig gives nare run.
@@ -326,24 +329,124 @@ async def test_a_log_warning_is_a_notification_not_stderr(
         with logs_as_notices(app):
             async with app.run_test() as pilot:
                 logging.getLogger("nare.transport").warning("discovery [failed]")
-                await until(
-                    pilot,
-                    lambda: any(
-                        n.message == "discovery [failed]" for n in app._notifications
-                    ),
-                )
+                # In the transcript, not a toast that is gone in seconds.
+                await until(pilot, lambda: "discovery [failed]" in shown(app))
         assert stderr in logging.getLogger().handlers  # put back for nare run
     finally:
         logging.getLogger().removeHandler(stderr)
     assert "discovery" not in capsys.readouterr().err
 
 
-def test_a_notice_gets_its_own_line_in_the_live_area(tmp_path: Path) -> None:
+async def test_notices_stay_in_the_transcript_after_the_turn(tmp_path: Path) -> None:
+    app = make(tmp_path, FakeProvider([text_reply("ok")]))
+    async with app.run_test() as pilot:
+        compacted = "compacted: elided 3 tool results, ~900 -> ~300 tokens"
+        app._event(Event("progress", compacted, {"compaction": {}}))
+        await submit(pilot, app, "go")
+        await until(pilot, lambda: app.run_state == "done")
+        assert compacted in shown(app)
+        assert "context window 32000 (default)" in shown(app)
+        assert app.live.plain == ""
+        await submit(pilot, app, "again")
+        await until(pilot, lambda: app.run_state == "error")  # out of replies
+        assert shown(app).count("context window 32000") == 1  # unchanged
+
+
+def test_an_image_notice_gets_its_own_line_in_the_live_area(tmp_path: Path) -> None:
     app = make(tmp_path, FakeProvider([]))
-    notice = {"context_window": {"tokens": 32000, "source": "default"}}
-    app._event(Event("progress", "context window 32000 (default)", notice))
+    app._event(Event("progress", "read a.png", {"tool": "read", "image": {}}))
     app._event(Event("progress", "hello"))
-    assert app.live.plain == "context window 32000 (default)\nhello"
+    assert app.live.plain == "read a.png\nhello"
+
+
+async def test_the_newest_block_stays_in_view(tmp_path: Path) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    async with app.run_test(size=(100, 40)) as pilot:
+        app.query_one(Transcript).add([Block(Text(f"B{n:02d}x")) for n in range(60)])
+        await pilot.pause()
+        live = Text("\n".join(f"live {n}" for n in range(10)))
+        app.query_one("#live-text", Static).update(live)
+        await pilot.pause()
+        assert "B59x" in app.export_screenshot()
+        await pilot.resize_terminal(80, 24)
+        await pilot.pause()
+        assert "B59x" in app.export_screenshot()
+
+
+async def test_a_settled_turn_leaves_a_scrolled_up_transcript_alone(
+    tmp_path: Path,
+) -> None:
+    transport = Streaming("thinking it over\n")
+    app = make(tmp_path, transport)
+    async with app.run_test() as pilot:
+        transcript = app.query_one(Transcript)
+        transcript.add([Block(Text(f"B{n:02d}x")) for n in range(60)])
+        await submit(pilot, app, "go")
+        await until(pilot, lambda: "thinking it over" in app.live.plain)
+        await pilot.press("pageup")
+        await pilot.pause()
+        where = transcript.scroll_y
+        assert where < transcript.max_scroll_y
+        transport.release.set()
+        await until(pilot, lambda: app.run_state == "done")
+        await pilot.pause()
+        assert transcript.scroll_y == where
+        # Sending a prompt brings you back to the newest content.
+        await submit(pilot, app, "again")
+        await until(pilot, lambda: app.run_state == "done")
+        await pilot.pause()
+        assert transcript.scroll_y == transcript.max_scroll_y
+
+
+async def test_page_keys_scroll_the_transcript_while_you_type(tmp_path: Path) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    async with app.run_test() as pilot:
+        transcript = app.query_one(Transcript)
+        transcript.add([Block(Text(f"B{n:02d}x")) for n in range(60)])
+        await pilot.pause()
+        assert app.focused is app.query_one(Input)
+        await pilot.press("pageup")
+        await pilot.pause()
+        assert transcript.scroll_y < transcript.max_scroll_y
+        await pilot.press("pagedown")
+        await pilot.pause()
+        # Back at the bottom, the anchor holds again.
+        transcript.add([Block(Text("newest"))])
+        await pilot.pause()
+        assert transcript.scroll_y == transcript.max_scroll_y
+        # A page key with nowhere to go must not let go of the bottom either.
+        await pilot.press("pagedown")
+        transcript.add([Block(Text(f"C{n:02d}x")) for n in range(30)])
+        await pilot.pause()
+        assert "C29x" in app.export_screenshot()
+
+
+async def test_pageup_on_a_short_transcript_keeps_following(tmp_path: Path) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    async with app.run_test() as pilot:
+        await pilot.press("pageup")
+        app.query_one(Transcript).add([Block(Text(f"B{n:02d}x")) for n in range(60)])
+        await pilot.pause()
+        assert "B59x" in app.export_screenshot()
+
+
+def test_a_tool_call_with_a_notice_shaped_argument_is_not_a_notice(
+    tmp_path: Path,
+) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    app._event(Event("tool_use", "mcp_llm_query", {"context_window": 8000}))
+    assert app.window is None
+
+
+async def test_esc_during_a_streamed_turn_leaves_a_mark(tmp_path: Path) -> None:
+    transport = Streaming("half an answer\n")
+    app = make(tmp_path, transport, prompt="go")
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: "half an answer" in app.live.plain)
+        await pilot.press("escape")
+        await until(pilot, lambda: app.run_state == "interrupted")
+        await pilot.pause()
+        assert "— interrupted —" in shown(app)
 
 
 async def test_the_live_block_shows_the_newest_streamed_text(tmp_path: Path) -> None:

@@ -27,6 +27,7 @@ from textual.app import App, ComposeResult
 from textual.await_remove import AwaitRemove
 from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import Collapsible, Input, Static
@@ -69,13 +70,17 @@ BUSY = ("working", "awaiting approval")
 
 
 class Transcript(VerticalScroll):
+    """Anchored by its app: it follows new blocks until you scroll up."""
+
     def add(self, blocks: list[Block]) -> None:
         for block in blocks:
             if block.title is None:
                 self.mount(Static(block.content))
             else:
                 self.mount(Collapsible(Static(block.content), title=block.title))
-        self.scroll_end(animate=False)
+
+    def note(self, text: str, style: str = "dim") -> None:
+        self.add([Block(Text(text, style=style))])
 
     def reset(self) -> AwaitRemove:
         return self.remove_children()
@@ -113,6 +118,9 @@ class TuiApp(App[None]):
         Binding("ctrl+c", "interrupt", "interrupt", priority=True),
         Binding("escape", "interrupt", "interrupt"),
         Binding("ctrl+q", "quit", "quit", priority=True),
+        # The input box has focus and no use for them: the transcript does.
+        Binding("pageup", "page(-1)", "scroll up", show=False),
+        Binding("pagedown", "page(1)", "scroll down", show=False),
     ]
 
     def __init__(
@@ -136,6 +144,7 @@ class TuiApp(App[None]):
         self.args = args
         self.prices = prices
         self.prompt = prompt
+        self.root = str(Path(args.root or ".").resolve())
         self.approver = Approver(self._ask)
         self.run_state = "idle"
         if session is not None:
@@ -147,6 +156,7 @@ class TuiApp(App[None]):
         self.drawn = 0
         self.turns_from = 0 if session is None else session.turns
         self.live = Text()
+        self.window: str | None = None  # the last context window announced
         self.worker: Worker[None] | None = None
 
     def compose(self) -> ComposeResult:
@@ -160,9 +170,11 @@ class TuiApp(App[None]):
 
     def on_mount(self) -> None:
         self.query_one("#live", VerticalScroll).anchor()
-        root = Path(self.args.root or ".").resolve()
+        # Not scroll_end on every block: that pulled you down mid-read, and
+        # the anchor also holds the last line when #live grows or on resize.
+        self.query_one(Transcript).anchor()
         start = (
-            f"nare {NARE_VERSION} · {self.args.model} · root {root} · "
+            f"nare {NARE_VERSION} · {self.args.model} · root {self.root} · "
             f"session {Path(self.args.session).resolve()}"
         )
         blocks = [Block(Text(start, style="dim"))]
@@ -186,6 +198,19 @@ class TuiApp(App[None]):
                 and not self.worker.is_cancelled
             )
         return True
+
+    def action_page(self, direction: int) -> None:
+        # A scroll that does not move still releases the anchor, and Textual
+        # only re-checks it when the offset changes: the view would stop
+        # following. So a page that reaches the bottom re-anchors instead.
+        transcript = self.query_one(Transcript)
+        page = transcript.scrollable_content_region.height
+        if direction > 0 and transcript.scroll_y + page >= transcript.max_scroll_y:
+            transcript.anchor()
+        elif direction > 0:
+            transcript.scroll_page_down()
+        elif transcript.scroll_y > 0:
+            transcript.scroll_page_up()
 
     def action_interrupt(self) -> None:
         if self.worker is not None:
@@ -213,9 +238,11 @@ class TuiApp(App[None]):
             reopen(self.session, text)
         messages = self.session.messages
         transcript = self.query_one(Transcript)
+        transcript.anchor()  # back to the newest, if you had scrolled up
         # A turn held back for its results first: reopen just answered it.
         if self.drawn < len(messages) - 1:
-            transcript.add(render_messages(messages, self.drawn, len(messages) - 1))
+            end = len(messages) - 1
+            transcript.add(render_messages(messages, self.drawn, end, self.root))
         # Drawn from the text, not from the session: reopen merges it into a
         # trailing user message the transcript has already drawn.
         transcript.add(render_user(text))
@@ -260,22 +287,36 @@ class TuiApp(App[None]):
         finally:
             self.live = Text()
             self._draw()
+            if self.run_state == "interrupted":
+                self.query_one(Transcript).note("— interrupted —")
             self._save()
 
     def _event(self, event: Event) -> None:
-        if event.type in ("progress", "thinking"):
-            # A notice (context window, compaction, image, MCP result) carries
-            # detail and gets its own line; a streamed delta does not.
+        notice = event.type == "progress" and (
+            "compaction" in event.detail or "context_window" in event.detail
+        )
+        if notice:
+            # Kept: the live area clears when the turn settles. The window is
+            # announced on every follow-up, so only a change is news.
+            if event.text != self.window:
+                self.query_one(Transcript).note(event.text)
+            if "context_window" in event.detail:
+                self.window = event.text
+        elif event.type in ("progress", "thinking"):
+            # An image or MCP notice gets its own line; its call block keeps it.
             text = f"{event.text}\n" if event.detail else event.text
             self.live.append(text, style="dim" if event.type == "thinking" else "")
         self._draw()
+
+    def on_logged(self, message: Logged) -> None:
+        self.query_one(Transcript).note(message.text, message.style)
 
     def _draw(self) -> None:
         if self.session is None:
             return
         end = settled(self.session.messages)
         if end > self.drawn:
-            blocks = render_messages(self.session.messages, self.drawn, end)
+            blocks = render_messages(self.session.messages, self.drawn, end, self.root)
             self.query_one(Transcript).add(blocks)
             self.drawn = end
             self.live = Text()
@@ -361,6 +402,7 @@ class AttachApp(App[None]):
         yield Static(id="status")
 
     async def on_mount(self) -> None:
+        self.query_one(Transcript).anchor()
         await self.poll()
         # Polling continues after done or blocked: Conductor resumes the same
         # path for its next round. The screen owns the timer: a pruned screen
@@ -380,8 +422,11 @@ class AttachApp(App[None]):
                 # show. Awaiting it lets the prune finish first.
                 await transcript.reset()
                 self.drawn = 0
-            end = settled(update.session.messages)
-            transcript.add(render_messages(update.session.messages, self.drawn, end))
+            messages = update.session.messages
+            end = settled(messages)
+            policy = update.session.policy
+            root = policy.get("root") if isinstance(policy, dict) else None
+            transcript.add(render_messages(messages, self.drawn, end, root))
             self.drawn = end
             self.query_one("#outcome", Static).update(render_outcome(update.session))
         if self.watcher.fatal and self.timer is not None:
@@ -391,6 +436,18 @@ class AttachApp(App[None]):
         status = attach_status(self.watcher.session, self.watcher.problem, age)
         self.query_one("#status", Static).update(status)
 
+    def on_logged(self, message: Logged) -> None:
+        self.query_one(Transcript).note(message.text, message.style)
+
+
+class Logged(Message):
+    """A log record, for the transcript. A toast was gone in seconds."""
+
+    def __init__(self, text: str, style: str) -> None:
+        super().__init__()
+        self.text = text
+        self.style = style
+
 
 class _Notices(logging.Handler):
     def __init__(self, app: App[None]) -> None:
@@ -398,19 +455,16 @@ class _Notices(logging.Handler):
         self.app = app
 
     def emit(self, record: logging.LogRecord) -> None:
-        # notify() is thread-safe, so a record from asyncio.to_thread is fine.
-        self.app.notify(
-            self.format(record),
-            severity="error" if record.levelno >= logging.ERROR else "warning",
-            markup=False,
-        )
+        # post_message() is thread-safe: a record can come from to_thread.
+        style = "red" if record.levelno >= logging.ERROR else "dim"
+        self.app.post_message(Logged(self.format(record), style))
 
 
 @contextlib.contextmanager
 def logs_as_notices(app: App[None]) -> Iterator[None]:
     """Textual draws on the real stderr, and a handler already holding that
     stream (nare run's basicConfig) would paint over the screen. Records
-    become notifications instead, and the old handlers come back after.
+    become transcript lines instead, and the old handlers come back after.
     """
     root = logging.getLogger()
     saved, root.handlers = root.handlers, [_Notices(app)]

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import difflib
 import json
+import os
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,13 +19,18 @@ from typing import Any
 
 from rich.console import Group, RenderableType
 from rich.markdown import Markdown
+from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.text import Text
 
 from nare.session import Message, Session, Usage, unanswered
-from nare.tools import Policy
+from nare.tools import Policy, questions_from
+from nare.transport import ToolCall
 
 RESULT_LINES = 5
+DIFF_LINES = 20
+# A leading `cd <dir> &&`, the dir bare or quoted.
+_CD = re.compile(r"""cd\s+("[^"]*"|'[^']*'|[^\s;&|]+)\s*&&\s*""")
 
 
 @dataclass(frozen=True)
@@ -43,10 +50,17 @@ def settled(messages: list[Message]) -> int:
 
 
 def render_user(text: str) -> list[Block]:
-    return [Block(Text(f"> {text}", style="bold"))]
+    return [Block(Group(Rule(style="dim"), Text(f"> {text}", style="bold")))]
 
 
-def render_messages(messages: list[Message], start: int, end: int) -> list[Block]:
+def render_messages(
+    messages: list[Message], start: int, end: int, root: str | None = None
+) -> list[Block]:
+    """`root` is the run's --root: commands and paths are shown relative to it.
+    A relative one is ignored: a saved session can be watched from anywhere.
+    """
+    if not isinstance(root, str) or not os.path.isabs(root):
+        root = None
     blocks: list[Block] = []
     for index in range(start, end):
         message = messages[index]
@@ -66,52 +80,130 @@ def render_messages(messages: list[Message], start: int, end: int) -> list[Block
         for block in message.content:
             kind = block.get("type")
             if kind == "text":
-                blocks.append(Block(Markdown(str(block.get("text", "")))))
+                markdown = _markdown(str(block.get("text", "")))
+                blocks.append(Block(Group(Text(), markdown)))
             elif kind == "thinking":
                 thought = Text(str(block.get("thinking", "")), style="dim")
                 blocks.append(Block(thought, title="thinking"))
             elif kind == "tool_use":
-                blocks.append(Block(_call(block, answers.get(block.get("id")))))
+                answer = answers.get(block.get("id"))
+                blocks.append(Block(_call(block, answer, root)))
     return blocks
 
 
-def _head(text: str) -> str:
+def _markdown(text: str) -> Markdown:
+    """Markdown that keeps single newlines. CommonMark joins them into a
+    space, so a model's line-per-item list read as one paragraph. The parser
+    leaves code blocks alone: their newlines are not breaks.
+    """
+    markdown = Markdown(text)
+    for token in markdown.parsed:
+        for child in token.children or []:
+            if child.type == "softbreak":
+                child.type = "hardbreak"
+    return markdown
+
+
+def _head(text: str, keep: int = RESULT_LINES) -> str:
     lines = text.splitlines()
-    if len(lines) <= RESULT_LINES:
+    if len(lines) <= keep:
         return text
-    rest = len(lines) - RESULT_LINES
-    return "\n".join(lines[:RESULT_LINES] + [f"... {rest} more lines"])
+    return "\n".join(lines[:keep] + [f"… {len(lines) - keep} more lines"])
 
 
-def _summary(name: str, args: dict[str, Any]) -> str:
-    if name == "bash":
-        line = str(args.get("command", ""))
-    elif "path" in args:
-        line = str(args["path"])
-    else:
-        line = json.dumps(args, ensure_ascii=False)
+def _cut(line: str) -> str:
     line = " ".join(line.split())
     return line if len(line) <= 100 else line[:99] + "..."
 
 
-def _call(block: dict[str, Any], answer: dict[str, Any] | None) -> RenderableType:
+def _relative(path: str, root: str | None) -> str:
+    if root is None or not os.path.isabs(path):
+        return path
+    rel = os.path.relpath(path, root)
+    return path if rel == os.pardir or rel.startswith(os.pardir + os.sep) else rel
+
+
+def _command(command: str, root: str | None) -> str:
+    """The command without the model's `cd <root> &&`, which every call
+    repeats, and one line of it: a heredoc says how long it is instead.
+    """
+    command = command.strip()
+    cd = _CD.match(command)
+    if cd and root is not None:
+        target = os.path.join(root, cd.group(1).strip("'\""))
+        if os.path.normpath(target) == os.path.normpath(root):
+            command = command[cd.end() :]
+    first, *rest = command.splitlines() or [""]
+    return _cut(first) + (f" (+{len(rest)} lines)" if rest else "")
+
+
+def _summary(name: str, args: dict[str, Any], root: str | None) -> str:
+    if name == "bash":
+        return _command(str(args.get("command", "")), root)
+    if "path" in args:
+        return _cut(_relative(str(args["path"]), root))
+    return _cut(json.dumps(args, ensure_ascii=False))
+
+
+def _failed(name: str, answer: dict[str, Any]) -> bool:
+    if answer.get("is_error"):
+        return True
+    if name != "bash":
+        return False
+    first = str(answer.get("content", "")).split("\n")[0]
+    code = re.fullmatch(r"exit (-?\d+)", first)
+    # Negative is a signal: the shell itself was killed.
+    return code is not None and int(code[1]) != 0
+
+
+def _done(
+    name: str, args: dict[str, Any], answer: dict[str, Any], root: str | None
+) -> str:
+    """A successful result, in one line where the call already says the rest."""
+    path = _relative(str(args.get("path", "")), root)
+    content = str(answer.get("content", ""))
+    if name == "write":
+        return f"wrote {path} ({len(str(args.get('content', '')).splitlines())} lines)"
+    if name == "read" and "image" not in answer:
+        return f"read {path} ({len(content.splitlines())} lines)"
+    if name == "edit":
+        return f"edited {path}"
+    return _head(content)
+
+
+def _call(
+    block: dict[str, Any], answer: dict[str, Any] | None, root: str | None
+) -> RenderableType:
     name = str(block.get("name", ""))
     args = block.get("input") or {}
-    parts: list[RenderableType] = [
-        Text(f"● {name} {_summary(name, args)}", style="bold cyan")
-    ]
+    failed = answer is not None and _failed(name, answer)
+    if name == "ask":
+        # Listed, not left to the outcome panel: it goes once they are answered.
+        questions = questions_from([ToolCall("", name, args)])
+        n = len(questions)
+        header = Text(
+            f"? asked {n} question{'' if n == 1 else 's'}", style="bold yellow"
+        )
+        listed = [f"  {i}. {q}" for i, q in enumerate(questions, 1)]
+        if not failed:
+            return Group(header, Text("\n".join(listed), style="yellow"))
+    else:
+        header = Text(f"● {name} {_summary(name, args, root)}", style="bold cyan")
+    parts: list[RenderableType] = [header]
     if name == "edit":
         diff = unified(
             str(args.get("old", "")),
             str(args.get("new", "")),
-            str(args.get("path", "")),
+            _relative(str(args.get("path", "")), root),
         )
-        parts.append(Syntax(diff, "diff"))
+        parts.append(Syntax(_head(diff, DIFF_LINES), "diff"))
     elif name == "write":
         parts.append(Text(_head(str(args.get("content", ""))), style="dim"))
     if answer is not None:
-        style = "red" if answer.get("is_error") else "dim"
-        parts.append(Text(_head(str(answer.get("content", ""))), style=style))
+        if failed:
+            parts.append(Text(_head(str(answer.get("content", ""))), style="red"))
+        else:
+            parts.append(Text(_done(name, args, answer, root), style="dim"))
     return Group(*parts)
 
 
