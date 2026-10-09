@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import difflib
 import json
+import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -213,6 +215,16 @@ def _ago(seconds: float) -> str:
     return f"{seconds // 3600:.0f}h ago"
 
 
+def _interrupted(stamp: str | None) -> str | None:
+    if stamp is None:
+        return None
+    try:
+        when = datetime.fromisoformat(stamp)
+    except ValueError:
+        return "interrupted"
+    return f"interrupted {_ago(time.time() - when.timestamp())}"
+
+
 def attach_status(
     session: Session | None, problem: str | None, age: float | None
 ) -> Text:
@@ -223,7 +235,7 @@ def attach_status(
             f"turn {session.turns}",
             _tokens(session.usage.total_tokens),
             _cost(session.usage, None),
-            session.status,
+            _interrupted(session.interrupted_at) or session.status,
         ]
     if age is not None:
         parts.append(f"last write {_ago(age)}")
