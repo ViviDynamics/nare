@@ -389,3 +389,13 @@ def test_cli_region_flag_is_refused_for_other_providers(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     assert main(["run", "--yes", "--region", "us-east-1", "go"]) == 2
     assert "--region" in capsys.readouterr().err
+
+
+def test_a_bearer_token_still_needs_the_extra_for_stream_decoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "offline-bearer")
+    for name in ("boto3", "botocore", "botocore.session"):
+        monkeypatch.setitem(sys.modules, name, None)
+    with pytest.raises(ValueError, match=r"nare\[bedrock\]"):
+        BedrockTransport(model=MODEL, region="us-east-1")
