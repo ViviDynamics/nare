@@ -33,6 +33,8 @@ def bedrock_base_model(model: str) -> str:
 
 
 def _aws_credentials_resolve() -> bool:
+    """botocore is required even with a bearer token: the SDK decodes
+    Bedrock's event-stream responses with it."""
     try:
         session = importlib.import_module("botocore.session")
     except ImportError as exc:
@@ -40,6 +42,8 @@ def _aws_credentials_resolve() -> bool:
             "--provider bedrock needs the bedrock extra, which brings boto3: "
             "pip install 'nare[bedrock]'"
         ) from exc
+    if os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
+        return True
     return session.get_session().get_credentials() is not None
 
 
@@ -75,8 +79,7 @@ class BedrockTransport(AnthropicTransport):
         )
 
     def _check_credentials(self, api_key: str | None) -> None:
-        bearer = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK"))
-        credentials = bearer or _aws_credentials_resolve()
+        credentials = _aws_credentials_resolve()
         if self.region and credentials:
             return
         raise ValueError(
