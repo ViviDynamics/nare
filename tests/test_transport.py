@@ -540,7 +540,7 @@ def test_parameters_reach_the_transport() -> None:
 
 
 def test_an_unknown_kind_names_the_supported_kinds() -> None:
-    with pytest.raises(ValueError, match="anthropic, openai"):
+    with pytest.raises(ValueError, match="anthropic, bedrock, openai"):
         make_transport("gemini", model="gemini-3.1-flash-lite", api_key="k")
 
 
