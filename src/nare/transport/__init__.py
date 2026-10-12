@@ -79,15 +79,33 @@ def make_transport(
     system: str | None = None,
     streaming: bool = False,
     image_input: bool = False,
+    region: str | None = None,
 ) -> Transport:
     """Build a transport from configuration.
 
-    Two arms. `openai` reaches anything speaking Chat Completions, which is a
-    proxy, vLLM, llama.cpp or Ollama as much as it is OpenAI, and `--base-url`
-    is how a caller says which. A registry is slice 4, with the rest of the
+    Three arms. `bedrock` is the anthropic arm signed with AWS credentials.
+    `openai` reaches anything speaking Chat Completions, which is a proxy,
+    vLLM, llama.cpp or Ollama as much as it is OpenAI, and `--base-url` is how
+    a caller says which. A registry is slice 4, with the rest of the
     extension surface.
     """
+    if region is not None and kind != "bedrock":
+        raise ValueError(f"--region applies only to --provider bedrock, not {kind}")
     match kind:
+        case "bedrock":
+            from nare.transport.bedrock import BedrockTransport
+
+            return BedrockTransport(
+                model=model,
+                region=region,
+                base_url=base_url,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                effort=effort,
+                system=system,
+                streaming=streaming,
+                image_input=image_input,
+            )
         case "anthropic":
             from nare.transport.anthropic import AnthropicTransport
 
@@ -118,7 +136,7 @@ def make_transport(
             )
         case _:
             raise ValueError(
-                f"unknown provider {kind!r}; nare supports: anthropic, openai"
+                f"unknown provider {kind!r}; nare supports: anthropic, bedrock, openai"
             )
 
 
