@@ -12,7 +12,10 @@ RUN useradd --create-home --uid 10001 nare
 
 ARG WHEEL
 COPY ${WHEEL} /tmp/
-RUN pip install --no-cache-dir /tmp/*.whl && rm -rf /tmp/*.whl
+# The bedrock extra (boto3) lets an image that runs in AWS sign requests with
+# the pod's own credentials, so a caller does not rebuild to use it.
+RUN wheel=$(ls /tmp/*.whl) && pip install --no-cache-dir "${wheel}[bedrock]" \
+    && rm -rf /tmp/*.whl
 
 USER nare
 WORKDIR /work
