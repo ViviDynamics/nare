@@ -352,3 +352,45 @@ async def test_an_async_denial_refuses_the_call(tmp_path: Path) -> None:
         "is_error": True,
     }
     assert not target.exists()
+
+
+async def test_bash_keeps_a_failure_inside_a_pipe() -> None:
+    # Under dash, `npm run build 2>&1 | tail -30` said exit 0 for three
+    # failed builds in the practice run.
+    assert (await run_bash("false | true")).startswith("exit 1")
+
+
+async def test_bash_runs_bash_syntax() -> None:
+    assert (await run_bash("[[ 1 == 1 ]]")).startswith("exit 0")
+
+
+def _argv_of(monkeypatch: pytest.MonkeyPatch, command: str) -> tuple[str, ...]:
+    seen: dict[str, tuple[str, ...]] = {}
+    real = subprocess.Popen
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        seen["argv"] = tuple(args[0])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", spy)
+    asyncio.run(run_bash(command))
+    return seen["argv"]
+
+
+def test_bash_runs_bash_with_pipefail(monkeypatch: pytest.MonkeyPatch) -> None:
+    argv = _argv_of(monkeypatch, "true")
+    assert argv[0].endswith("bash")
+    assert argv[1:] == ("-o", "pipefail", "-c", "true")
+
+
+def test_bash_falls_back_to_sh_without_bash(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("nare.tools.shutil.which", lambda name: None)
+    assert _argv_of(monkeypatch, "true") == ("/bin/sh", "-c", "true")
+
+
+def test_the_bash_description_states_the_shell_semantics() -> None:
+    schema = next(s for s in TOOL_SCHEMAS if s["name"] == "bash")
+    assert (
+        "Runs in bash with pipefail. Each call is a fresh shell: "
+        "`cd` and `export` do not persist."
+    ) in schema["description"]

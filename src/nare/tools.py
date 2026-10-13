@@ -11,6 +11,7 @@ import base64
 import contextlib
 import inspect
 import os
+import shutil
 import signal
 import subprocess
 from collections.abc import Awaitable, Callable, Iterable
@@ -131,8 +132,21 @@ def edit_file(path: str, old: str, new: str) -> str:
     return f"edited {path}"
 
 
+def _shell(command: str) -> list[str]:
+    """bash with pipefail when there is one, else sh.
+
+    Under dash, `npm run build 2>&1 | tail -30` reported tail's exit 0 for
+    three failed builds, and `[[ ]]` was a syntax error.
+    """
+    bash = shutil.which("bash")
+    if bash is None:
+        return ["/bin/sh", "-c", command]
+    return [bash, "-o", "pipefail", "-c", command]
+
+
 async def run_bash(command: str, timeout: int = 120, *, cwd: str | None = None) -> str:
-    """Run a shell command in its own process group, with no stdin.
+    """Run a command in bash with pipefail (sh without bash), in its own
+    process group, with no stdin.
 
     `subprocess.run(timeout=...)` kills the shell and nothing the shell started,
     so `make dev &` outlives the call and the run leaks a server. The group is
@@ -144,8 +158,8 @@ async def run_bash(command: str, timeout: int = 120, *, cwd: str | None = None) 
     stdin is DEVNULL because nare's own stdin belongs to conductor: a command
     that reads would either eat conductor's pipe or block until the timeout.
     """
-    proc = await asyncio.create_subprocess_shell(
-        command,
+    proc = await asyncio.create_subprocess_exec(
+        *_shell(command),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL,
@@ -248,7 +262,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "name": "bash",
         "description": (
             "Run a shell command and return its exit code and combined output. "
-            "Use this with rg and find for search."
+            "Runs in bash with pipefail. Each call is a fresh shell: `cd` and "
+            "`export` do not persist. Use this with rg and find for search."
         ),
         "input_schema": {
             "type": "object",
