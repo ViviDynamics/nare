@@ -2,6 +2,7 @@ import asyncio
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -20,9 +21,12 @@ from nare.tools import (
     ask,
     dispatch,
     edit_file,
+    group_alive,
+    group_label,
     questions_from,
     read_file,
     run_bash,
+    stop_group,
     write_file,
 )
 from nare.transport import ToolCall
@@ -450,3 +454,45 @@ async def test_pipefail_reports_a_closed_pipe_as_an_exit_not_a_kill() -> None:
     assert result["is_error"] is False
     plain = await dispatch(bash_call("exit 3"), Policy())
     assert plain["is_error"] is False
+
+
+def test_group_alive_and_stop_group_on_a_real_group() -> None:
+    proc = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    try:
+        assert group_alive(proc.pid)
+        assert stop_group(proc.pid)
+        assert proc.wait(timeout=5) == -signal.SIGKILL
+        # Reaped, so nothing is left in the group.
+        assert not group_alive(proc.pid)
+        assert stop_group(proc.pid)  # already gone counts as stopped
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+@pytest.mark.parametrize("pgid", [0, 1, -5, True, "123", None, os.getpgrp()])
+def test_nare_never_signals_a_pgid_it_may_not(
+    monkeypatch: pytest.MonkeyPatch, pgid: object
+) -> None:
+    # killpg(0) is nare's own group, and a session file is data: a junk or
+    # hostile pgid must never reach a signal.
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        "nare.tools.os.killpg", lambda group, sig: sent.append((group, sig))
+    )
+    assert group_alive(pgid) is False
+    assert stop_group(pgid) is False
+    assert sent == []
+
+
+def test_group_label_is_the_first_line_redacted_then_cut() -> None:
+    assert group_label("  npm run dev\nsecond line") == "npm run dev"
+    assert group_label("a   b\tc") == "a b c"
+    assert group_label("") == ""
+    # Redacted before the cut: cutting first would leave `sk-ant-aaaa`, a stub
+    # too short for the key pattern to match.
+    label = group_label("x" * 50 + " sk-ant-" + "a" * 30)
+    assert len(label) == 60
+    assert label.endswith("...")
+    assert "sk-ant" not in label
+    assert "aaa" not in label

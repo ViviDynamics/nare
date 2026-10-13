@@ -19,10 +19,11 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 from PIL import Image
 
+from nare.events import redact
 from nare.mcp import ExternalTool
 from nare.transport import ToolCall
 
@@ -174,6 +175,64 @@ def _status(code: int) -> str:
     except ValueError:
         return f"killed by signal {-code}"
     return f"killed by {name} (signal {-code})"
+
+
+def _signalable(pgid: object) -> TypeGuard[int]:
+    """A pgid nare may signal: an int above 1 that is not nare's own group.
+
+    killpg(0) signals the caller's own group, and a pgid can come from a
+    session file, which is data.
+    """
+    return (
+        isinstance(pgid, int)
+        and not isinstance(pgid, bool)
+        and pgid > 1
+        and pgid != os.getpgrp()
+    )
+
+
+def group_alive(pgid: object) -> bool:
+    """Whether anything in the process group still exists.
+
+    A zombie counts: kill(0) cannot tell one from a running process.
+    """
+    if not _signalable(pgid):
+        return False
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # it exists; it is just not ours to signal
+    return True
+
+
+def stop_group(pgid: object) -> bool:
+    """SIGKILL a process group, as a timeout or a cancel does.
+
+    False when nare may not signal that pgid or the kill was refused. A group
+    that is already gone counts as stopped.
+    """
+    if not _signalable(pgid):
+        return False
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return True
+
+
+def group_label(command: str) -> str:
+    """One line that names a command, for `[still running: ...]` and the TUI.
+
+    Redacted before it is cut: a cut through a key leaves a stub that no
+    pattern matches.
+    """
+    first = (command.strip().splitlines() or [""])[0]
+    line = " ".join(redact(first).split())
+    return line if len(line) <= 60 else line[:57] + "..."
 
 
 async def bash_outcome(
