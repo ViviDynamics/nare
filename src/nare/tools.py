@@ -156,10 +156,13 @@ SELF_KILL_HINT = (
 
 @dataclass(frozen=True)
 class BashOutcome:
-    """One bash call: the text the model reads, and whether it is an error."""
+    """One bash call: the text the model reads, whether it is an error, and a
+    process group the command left running.
+    """
 
     text: str
     failed: bool = False
+    group: int | None = None
 
 
 def _status(code: int) -> str:
@@ -235,6 +238,23 @@ def group_label(command: str) -> str:
     return line if len(line) <= 60 else line[:57] + "..."
 
 
+async def _lingers(pgid: int) -> bool:
+    """Whether the group outlives the call.
+
+    Asked over about 0.1 s, not once: a child that exits as the shell dies is
+    a zombie until init reaps it, and kill(0) counts a zombie as alive.
+
+    ponytail: nare as PID 1 (the image's ENTRYPOINT, run without --init)
+    reaps nothing, so there a zombie reads as running for good. Reading member
+    states from /proc is the upgrade.
+    """
+    for _ in range(5):
+        if not group_alive(pgid):
+            return False
+        await asyncio.sleep(0.02)
+    return True
+
+
 async def bash_outcome(
     command: str, timeout: int = 120, *, cwd: str | None = None
 ) -> BashOutcome:
@@ -262,9 +282,9 @@ async def bash_outcome(
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
     except BaseException as exc:
-        # ponytail: killpg reaches the group the shell leads. A grandchild that
-        # calls setsid itself escapes it; a pid-tree walk is the upgrade, and
-        # not before something actually escapes.
+        # ponytail: a process that calls setsid itself (pg_ctl does) escapes
+        # the group, here and in the still-running probe below. The upgrade is
+        # prctl(PR_SET_CHILD_SUBREAPER), then listing /proc/self/task/*/children.
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
         await proc.wait()
@@ -282,7 +302,12 @@ async def bash_outcome(
         # The likeliest killer is the command itself: pkill -f matches the
         # shell whose argv holds the pattern.
         text += f"\n{SELF_KILL_HINT}"
-    return BashOutcome(text, failed=killed)
+    group = proc.pid if await _lingers(proc.pid) else None
+    if group is not None:
+        # The shell led the group, so its pid is the pgid. A Postgres started
+        # in the practice run was still running hours later, unreported.
+        text += f"\n[still running: process group {group} ({group_label(command)})]"
+    return BashOutcome(text, failed=killed, group=group)
 
 
 async def run_bash(command: str, timeout: int = 120, *, cwd: str | None = None) -> str:
@@ -496,12 +521,20 @@ def tool_result(call_id: str, text: str, *, is_error: bool = False) -> dict[str,
 
 
 async def dispatch(
-    call: ToolCall, policy: Policy, approve: Approve = approve_all
+    call: ToolCall,
+    policy: Policy,
+    approve: Approve = approve_all,
+    *,
+    left_running: Callable[[int, str], None] | None = None,
 ) -> dict[str, Any]:
     """Run one tool call. Every failure comes back as an is_error result rather
     than an exception: the model adapts, which is what it is good at. A policy
     refusal is one of those failures, so a narrowed session keeps working
     instead of dying on the first attempt to leave its box.
+
+    `left_running` hears of a process group a bash call left running, with its
+    label, so the caller can record it. A callback, not a key on the result:
+    a transport sends tool_result blocks as they are.
     """
     if call.error is not None:
         return tool_result(call.id, call.error, is_error=True)
@@ -544,6 +577,8 @@ async def dispatch(
             output = await asyncio.to_thread(_read_with_image, **args)
         elif call.name == "bash":
             outcome = await bash_outcome(**args)
+            if outcome.group is not None and left_running is not None:
+                left_running(outcome.group, group_label(str(args["command"])))
             return tool_result(call.id, outcome.text, is_error=outcome.failed)
         else:
             output = await asyncio.to_thread(function, **args)

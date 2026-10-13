@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -496,3 +497,60 @@ def test_group_label_is_the_first_line_redacted_then_cut() -> None:
     assert label.endswith("...")
     assert "sk-ant" not in label
     assert "aaa" not in label
+
+
+LEAVE_RUNNING = "(sleep 30 >/dev/null 2>&1 &)"
+
+
+def _reported_group(text: str) -> int | None:
+    found = re.search(r"\[still running: process group (\d+) \(", text)
+    return None if found is None else int(found[1])
+
+
+async def test_bash_reports_a_process_group_it_leaves_running() -> None:
+    # A Postgres started in the practice run was still running hours later,
+    # and nothing in the result said so.
+    command = "(sleep 2 >/dev/null 2>&1 &)"
+    text = await run_bash(command)
+    pgid = _reported_group(text)
+    try:
+        assert pgid is not None
+        assert text == f"exit 0\n[still running: process group {pgid} ({command})]"
+    finally:
+        if pgid is not None:
+            stop_group(pgid)
+
+
+async def test_bash_reports_nothing_when_nothing_is_left() -> None:
+    assert await run_bash("sleep 0.1 & wait") == "exit 0"
+
+
+@needs_pkill
+async def test_a_self_kill_does_not_read_as_a_group_left_running() -> None:
+    # Probed once, right after the shell died, pkill was still a zombie that
+    # init had not reaped in about one run in four.
+    tag = f"nare-self-{uuid.uuid4().hex}"
+    for _ in range(5):
+        text = await run_bash(f"pkill -f {tag}; echo unreachable")
+        assert text.startswith("killed by SIGTERM")
+        assert "still running" not in text
+
+
+async def test_dispatch_hands_a_group_left_running_to_its_caller() -> None:
+    seen: list[tuple[int, str]] = []
+
+    def record(pgid: int, label: str) -> None:
+        seen.append((pgid, label))
+
+    result = await dispatch(bash_call(LEAVE_RUNNING), Policy(), left_running=record)
+    try:
+        assert [label for _, label in seen] == [LEAVE_RUNNING]
+        pgid = seen[0][0]
+        assert group_alive(pgid)
+        assert result["is_error"] is False
+        assert result["content"].endswith(
+            f"[still running: process group {pgid} ({LEAVE_RUNNING})]"
+        )
+    finally:
+        for pgid, _ in seen:
+            stop_group(pgid)
