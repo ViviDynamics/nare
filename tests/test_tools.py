@@ -1,8 +1,11 @@
 import asyncio
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -394,3 +397,56 @@ def test_the_bash_description_states_the_shell_semantics() -> None:
         "Runs in bash with pipefail. Each call is a fresh shell: "
         "`cd` and `export` do not persist."
     ) in schema["description"]
+
+
+needs_pkill = pytest.mark.skipif(shutil.which("pkill") is None, reason="needs pkill")
+
+HINT = (
+    "pkill -f also matches the shell running this command; use a pattern "
+    "like `nex[t]-server`, or kill by `$!`."
+)
+
+
+def bash_call(command: str) -> ToolCall:
+    return ToolCall(id="c1", name="bash", args={"command": command})
+
+
+async def test_a_shell_killed_by_a_signal_says_so() -> None:
+    text = await run_bash("echo hi; kill -TERM $$")
+    assert text.startswith("killed by SIGTERM (signal 15)\nhi")
+    assert HINT in text
+
+
+@needs_pkill
+async def test_a_command_that_pkills_its_own_tag_is_an_error() -> None:
+    # The practice run's `pkill -f next-server` matched the tool's own shell,
+    # read as `exit -15`, was not an error, and cost a turn of about 50k tokens.
+    tag = f"nare-self-{uuid.uuid4().hex}"
+    result = await dispatch(bash_call(f"pkill -f {tag}; echo unreachable"), Policy())
+    assert result["is_error"] is True
+    assert result["content"].startswith("killed by SIGTERM (signal 15)")
+    assert "unreachable" not in result["content"]
+    assert HINT in result["content"]
+
+
+async def test_a_signal_without_a_kill_command_gets_no_pkill_hint() -> None:
+    python = shlex.quote(sys.executable)
+    text = await run_bash(f"ulimit -c 0; exec {python} -c 'import os; os.abort()'")
+    assert text.split("\n")[0] == "killed by SIGABRT (signal 6)"
+    assert "pkill" not in text
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="realtime signals are Linux")
+async def test_a_signal_python_cannot_name_still_reads_as_a_signal() -> None:
+    # 35 is a realtime signal: signal.Signals has no member for it.
+    assert (await run_bash("kill -35 $$")).split("\n")[0] == "killed by signal 35"
+
+
+async def test_pipefail_reports_a_closed_pipe_as_an_exit_not_a_kill() -> None:
+    # `yes` dies of SIGPIPE when head exits, so pipefail makes the pipeline
+    # exit 141. The shell exited normally: an exit code, not a kill.
+    result = await dispatch(bash_call("yes | head -1"), Policy())
+    assert result["content"] == "exit 141\ny"
+    assert result["is_error"] is False
+    plain = await dispatch(bash_call("exit 3"), Policy())
+    assert plain["is_error"] is False

@@ -11,6 +11,7 @@ import base64
 import contextlib
 import inspect
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -144,7 +145,40 @@ def _shell(command: str) -> list[str]:
     return [bash, "-o", "pipefail", "-c", command]
 
 
-async def run_bash(command: str, timeout: int = 120, *, cwd: str | None = None) -> str:
+_KILLERS = re.compile(r"\b(?:pkill|killall|kill)\b")
+
+SELF_KILL_HINT = (
+    "pkill -f also matches the shell running this command; use a pattern "
+    "like `nex[t]-server`, or kill by `$!`."
+)
+
+
+@dataclass(frozen=True)
+class BashOutcome:
+    """One bash call: the text the model reads, and whether it is an error."""
+
+    text: str
+    failed: bool = False
+
+
+def _status(code: int) -> str:
+    """`exit N`, or the signal that killed the shell.
+
+    A negative return code is a signal. Printed as `exit -15` it read as an odd
+    exit code, not as the shell being killed.
+    """
+    if code >= 0:
+        return f"exit {code}"
+    try:
+        name = signal.Signals(-code).name
+    except ValueError:
+        return f"killed by signal {-code}"
+    return f"killed by {name} (signal {-code})"
+
+
+async def bash_outcome(
+    command: str, timeout: int = 120, *, cwd: str | None = None
+) -> BashOutcome:
     """Run a command in bash with pipefail (sh without bash), in its own
     process group, with no stdin.
 
@@ -181,7 +215,22 @@ async def run_bash(command: str, timeout: int = 120, *, cwd: str | None = None) 
             raise subprocess.TimeoutExpired(command, timeout) from None
         raise
     output = (out + err).decode(errors="replace").strip()
-    return f"exit {proc.returncode}\n{_truncate(output)}".rstrip()
+    code = proc.returncode
+    assert code is not None  # communicate() returns after the exit
+    text = f"{_status(code)}\n{_truncate(output)}".rstrip()
+    killed = code < 0
+    if killed and _KILLERS.search(command):
+        # The likeliest killer is the command itself: pkill -f matches the
+        # shell whose argv holds the pattern.
+        text += f"\n{SELF_KILL_HINT}"
+    return BashOutcome(text, failed=killed)
+
+
+async def run_bash(command: str, timeout: int = 120, *, cwd: str | None = None) -> str:
+    """The text of bash_outcome(): what the model reads. dispatch() calls
+    bash_outcome() itself, to learn whether the result is an error.
+    """
+    return (await bash_outcome(command, timeout, cwd=cwd)).text
 
 
 def ask(questions: list[str]) -> str:
@@ -435,7 +484,8 @@ async def dispatch(
             args["image_model"] = policy.image_model
             output = await asyncio.to_thread(_read_with_image, **args)
         elif call.name == "bash":
-            output = await run_bash(**args)
+            outcome = await bash_outcome(**args)
+            return tool_result(call.id, outcome.text, is_error=outcome.failed)
         else:
             output = await asyncio.to_thread(function, **args)
         if isinstance(output, dict):
