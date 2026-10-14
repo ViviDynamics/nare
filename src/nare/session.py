@@ -178,6 +178,10 @@ def loads(text: str) -> Session:
             )
         raw["usage"] = Usage(**raw["usage"])
         raw["messages"] = [Message(**m) for m in raw["messages"]]
+        # The TUI vets each entry and drops junk; a junk container records
+        # nothing either, so a bash call can still append to it.
+        if not isinstance(raw.get("process_groups", []), list):
+            raw["process_groups"] = []
         return Session(**raw)
     except (KeyError, TypeError) as exc:
         raise ValueError(f"malformed session file: {exc}") from exc

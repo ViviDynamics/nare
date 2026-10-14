@@ -185,6 +185,18 @@ def test_a_file_from_before_process_groups_still_loads() -> None:
     assert loads(json.dumps(raw)).process_groups == []
 
 
+@pytest.mark.parametrize(
+    "junk", [None, {"pgid": 4242}, "4242", 4242], ids=["null", "object", "str", "int"]
+)
+def test_process_groups_that_are_not_a_list_load_as_empty(
+    junk: object,
+) -> None:
+    # The TUI loops over the field and a bash call appends to it.
+    raw = json.loads(dumps(new_session("go")))
+    raw["process_groups"] = junk
+    assert loads(json.dumps(raw)).process_groups == []
+
+
 def test_process_groups_survive_a_save_and_a_reopen() -> None:
     s = new_session("go")
     s.process_groups.append({"pgid": 4242, "command": "npm run dev"})
