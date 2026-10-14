@@ -78,6 +78,10 @@ class Session:
     # Set when a person interrupts a run, so a file left `working` reads as
     # stopped, not as running. reopen() clears it.
     interrupted_at: str | None = None
+    # Process groups a bash call left running, as {"pgid", "command"}: the TUI
+    # offers to kill the live ones at turn end and on quit. A record, so
+    # reopen() keeps it.
+    process_groups: list[dict[str, Any]] = field(default_factory=list)
     contract: int = CONTRACT_VERSION
     nare: str = NARE_VERSION
     events: list[Event] = field(default_factory=list, compare=False)
@@ -174,6 +178,10 @@ def loads(text: str) -> Session:
             )
         raw["usage"] = Usage(**raw["usage"])
         raw["messages"] = [Message(**m) for m in raw["messages"]]
+        # The TUI vets each entry and drops junk; a junk container records
+        # nothing either, so a bash call can still append to it.
+        if not isinstance(raw.get("process_groups", []), list):
+            raw["process_groups"] = []
         return Session(**raw)
     except (KeyError, TypeError) as exc:
         raise ValueError(f"malformed session file: {exc}") from exc

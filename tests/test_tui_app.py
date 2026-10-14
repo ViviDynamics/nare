@@ -2,7 +2,10 @@ import asyncio
 import io
 import json
 import logging
+import signal
+import subprocess
 import sys
+import time
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from typing import Any, cast
@@ -19,10 +22,13 @@ from nare.cli import build_parser, main
 from nare.events import Event
 from nare.loop import INTERRUPTED
 from nare.session import Message, loads, new_session, save
+from nare.tools import group_alive, stop_group
 from nare.transport import Delta, Reply, Transport
 from nare.tui.app import (
+    OFFER_GRACE,
     ApprovalScreen,
     AttachApp,
+    GroupsScreen,
     Transcript,
     TuiApp,
     exit_summary,
@@ -706,3 +712,367 @@ def test_the_exit_summary_is_redacted(tmp_path: Path) -> None:
     app.session.messages.append(Message("assistant", [{"type": "text", "text": key}]))
     summary = exit_summary(app)
     assert key not in summary and "[redacted]" in summary
+
+
+LEAVE_RUNNING = "(sleep 30 >/dev/null 2>&1 &)"
+
+
+def leaves_a_group(*after: Reply) -> FakeProvider:
+    return FakeProvider(
+        [tool_reply("bash", {"command": LEAVE_RUNNING}), text_reply("started"), *after]
+    )
+
+
+def stop_recorded(app: TuiApp) -> None:
+    for group in [] if app.session is None else app.session.process_groups:
+        stop_group(group["pgid"])
+
+
+def group_gone(pgid: int) -> bool:
+    for _ in range(300):
+        if not group_alive(pgid):
+            return True
+        time.sleep(0.01)
+    return False
+
+
+async def to_groups_offer(pilot: Pilot[None], app: TuiApp) -> int:
+    """Approve the bash call, wait until the offer takes answers, return the
+    recorded pgid.
+    """
+    await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
+    await pilot.press("y")
+    await until(
+        pilot,
+        lambda: (
+            isinstance(app.screen, GroupsScreen) and bool(app.screen.query("#groups"))
+        ),
+    )
+    await pilot.pause(OFFER_GRACE)
+    assert app.session is not None
+    return int(app.session.process_groups[0]["pgid"])
+
+
+async def test_a_run_that_leaves_a_group_running_offers_to_kill_it(
+    tmp_path: Path,
+) -> None:
+    app = make(tmp_path, leaves_a_group(), prompt="start it")
+    try:
+        async with app.run_test() as pilot:
+            pgid = await to_groups_offer(pilot, app)
+            assert app.run_state == "done"
+            screen = cast(GroupsScreen, app.screen)
+            assert not screen.quitting
+            listed = str(screen.query_one("#groups", Static).content)
+            assert f"process group {pgid} ({LEAVE_RUNNING})" in listed
+            await pilot.press("k")
+            await until(pilot, lambda: not group_alive(pgid))
+            assert not isinstance(app.screen, GroupsScreen)
+            assert f"killed process group {pgid}" in shown(app)
+    finally:
+        stop_recorded(app)
+
+
+async def test_typing_as_the_offer_appears_does_not_answer_it(tmp_path: Path) -> None:
+    # The input box comes back as the run settles, and the offer takes the
+    # keys in the same tick: a follow-up "keep going" killed the group.
+    app = make(tmp_path, leaves_a_group(), prompt="start it")
+    try:
+        async with app.run_test() as pilot:
+            await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
+            await pilot.press("y")
+            await until(pilot, lambda: isinstance(app.screen, GroupsScreen))
+            await pilot.press(*"keep")
+            await pilot.pause()
+            assert isinstance(app.screen, GroupsScreen)
+            assert "killed process group" not in shown(app)
+            await pilot.pause(OFFER_GRACE)
+            await pilot.press("l")
+            await until(pilot, lambda: not isinstance(app.screen, GroupsScreen))
+            assert "left running: process group" in shown(app)
+    finally:
+        stop_recorded(app)
+
+
+async def test_leave_keeps_the_group_and_is_not_asked_again(tmp_path: Path) -> None:
+    app = make(tmp_path, leaves_a_group(text_reply("again")), prompt="start it")
+    try:
+        async with app.run_test() as pilot:
+            pgid = await to_groups_offer(pilot, app)
+            await pilot.press("l")
+            await until(pilot, lambda: not isinstance(app.screen, GroupsScreen))
+            assert group_alive(pgid)
+            assert f"left running: process group {pgid}" in shown(app)
+            await submit(pilot, app, "and now?")
+            await until(
+                pilot,
+                lambda: (
+                    "again" in shown(app)
+                    and app.worker is not None
+                    and app.worker.is_finished
+                ),
+            )
+            await pilot.pause()
+            assert not isinstance(app.screen, GroupsScreen)
+    finally:
+        stop_recorded(app)
+
+
+async def test_escape_at_the_turn_end_offer_leaves_the_group(tmp_path: Path) -> None:
+    app = make(tmp_path, leaves_a_group(), prompt="start it")
+    try:
+        async with app.run_test() as pilot:
+            pgid = await to_groups_offer(pilot, app)
+            await pilot.press("escape")
+            await until(pilot, lambda: not isinstance(app.screen, GroupsScreen))
+            assert group_alive(pgid)
+            assert f"left running: process group {pgid}" in shown(app)
+            assert pgid in app.left
+    finally:
+        stop_recorded(app)
+
+
+async def test_a_kill_that_fails_at_turn_end_says_so_and_keeps_the_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = make(tmp_path, leaves_a_group(), prompt="start it")
+    monkeypatch.setattr("nare.tui.app.stop_group", lambda pgid: False)
+    try:
+        async with app.run_test() as pilot:
+            pgid = await to_groups_offer(pilot, app)
+            await pilot.press("k")
+            await until(pilot, lambda: not isinstance(app.screen, GroupsScreen))
+            assert f"could not kill process group {pgid}" in shown(app)
+            assert f"killed process group {pgid}" not in shown(app)
+            assert app.session is not None
+            assert [g["pgid"] for g in app.session.process_groups] == [pgid]
+    finally:
+        stop_recorded(app)
+
+
+async def test_a_run_that_leaves_nothing_running_offers_nothing(
+    tmp_path: Path,
+) -> None:
+    replies = [tool_reply("bash", {"command": "true"}), text_reply("ok")]
+    app = make(tmp_path, FakeProvider(replies), prompt="go")
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
+        await pilot.press("y")
+        await until(pilot, lambda: app.worker is not None and app.worker.is_finished)
+        await pilot.pause()
+        assert app.run_state == "done"
+        assert not isinstance(app.screen, GroupsScreen)
+
+
+def sleeper() -> subprocess.Popen[bytes]:
+    return subprocess.Popen(["sleep", "30"], start_new_session=True)
+
+
+def resumable(tmp_path: Path, pgid: int) -> Path:
+    """A saved session that recorded `pgid` as left running."""
+    s = new_session("go")
+    s.status = "done"
+    s.process_groups.append({"pgid": pgid, "command": "sleep 30"})
+    path = tmp_path / "earlier.json"
+    save(s, path)
+    return path
+
+
+async def test_quitting_with_a_live_group_asks_first_and_k_kills_it(
+    tmp_path: Path,
+) -> None:
+    proc = sleeper()
+    try:
+        path = resumable(tmp_path, proc.pid)
+        app = make(tmp_path, FakeProvider([]), "--resume", str(path))
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+q")
+            await until(pilot, lambda: isinstance(app.screen, GroupsScreen))
+            assert cast(GroupsScreen, app.screen).quitting
+            assert app.return_code is None
+            await pilot.press("k")
+            await until(pilot, lambda: app.return_code is not None)
+        assert proc.wait(timeout=5) == -signal.SIGKILL
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+async def test_l_at_the_quit_prompt_leaves_the_group_and_quits(
+    tmp_path: Path,
+) -> None:
+    proc = sleeper()
+    try:
+        path = resumable(tmp_path, proc.pid)
+        app = make(tmp_path, FakeProvider([]), "--resume", str(path))
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+q")
+            await until(pilot, lambda: isinstance(app.screen, GroupsScreen))
+            await pilot.press("l")
+            await until(pilot, lambda: app.return_code is not None)
+        assert proc.poll() is None
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+async def test_escape_at_the_quit_prompt_leaves_the_group_and_quits(
+    tmp_path: Path,
+) -> None:
+    proc = sleeper()
+    try:
+        path = resumable(tmp_path, proc.pid)
+        app = make(tmp_path, FakeProvider([]), "--resume", str(path))
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+q")
+            await until(pilot, lambda: isinstance(app.screen, GroupsScreen))
+            await pilot.press("escape")
+            await until(pilot, lambda: app.return_code is not None)
+        assert proc.poll() is None
+        assert app.not_killed == []
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+async def test_ctrl_q_at_the_quit_prompt_does_not_stack_another(
+    tmp_path: Path,
+) -> None:
+    proc = sleeper()
+    try:
+        path = resumable(tmp_path, proc.pid)
+        app = make(tmp_path, FakeProvider([]), "--resume", str(path))
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+q")
+            await until(pilot, lambda: isinstance(app.screen, GroupsScreen))
+            await pilot.press("ctrl+q")
+            await pilot.pause()
+            assert len(app.screen_stack) == 2
+            assert app.return_code is None
+            await pilot.press("l")
+            await until(pilot, lambda: app.return_code is not None)
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+async def test_ctrl_q_during_a_turn_end_offer_asks_once_about_quitting(
+    tmp_path: Path,
+) -> None:
+    app = make(tmp_path, leaves_a_group(), prompt="start it")
+    try:
+        async with app.run_test() as pilot:
+            pgid = await to_groups_offer(pilot, app)
+            await pilot.press("ctrl+q")
+            await until(
+                pilot,
+                lambda: isinstance(app.screen, GroupsScreen) and app.screen.quitting,
+            )
+            assert len(app.screen_stack) == 2
+            await pilot.press("k")
+            await until(pilot, lambda: app.return_code is not None)
+        assert group_gone(pgid)
+    finally:
+        stop_recorded(app)
+
+
+async def test_ctrl_q_mid_run_cancels_then_asks_about_a_recorded_group(
+    tmp_path: Path,
+) -> None:
+    # The second model call never returns: the run is still working.
+    transport = Stalled(tool_reply("bash", {"command": LEAVE_RUNNING}), stall=2)
+    app = make(tmp_path, transport, prompt="start it")
+    try:
+        async with app.run_test() as pilot:
+            await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
+            await pilot.press("y")
+            await until(pilot, lambda: transport.calls == 2)
+            assert app.run_state == "working"
+            assert app.session is not None
+            pgid = int(app.session.process_groups[0]["pgid"])
+            await pilot.press("ctrl+q")
+            await until(
+                pilot,
+                lambda: isinstance(app.screen, GroupsScreen) and app.screen.quitting,
+            )
+            assert app.run_state == "interrupted"
+            assert len(app.screen_stack) == 2  # no turn-end offer underneath
+            assert [g["pgid"] for g in cast(GroupsScreen, app.screen).groups] == [pgid]
+            await pilot.press("k")
+            await until(pilot, lambda: app.return_code is not None)
+        assert group_gone(pgid)
+    finally:
+        stop_recorded(app)
+
+
+async def test_a_group_killed_at_turn_end_is_forgotten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = make(tmp_path, leaves_a_group(), prompt="start it")
+    try:
+        async with app.run_test() as pilot:
+            pgid = await to_groups_offer(pilot, app)
+            await pilot.press("k")
+            await until(pilot, lambda: not group_alive(pgid))
+            assert app.session is not None
+            assert app.session.process_groups == []
+            # The pgid now leads an unrelated group: kill(0) succeeds again.
+            monkeypatch.setattr("nare.tui.app.group_alive", lambda pgid: True)
+            await pilot.press("ctrl+q")
+            await until(pilot, lambda: app.return_code is not None)
+    finally:
+        stop_recorded(app)
+
+
+async def test_a_group_killed_at_quit_is_forgotten(tmp_path: Path) -> None:
+    proc = sleeper()
+    try:
+        path = resumable(tmp_path, proc.pid)
+        app = make(tmp_path, FakeProvider([]), "--resume", str(path))
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+q")
+            await until(pilot, lambda: isinstance(app.screen, GroupsScreen))
+            await pilot.press("k")
+            await until(pilot, lambda: app.return_code is not None)
+        assert app.session is not None
+        assert app.session.process_groups == []
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+async def test_a_kill_that_fails_at_quit_is_in_the_exit_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A group nare may not signal is still offered (kill(0) answers EPERM).
+    # "k kill and quit" exited in silence and the group ran on.
+    proc = sleeper()
+    try:
+        path = resumable(tmp_path, proc.pid)
+        app = make(tmp_path, FakeProvider([]), "--resume", str(path))
+        monkeypatch.setattr("nare.tui.app.stop_group", lambda pgid: False)
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+q")
+            await until(pilot, lambda: isinstance(app.screen, GroupsScreen))
+            await pilot.press("k")
+            await until(pilot, lambda: app.return_code is not None)
+        assert (
+            f"could not kill process group {proc.pid} (sleep 30)"
+            in exit_summary(app).splitlines()
+        )
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+async def test_a_recorded_group_that_has_died_is_forgotten(tmp_path: Path) -> None:
+    proc = sleeper()
+    proc.kill()
+    proc.wait()
+    path = resumable(tmp_path, proc.pid)
+    app = make(tmp_path, FakeProvider([]), "--resume", str(path))
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+q")
+        await until(pilot, lambda: app.return_code is not None)
+    assert app.session is not None
+    assert app.session.process_groups == []

@@ -11,16 +11,19 @@ import base64
 import contextlib
 import inspect
 import os
+import re
+import shutil
 import signal
 import subprocess
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 from PIL import Image
 
+from nare.events import redact
 from nare.mcp import ExternalTool
 from nare.transport import ToolCall
 
@@ -131,8 +134,152 @@ def edit_file(path: str, old: str, new: str) -> str:
     return f"edited {path}"
 
 
-async def run_bash(command: str, timeout: int = 120, *, cwd: str | None = None) -> str:
-    """Run a shell command in its own process group, with no stdin.
+def _shell(command: str) -> list[str]:
+    """bash with pipefail when there is one, else sh.
+
+    Under dash, `npm run build 2>&1 | tail -30` reported tail's exit 0 for
+    three failed builds, and `[[ ]]` was a syntax error.
+    """
+    bash = shutil.which("bash")
+    if bash is None:
+        return ["/bin/sh", "-c", command]
+    return [bash, "-o", "pipefail", "-c", command]
+
+
+_KILLERS = re.compile(r"\b(?:pkill|killall|kill)\b")
+
+SELF_KILL_HINT = (
+    "pkill -f also matches the shell running this command; use a pattern "
+    "like `nex[t]-server`, or kill by `$!`."
+)
+
+
+@dataclass(frozen=True)
+class BashOutcome:
+    """One bash call: the text the model reads, whether it is an error, and a
+    process group the command left running.
+    """
+
+    text: str
+    failed: bool = False
+    group: int | None = None
+
+
+def _status(code: int) -> str:
+    """`exit N`, or the signal that killed the shell.
+
+    A negative return code is a signal. Printed as `exit -15` it read as an odd
+    exit code, not as the shell being killed.
+    """
+    if code >= 0:
+        return f"exit {code}"
+    try:
+        name = signal.Signals(-code).name
+    except ValueError:
+        return f"killed by signal {-code}"
+    return f"killed by {name} (signal {-code})"
+
+
+def _signalable(pgid: object) -> TypeGuard[int]:
+    """A pgid nare may signal: an int above 1 that is not nare's own group.
+
+    killpg(0) signals the caller's own group, and a pgid can come from a
+    session file, which is data.
+    """
+    return (
+        isinstance(pgid, int)
+        and not isinstance(pgid, bool)
+        and pgid > 1
+        and pgid != os.getpgrp()
+    )
+
+
+def group_alive(pgid: object) -> bool:
+    """Whether anything in the process group is still running.
+
+    kill(0) first: it is cheap and settles a group that is gone. It also
+    counts a zombie, and nare as PID 1 (the image run without --init) reaps
+    nothing, so there a finished orphan would read as running for good.
+    """
+    if not _signalable(pgid):
+        return False
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass  # it exists; it is just not ours to signal
+    return _running_member(pgid)
+
+
+def _running_member(pgid: int) -> bool:
+    """Whether /proc shows a member of the group that is not a zombie.
+
+    True where there is no /proc to read: kill(0) has already found the group.
+    """
+    try:
+        pids = [name for name in os.listdir("/proc") if name.isdigit()]
+    except OSError:
+        return True
+    for pid in pids:
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_bytes()
+        except OSError:
+            continue  # it exited after the listing
+        # comm, in parentheses, can hold spaces and ")": split after the last.
+        state, _ppid, pgrp, *_ = stat[stat.rindex(b")") + 2 :].split()
+        if int(pgrp) == pgid and state not in (b"Z", b"X"):
+            return True
+    return False
+
+
+def stop_group(pgid: object) -> bool:
+    """SIGKILL a process group, as a timeout or a cancel does.
+
+    False when nare may not signal that pgid or the kill was refused. A group
+    that is already gone counts as stopped.
+    """
+    if not _signalable(pgid):
+        return False
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return True
+
+
+def group_label(command: str) -> str:
+    """One line that names a command, for `[still running: ...]` and the TUI.
+
+    Redacted before it is cut: a cut through a key leaves a stub that no
+    pattern matches.
+    """
+    first = (command.strip().splitlines() or [""])[0]
+    line = " ".join(redact(first).split())
+    return line if len(line) <= 60 else line[:57] + "..."
+
+
+async def _lingers(pgid: int) -> bool:
+    """Whether the group outlives the call.
+
+    Asked over about 0.1 s, not once: a child that exits as the shell dies is
+    a zombie until init reaps it, and where there is no /proc, group_alive()
+    counts a zombie as alive.
+    """
+    for _ in range(5):
+        if not group_alive(pgid):
+            return False
+        await asyncio.sleep(0.02)
+    return True
+
+
+async def bash_outcome(
+    command: str, timeout: int = 120, *, cwd: str | None = None
+) -> BashOutcome:
+    """Run a command in bash with pipefail (sh without bash), in its own
+    process group, with no stdin.
 
     `subprocess.run(timeout=...)` kills the shell and nothing the shell started,
     so `make dev &` outlives the call and the run leaks a server. The group is
@@ -144,8 +291,8 @@ async def run_bash(command: str, timeout: int = 120, *, cwd: str | None = None) 
     stdin is DEVNULL because nare's own stdin belongs to conductor: a command
     that reads would either eat conductor's pipe or block until the timeout.
     """
-    proc = await asyncio.create_subprocess_shell(
-        command,
+    proc = await asyncio.create_subprocess_exec(
+        *_shell(command),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL,
@@ -154,10 +301,13 @@ async def run_bash(command: str, timeout: int = 120, *, cwd: str | None = None) 
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
+        # In here so a cancel during the probe kills the group too: the call
+        # then never returns, so dispatch never hears of the group.
+        lingers = await _lingers(proc.pid)
     except BaseException as exc:
-        # ponytail: killpg reaches the group the shell leads. A grandchild that
-        # calls setsid itself escapes it; a pid-tree walk is the upgrade, and
-        # not before something actually escapes.
+        # ponytail: a process that calls setsid itself (pg_ctl does) escapes
+        # the group, here and in the still-running probe. The upgrade is
+        # prctl(PR_SET_CHILD_SUBREAPER), then listing /proc/self/task/*/children.
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
         await proc.wait()
@@ -167,7 +317,27 @@ async def run_bash(command: str, timeout: int = 120, *, cwd: str | None = None) 
             raise subprocess.TimeoutExpired(command, timeout) from None
         raise
     output = (out + err).decode(errors="replace").strip()
-    return f"exit {proc.returncode}\n{_truncate(output)}".rstrip()
+    code = proc.returncode
+    assert code is not None  # communicate() returns after the exit
+    text = f"{_status(code)}\n{_truncate(output)}".rstrip()
+    killed = code < 0
+    if killed and _KILLERS.search(command):
+        # The likeliest killer is the command itself: pkill -f matches the
+        # shell whose argv holds the pattern.
+        text += f"\n{SELF_KILL_HINT}"
+    group = proc.pid if lingers else None
+    if group is not None:
+        # The shell led the group, so its pid is the pgid. A Postgres started
+        # in the practice run was still running hours later, unreported.
+        text += f"\n[still running: process group {group} ({group_label(command)})]"
+    return BashOutcome(text, failed=killed, group=group)
+
+
+async def run_bash(command: str, timeout: int = 120, *, cwd: str | None = None) -> str:
+    """The text of bash_outcome(): what the model reads. dispatch() calls
+    bash_outcome() itself, to learn whether the result is an error.
+    """
+    return (await bash_outcome(command, timeout, cwd=cwd)).text
 
 
 def ask(questions: list[str]) -> str:
@@ -248,7 +418,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "name": "bash",
         "description": (
             "Run a shell command and return its exit code and combined output. "
-            "Use this with rg and find for search."
+            "Runs in bash with pipefail. Each call is a fresh shell: `cd` and "
+            "`export` do not persist. Use this with rg and find for search."
         ),
         "input_schema": {
             "type": "object",
@@ -373,12 +544,20 @@ def tool_result(call_id: str, text: str, *, is_error: bool = False) -> dict[str,
 
 
 async def dispatch(
-    call: ToolCall, policy: Policy, approve: Approve = approve_all
+    call: ToolCall,
+    policy: Policy,
+    approve: Approve = approve_all,
+    *,
+    left_running: Callable[[int, str], None] | None = None,
 ) -> dict[str, Any]:
     """Run one tool call. Every failure comes back as an is_error result rather
     than an exception: the model adapts, which is what it is good at. A policy
     refusal is one of those failures, so a narrowed session keeps working
     instead of dying on the first attempt to leave its box.
+
+    `left_running` hears of a process group a bash call left running, with its
+    label, so the caller can record it. A callback, not a key on the result:
+    a transport sends tool_result blocks as they are.
     """
     if call.error is not None:
         return tool_result(call.id, call.error, is_error=True)
@@ -420,7 +599,10 @@ async def dispatch(
             args["image_model"] = policy.image_model
             output = await asyncio.to_thread(_read_with_image, **args)
         elif call.name == "bash":
-            output = await run_bash(**args)
+            outcome = await bash_outcome(**args)
+            if outcome.group is not None and left_running is not None:
+                left_running(outcome.group, group_label(str(args["command"])))
+            return tool_result(call.id, outcome.text, is_error=outcome.failed)
         else:
             output = await asyncio.to_thread(function, **args)
         if isinstance(output, dict):

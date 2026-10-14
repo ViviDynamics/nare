@@ -39,7 +39,7 @@ from nare.contract import NARE_VERSION, NEVER_STARTED
 from nare.events import Event, redact
 from nare.loop import configure_budgets, run
 from nare.session import Session, Usage, loads, new_session, reopen, save, unanswered
-from nare.tools import Policy
+from nare.tools import Policy, group_alive, stop_group
 from nare.transport import Transport
 from nare.tui.approve import Approver
 from nare.tui.attach import Watcher
@@ -62,6 +62,11 @@ CSS = """
 ApprovalScreen { align: center middle; }
 ApprovalScreen > VerticalScroll {
     width: 90%; height: 80%; border: thick $accent; background: $surface;
+}
+GroupsScreen { align: center middle; }
+GroupsScreen > VerticalScroll {
+    width: 90%; height: auto; max-height: 80%;
+    border: thick $warning; background: $surface;
 }
 """
 
@@ -111,6 +116,51 @@ class ApprovalScreen(ModalScreen[str]):
             yield Static(Syntax(self.text, self.lexer, word_wrap=True), id="preview")
 
 
+def _group_text(group: dict[str, Any]) -> str:
+    return f"process group {group.get('pgid')} ({group.get('command', '')})"
+
+
+# The offer's answer keys are plain letters: see GroupsScreen.action_dismiss.
+OFFER_GRACE = 0.5
+
+
+class GroupsScreen(ModalScreen[str]):
+    """Process groups a bash call left running: kill them or leave them.
+
+    Escape leaves them, the answer that changes nothing, as it denies in
+    ApprovalScreen.
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        ("k", "dismiss('k')", "kill"),
+        ("l", "dismiss('l')", "leave"),
+        ("escape", "dismiss('l')", "leave"),
+    ]
+
+    def __init__(self, groups: list[dict[str, Any]], *, quitting: bool = False) -> None:
+        super().__init__()
+        self.groups = groups
+        self.quitting = quitting
+        self.shown = time.monotonic()
+
+    def compose(self) -> ComposeResult:
+        then = " and quit" if self.quitting else ""
+        with VerticalScroll():
+            yield Static(
+                Text(f"still running   k kill{then} · l leave{then}", style="bold")
+            )
+            yield Static(
+                Text("\n".join(_group_text(g) for g in self.groups)), id="groups"
+            )
+
+    async def action_dismiss(self, result: str | None = None) -> None:
+        # A turn-end offer appears as the input box comes back, so a person
+        # may already be typing a follow-up: its first letters must not
+        # answer. The quit prompt follows a deliberate Ctrl-Q.
+        if self.quitting or time.monotonic() - self.shown >= OFFER_GRACE:
+            await super().action_dismiss(result)
+
+
 class TuiApp(App[None]):
     CSS = CSS
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -158,6 +208,12 @@ class TuiApp(App[None]):
         self.live = Text()
         self.window: str | None = None  # the last context window announced
         self.worker: Worker[None] | None = None
+        # Groups a person left at a turn end: not offered again until quit,
+        # which asks about every live one.
+        self.left: set[int] = set()
+        # Groups the quit prompt could not kill: the exit summary names them,
+        # as the transcript does at a turn end.
+        self.not_killed: list[str] = []
 
     def compose(self) -> ComposeResult:
         yield Transcript(id="transcript")
@@ -217,6 +273,8 @@ class TuiApp(App[None]):
             self.worker.cancel()
 
     async def action_quit(self) -> None:
+        if isinstance(self.screen, GroupsScreen) and self.screen.quitting:
+            return  # already asking: k or l answers it
         # Cancel and wait while the widgets still exist, so the run's own
         # `finally` can draw and save; main() saves once more after exit.
         if self.worker is not None and self.worker.is_running:
@@ -224,6 +282,25 @@ class TuiApp(App[None]):
                 self.worker.cancel()
             with contextlib.suppress(WorkerCancelled):
                 await self.worker.wait()
+        if isinstance(self.screen, GroupsScreen):
+            # A turn-end offer: the quit prompt asks about every live group.
+            self.pop_screen()
+        groups = self._live_groups(skip_left=False)
+        if not groups:
+            self.exit()
+            return
+        self.push_screen(
+            GroupsScreen(groups, quitting=True),
+            lambda key: self._quit_after(groups, key),
+        )
+
+    def _quit_after(self, groups: list[dict[str, Any]], key: str | None) -> None:
+        if key == "k":
+            for group in groups:
+                if stop_group(group["pgid"]):
+                    self._forget(group["pgid"])
+                else:
+                    self.not_killed.append(_group_text(group))
         self.exit()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -278,6 +355,9 @@ class TuiApp(App[None]):
                     saved = session.turns
                     self._save()
             self._set_state(session.status)
+            # A run that settled on its own, not an interrupt: the quit
+            # prompt, or the next turn end, catches what an interrupt leaves.
+            self._offer_groups()
         except asyncio.CancelledError:
             self._set_state("interrupted")
             # Saved by the finally below: a file left `working` reads as a
@@ -379,6 +459,65 @@ class TuiApp(App[None]):
             if self.screen is screen:
                 self.pop_screen()
             self._set_state("working")
+
+    def _live_groups(self, *, skip_left: bool) -> list[dict[str, Any]]:
+        """Recorded process groups that are still alive, each pgid once.
+
+        Forgets the ones that are gone: a dead group's pgid can later lead an
+        unrelated group, and kill(0) cannot tell the two apart.
+
+        ponytail: a group that dies while nare is not looking (left at quit,
+        then a reboot) is still recorded. Recording a member's start time is
+        the upgrade.
+        """
+        if self.session is None:
+            return []
+        seen: set[int] = set()
+        live: list[dict[str, Any]] = []
+        kept: list[dict[str, Any]] = []
+        for group in self.session.process_groups:
+            # Any: a session file is data, and group_alive() vets it below.
+            pgid: Any = group.get("pgid") if isinstance(group, dict) else None
+            # group_alive first: it refuses junk, which may not even hash.
+            if not group_alive(pgid):
+                continue
+            kept.append(group)
+            if pgid in seen or (skip_left and pgid in self.left):
+                continue
+            seen.add(pgid)
+            live.append(group)
+        self.session.process_groups = kept
+        return live
+
+    def _forget(self, pgid: int) -> None:
+        """Drop a group nare killed: its pgid can later lead an unrelated one."""
+        if self.session is not None:
+            self.session.process_groups = [
+                group
+                for group in self.session.process_groups
+                if not (isinstance(group, dict) and group.get("pgid") == pgid)
+            ]
+
+    def _offer_groups(self) -> None:
+        """At turn end: the live groups not already left, kill or leave."""
+        groups = self._live_groups(skip_left=True)
+        if groups:
+            self.push_screen(
+                GroupsScreen(groups), lambda key: self._settle_groups(groups, key)
+            )
+
+    def _settle_groups(self, groups: list[dict[str, Any]], key: str | None) -> None:
+        transcript = self.query_one(Transcript)
+        for group in groups:
+            text = _group_text(group)
+            if key != "k":
+                self.left.add(group["pgid"])
+                transcript.note(f"left running: {text}")
+            elif stop_group(group["pgid"]):
+                self._forget(group["pgid"])
+                transcript.note(f"killed {text}")
+            else:
+                transcript.note(f"could not kill {text}", "yellow")
 
 
 class AttachApp(App[None]):
@@ -555,6 +694,7 @@ def exit_summary(app: TuiApp, keep: int = 20) -> str:
             *lines,
             *([outcome] if outcome else []),
             app.status_text().plain,
+            *(f"could not kill {text}" for text in app.not_killed),
             f"session: {path} · resume: nare tui --resume {path}",
         ]
     )

@@ -1,8 +1,13 @@
 import asyncio
 import os
+import re
+import shlex
+import shutil
+import signal
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -17,9 +22,12 @@ from nare.tools import (
     ask,
     dispatch,
     edit_file,
+    group_alive,
+    group_label,
     questions_from,
     read_file,
     run_bash,
+    stop_group,
     write_file,
 )
 from nare.transport import ToolCall
@@ -352,3 +360,272 @@ async def test_an_async_denial_refuses_the_call(tmp_path: Path) -> None:
         "is_error": True,
     }
     assert not target.exists()
+
+
+async def test_bash_keeps_a_failure_inside_a_pipe() -> None:
+    # Under dash, `npm run build 2>&1 | tail -30` said exit 0 for three
+    # failed builds in the practice run.
+    assert (await run_bash("false | true")).startswith("exit 1")
+
+
+async def test_bash_runs_bash_syntax() -> None:
+    assert (await run_bash("[[ 1 == 1 ]]")).startswith("exit 0")
+
+
+def _argv_of(monkeypatch: pytest.MonkeyPatch, command: str) -> tuple[str, ...]:
+    seen: dict[str, tuple[str, ...]] = {}
+    real = subprocess.Popen
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        seen["argv"] = tuple(args[0])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", spy)
+    asyncio.run(run_bash(command))
+    return seen["argv"]
+
+
+def test_bash_runs_bash_with_pipefail(monkeypatch: pytest.MonkeyPatch) -> None:
+    argv = _argv_of(monkeypatch, "true")
+    assert argv[0].endswith("bash")
+    assert argv[1:] == ("-o", "pipefail", "-c", "true")
+
+
+def test_bash_falls_back_to_sh_without_bash(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("nare.tools.shutil.which", lambda name: None)
+    assert _argv_of(monkeypatch, "true") == ("/bin/sh", "-c", "true")
+
+
+def test_the_bash_description_states_the_shell_semantics() -> None:
+    schema = next(s for s in TOOL_SCHEMAS if s["name"] == "bash")
+    assert (
+        "Runs in bash with pipefail. Each call is a fresh shell: "
+        "`cd` and `export` do not persist."
+    ) in schema["description"]
+
+
+needs_pkill = pytest.mark.skipif(shutil.which("pkill") is None, reason="needs pkill")
+
+HINT = (
+    "pkill -f also matches the shell running this command; use a pattern "
+    "like `nex[t]-server`, or kill by `$!`."
+)
+
+
+def bash_call(command: str) -> ToolCall:
+    return ToolCall(id="c1", name="bash", args={"command": command})
+
+
+async def test_a_shell_killed_by_a_signal_says_so() -> None:
+    text = await run_bash("echo hi; kill -TERM $$")
+    assert text.startswith("killed by SIGTERM (signal 15)\nhi")
+    assert HINT in text
+
+
+@needs_pkill
+async def test_a_command_that_pkills_its_own_tag_is_an_error() -> None:
+    # The practice run's `pkill -f next-server` matched the tool's own shell,
+    # read as `exit -15`, was not an error, and cost a turn of about 50k tokens.
+    tag = f"nare-self-{uuid.uuid4().hex}"
+    result = await dispatch(bash_call(f"pkill -f {tag}; echo unreachable"), Policy())
+    assert result["is_error"] is True
+    assert result["content"].startswith("killed by SIGTERM (signal 15)")
+    assert "unreachable" not in result["content"]
+    assert HINT in result["content"]
+
+
+async def test_a_signal_without_a_kill_command_gets_no_pkill_hint() -> None:
+    python = shlex.quote(sys.executable)
+    text = await run_bash(f"ulimit -c 0; exec {python} -c 'import os; os.abort()'")
+    assert text.split("\n")[0] == "killed by SIGABRT (signal 6)"
+    assert "pkill" not in text
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="realtime signals are Linux")
+async def test_a_signal_python_cannot_name_still_reads_as_a_signal() -> None:
+    # 35 is a realtime signal: signal.Signals has no member for it.
+    assert (await run_bash("kill -35 $$")).split("\n")[0] == "killed by signal 35"
+
+
+async def test_pipefail_reports_a_closed_pipe_as_an_exit_not_a_kill() -> None:
+    # `yes` dies of SIGPIPE when head exits, so pipefail makes the pipeline
+    # exit 141. The shell exited normally: an exit code, not a kill.
+    result = await dispatch(bash_call("yes | head -1"), Policy())
+    assert result["content"] == "exit 141\ny"
+    assert result["is_error"] is False
+    plain = await dispatch(bash_call("exit 3"), Policy())
+    assert plain["is_error"] is False
+
+
+def test_group_alive_and_stop_group_on_a_real_group() -> None:
+    proc = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    try:
+        assert group_alive(proc.pid)
+        assert stop_group(proc.pid)
+        assert proc.wait(timeout=5) == -signal.SIGKILL
+        # Reaped, so nothing is left in the group.
+        assert not group_alive(proc.pid)
+        assert stop_group(proc.pid)  # already gone counts as stopped
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+needs_proc = pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="reads member states from /proc"
+)
+
+
+def _state(pid: int) -> str:
+    stat = Path(f"/proc/{pid}/stat").read_text()
+    return stat[stat.rindex(")") + 2]
+
+
+@needs_proc
+def test_a_group_holding_only_a_zombie_is_not_alive() -> None:
+    # Not reaped, so `true` stays a zombie; kill(0) still finds the group.
+    proc = subprocess.Popen(["true"], start_new_session=True)
+    try:
+        for _ in range(300):
+            if _state(proc.pid) == "Z":
+                break
+            time.sleep(0.01)
+        assert _state(proc.pid) == "Z"
+        assert not group_alive(proc.pid)
+    finally:
+        proc.wait()
+
+
+# nare as PID 1 (the image run without --init): orphans reparent to nare,
+# which never reaps them, so each one that exits stays a zombie.
+AS_PID_1 = """
+import asyncio, ctypes
+from nare.tools import run_bash
+assert ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
+print(asyncio.run(run_bash("(sleep 0.01 &); echo hi")))
+"""
+
+
+@needs_proc
+def test_an_orphan_that_exited_is_not_reported_when_nare_is_pid_1() -> None:
+    done = subprocess.run(
+        [sys.executable, "-c", AS_PID_1], capture_output=True, text=True, timeout=30
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "exit 0\nhi"
+
+
+@pytest.mark.parametrize("pgid", [0, 1, -5, True, "123", None, os.getpgrp()])
+def test_nare_never_signals_a_pgid_it_may_not(
+    monkeypatch: pytest.MonkeyPatch, pgid: object
+) -> None:
+    # killpg(0) is nare's own group, and a session file is data: a junk or
+    # hostile pgid must never reach a signal.
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        "nare.tools.os.killpg", lambda group, sig: sent.append((group, sig))
+    )
+    assert group_alive(pgid) is False
+    assert stop_group(pgid) is False
+    assert sent == []
+
+
+def test_group_label_is_the_first_line_redacted_then_cut() -> None:
+    assert group_label("  npm run dev\nsecond line") == "npm run dev"
+    assert group_label("a   b\tc") == "a b c"
+    assert group_label("") == ""
+    # Redacted before the cut: cutting first would leave `sk-ant-aaaa`, a stub
+    # too short for the key pattern to match.
+    label = group_label("x" * 50 + " sk-ant-" + "a" * 30)
+    assert len(label) == 60
+    assert label.endswith("...")
+    assert "sk-ant" not in label
+    assert "aaa" not in label
+
+
+LEAVE_RUNNING = "(sleep 30 >/dev/null 2>&1 &)"
+
+
+def _reported_group(text: str) -> int | None:
+    found = re.search(r"\[still running: process group (\d+) \(", text)
+    return None if found is None else int(found[1])
+
+
+async def test_bash_reports_a_process_group_it_leaves_running() -> None:
+    # A Postgres started in the practice run was still running hours later,
+    # and nothing in the result said so.
+    command = "(sleep 2 >/dev/null 2>&1 &)"
+    text = await run_bash(command)
+    pgid = _reported_group(text)
+    try:
+        assert pgid is not None
+        assert text == f"exit 0\n[still running: process group {pgid} ({command})]"
+    finally:
+        if pgid is not None:
+            stop_group(pgid)
+
+
+async def test_a_cancel_while_probing_for_a_group_left_running_kills_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The probe sleeps for about 0.1 s after the shell exits. A Ctrl-C there
+    # skipped the kill, and the call never returned, so dispatch never heard
+    # of the group: it ran on, neither killed nor listed at quit.
+    probed: list[int] = []
+    probing = asyncio.Event()
+    real = group_alive
+
+    def spy(pgid: object) -> bool:
+        assert isinstance(pgid, int)
+        probed.append(pgid)
+        probing.set()
+        return real(pgid)
+
+    monkeypatch.setattr("nare.tools.group_alive", spy)
+    task = asyncio.create_task(run_bash(LEAVE_RUNNING))
+    await asyncio.wait_for(probing.wait(), 5)
+    task.cancel()
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5)
+        deadline = time.monotonic() + 5
+        while real(probed[0]) and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        assert not real(probed[0])
+    finally:
+        stop_group(probed[0])
+
+
+async def test_bash_reports_nothing_when_nothing_is_left() -> None:
+    assert await run_bash("sleep 0.1 & wait") == "exit 0"
+
+
+@needs_pkill
+async def test_a_self_kill_does_not_read_as_a_group_left_running() -> None:
+    # Probed once, right after the shell died, pkill was still a zombie that
+    # init had not reaped in about one run in four.
+    tag = f"nare-self-{uuid.uuid4().hex}"
+    for _ in range(5):
+        text = await run_bash(f"pkill -f {tag}; echo unreachable")
+        assert text.startswith("killed by SIGTERM")
+        assert "still running" not in text
+
+
+async def test_dispatch_hands_a_group_left_running_to_its_caller() -> None:
+    seen: list[tuple[int, str]] = []
+
+    def record(pgid: int, label: str) -> None:
+        seen.append((pgid, label))
+
+    result = await dispatch(bash_call(LEAVE_RUNNING), Policy(), left_running=record)
+    try:
+        assert [label for _, label in seen] == [LEAVE_RUNNING]
+        pgid = seen[0][0]
+        assert group_alive(pgid)
+        assert result["is_error"] is False
+        assert result["content"].endswith(
+            f"[still running: process group {pgid} ({LEAVE_RUNNING})]"
+        )
+    finally:
+        for pgid, _ in seen:
+            stop_group(pgid)
