@@ -30,7 +30,7 @@ from nare.session import (
     loads,
     new_session,
 )
-from nare.tools import Policy, approve_all
+from nare.tools import Policy, approve_all, group_alive, stop_group
 from nare.transport import Reply, ToolCall, Transport
 
 
@@ -537,3 +537,24 @@ async def test_cancelling_dispatch_answers_the_rest_as_interrupted() -> None:
     assert answers[0]["content"].startswith("exit 0")
     assert answers[1]["content"] == INTERRUPTED
     assert answers[1]["is_error"] is True
+
+
+async def test_a_bash_call_that_leaves_a_group_running_is_recorded() -> None:
+    command = "(sleep 30 >/dev/null 2>&1 &)"
+    session = new_session("start it")
+    fake = FakeProvider([tool_reply("bash", {"command": command})])
+    await step(session, fake, approve_all, Policy())
+    groups = session.process_groups
+    try:
+        assert [g["command"] for g in groups] == [command]
+        assert group_alive(groups[0]["pgid"])
+    finally:
+        for group in groups:
+            stop_group(group["pgid"])
+
+
+async def test_a_bash_call_that_leaves_nothing_records_nothing() -> None:
+    session = new_session("go")
+    fake = FakeProvider([tool_reply("bash", {"command": "true"})])
+    await step(session, fake, approve_all, Policy())
+    assert session.process_groups == []

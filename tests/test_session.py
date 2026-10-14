@@ -177,3 +177,17 @@ def test_save_is_atomic_and_owner_only(tmp_path: Path) -> None:
     assert loads(path.read_text()) == s
     assert path.stat().st_mode & 0o777 == 0o600
     assert [f.name for f in tmp_path.iterdir()] == ["s.json"]
+
+
+def test_a_file_from_before_process_groups_still_loads() -> None:
+    raw = json.loads(dumps(new_session("go")))
+    del raw["process_groups"]
+    assert loads(json.dumps(raw)).process_groups == []
+
+
+def test_process_groups_survive_a_save_and_a_reopen() -> None:
+    s = new_session("go")
+    s.process_groups.append({"pgid": 4242, "command": "npm run dev"})
+    s = loads(dumps(s))
+    reopen(s, "next")
+    assert s.process_groups == [{"pgid": 4242, "command": "npm run dev"}]

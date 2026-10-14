@@ -78,6 +78,10 @@ class Session:
     # Set when a person interrupts a run, so a file left `working` reads as
     # stopped, not as running. reopen() clears it.
     interrupted_at: str | None = None
+    # Process groups a bash call left running, as {"pgid", "command"}: the TUI
+    # offers to kill the live ones at turn end and on quit. A record, so
+    # reopen() keeps it.
+    process_groups: list[dict[str, Any]] = field(default_factory=list)
     contract: int = CONTRACT_VERSION
     nare: str = NARE_VERSION
     events: list[Event] = field(default_factory=list, compare=False)
