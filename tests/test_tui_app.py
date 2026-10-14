@@ -898,3 +898,52 @@ async def test_ctrl_q_during_a_turn_end_offer_asks_once_about_quitting(
         assert group_gone(pgid)
     finally:
         stop_recorded(app)
+
+
+async def test_a_group_killed_at_turn_end_is_forgotten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = make(tmp_path, leaves_a_group(), prompt="start it")
+    try:
+        async with app.run_test() as pilot:
+            pgid = await to_groups_offer(pilot, app)
+            await pilot.press("k")
+            await until(pilot, lambda: not group_alive(pgid))
+            assert app.session is not None
+            assert app.session.process_groups == []
+            # The pgid now leads an unrelated group: kill(0) succeeds again.
+            monkeypatch.setattr("nare.tui.app.group_alive", lambda pgid: True)
+            await pilot.press("ctrl+q")
+            await until(pilot, lambda: app.return_code is not None)
+    finally:
+        stop_recorded(app)
+
+
+async def test_a_group_killed_at_quit_is_forgotten(tmp_path: Path) -> None:
+    proc = sleeper()
+    try:
+        path = resumable(tmp_path, proc.pid)
+        app = make(tmp_path, FakeProvider([]), "--resume", str(path))
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+q")
+            await until(pilot, lambda: isinstance(app.screen, GroupsScreen))
+            await pilot.press("k")
+            await until(pilot, lambda: app.return_code is not None)
+        assert app.session is not None
+        assert app.session.process_groups == []
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+async def test_a_recorded_group_that_has_died_is_forgotten(tmp_path: Path) -> None:
+    proc = sleeper()
+    proc.kill()
+    proc.wait()
+    path = resumable(tmp_path, proc.pid)
+    app = make(tmp_path, FakeProvider([]), "--resume", str(path))
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+q")
+        await until(pilot, lambda: app.return_code is not None)
+    assert app.session is not None
+    assert app.session.process_groups == []

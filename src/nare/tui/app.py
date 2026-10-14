@@ -282,7 +282,8 @@ class TuiApp(App[None]):
     def _quit_after(self, groups: list[dict[str, Any]], key: str | None) -> None:
         if key == "k":
             for group in groups:
-                stop_group(group["pgid"])
+                if stop_group(group["pgid"]):
+                    self._forget(group["pgid"])
         self.exit()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -445,25 +446,40 @@ class TuiApp(App[None]):
     def _live_groups(self, *, skip_left: bool) -> list[dict[str, Any]]:
         """Recorded process groups that are still alive, each pgid once.
 
-        ponytail: a pgid recorded by an earlier process can since belong to an
-        unrelated group, and kill(0) cannot tell. Recording a member's start
-        time is the upgrade.
+        Forgets the ones that are gone: a dead group's pgid can later lead an
+        unrelated group, and kill(0) cannot tell the two apart.
+
+        ponytail: a group that dies while nare is not looking (left at quit,
+        then a reboot) is still recorded. Recording a member's start time is
+        the upgrade.
         """
         if self.session is None:
             return []
         seen: set[int] = set()
         live: list[dict[str, Any]] = []
+        kept: list[dict[str, Any]] = []
         for group in self.session.process_groups:
             # Any: a session file is data, and group_alive() vets it below.
             pgid: Any = group.get("pgid") if isinstance(group, dict) else None
             # group_alive first: it refuses junk, which may not even hash.
-            if not group_alive(pgid) or pgid in seen:
+            if not group_alive(pgid):
                 continue
-            if skip_left and pgid in self.left:
+            kept.append(group)
+            if pgid in seen or (skip_left and pgid in self.left):
                 continue
             seen.add(pgid)
             live.append(group)
+        self.session.process_groups = kept
         return live
+
+    def _forget(self, pgid: int) -> None:
+        """Drop a group nare killed: its pgid can later lead an unrelated one."""
+        if self.session is not None:
+            self.session.process_groups = [
+                group
+                for group in self.session.process_groups
+                if not (isinstance(group, dict) and group.get("pgid") == pgid)
+            ]
 
     def _offer_groups(self) -> None:
         """At turn end: the live groups not already left, kill or leave."""
@@ -481,6 +497,7 @@ class TuiApp(App[None]):
                 self.left.add(group["pgid"])
                 transcript.note(f"left running: {text}")
             elif stop_group(group["pgid"]):
+                self._forget(group["pgid"])
                 transcript.note(f"killed {text}")
             else:
                 transcript.note(f"could not kill {text}", "yellow")
