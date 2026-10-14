@@ -2,6 +2,8 @@ import asyncio
 import io
 import json
 import logging
+import signal
+import subprocess
 import sys
 import time
 from collections.abc import AsyncGenerator, Callable
@@ -798,3 +800,96 @@ async def test_a_run_that_leaves_nothing_running_offers_nothing(
         await pilot.pause()
         assert app.run_state == "done"
         assert not isinstance(app.screen, GroupsScreen)
+
+
+def sleeper() -> subprocess.Popen[bytes]:
+    return subprocess.Popen(["sleep", "30"], start_new_session=True)
+
+
+def resumable(tmp_path: Path, pgid: int) -> Path:
+    """A saved session that recorded `pgid` as left running."""
+    s = new_session("go")
+    s.status = "done"
+    s.process_groups.append({"pgid": pgid, "command": "sleep 30"})
+    path = tmp_path / "earlier.json"
+    save(s, path)
+    return path
+
+
+async def test_quitting_with_a_live_group_asks_first_and_k_kills_it(
+    tmp_path: Path,
+) -> None:
+    proc = sleeper()
+    try:
+        path = resumable(tmp_path, proc.pid)
+        app = make(tmp_path, FakeProvider([]), "--resume", str(path))
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+q")
+            await until(pilot, lambda: isinstance(app.screen, GroupsScreen))
+            assert cast(GroupsScreen, app.screen).quitting
+            assert app.return_code is None
+            await pilot.press("k")
+            await until(pilot, lambda: app.return_code is not None)
+        assert proc.wait(timeout=5) == -signal.SIGKILL
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+async def test_l_at_the_quit_prompt_leaves_the_group_and_quits(
+    tmp_path: Path,
+) -> None:
+    proc = sleeper()
+    try:
+        path = resumable(tmp_path, proc.pid)
+        app = make(tmp_path, FakeProvider([]), "--resume", str(path))
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+q")
+            await until(pilot, lambda: isinstance(app.screen, GroupsScreen))
+            await pilot.press("l")
+            await until(pilot, lambda: app.return_code is not None)
+        assert proc.poll() is None
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+async def test_ctrl_q_at_the_quit_prompt_does_not_stack_another(
+    tmp_path: Path,
+) -> None:
+    proc = sleeper()
+    try:
+        path = resumable(tmp_path, proc.pid)
+        app = make(tmp_path, FakeProvider([]), "--resume", str(path))
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+q")
+            await until(pilot, lambda: isinstance(app.screen, GroupsScreen))
+            await pilot.press("ctrl+q")
+            await pilot.pause()
+            assert len(app.screen_stack) == 2
+            assert app.return_code is None
+            await pilot.press("l")
+            await until(pilot, lambda: app.return_code is not None)
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+async def test_ctrl_q_during_a_turn_end_offer_asks_once_about_quitting(
+    tmp_path: Path,
+) -> None:
+    app = make(tmp_path, leaves_a_group(), prompt="start it")
+    try:
+        async with app.run_test() as pilot:
+            pgid = await to_groups_offer(pilot, app)
+            await pilot.press("ctrl+q")
+            await until(
+                pilot,
+                lambda: isinstance(app.screen, GroupsScreen) and app.screen.quitting,
+            )
+            assert len(app.screen_stack) == 2
+            await pilot.press("k")
+            await until(pilot, lambda: app.return_code is not None)
+        assert group_gone(pgid)
+    finally:
+        stop_recorded(app)

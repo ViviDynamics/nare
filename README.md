@@ -98,9 +98,12 @@ session). `edit` and `write` show a diff first. `read` and `ask` never prompt.
 a follow-up to keep going. When nare asks a question, the answer is the next
 thing you type. **Ctrl-Q** quits and leaves the last answer and a
 `nare tui --resume` command on the terminal. An interrupt or a quit kills a
-`bash` command that is still running. **PageUp** and **PageDown** scroll the
-transcript while you type; it stops following new output until you scroll back
-to the bottom or send a prompt.
+`bash` command that is still running. If a `bash` command leaves a process
+running in the background, nare lists it when it finishes the turn and again
+when you quit: **k** kills it, **l** leaves it running. A daemon that detaches
+into a session of its own, as `pg_ctl` does, is not caught. **PageUp** and
+**PageDown** scroll the transcript while you type; it stops following new
+output until you scroll back to the bottom or send a prompt.
 
 Every run is saved. Without `--session`, the file goes to
 `$XDG_STATE_HOME/nare/sessions/<id>.json` (`~/.local/state/...` when

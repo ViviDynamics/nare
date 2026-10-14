@@ -258,6 +258,8 @@ class TuiApp(App[None]):
             self.worker.cancel()
 
     async def action_quit(self) -> None:
+        if isinstance(self.screen, GroupsScreen) and self.screen.quitting:
+            return  # already asking: k or l answers it
         # Cancel and wait while the widgets still exist, so the run's own
         # `finally` can draw and save; main() saves once more after exit.
         if self.worker is not None and self.worker.is_running:
@@ -265,6 +267,22 @@ class TuiApp(App[None]):
                 self.worker.cancel()
             with contextlib.suppress(WorkerCancelled):
                 await self.worker.wait()
+        if isinstance(self.screen, GroupsScreen):
+            # A turn-end offer: the quit prompt asks about every live group.
+            self.pop_screen()
+        groups = self._live_groups(skip_left=False)
+        if not groups:
+            self.exit()
+            return
+        self.push_screen(
+            GroupsScreen(groups, quitting=True),
+            lambda key: self._quit_after(groups, key),
+        )
+
+    def _quit_after(self, groups: list[dict[str, Any]], key: str | None) -> None:
+        if key == "k":
+            for group in groups:
+                stop_group(group["pgid"])
         self.exit()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
