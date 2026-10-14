@@ -936,6 +936,30 @@ async def test_a_group_killed_at_quit_is_forgotten(tmp_path: Path) -> None:
         proc.wait()
 
 
+async def test_a_kill_that_fails_at_quit_is_in_the_exit_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A group nare may not signal is still offered (kill(0) answers EPERM).
+    # "k kill and quit" exited in silence and the group ran on.
+    proc = sleeper()
+    try:
+        path = resumable(tmp_path, proc.pid)
+        app = make(tmp_path, FakeProvider([]), "--resume", str(path))
+        monkeypatch.setattr("nare.tui.app.stop_group", lambda pgid: False)
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+q")
+            await until(pilot, lambda: isinstance(app.screen, GroupsScreen))
+            await pilot.press("k")
+            await until(pilot, lambda: app.return_code is not None)
+        assert (
+            f"could not kill process group {proc.pid} (sleep 30)"
+            in exit_summary(app).splitlines()
+        )
+    finally:
+        proc.kill()
+        proc.wait()
+
+
 async def test_a_recorded_group_that_has_died_is_forgotten(tmp_path: Path) -> None:
     proc = sleeper()
     proc.kill()

@@ -199,6 +199,9 @@ class TuiApp(App[None]):
         # Groups a person left at a turn end: not offered again until quit,
         # which asks about every live one.
         self.left: set[int] = set()
+        # Groups the quit prompt could not kill: the exit summary names them,
+        # as the transcript does at a turn end.
+        self.not_killed: list[str] = []
 
     def compose(self) -> ComposeResult:
         yield Transcript(id="transcript")
@@ -284,6 +287,8 @@ class TuiApp(App[None]):
             for group in groups:
                 if stop_group(group["pgid"]):
                     self._forget(group["pgid"])
+                else:
+                    self.not_killed.append(_group_text(group))
         self.exit()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -677,6 +682,7 @@ def exit_summary(app: TuiApp, keep: int = 20) -> str:
             *lines,
             *([outcome] if outcome else []),
             app.status_text().plain,
+            *(f"could not kill {text}" for text in app.not_killed),
             f"session: {path} · resume: nare tui --resume {path}",
         ]
     )
