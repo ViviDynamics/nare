@@ -471,6 +471,50 @@ def test_group_alive_and_stop_group_on_a_real_group() -> None:
         proc.wait()
 
 
+needs_proc = pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="reads member states from /proc"
+)
+
+
+def _state(pid: int) -> str:
+    stat = Path(f"/proc/{pid}/stat").read_text()
+    return stat[stat.rindex(")") + 2]
+
+
+@needs_proc
+def test_a_group_holding_only_a_zombie_is_not_alive() -> None:
+    # Not reaped, so `true` stays a zombie; kill(0) still finds the group.
+    proc = subprocess.Popen(["true"], start_new_session=True)
+    try:
+        for _ in range(300):
+            if _state(proc.pid) == "Z":
+                break
+            time.sleep(0.01)
+        assert _state(proc.pid) == "Z"
+        assert not group_alive(proc.pid)
+    finally:
+        proc.wait()
+
+
+# nare as PID 1 (the image run without --init): orphans reparent to nare,
+# which never reaps them, so each one that exits stays a zombie.
+AS_PID_1 = """
+import asyncio, ctypes
+from nare.tools import run_bash
+assert ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
+print(asyncio.run(run_bash("(sleep 0.01 &); echo hi")))
+"""
+
+
+@needs_proc
+def test_an_orphan_that_exited_is_not_reported_when_nare_is_pid_1() -> None:
+    done = subprocess.run(
+        [sys.executable, "-c", AS_PID_1], capture_output=True, text=True, timeout=30
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "exit 0\nhi"
+
+
 @pytest.mark.parametrize("pgid", [0, 1, -5, True, "123", None, os.getpgrp()])
 def test_nare_never_signals_a_pgid_it_may_not(
     monkeypatch: pytest.MonkeyPatch, pgid: object

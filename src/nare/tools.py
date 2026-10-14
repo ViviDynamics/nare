@@ -195,9 +195,11 @@ def _signalable(pgid: object) -> TypeGuard[int]:
 
 
 def group_alive(pgid: object) -> bool:
-    """Whether anything in the process group still exists.
+    """Whether anything in the process group is still running.
 
-    A zombie counts: kill(0) cannot tell one from a running process.
+    kill(0) first: it is cheap and settles a group that is gone. It also
+    counts a zombie, and nare as PID 1 (the image run without --init) reaps
+    nothing, so there a finished orphan would read as running for good.
     """
     if not _signalable(pgid):
         return False
@@ -206,8 +208,29 @@ def group_alive(pgid: object) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True  # it exists; it is just not ours to signal
-    return True
+        pass  # it exists; it is just not ours to signal
+    return _running_member(pgid)
+
+
+def _running_member(pgid: int) -> bool:
+    """Whether /proc shows a member of the group that is not a zombie.
+
+    True where there is no /proc to read: kill(0) has already found the group.
+    """
+    try:
+        pids = [name for name in os.listdir("/proc") if name.isdigit()]
+    except OSError:
+        return True
+    for pid in pids:
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_bytes()
+        except OSError:
+            continue  # it exited after the listing
+        # comm, in parentheses, can hold spaces and ")": split after the last.
+        state, _ppid, pgrp, *_ = stat[stat.rindex(b")") + 2 :].split()
+        if int(pgrp) == pgid and state not in (b"Z", b"X"):
+            return True
+    return False
 
 
 def stop_group(pgid: object) -> bool:
@@ -242,11 +265,8 @@ async def _lingers(pgid: int) -> bool:
     """Whether the group outlives the call.
 
     Asked over about 0.1 s, not once: a child that exits as the shell dies is
-    a zombie until init reaps it, and kill(0) counts a zombie as alive.
-
-    ponytail: nare as PID 1 (the image's ENTRYPOINT, run without --init)
-    reaps nothing, so there a zombie reads as running for good. Reading member
-    states from /proc is the upgrade.
+    a zombie until init reaps it, and where there is no /proc, group_alive()
+    counts a zombie as alive.
     """
     for _ in range(5):
         if not group_alive(pgid):
