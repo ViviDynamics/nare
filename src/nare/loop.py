@@ -292,6 +292,10 @@ async def step(
         s.events.append(Event("tool_use", call.name, dict(call.args)))
 
     only_asks = all(call.name == "ask" for call in reply.tool_calls)
+
+    def left_running(pgid: int, command: str) -> None:
+        s.process_groups.append({"pgid": pgid, "command": command})
+
     results: list[dict[str, Any]] = []
     unanswered = "tool dispatch failed"
     try:
@@ -313,7 +317,9 @@ async def step(
                 if call.name == "ask" and not only_asks and "ask" in policy.tools:
                     results.append(tool_result(call.id, ASK_NOT_ALONE, is_error=True))
                     continue
-                result = await dispatch(call, policy, approve)
+                result = await dispatch(
+                    call, policy, approve, left_running=left_running
+                )
                 results.append(result)
                 if "image" in result:
                     image = result["image"]
