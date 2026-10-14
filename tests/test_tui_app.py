@@ -818,6 +818,38 @@ async def test_leave_keeps_the_group_and_is_not_asked_again(tmp_path: Path) -> N
         stop_recorded(app)
 
 
+async def test_escape_at_the_turn_end_offer_leaves_the_group(tmp_path: Path) -> None:
+    app = make(tmp_path, leaves_a_group(), prompt="start it")
+    try:
+        async with app.run_test() as pilot:
+            pgid = await to_groups_offer(pilot, app)
+            await pilot.press("escape")
+            await until(pilot, lambda: not isinstance(app.screen, GroupsScreen))
+            assert group_alive(pgid)
+            assert f"left running: process group {pgid}" in shown(app)
+            assert pgid in app.left
+    finally:
+        stop_recorded(app)
+
+
+async def test_a_kill_that_fails_at_turn_end_says_so_and_keeps_the_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = make(tmp_path, leaves_a_group(), prompt="start it")
+    monkeypatch.setattr("nare.tui.app.stop_group", lambda pgid: False)
+    try:
+        async with app.run_test() as pilot:
+            pgid = await to_groups_offer(pilot, app)
+            await pilot.press("k")
+            await until(pilot, lambda: not isinstance(app.screen, GroupsScreen))
+            assert f"could not kill process group {pgid}" in shown(app)
+            assert f"killed process group {pgid}" not in shown(app)
+            assert app.session is not None
+            assert [g["pgid"] for g in app.session.process_groups] == [pgid]
+    finally:
+        stop_recorded(app)
+
+
 async def test_a_run_that_leaves_nothing_running_offers_nothing(
     tmp_path: Path,
 ) -> None:
@@ -884,6 +916,25 @@ async def test_l_at_the_quit_prompt_leaves_the_group_and_quits(
         proc.wait()
 
 
+async def test_escape_at_the_quit_prompt_leaves_the_group_and_quits(
+    tmp_path: Path,
+) -> None:
+    proc = sleeper()
+    try:
+        path = resumable(tmp_path, proc.pid)
+        app = make(tmp_path, FakeProvider([]), "--resume", str(path))
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+q")
+            await until(pilot, lambda: isinstance(app.screen, GroupsScreen))
+            await pilot.press("escape")
+            await until(pilot, lambda: app.return_code is not None)
+        assert proc.poll() is None
+        assert app.not_killed == []
+    finally:
+        proc.kill()
+        proc.wait()
+
+
 async def test_ctrl_q_at_the_quit_prompt_does_not_stack_another(
     tmp_path: Path,
 ) -> None:
@@ -918,6 +969,35 @@ async def test_ctrl_q_during_a_turn_end_offer_asks_once_about_quitting(
                 lambda: isinstance(app.screen, GroupsScreen) and app.screen.quitting,
             )
             assert len(app.screen_stack) == 2
+            await pilot.press("k")
+            await until(pilot, lambda: app.return_code is not None)
+        assert group_gone(pgid)
+    finally:
+        stop_recorded(app)
+
+
+async def test_ctrl_q_mid_run_cancels_then_asks_about_a_recorded_group(
+    tmp_path: Path,
+) -> None:
+    # The second model call never returns: the run is still working.
+    transport = Stalled(tool_reply("bash", {"command": LEAVE_RUNNING}), stall=2)
+    app = make(tmp_path, transport, prompt="start it")
+    try:
+        async with app.run_test() as pilot:
+            await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
+            await pilot.press("y")
+            await until(pilot, lambda: transport.calls == 2)
+            assert app.run_state == "working"
+            assert app.session is not None
+            pgid = int(app.session.process_groups[0]["pgid"])
+            await pilot.press("ctrl+q")
+            await until(
+                pilot,
+                lambda: isinstance(app.screen, GroupsScreen) and app.screen.quitting,
+            )
+            assert app.run_state == "interrupted"
+            assert len(app.screen_stack) == 2  # no turn-end offer underneath
+            assert [g["pgid"] for g in cast(GroupsScreen, app.screen).groups] == [pgid]
             await pilot.press("k")
             await until(pilot, lambda: app.return_code is not None)
         assert group_gone(pgid)
