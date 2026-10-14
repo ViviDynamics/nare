@@ -739,7 +739,12 @@ async def to_groups_offer(pilot: Pilot[None], app: TuiApp) -> int:
     """Approve the bash call, wait for the offer, return the recorded pgid."""
     await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
     await pilot.press("y")
-    await until(pilot, lambda: isinstance(app.screen, GroupsScreen))
+    await until(
+        pilot,
+        lambda: (
+            isinstance(app.screen, GroupsScreen) and bool(app.screen.query("#groups"))
+        ),
+    )
     assert app.session is not None
     return int(app.session.process_groups[0]["pgid"])
 
