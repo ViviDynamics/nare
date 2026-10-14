@@ -301,9 +301,12 @@ async def bash_outcome(
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
+        # In here so a cancel during the probe kills the group too: the call
+        # then never returns, so dispatch never hears of the group.
+        lingers = await _lingers(proc.pid)
     except BaseException as exc:
         # ponytail: a process that calls setsid itself (pg_ctl does) escapes
-        # the group, here and in the still-running probe below. The upgrade is
+        # the group, here and in the still-running probe. The upgrade is
         # prctl(PR_SET_CHILD_SUBREAPER), then listing /proc/self/task/*/children.
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
@@ -322,7 +325,7 @@ async def bash_outcome(
         # The likeliest killer is the command itself: pkill -f matches the
         # shell whose argv holds the pattern.
         text += f"\n{SELF_KILL_HINT}"
-    group = proc.pid if await _lingers(proc.pid) else None
+    group = proc.pid if lingers else None
     if group is not None:
         # The shell led the group, so its pid is the pgid. A Postgres started
         # in the practice run was still running hours later, unreported.

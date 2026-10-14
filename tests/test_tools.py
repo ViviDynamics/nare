@@ -565,6 +565,37 @@ async def test_bash_reports_a_process_group_it_leaves_running() -> None:
             stop_group(pgid)
 
 
+async def test_a_cancel_while_probing_for_a_group_left_running_kills_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The probe sleeps for about 0.1 s after the shell exits. A Ctrl-C there
+    # skipped the kill, and the call never returned, so dispatch never heard
+    # of the group: it ran on, neither killed nor listed at quit.
+    probed: list[int] = []
+    probing = asyncio.Event()
+    real = group_alive
+
+    def spy(pgid: object) -> bool:
+        assert isinstance(pgid, int)
+        probed.append(pgid)
+        probing.set()
+        return real(pgid)
+
+    monkeypatch.setattr("nare.tools.group_alive", spy)
+    task = asyncio.create_task(run_bash(LEAVE_RUNNING))
+    await asyncio.wait_for(probing.wait(), 5)
+    task.cancel()
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5)
+        deadline = time.monotonic() + 5
+        while real(probed[0]) and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        assert not real(probed[0])
+    finally:
+        stop_group(probed[0])
+
+
 async def test_bash_reports_nothing_when_nothing_is_left() -> None:
     assert await run_bash("sleep 0.1 & wait") == "exit 0"
 
