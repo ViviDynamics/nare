@@ -25,6 +25,7 @@ from nare.session import Message, loads, new_session, save
 from nare.tools import group_alive, stop_group
 from nare.transport import Delta, Reply, Transport
 from nare.tui.app import (
+    OFFER_GRACE,
     ApprovalScreen,
     AttachApp,
     GroupsScreen,
@@ -736,7 +737,9 @@ def group_gone(pgid: int) -> bool:
 
 
 async def to_groups_offer(pilot: Pilot[None], app: TuiApp) -> int:
-    """Approve the bash call, wait for the offer, return the recorded pgid."""
+    """Approve the bash call, wait until the offer takes answers, return the
+    recorded pgid.
+    """
     await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
     await pilot.press("y")
     await until(
@@ -745,6 +748,7 @@ async def to_groups_offer(pilot: Pilot[None], app: TuiApp) -> int:
             isinstance(app.screen, GroupsScreen) and bool(app.screen.query("#groups"))
         ),
     )
+    await pilot.pause(OFFER_GRACE)
     assert app.session is not None
     return int(app.session.process_groups[0]["pgid"])
 
@@ -765,6 +769,27 @@ async def test_a_run_that_leaves_a_group_running_offers_to_kill_it(
             await until(pilot, lambda: not group_alive(pgid))
             assert not isinstance(app.screen, GroupsScreen)
             assert f"killed process group {pgid}" in shown(app)
+    finally:
+        stop_recorded(app)
+
+
+async def test_typing_as_the_offer_appears_does_not_answer_it(tmp_path: Path) -> None:
+    # The input box comes back as the run settles, and the offer takes the
+    # keys in the same tick: a follow-up "keep going" killed the group.
+    app = make(tmp_path, leaves_a_group(), prompt="start it")
+    try:
+        async with app.run_test() as pilot:
+            await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
+            await pilot.press("y")
+            await until(pilot, lambda: isinstance(app.screen, GroupsScreen))
+            await pilot.press(*"keep")
+            await pilot.pause()
+            assert isinstance(app.screen, GroupsScreen)
+            assert "killed process group" not in shown(app)
+            await pilot.pause(OFFER_GRACE)
+            await pilot.press("l")
+            await until(pilot, lambda: not isinstance(app.screen, GroupsScreen))
+            assert "left running: process group" in shown(app)
     finally:
         stop_recorded(app)
 

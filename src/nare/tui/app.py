@@ -120,6 +120,10 @@ def _group_text(group: dict[str, Any]) -> str:
     return f"process group {group.get('pgid')} ({group.get('command', '')})"
 
 
+# The offer's answer keys are plain letters: see GroupsScreen.action_dismiss.
+OFFER_GRACE = 0.5
+
+
 class GroupsScreen(ModalScreen[str]):
     """Process groups a bash call left running: kill them or leave them.
 
@@ -137,6 +141,7 @@ class GroupsScreen(ModalScreen[str]):
         super().__init__()
         self.groups = groups
         self.quitting = quitting
+        self.shown = time.monotonic()
 
     def compose(self) -> ComposeResult:
         then = " and quit" if self.quitting else ""
@@ -147,6 +152,13 @@ class GroupsScreen(ModalScreen[str]):
             yield Static(
                 Text("\n".join(_group_text(g) for g in self.groups)), id="groups"
             )
+
+    async def action_dismiss(self, result: str | None = None) -> None:
+        # A turn-end offer appears as the input box comes back, so a person
+        # may already be typing a follow-up: its first letters must not
+        # answer. The quit prompt follows a deliberate Ctrl-Q.
+        if self.quitting or time.monotonic() - self.shown >= OFFER_GRACE:
+            await super().action_dismiss(result)
 
 
 class TuiApp(App[None]):
