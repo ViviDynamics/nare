@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import sys
+import time
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from typing import Any, cast
@@ -19,10 +20,12 @@ from nare.cli import build_parser, main
 from nare.events import Event
 from nare.loop import INTERRUPTED
 from nare.session import Message, loads, new_session, save
+from nare.tools import group_alive, stop_group
 from nare.transport import Delta, Reply, Transport
 from nare.tui.app import (
     ApprovalScreen,
     AttachApp,
+    GroupsScreen,
     Transcript,
     TuiApp,
     exit_summary,
@@ -706,3 +709,92 @@ def test_the_exit_summary_is_redacted(tmp_path: Path) -> None:
     app.session.messages.append(Message("assistant", [{"type": "text", "text": key}]))
     summary = exit_summary(app)
     assert key not in summary and "[redacted]" in summary
+
+
+LEAVE_RUNNING = "(sleep 30 >/dev/null 2>&1 &)"
+
+
+def leaves_a_group(*after: Reply) -> FakeProvider:
+    return FakeProvider(
+        [tool_reply("bash", {"command": LEAVE_RUNNING}), text_reply("started"), *after]
+    )
+
+
+def stop_recorded(app: TuiApp) -> None:
+    for group in [] if app.session is None else app.session.process_groups:
+        stop_group(group["pgid"])
+
+
+def group_gone(pgid: int) -> bool:
+    for _ in range(300):
+        if not group_alive(pgid):
+            return True
+        time.sleep(0.01)
+    return False
+
+
+async def to_groups_offer(pilot: Pilot[None], app: TuiApp) -> int:
+    """Approve the bash call, wait for the offer, return the recorded pgid."""
+    await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
+    await pilot.press("y")
+    await until(pilot, lambda: isinstance(app.screen, GroupsScreen))
+    assert app.session is not None
+    return int(app.session.process_groups[0]["pgid"])
+
+
+async def test_a_run_that_leaves_a_group_running_offers_to_kill_it(
+    tmp_path: Path,
+) -> None:
+    app = make(tmp_path, leaves_a_group(), prompt="start it")
+    try:
+        async with app.run_test() as pilot:
+            pgid = await to_groups_offer(pilot, app)
+            assert app.run_state == "done"
+            screen = cast(GroupsScreen, app.screen)
+            assert not screen.quitting
+            listed = str(screen.query_one("#groups", Static).content)
+            assert f"process group {pgid} ({LEAVE_RUNNING})" in listed
+            await pilot.press("k")
+            await until(pilot, lambda: not group_alive(pgid))
+            assert not isinstance(app.screen, GroupsScreen)
+            assert f"killed process group {pgid}" in shown(app)
+    finally:
+        stop_recorded(app)
+
+
+async def test_leave_keeps_the_group_and_is_not_asked_again(tmp_path: Path) -> None:
+    app = make(tmp_path, leaves_a_group(text_reply("again")), prompt="start it")
+    try:
+        async with app.run_test() as pilot:
+            pgid = await to_groups_offer(pilot, app)
+            await pilot.press("l")
+            await until(pilot, lambda: not isinstance(app.screen, GroupsScreen))
+            assert group_alive(pgid)
+            assert f"left running: process group {pgid}" in shown(app)
+            await submit(pilot, app, "and now?")
+            await until(
+                pilot,
+                lambda: (
+                    "again" in shown(app)
+                    and app.worker is not None
+                    and app.worker.is_finished
+                ),
+            )
+            await pilot.pause()
+            assert not isinstance(app.screen, GroupsScreen)
+    finally:
+        stop_recorded(app)
+
+
+async def test_a_run_that_leaves_nothing_running_offers_nothing(
+    tmp_path: Path,
+) -> None:
+    replies = [tool_reply("bash", {"command": "true"}), text_reply("ok")]
+    app = make(tmp_path, FakeProvider(replies), prompt="go")
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
+        await pilot.press("y")
+        await until(pilot, lambda: app.worker is not None and app.worker.is_finished)
+        await pilot.pause()
+        assert app.run_state == "done"
+        assert not isinstance(app.screen, GroupsScreen)
