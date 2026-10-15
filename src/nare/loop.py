@@ -129,10 +129,15 @@ def schema_instruction(schema: dict[str, Any]) -> str:
     Validating an answer without ever stating the requirement wastes the first
     turn by construction: a model cannot satisfy a shape it was never shown,
     and a weaker one never converges on it through corrections alone.
+
+    It says it wins: the default system prompt asks the final message for
+    prose (what was not tested, what was left running), and prose beside the
+    JSON costs a correction round.
     """
     return (
         "Your final answer must be a JSON document satisfying this JSON Schema, "
-        "and nothing else:\n"
+        "and nothing else. This overrides any other instruction about your "
+        "final message:\n"
         f"{json.dumps(schema)}"
     )
 

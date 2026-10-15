@@ -185,6 +185,23 @@ async def test_the_model_is_told_the_schema_before_it_answers() -> None:
     assert "JSON Schema" in first_request
 
 
+async def test_the_schema_outranks_other_instructions_about_the_final_message() -> None:
+    # The default system prompt asks the final message to say what was not
+    # tested and what was left running. A schema run's answer is the JSON
+    # alone, and prose beside it costs a correction round or the whole run.
+    provider = FakeProvider([text_reply('{"name": "ada"}')])
+    session = new_session("go")
+
+    await drain(session, provider, schema=PERSON)
+
+    first_request = json.dumps(
+        [block for message in provider.calls[0][0] for block in message.content]
+    )
+    assert "This overrides any other instruction about your final message" in (
+        first_request
+    )
+
+
 async def test_the_correction_restates_the_schema() -> None:
     provider = FakeProvider([text_reply("prose"), text_reply('{"name": "ada"}')])
     session = new_session("go")
