@@ -93,6 +93,33 @@ def test_a_bad_output_cap_is_refused(value: str) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("value", "stream"),
+    [("1", True), ("true", True), ("YES", True), ("0", False), ("no", False)],
+)
+def test_streaming_follows_nares_own_variable(value: str, stream: bool) -> None:
+    # Read the way `nare run` reads it, so the agent and the judge agree.
+    config = resolve_config(
+        model="m",
+        provider=None,
+        base_url=None,
+        judge_model=None,
+        env={"ANTHROPIC_API_KEY": "k", "NARE_STREAM": value},
+    )
+    assert config.stream is stream
+
+
+def test_streaming_is_off_by_default() -> None:
+    config = resolve_config(
+        model="m",
+        provider=None,
+        base_url=None,
+        judge_model=None,
+        env={"ANTHROPIC_API_KEY": "k"},
+    )
+    assert config.stream is False
+
+
 def test_missing_model_is_refused() -> None:
     with pytest.raises(ConfigError, match="model"):
         resolve_config(

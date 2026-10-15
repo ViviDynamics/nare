@@ -31,6 +31,10 @@ class Config:
     # The agent's --max-tokens, or None for nare's own default. A reasoning
     # model can spend the default 8192 thinking and never reach a tool call.
     max_tokens: int | None = None
+    # NARE_STREAM, read as `nare run` reads it. The agent gets the variable
+    # itself; the judge streams on this. Through a proxy, a reasoning model's
+    # non-streamed reply arrived with no content at all.
+    stream: bool = False
 
 
 def _max_tokens_from(env: Mapping[str, str]) -> int | None:
@@ -86,4 +90,5 @@ def resolve_config(
         api_key=api_key,
         api_key_var=key_var,
         max_tokens=_max_tokens_from(env),
+        stream=env.get("NARE_STREAM", "").strip().lower() in ("1", "true", "yes"),
     )

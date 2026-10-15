@@ -79,6 +79,7 @@ def judge_transport(config: Config) -> Transport:
         api_key=config.api_key,
         max_tokens=JUDGE_MAX_TOKENS,
         system=JUDGE_SYSTEM,
+        streaming=config.stream,
     )
 
 
