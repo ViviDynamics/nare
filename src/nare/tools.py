@@ -450,7 +450,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "name": "write",
         "description": (
             "Write a file, creating parent directories and overwriting any "
-            "existing contents."
+            "existing contents. Prefer `edit` for a file that already exists."
         ),
         "input_schema": {
             "type": "object",
@@ -465,7 +465,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "name": "edit",
         "description": (
             "Replace an exact string in a file. The old string must appear "
-            "exactly once; include surrounding context to make it unique."
+            "exactly once; include surrounding context to make it unique. "
+            "Re-read a file before editing it if you rewrote it."
         ),
         "input_schema": {
             "type": "object",
@@ -482,7 +483,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "description": (
             "Run a shell command and return its exit code and combined output. "
             "Runs in bash with pipefail. Each call is a fresh shell: `cd` and "
-            "`export` do not persist. Use this with rg and find for search."
+            "`export` do not persist. Use this with rg and find for search. "
+            "Stop a background process by `$!` in the call that started it, "
+            "not with `pkill -f`, which can match this shell. Stop one the "
+            "result reports as still running with `kill -- -<group>`."
         ),
         "input_schema": {
             "type": "object",
@@ -513,8 +517,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "items": {"type": "string"},
                     "description": (
                         "One question per item, naming the readings you are "
-                        "choosing between, e.g. 'Raise TIMEOUT from 30 to what: "
-                        "60, 120, or another value?'"
+                        "choosing between and the one you will use if it goes "
+                        "unanswered, e.g. 'Raise TIMEOUT from 30 to what: 60, "
+                        "120, or another value? Unanswered, I will use 60.'"
                     ),
                 }
             },

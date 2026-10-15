@@ -573,6 +573,37 @@ def test_the_bash_description_states_the_shell_semantics() -> None:
     ) in schema["description"]
 
 
+def schema_of(name: str) -> dict[str, Any]:
+    return next(s for s in TOOL_SCHEMAS if s["name"] == name)
+
+
+def test_the_write_description_prefers_edit_for_an_existing_file() -> None:
+    # The practice run rewrote files it had just written, five times.
+    assert (
+        "Prefer `edit` for a file that already exists."
+        in (schema_of("write")["description"])
+    )
+
+
+def test_the_edit_description_says_to_reread_a_rewritten_file() -> None:
+    # An edit after a rewrite used the text from before it, and failed.
+    assert (
+        "Re-read a file before editing it if you rewrote it."
+        in (schema_of("edit")["description"])
+    )
+
+
+def test_the_bash_description_says_how_to_stop_what_it_started() -> None:
+    description = schema_of("bash")["description"]
+    assert "by `$!` in the call that started it" in description
+    assert "`kill -- -<group>`" in description
+
+
+def test_the_ask_question_states_its_default() -> None:
+    questions = schema_of("ask")["input_schema"]["properties"]["questions"]
+    assert "the one you will use if it goes unanswered" in questions["description"]
+
+
 needs_pkill = pytest.mark.skipif(shutil.which("pkill") is None, reason="needs pkill")
 
 HINT = (
@@ -798,3 +829,19 @@ async def test_dispatch_hands_a_group_left_running_to_its_caller() -> None:
     finally:
         for pgid, _ in seen:
             stop_group(pgid)
+
+
+async def test_the_kill_advice_stops_a_group_from_a_later_call() -> None:
+    # Each call is a fresh shell, so `$!` from the call that started a process
+    # is gone by the next one. The description names the reported group
+    # instead, and following it has to work.
+    pgid = _reported_group(await run_bash(LEAVE_RUNNING))
+    assert pgid is not None
+    try:
+        assert await run_bash(f"kill -- -{pgid}") == "exit 0"
+        deadline = time.monotonic() + 5
+        while group_alive(pgid) and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        assert not group_alive(pgid)
+    finally:
+        stop_group(pgid)
