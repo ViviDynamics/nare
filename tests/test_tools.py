@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import re
 import shlex
@@ -379,6 +380,33 @@ async def test_a_spawn_that_fails_after_a_cancel_still_raises_cancelled(
     released.set()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, 5)
+
+
+async def test_a_spawn_that_fails_after_a_cancel_logs_no_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Fails first on Python 3.14 only: 3.12's shield never logs.
+
+    On 3.14, a shielded task that fails after its shield was cancelled logs
+    "OSError exception in shielded future" at ERROR, though the call handles
+    the error. The TUI showed that as a red line, traceback and all.
+    """
+    entered = asyncio.Event()
+    released = asyncio.Event()
+
+    async def failing(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        await released.wait()
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", failing)
+    task = asyncio.create_task(run_bash("true"))
+    await asyncio.wait_for(entered.wait(), 5)
+    task.cancel()
+    released.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5)
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR] == []
 
 
 async def test_a_cancel_when_loop_shutdown_also_cancels_the_spawn_still_ends(

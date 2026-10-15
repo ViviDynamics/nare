@@ -280,6 +280,28 @@ async def _lingers(pgid: int) -> bool:
     return True
 
 
+async def _spawn(
+    command: str, cwd: str | None
+) -> asyncio.subprocess.Process | Exception:
+    """Start the shell in its own group, and return a failure, not raise it.
+
+    Returned: on Python 3.14, a shielded task that fails after its shield was
+    cancelled logs "OSError exception in shielded future" at ERROR, though
+    bash_outcome() handles the failure. The TUI showed that as a red line.
+    """
+    try:
+        return await asyncio.create_subprocess_exec(
+            *_shell(command),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            cwd=cwd,
+        )
+    except Exception as exc:
+        return exc
+
+
 async def bash_outcome(
     command: str, timeout: int = 120, *, cwd: str | None = None
 ) -> BashOutcome:
@@ -296,22 +318,13 @@ async def bash_outcome(
     stdin is DEVNULL because nare's own stdin belongs to conductor: a command
     that reads would either eat conductor's pipe or block until the timeout.
     """
-    spawn = asyncio.create_task(
-        asyncio.create_subprocess_exec(
-            *_shell(command),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-            cwd=cwd,
-        )
-    )
+    spawn = asyncio.create_task(_spawn(command, cwd))
     try:
         # Shielded: Popen has started the shell before asyncio connects its
         # pipes. asyncio's own cleanup for a cancel there kills the shell
         # alone, then waits on pipes a background child holds open, so under
         # load 1 cancel in 4 hung the cancel or left `sleep 30 &` running.
-        proc = await asyncio.shield(spawn)
+        started = await asyncio.shield(spawn)
     except asyncio.CancelledError:
         # Wait the spawn out, then kill what it started. A loop, not a bare
         # `await spawn`: a second cancel would reach the spawn and hand it to
@@ -337,12 +350,18 @@ async def bash_outcome(
         # the shell only, so its background children can outlive the call.
         # The upgrade is to own the Popen, so the group is known before any
         # await.
-        if not spawn.cancelled() and spawn.exception() is None:
-            proc = spawn.result()
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(proc.pid, signal.SIGKILL)
-            await proc.wait()
+        if not spawn.cancelled():
+            started = spawn.result()
+            if not isinstance(started, Exception):
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(started.pid, signal.SIGKILL)
+                await started.wait()
         raise
+    if isinstance(started, Exception):
+        # A spawn that failed with no cancel, say for a cwd that does not
+        # exist, raises its own error, so dispatch reports it.
+        raise started
+    proc = started
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
         # In here so a cancel during the probe kills the group too: the call
