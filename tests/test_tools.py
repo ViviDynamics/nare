@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import re
 import shlex
@@ -290,6 +291,174 @@ async def test_a_cancel_kills_the_whole_process_group(tmp_path: Path) -> None:
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, 5)
     assert _gone(int(pidfile.read_text()))
+
+
+def _hold_pipe_connects(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
+    """Hold asyncio's pipe connects for the next spawn until the Event is set.
+
+    Popen has started the shell by then, so a cancel lands mid-spawn every
+    time, with or without load.
+    """
+    loop = asyncio.get_running_loop()
+    real = loop.connect_read_pipe
+    released = asyncio.Event()
+
+    async def held(*args: Any, **kwargs: Any) -> Any:
+        await released.wait()
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(loop, "connect_read_pipe", held)
+    return released
+
+
+async def _wait_for_pidfile(pidfile: Path) -> None:
+    for _ in range(500):
+        if pidfile.exists() and pidfile.read_text().strip():
+            return
+        await asyncio.sleep(0.01)
+    pytest.fail(f"the shell never wrote {pidfile}")
+
+
+async def _result_within_5s(task: asyncio.Task[Any]) -> Any:
+    """The cancelled call's result, or a failure if it has not ended in 5 s.
+
+    Not asyncio.wait_for(task, 5): when its time runs out it cancels the call
+    and waits for it, and a cancelled call that waits out its spawn ignores
+    that cancel, so a regression there hung the test rather than failed it.
+    Left running here, the call ends at teardown, which cancels its spawn too.
+    """
+    done, _ = await asyncio.wait({task}, timeout=5)
+    if not done:
+        pytest.fail("the cancelled call was still running after 5 s")
+    return task.result()
+
+
+async def test_a_cancel_while_asyncio_connects_the_pipes_kills_the_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A cancel while asyncio connected the pipes met asyncio's own cleanup,
+    # which kills the shell alone, then waits on the pipes the background
+    # sleep holds open. Under load 1 cancel in 4 hung or left the sleep.
+    released = _hold_pipe_connects(monkeypatch)
+    pidfile = tmp_path / "pid"
+    task = asyncio.create_task(run_bash(f"sleep 30 & echo $! > {pidfile}; wait"))
+    await _wait_for_pidfile(pidfile)
+    task.cancel()
+    released.set()
+    with pytest.raises(asyncio.CancelledError):
+        await _result_within_5s(task)
+    assert _gone(int(pidfile.read_text()))
+
+
+async def test_a_second_cancel_while_the_pipes_connect_still_kills_the_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # After a cancel the call waits for its spawn, to kill what it started. A
+    # second cancel that reached the spawn there handed it to asyncio's own
+    # cleanup after all: the sleep ran on, or held up the cancel.
+    released = _hold_pipe_connects(monkeypatch)
+    pidfile = tmp_path / "pid"
+    task = asyncio.create_task(run_bash(f"sleep 30 & echo $! > {pidfile}; wait"))
+    await _wait_for_pidfile(pidfile)
+    task.cancel()
+    # One yield delivers the first cancel, so the call is waiting on its
+    # spawn when the second one comes.
+    await asyncio.sleep(0)
+    task.cancel()
+    released.set()
+    with pytest.raises(asyncio.CancelledError):
+        await _result_within_5s(task)
+    assert _gone(int(pidfile.read_text()))
+
+
+async def test_a_spawn_that_fails_after_a_cancel_still_raises_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A cancelled call waits for its spawn so it can kill the group. A spawn
+    # that then failed raised its own OSError, so the caller, who asked to
+    # cancel, never heard that the call was cancelled.
+    # The spawn fails here, not in connect_read_pipe as #78 first said: on
+    # Python 3.12, which CI runs, asyncio's spawn never finishes once a pipe
+    # connect fails, and the test hung.
+    entered = asyncio.Event()
+    released = asyncio.Event()
+
+    async def failing(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        await released.wait()
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", failing)
+    task = asyncio.create_task(run_bash("true"))
+    await asyncio.wait_for(entered.wait(), 5)
+    task.cancel()
+    released.set()
+    with pytest.raises(asyncio.CancelledError):
+        await _result_within_5s(task)
+
+
+async def test_a_spawn_that_fails_after_a_cancel_logs_no_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Fails first on Python 3.14 only: 3.12's shield never logs.
+
+    On 3.14, a shielded task that fails after its shield was cancelled logs
+    "OSError exception in shielded future" at ERROR, though the call handles
+    the error. The TUI showed that as a red line, traceback and all.
+    """
+    entered = asyncio.Event()
+    released = asyncio.Event()
+
+    async def failing(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        await released.wait()
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", failing)
+    task = asyncio.create_task(run_bash("true"))
+    await asyncio.wait_for(entered.wait(), 5)
+    task.cancel()
+    released.set()
+    with pytest.raises(asyncio.CancelledError):
+        await _result_within_5s(task)
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR] == []
+
+
+async def test_a_cancel_when_loop_shutdown_also_cancels_the_spawn_still_ends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fails first on Python 3.12 only: 3.14's asyncio ends that spawn itself.
+
+    asyncio.run's shutdown cancels every task, the spawn and its pipe connect
+    too. On 3.12 asyncio's spawn then waits for pipes that never connect, so
+    the call, waiting its spawn out, hung, and asyncio.run with it.
+    """
+    monkeypatch.setattr("nare.tools._SPAWN_WAIT", 0.2)
+    released = _hold_pipe_connects(monkeypatch)
+    pidfile = tmp_path / "pid"
+    before = asyncio.all_tasks()
+    task = asyncio.create_task(run_bash(f"sleep 30 & echo $! > {pidfile}; wait"))
+    await _wait_for_pidfile(pidfile)
+    task.cancel()
+    await asyncio.sleep(0)
+    spawning = asyncio.all_tasks() - before - {task}
+    for t in spawning:
+        t.cancel()
+    released.set()
+    try:
+        done, _ = await asyncio.wait({task}, timeout=5)
+        assert done == {task}
+        assert task.cancelled()
+    finally:
+        # The pid went with the spawn, so the background sleep runs on.
+        try:
+            os.kill(int(pidfile.read_text()), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        # A second cancel ends a stuck spawn, so a failure fails the test
+        # instead of hanging it.
+        for t in spawning:
+            t.cancel()
 
 
 def test_commands_do_not_inherit_nares_stdin(
