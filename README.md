@@ -85,6 +85,13 @@ without promoting the invalid object. Any earlier schema-valid output remains
 available. A validating answer is parsed onto the session, carried
 in the `output` event's detail, and included in the final `result` line.
 
+`--structured-output json_schema` (openai provider) also asks the backend to
+enforce that schema at decode time on the correction turn, which is then sent
+without tools, and on every turn of a run that offers no tools. Tool-using
+turns stay unconstrained, because a constrained request cannot call a tool, and
+nare still validates every answer. See
+[docs/contract.md](docs/contract.md#schema-constrained-answers).
+
 ## Terminal UI
 
 `nare tui` is the same loop for a person. Type a task, watch it stream, and

@@ -25,8 +25,10 @@ from nare.contract import CONTRACT_VERSION, EXIT_CODES, NEVER_STARTED, describe
 from nare.events import Event, redact
 from nare.loop import (
     MAX_TURNS_DEFAULT,
+    STRUCTURED_OUTPUT_MODES,
     budget_record,
     check_budget,
+    check_structured_output,
     configure_budgets,
     run,
 )
@@ -100,6 +102,16 @@ def build_parser() -> argparse.ArgumentParser:
             "subset (type, properties, required, items, enum, "
             "additionalProperties) and refuses a schema using anything else "
             "rather than validating it only in part"
+        ),
+    )
+    run_parser.add_argument(
+        "--structured-output",
+        choices=STRUCTURED_OUTPUT_MODES,
+        help=(
+            "ask the backend to constrain answers to the --schema at decode time "
+            "(openai provider only). A constrained turn offers no tools, so only "
+            "the schema correction turn, or every turn of a run with no tools, "
+            "is constrained. nare still validates every answer"
         ),
     )
     add_run_flags(run_parser)
@@ -356,6 +368,7 @@ async def _execute(
                 prices=prices,
                 mcp_servers=args.mcp_servers,
                 mcp_allow_all=args.tools is None,
+                structured_output=args.structured_output,
             )
             if transport is not None
             else _pending_events(session)
@@ -477,6 +490,8 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
                 raise ValueError(f"stdin (-): {exc}") from exc
         policy = policy_from_args(args)
         schema = schema_from_args(args)
+        if args.structured_output is not None and schema is None:
+            raise ValueError("--structured-output requires --schema")
         session = _load_or_new(args)
         configure_budgets(session, args.budget_tokens, args.budget_usd)
         if check_budget(session):
@@ -485,6 +500,8 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
             transport = None
         elif transport is None:
             transport = transport_from_args(args)
+        if transport is not None:
+            check_structured_output(transport, schema, args.structured_output)
     except (ValueError, OSError, UnsupportedSchema) as exc:
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED

@@ -209,3 +209,30 @@ def test_contract_describes_read_image_input() -> None:
         "max_pixels": 20000000,
         "max_edge": 8000,
     }
+
+
+def test_contract_describes_structured_output() -> None:
+    assert describe()["structured_output"] == {
+        "flag": "--structured-output",
+        "modes": ["json_schema"],
+        "requires": "--schema",
+        "providers": ["openai"],
+        "constrained_turns": ["schema_correction", "tool_free_run"],
+        "event": "progress",
+        "event_detail": "structured_output",
+    }
+
+
+def test_the_documented_contract_describes_structured_output() -> None:
+    doc = Path(__file__).parent.parent / "docs" / "contract.md"
+    text = doc.read_text(encoding="utf-8")
+
+    assert "## Schema-constrained answers" in text
+    assert "--structured-output json_schema" in text
+    assert '"response_format"' in text
+
+
+def test_the_advertised_modes_are_the_ones_the_loop_accepts() -> None:
+    from nare.loop import STRUCTURED_OUTPUT_MODES
+
+    assert describe()["structured_output"]["modes"] == list(STRUCTURED_OUTPUT_MODES)

@@ -72,6 +72,17 @@ def describe() -> dict[str, Any]:
             "encoding": "utf-8",
             "exclusive": True,
         },
+        # Additive: a caller checks for it before asking for constrained
+        # answers, and refuses to run unconstrained rather than guess.
+        "structured_output": {
+            "flag": "--structured-output",
+            "modes": ["json_schema"],
+            "requires": "--schema",
+            "providers": ["openai"],
+            "constrained_turns": ["schema_correction", "tool_free_run"],
+            "event": "progress",
+            "event_detail": "structured_output",
+        },
         # The redaction is part of what a caller relies on: event `text` and
         # whatever a caller pipes through `nare redact` carry it, and a rule
         # change is a change to what those mean.
