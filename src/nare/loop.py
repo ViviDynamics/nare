@@ -30,6 +30,11 @@ from nare.transport import Delta, StopReason, StreamingTransport, Transport
 
 MAX_TURNS_DEFAULT = 50
 
+# The constrained-answer modes a transport can be asked for. One today: the
+# OpenAI-compatible json_schema response format.
+StructuredOutput = Literal["json_schema"]
+STRUCTURED_OUTPUT_MODES: tuple[str, ...] = ("json_schema",)
+
 # What an unanswered call says when a person stopped the turn, so the model is
 # told what happened instead of that a tool broke.
 INTERRUPTED = "interrupted by the user"
@@ -135,6 +140,49 @@ def _answer_errors(text: str, schema: dict[str, Any]) -> list[str]:
     return errors
 
 
+def check_structured_output(
+    transport: Transport,
+    schema: dict[str, Any] | None,
+    structured_output: str | None,
+) -> None:
+    """Refuse before any turn a constrained run that could not be constrained.
+
+    A run that asked for constrained answers and silently got free text would
+    hand its caller the failure it asked to be protected from.
+    """
+    if structured_output is None:
+        return
+    if structured_output not in STRUCTURED_OUTPUT_MODES:
+        raise ValueError(
+            f"unknown structured output mode {structured_output!r}; "
+            f"supported: {', '.join(STRUCTURED_OUTPUT_MODES)}"
+        )
+    if schema is None:
+        raise ValueError("structured output requires a schema")
+    if getattr(transport, "supports_structured_output", False) is not True:
+        raise ValueError(
+            f"{type(transport).__name__} does not support structured output"
+        )
+
+
+def _constrained(
+    s: Session,
+    schema: dict[str, Any] | None,
+    structured_output: str | None,
+    tools: list[dict[str, Any]],
+) -> bool:
+    """Whether this turn is a schema-constrained answer turn.
+
+    A constrained request cannot call a tool (measured on vLLM: the model
+    invents an answer instead), so only a turn that needs no tool is
+    constrained: the one schema correction, or any turn of a run offering no
+    tools. A first answer is never known to be final before it is generated.
+    """
+    if structured_output is None or schema is None:
+        return False
+    return s.schema_retried or not tools
+
+
 def _without_images(messages: list[Message], model: str) -> list[Message]:
     if not any("image" in block for message in messages for block in message.content):
         return messages
@@ -161,6 +209,7 @@ async def step(
     context_window: int = 32000,
     prices: Prices | None = None,
     on_delta: Callable[[Delta], None] | None = None,
+    structured_output: str | None = None,
 ) -> Session:
     report = compact(s, context_window, image_input=policy.image_input)
     if report is not None:
@@ -186,12 +235,32 @@ async def step(
         if policy.image_input
         else _without_images(s.messages, policy.image_model)
     )
+    tools = policy.schemas()
+    constrained = _constrained(s, schema, structured_output, tools)
+    if constrained:
+        s.events.append(
+            Event(
+                "progress",
+                f"schema-constrained answer turn ({structured_output})"
+                + ("; tools withheld" if tools else ""),
+                {
+                    "structured_output": {
+                        "mode": structured_output,
+                        "tools_withheld": bool(tools),
+                    }
+                },
+            )
+        )
+    # Off, the transport is called exactly as before: (messages, tools).
+    extra: dict[str, Any] = {"response_schema": schema} if constrained else {}
+    if constrained:
+        tools = []
     streamed = bool(getattr(transport, "streaming", False)) and on_delta is not None
     if streamed:
         reply = None
         async with aclosing(
             cast(StreamingTransport, transport).stream_turn(
-                model_messages, policy.schemas()
+                model_messages, tools, **extra
             )
         ) as stream:
             async for item in stream:
@@ -203,7 +272,7 @@ async def step(
         if reply is None:
             raise RuntimeError("stream ended without a completed reply")
     else:
-        reply = await transport.turn(model_messages, policy.schemas())
+        reply = await transport.turn(model_messages, tools, **extra)
     s.last_input_tokens = (
         reply.usage.input + reply.usage.cache_read + reply.usage.cache_write
     )
@@ -390,6 +459,7 @@ async def _live_step(
     schema: dict[str, Any] | None,
     window: int,
     prices: Prices | None,
+    structured_output: str | None = None,
 ) -> AsyncGenerator[Event, None]:
     queue: asyncio.Queue[Event] = asyncio.Queue()
     buffers: dict[Literal["progress", "thinking"], LiveText] = {
@@ -403,7 +473,17 @@ async def _live_step(
             queue.put_nowait(Event(delta.kind, text))
 
     task = asyncio.create_task(
-        step(s, transport, approve, policy, schema, window, prices, receive)
+        step(
+            s,
+            transport,
+            approve,
+            policy,
+            schema,
+            window,
+            prices,
+            receive,
+            structured_output,
+        )
     )
     waiter: asyncio.Task[Event] | None = None
     try:
@@ -452,6 +532,7 @@ async def _run(
     context_window: int | None = None,
     budget_usd: float | None = None,
     prices: Prices | None = None,
+    structured_output: str | None = None,
 ) -> AsyncGenerator[Event, None]:
     """Advance the session to a terminal status, yielding events as they occur.
 
@@ -531,14 +612,28 @@ async def _run(
                         yield session.events.pop(0)
                     async with aclosing(
                         _live_step(
-                            session, transport, approve, policy, schema, window, prices
+                            session,
+                            transport,
+                            approve,
+                            policy,
+                            schema,
+                            window,
+                            prices,
+                            structured_output,
                         )
                     ) as stream:
                         async for event in stream:
                             yield event
                 else:
                     await step(
-                        session, transport, approve, policy, schema, window, prices
+                        session,
+                        transport,
+                        approve,
+                        policy,
+                        schema,
+                        window,
+                        prices,
+                        structured_output=structured_output,
                     )
                 if session.status not in ("done", "blocked"):
                     check_budget(session)
@@ -567,7 +662,9 @@ async def run(
     prices: Prices | None = None,
     mcp_servers: dict[str, Server] | None = None,
     mcp_allow_all: bool = False,
+    structured_output: StructuredOutput | None = None,
 ) -> AsyncGenerator[Event, None]:
+    check_structured_output(transport, schema, structured_output)
     configure_budgets(session, budget_tokens, budget_usd)
     if context_window is not None and (
         isinstance(context_window, bool)
@@ -602,6 +699,7 @@ async def run(
                     context_window=context_window,
                     budget_usd=budget_usd,
                     prices=prices,
+                    structured_output=structured_output,
                 )
             ) as stream:
                 async for event in stream:
