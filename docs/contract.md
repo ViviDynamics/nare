@@ -435,13 +435,25 @@ cannot honour the schema refuses the request instead of answering freely.
 
 nare's validator stays authoritative. A constrained answer is extracted and
 validated like any other, and a correction that still fails ends the run with
-`stop_reason` `schema_violation`. Each constrained turn emits one `progress`
-event whose `detail` is `{"structured_output": {"mode": "json_schema",
-"tools_withheld": true|false}}` before the request is sent. A resumed run
-offers tools again, because the correction round is per-run state.
+`stop_reason` `schema_violation`. Each constrained turn records one
+`progress` event whose `detail` is `{"structured_output": {"mode":
+"json_schema", "tools_withheld": true|false}}`. It is recorded before the
+request and emitted with that turn's events, so under `--stream` the turn's
+live deltas can reach stdout first; count markers, do not use them to label
+deltas. A resumed run offers tools again, because the correction round is
+per-run state. A backend that returned tool calls on the tool-free correction
+anyway would have them run, and the rest of the run would stay constrained
+and tool-free; a backend following the OpenAI specification cannot.
+
+`strict: true` follows OpenAI's strict mode, which refuses (HTTP 400) a schema
+that does not mark every property required with `additionalProperties` false.
+Such a refusal ends the run as a provider failure (`stop_reason` null), not as
+`schema_violation`. vLLM enforces the schema without that restriction.
 
 `--structured-output` without `--schema`, or with `--provider anthropic`,
-never starts (exit 2). In the library, `run(structured_output="json_schema")`
+never starts (exit 2). The one exception is a resume whose budget is already
+spent: it reports that result without building a transport, so no model is
+called. In the library, `run(structured_output="json_schema")`
 raises `ValueError` before any turn when there is no schema or the transport
 does not set `supports_structured_output = True`; a supporting transport's
 `turn` and `stream_turn` accept a keyword-only `response_schema`. Without the

@@ -51,6 +51,34 @@ class StreamingTransport(Protocol):
     ) -> AsyncGenerator[Delta | Reply, None]: ...
 
 
+class StructuredTransport(Protocol):
+    """A transport that can constrain an answer turn to a JSON Schema.
+
+    Declared with `supports_structured_output = True`; the loop calls it with
+    `response_schema` only on a constrained turn, and with no tools.
+    """
+
+    supports_structured_output: bool
+
+    async def turn(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        response_schema: dict[str, Any] | None = None,
+    ) -> Reply: ...
+
+
+class StreamingStructuredTransport(Protocol):
+    def stream_turn(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        response_schema: dict[str, Any] | None = None,
+    ) -> AsyncGenerator[Delta | Reply, None]: ...
+
+
 class Transport(Protocol):
     """A turn and optional backend window discovery. Configuration is bound at
     construction, which keeps the

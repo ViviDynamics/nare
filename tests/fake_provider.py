@@ -8,7 +8,14 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from nare.session import Message, Usage
-from nare.transport import Delta, Reply, StopReason, ToolCall, Transport
+from nare.transport import (
+    Delta,
+    Reply,
+    StopReason,
+    StructuredTransport,
+    ToolCall,
+    Transport,
+)
 
 
 class FakeProvider:
@@ -86,6 +93,7 @@ class StrictArityProvider(FakeProvider):
 # The whole cost of keeping the double and the protocol honest: mypy fails here
 # if Transport ever drifts away from FakeProvider.
 _check: Transport = FakeProvider([])
+_structured: StructuredTransport = StructuredProvider([])
 
 
 def text_reply(text: str, *, stop_reason: StopReason = "end_turn") -> Reply:

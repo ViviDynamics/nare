@@ -8,7 +8,7 @@ from typing import Any
 import httpx2
 
 from nare.session import Message
-from nare.transport import Reply
+from nare.transport import Reply, StructuredTransport
 from nare.transport.anthropic import AnthropicTransport
 from nare.transport.openai import OpenAITransport
 
@@ -69,6 +69,9 @@ def transport(seen: list[dict[str, Any]], *, streaming: bool) -> OpenAITransport
         http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
     )
 
+
+# mypy fails here if the rail drifts away from the structured protocol.
+_check: StructuredTransport = OpenAITransport(model="m", api_key="k")
 
 EXPECTED_FORMAT = {
     "type": "json_schema",

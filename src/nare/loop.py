@@ -26,7 +26,14 @@ from nare.tools import (
     questions_from,
     tool_result,
 )
-from nare.transport import Delta, StopReason, StreamingTransport, Transport
+from nare.transport import (
+    Delta,
+    StopReason,
+    StreamingStructuredTransport,
+    StreamingTransport,
+    StructuredTransport,
+    Transport,
+)
 
 MAX_TURNS_DEFAULT = 50
 
@@ -252,16 +259,15 @@ async def step(
             )
         )
     # Off, the transport is called exactly as before: (messages, tools).
-    extra: dict[str, Any] = {"response_schema": schema} if constrained else {}
-    if constrained:
-        tools = []
     streamed = bool(getattr(transport, "streaming", False)) and on_delta is not None
     if streamed:
         reply = None
         async with aclosing(
-            cast(StreamingTransport, transport).stream_turn(
-                model_messages, tools, **extra
+            cast(StreamingStructuredTransport, transport).stream_turn(
+                model_messages, [], response_schema=schema
             )
+            if constrained
+            else cast(StreamingTransport, transport).stream_turn(model_messages, tools)
         ) as stream:
             async for item in stream:
                 if isinstance(item, Delta):
@@ -272,7 +278,13 @@ async def step(
         if reply is None:
             raise RuntimeError("stream ended without a completed reply")
     else:
-        reply = await transport.turn(model_messages, tools, **extra)
+        reply = await (
+            cast(StructuredTransport, transport).turn(
+                model_messages, [], response_schema=schema
+            )
+            if constrained
+            else transport.turn(model_messages, tools)
+        )
     s.last_input_tokens = (
         reply.usage.input + reply.usage.cache_read + reply.usage.cache_write
     )
