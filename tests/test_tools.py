@@ -355,6 +355,32 @@ async def test_a_second_cancel_while_the_pipes_connect_still_kills_the_group(
     assert _gone(int(pidfile.read_text()))
 
 
+async def test_a_spawn_that_fails_after_a_cancel_still_raises_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A cancelled call waits for its spawn so it can kill the group. A spawn
+    # that then failed raised its own OSError, so the caller, who asked to
+    # cancel, never heard that the call was cancelled.
+    # The spawn fails here, not in connect_read_pipe as #78 first said: on
+    # Python 3.12, which CI runs, asyncio's spawn never finishes once a pipe
+    # connect fails, and the test hung.
+    entered = asyncio.Event()
+    released = asyncio.Event()
+
+    async def failing(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        await released.wait()
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", failing)
+    task = asyncio.create_task(run_bash("true"))
+    await asyncio.wait_for(entered.wait(), 5)
+    task.cancel()
+    released.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5)
+
+
 def test_commands_do_not_inherit_nares_stdin(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

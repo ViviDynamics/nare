@@ -311,13 +311,21 @@ async def bash_outcome(
         # Wait the spawn out, then kill what it started. A loop, not a bare
         # `await spawn`: a second cancel would reach the spawn and hand it to
         # asyncio's own cleanup after all.
+        # ponytail: on Python 3.12, which CI runs, asyncio's spawn never
+        # finishes once a pipe connect fails, so this loop, and the cancel,
+        # wait forever. The upgrade is Python 3.14.1 or later, whose asyncio
+        # finishes that spawn.
         while not spawn.done():
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await asyncio.shield(spawn)
-        proc = spawn.result()
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)
-        await proc.wait()
+        # A failed spawn leaves no process here: asyncio's own cleanup has
+        # killed the shell. The caller asked to cancel, so it hears that,
+        # not how a spawn it no longer wants went wrong.
+        if not spawn.cancelled() and spawn.exception() is None:
+            proc = spawn.result()
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            await proc.wait()
         raise
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
