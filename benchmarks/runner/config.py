@@ -28,6 +28,22 @@ class Config:
     judge_model: str
     api_key: str | None
     api_key_var: str
+    # The agent's --max-tokens, or None for nare's own default. A reasoning
+    # model can spend the default 8192 thinking and never reach a tool call.
+    max_tokens: int | None = None
+
+
+def _max_tokens_from(env: Mapping[str, str]) -> int | None:
+    raw = env.get("NARE_BENCH_MAX_TOKENS")
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        raise ConfigError(f"NARE_BENCH_MAX_TOKENS must be a positive integer: {raw!r}")
+    return value
 
 
 def resolve_config(
@@ -69,4 +85,5 @@ def resolve_config(
         ),
         api_key=api_key,
         api_key_var=key_var,
+        max_tokens=_max_tokens_from(env),
     )

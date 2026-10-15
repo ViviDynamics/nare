@@ -266,3 +266,68 @@ def test_the_agent_streams_when_the_host_asks(
     passthrough = seen["passthrough"]
     assert isinstance(passthrough, tuple)
     assert "NARE_STREAM" in passthrough
+
+
+@pytest.mark.parametrize(("cap", "sent"), [(32000, "32000"), (None, None)])
+def test_the_agent_gets_the_output_cap_the_run_sets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cap: int | None, sent: str | None
+) -> None:
+    from dataclasses import replace
+
+    from benchmarks.runner import sandbox as mod
+
+    seen: dict[str, object] = {}
+
+    def fake_run(*args: object, **kwargs: object) -> tuple[int, str, str, bool]:
+        seen.update(kwargs)
+        return 0, "", "", False
+
+    monkeypatch.setattr(mod, "_docker_run", fake_run)
+    config = replace(CONFIG, max_tokens=cap)
+    mod.run_agent(make_case(tmp_path), tmp_path, tmp_path, config)
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert env.get("BENCH_MAX_TOKENS") == sent
+
+
+@pytest.mark.parametrize(
+    ("cap", "expected"), [("32000", ["--max-tokens", "32000"]), ("", [])]
+)
+def test_the_agent_script_passes_the_output_cap_only_when_set(
+    tmp_path: Path, cap: str, expected: list[str]
+) -> None:
+    """The real script under sh, with a stub nare that prints its arguments."""
+    import os
+    import subprocess
+
+    from benchmarks.runner.sandbox import _AGENT_SCRIPT
+
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    (stubs / "nare").write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    (stubs / "nare").chmod(0o755)
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "a.txt").write_text("x\n")
+    env = {
+        **os.environ,
+        "PATH": f"{stubs}:{os.environ['PATH']}",
+        # The person's own git config (commit signing, hooks) stays out of it.
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "BENCH_PROMPT": "do it",
+        "BENCH_MODEL": "m",
+        "BENCH_MAX_TURNS": "3",
+        "BENCH_MAX_TOKENS": cap,
+    }
+    done = subprocess.run(
+        ["sh", "-c", _AGENT_SCRIPT],
+        cwd=work,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    args = done.stdout.splitlines()
+    assert args[args.index("m") + 1 : args.index("--")] == expected
+    assert args[-1] == "do it"

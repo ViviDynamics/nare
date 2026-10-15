@@ -57,6 +57,42 @@ def test_judge_model_can_be_set_by_environment() -> None:
     assert config.judge_model == "gpt-5-nano"
 
 
+def test_the_agents_output_cap_can_be_set_by_environment() -> None:
+    # A reasoning model spent nare's default 8192 output tokens thinking and
+    # was cut off before its first tool call, which grades as the agent's fail.
+    config = resolve_config(
+        model="m",
+        provider=None,
+        base_url=None,
+        judge_model=None,
+        env={"ANTHROPIC_API_KEY": "k", "NARE_BENCH_MAX_TOKENS": "32000"},
+    )
+    assert config.max_tokens == 32000
+
+
+def test_the_agents_output_cap_defaults_to_nares_own() -> None:
+    config = resolve_config(
+        model="m",
+        provider=None,
+        base_url=None,
+        judge_model=None,
+        env={"ANTHROPIC_API_KEY": "k"},
+    )
+    assert config.max_tokens is None
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "lots"])
+def test_a_bad_output_cap_is_refused(value: str) -> None:
+    with pytest.raises(ConfigError, match="NARE_BENCH_MAX_TOKENS"):
+        resolve_config(
+            model="m",
+            provider=None,
+            base_url=None,
+            judge_model=None,
+            env={"ANTHROPIC_API_KEY": "k", "NARE_BENCH_MAX_TOKENS": value},
+        )
+
+
 def test_missing_model_is_refused() -> None:
     with pytest.raises(ConfigError, match="model"):
         resolve_config(

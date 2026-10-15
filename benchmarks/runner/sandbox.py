@@ -70,7 +70,8 @@ git init -q -b main
 git add -A
 git -c user.email=bench@nare.invalid -c user.name=nare-bench commit -qm fixture
 exec nare run --yes --jsonl --session /out/session.json \
-     --max-turns "$BENCH_MAX_TURNS" --model "$BENCH_MODEL" -- "$BENCH_PROMPT"
+     --max-turns "$BENCH_MAX_TURNS" --model "$BENCH_MODEL" \
+     ${BENCH_MAX_TOKENS:+--max-tokens "$BENCH_MAX_TOKENS"} -- "$BENCH_PROMPT"
 """
 
 
@@ -181,6 +182,11 @@ def run_agent(
             "BENCH_MAX_TURNS": str(case.max_turns),
             "NARE_PROVIDER": config.provider,
             **({"NARE_BASE_URL": config.base_url} if config.base_url else {}),
+            **(
+                {"BENCH_MAX_TOKENS": str(config.max_tokens)}
+                if config.max_tokens
+                else {}
+            ),
         },
         # The key the provider under test actually reads, not always the
         # Anthropic one: an openai run needs OPENAI_API_KEY in the container.
