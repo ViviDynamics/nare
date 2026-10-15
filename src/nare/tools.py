@@ -318,9 +318,12 @@ async def bash_outcome(
         while not spawn.done():
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await asyncio.shield(spawn)
-        # A failed spawn leaves no process here: asyncio's own cleanup has
-        # killed the shell. The caller asked to cancel, so it hears that,
-        # not how a spawn it no longer wants went wrong.
+        # The caller asked to cancel, so it hears that, not how a spawn it no
+        # longer wants went wrong.
+        # ponytail: a spawn that fails after Popen (a pipe connect) loses the
+        # pid. asyncio's own cleanup kills the shell only, so its background
+        # children can outlive the call. The upgrade is to own the Popen, so
+        # the group is known before any await.
         if not spawn.cancelled() and spawn.exception() is None:
             proc = spawn.result()
             with contextlib.suppress(ProcessLookupError):
