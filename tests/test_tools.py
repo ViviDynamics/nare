@@ -381,6 +381,43 @@ async def test_a_spawn_that_fails_after_a_cancel_still_raises_cancelled(
         await asyncio.wait_for(task, 5)
 
 
+async def test_a_cancel_when_loop_shutdown_also_cancels_the_spawn_still_ends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fails first on Python 3.12 only: 3.14's asyncio ends that spawn itself.
+
+    asyncio.run's shutdown cancels every task, the spawn and its pipe connect
+    too. On 3.12 asyncio's spawn then waits for pipes that never connect, so
+    the call, waiting its spawn out, hung, and asyncio.run with it.
+    """
+    monkeypatch.setattr("nare.tools._SPAWN_WAIT", 0.2)
+    released = _hold_pipe_connects(monkeypatch)
+    pidfile = tmp_path / "pid"
+    before = asyncio.all_tasks()
+    task = asyncio.create_task(run_bash(f"sleep 30 & echo $! > {pidfile}; wait"))
+    await _wait_for_pidfile(pidfile)
+    task.cancel()
+    await asyncio.sleep(0)
+    spawning = asyncio.all_tasks() - before - {task}
+    for t in spawning:
+        t.cancel()
+    released.set()
+    try:
+        done, _ = await asyncio.wait({task}, timeout=5)
+        assert done == {task}
+        assert task.cancelled()
+    finally:
+        # The pid went with the spawn, so the background sleep runs on.
+        try:
+            os.kill(int(pidfile.read_text()), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        # A second cancel ends a stuck spawn, so a failure fails the test
+        # instead of hanging it.
+        for t in spawning:
+            t.cancel()
+
+
 def test_commands_do_not_inherit_nares_stdin(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

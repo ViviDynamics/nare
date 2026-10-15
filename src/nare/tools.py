@@ -261,6 +261,11 @@ def group_label(command: str) -> str:
     return line if len(line) <= 60 else line[:57] + "..."
 
 
+# How long a cancelled call waits for its spawn before giving up on it. A
+# spawn takes about a millisecond.
+_SPAWN_WAIT = 5.0
+
+
 async def _lingers(pgid: int) -> bool:
     """Whether the group outlives the call.
 
@@ -312,18 +317,26 @@ async def bash_outcome(
         # `await spawn`: a second cancel would reach the spawn and hand it to
         # asyncio's own cleanup after all.
         # ponytail: on Python 3.12, which CI runs, asyncio's spawn never
-        # finishes once a pipe connect fails, so this loop, and the cancel,
-        # wait forever. The upgrade is Python 3.14.1 or later, whose asyncio
-        # finishes that spawn.
-        while not spawn.done():
+        # finishes once a pipe connect fails, or once loop shutdown cancels it
+        # mid-connect, and the cancel and asyncio.run waited forever. So the
+        # wait gives up after _SPAWN_WAIT seconds and cancels the spawn again,
+        # which ends it; the shell's background children run on. The upgrade
+        # is Python 3.14.1 or later, whose asyncio finishes that spawn.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _SPAWN_WAIT
+        while not spawn.done() and loop.time() < deadline:
             with contextlib.suppress(asyncio.CancelledError, Exception):
-                await asyncio.shield(spawn)
+                await asyncio.wait_for(asyncio.shield(spawn), deadline - loop.time())
+        if not spawn.done():
+            spawn.cancel()
+            raise
         # The caller asked to cancel, so it hears that, not how a spawn it no
         # longer wants went wrong.
-        # ponytail: a spawn that fails after Popen (a pipe connect) loses the
-        # pid. asyncio's own cleanup kills the shell only, so its background
-        # children can outlive the call. The upgrade is to own the Popen, so
-        # the group is known before any await.
+        # ponytail: a spawn that fails after Popen (a pipe connect), or that
+        # loop shutdown cancels, loses the pid. asyncio's own cleanup kills
+        # the shell only, so its background children can outlive the call.
+        # The upgrade is to own the Popen, so the group is known before any
+        # await.
         if not spawn.cancelled() and spawn.exception() is None:
             proc = spawn.result()
             with contextlib.suppress(ProcessLookupError):
