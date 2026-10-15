@@ -316,6 +316,7 @@ async def _wait_for_pidfile(pidfile: Path) -> None:
         if pidfile.exists() and pidfile.read_text().strip():
             return
         await asyncio.sleep(0.01)
+    pytest.fail(f"the shell never wrote {pidfile}")
 
 
 async def _result_within_5s(task: asyncio.Task[Any]) -> Any:
