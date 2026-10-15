@@ -184,7 +184,10 @@ def run_agent(
         },
         # The key the provider under test actually reads, not always the
         # Anthropic one: an openai run needs OPENAI_API_KEY in the container.
-        passthrough=(config.api_key_var,),
+        # NARE_STREAM too: a proxy behind Cloudflare answers 524 to a turn
+        # that takes over 120 s to return whole, and a streamed turn does not.
+        # It changes how a turn arrives, not what the run measures.
+        passthrough=(config.api_key_var, "NARE_STREAM"),
     )
     return RunArtifacts(
         stdout=out,

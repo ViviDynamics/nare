@@ -241,4 +241,28 @@ def test_the_agent_gets_the_key_its_provider_reads(
         judge=None,
     )
     run_agent(case, tmp_path, tmp_path, config)
-    assert seen["passthrough"] == ("OPENAI_API_KEY",)
+    passthrough = seen["passthrough"]
+    assert isinstance(passthrough, tuple)
+    assert "OPENAI_API_KEY" in passthrough
+    assert "ANTHROPIC_API_KEY" not in passthrough
+
+
+def test_the_agent_streams_when_the_host_asks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A proxy behind Cloudflare answered 524 to every turn that took over
+    # 120 s to return whole: the turn where the model writes the app. A
+    # streamed turn sends bytes at once, so NARE_STREAM reaches the agent.
+    from benchmarks.runner import sandbox as mod
+
+    seen: dict[str, object] = {}
+
+    def fake_run(*args: object, **kwargs: object) -> tuple[int, str, str, bool]:
+        seen.update(kwargs)
+        return 0, "", "", False
+
+    monkeypatch.setattr(mod, "_docker_run", fake_run)
+    mod.run_agent(make_case(tmp_path), tmp_path, tmp_path, CONFIG)
+    passthrough = seen["passthrough"]
+    assert isinstance(passthrough, tuple)
+    assert "NARE_STREAM" in passthrough

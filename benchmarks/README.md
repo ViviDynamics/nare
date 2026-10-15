@@ -13,6 +13,7 @@ Docker is required; every repetition runs in a throwaway container.
     export ANTHROPIC_API_KEY=...        # OPENAI_API_KEY for NARE_PROVIDER=openai
     export NARE_MODEL=claude-haiku
     export NARE_BASE_URL=https://...    # only if you use a proxy
+    export NARE_STREAM=1                # if the proxy times out slow replies
 
     bin/bench verify                    # free: are the cases well-formed?
     bin/bench run --tier smoke          # measure
