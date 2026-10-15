@@ -334,6 +334,27 @@ async def test_a_cancel_while_asyncio_connects_the_pipes_kills_the_group(
     assert _gone(int(pidfile.read_text()))
 
 
+async def test_a_second_cancel_while_the_pipes_connect_still_kills_the_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # After a cancel the call waits for its spawn, to kill what it started. A
+    # second cancel that reached the spawn there handed it to asyncio's own
+    # cleanup after all: the sleep ran on, or held up the cancel.
+    released = _hold_pipe_connects(monkeypatch)
+    pidfile = tmp_path / "pid"
+    task = asyncio.create_task(run_bash(f"sleep 30 & echo $! > {pidfile}; wait"))
+    await _wait_for_pidfile(pidfile)
+    task.cancel()
+    # One yield delivers the first cancel, so the call is waiting on its
+    # spawn when the second one comes.
+    await asyncio.sleep(0)
+    task.cancel()
+    released.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5)
+    assert _gone(int(pidfile.read_text()))
+
+
 def test_commands_do_not_inherit_nares_stdin(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

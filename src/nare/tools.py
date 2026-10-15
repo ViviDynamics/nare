@@ -308,7 +308,13 @@ async def bash_outcome(
         # load 1 cancel in 4 hung the cancel or left `sleep 30 &` running.
         proc = await asyncio.shield(spawn)
     except asyncio.CancelledError:
-        proc = await spawn
+        # Wait the spawn out, then kill what it started. A loop, not a bare
+        # `await spawn`: a second cancel would reach the spawn and hand it to
+        # asyncio's own cleanup after all.
+        while not spawn.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(spawn)
+        proc = spawn.result()
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
         await proc.wait()
