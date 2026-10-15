@@ -1,11 +1,19 @@
 from __future__ import annotations
 
-from benchmarks.runner.case import load_cases
+import json
+import subprocess
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from benchmarks.runner.case import Case, load_cases
 from benchmarks.runner.sandbox import repo_root
 
 SEEDS = {
     "ambiguous-request",
     "bash-timeout-recovery",
+    "bootstrap-without-database",
     "edit-docstring",
     "fix-failing-test",
     "multi-file-rename",
@@ -50,3 +58,77 @@ def test_the_ask_case_judges_the_question_not_just_the_status() -> None:
     assert judge is not None
     assert judge.min_met == 2
     assert len(judge.assertions) == 2
+
+
+def cases() -> dict[str, Case]:
+    return {c.id: c for c in load_cases(repo_root() / "benchmarks" / "cases")}
+
+
+def check_with(case_id: str, marker: str) -> str:
+    """The one bash check of a case whose command contains `marker`."""
+    [cmd] = [
+        c.cmd or "" for c in cases()[case_id].bash_checks if marker in (c.cmd or "")
+    ]
+    return cmd
+
+
+def run_here(cmd: str, cwd: Path, out: Path | None = None) -> int:
+    """A case's check run here instead of in Docker, with /out at `out`."""
+    if out is not None:
+        cmd = cmd.replace("/out/", f"{out}/")
+    return subprocess.run(["sh", "-c", cmd], cwd=cwd, capture_output=True).returncode
+
+
+def session_with(*commands: str, groups: list[dict[str, Any]] | None = None) -> str:
+    calls = [
+        {"type": "tool_use", "id": f"t{n}", "name": "bash", "input": {"command": c}}
+        for n, c in enumerate(commands)
+    ]
+    return json.dumps(
+        {
+            "messages": [{"role": "assistant", "content": calls}],
+            "process_groups": groups or [],
+        }
+    )
+
+
+def test_the_bootstrap_case_fails_a_run_that_left_a_process_running(
+    tmp_path: Path,
+) -> None:
+    cmd = check_with("bootstrap-without-database", "process_groups")
+    (tmp_path / "session.json").write_text(
+        session_with(groups=[{"pgid": 42, "command": "flask run &"}])
+    )
+    assert run_here(cmd, tmp_path, tmp_path) != 0
+    (tmp_path / "session.json").write_text(session_with("flask --help"))
+    assert run_here(cmd, tmp_path, tmp_path) == 0
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "initdb -D /tmp/pg",
+        "pg_ctl -D /tmp/pg start",
+        "curl -L micro.mamba.pm/api/micromamba/linux-64/latest | tar xj",
+        "./bin/micromamba create -p /tmp/pgenv postgresql",
+        "apt-get install -y postgresql",
+    ],
+)
+def test_the_bootstrap_case_fails_a_run_that_set_up_a_database(
+    tmp_path: Path, command: str
+) -> None:
+    # pg_ctl calls setsid, so the server escapes nare's process-group probe
+    # and never reaches process_groups. The commands are the evidence.
+    cmd = check_with("bootstrap-without-database", "initdb")
+    (tmp_path / "session.json").write_text(session_with("ls", command))
+    assert run_here(cmd, tmp_path, tmp_path) != 0
+
+
+def test_the_bootstrap_case_allows_installing_the_projects_own_packages(
+    tmp_path: Path,
+) -> None:
+    cmd = check_with("bootstrap-without-database", "initdb")
+    (tmp_path / "session.json").write_text(
+        session_with("pip install 'psycopg[binary]' flask", "grep -r postgres .")
+    )
+    assert run_here(cmd, tmp_path, tmp_path) == 0
