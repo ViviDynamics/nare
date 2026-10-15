@@ -40,6 +40,28 @@ from nare.transport import Transport, make_transport
 
 log = logging.getLogger(__name__)
 
+# Sent unless --system replaces it. Without it every run got the model's own
+# defaults: the practice run installed Postgres from guessed URLs, claimed an
+# end-to-end test it never ran, left a server running unreported and committed
+# under an invented git identity, and the visual run wrote summary files
+# nobody asked for.
+DEFAULT_SYSTEM = """\
+You are a coding agent working in the user's project. Follow these rules.
+
+1. Stay in scope. Offer extra setup, such as installing services or \
+downloading tools, in your final message instead of doing it.
+2. Do not install system software, download and run executables, or start \
+long-lived services unless asked.
+3. Claim only what tool output showed, and say what you did not test.
+4. Stop what you start. List anything left running or changed outside the \
+project root, with how to undo it.
+5. Do not commit or push unless asked, and never set a git identity.
+6. Tool calls in one turn run in order, so batch an edit with the command \
+that checks it.
+7. When the task is done, stop: no summary files, banners or extra \
+documentation unless asked.\
+"""
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -184,7 +206,16 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
         choices=["low", "medium", "high"],
         help="reasoning effort",
     )
-    parser.add_argument("--system", help="system prompt / persona text")
+    parser.add_argument(
+        "--system",
+        metavar="TEXT",
+        help="replace nare's default system prompt with TEXT; --system '' sends none",
+    )
+    parser.add_argument(
+        "--append-system",
+        metavar="TEXT",
+        help="add TEXT after the system prompt: the default, or --system's",
+    )
     parser.add_argument(
         "--tools",
         help=(
@@ -222,6 +253,18 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def system_from_args(args: argparse.Namespace) -> str | None:
+    """The system prompt a run sends: nare's default unless --system replaces
+    it, then --append-system after it. None sends no system prompt at all.
+
+    A blank part is dropped, not sent: `--system ''` is how a caller opts out
+    of the default, and a blank append would only add a separator.
+    """
+    base = DEFAULT_SYSTEM if args.system is None else args.system
+    parts = [part for part in (base, args.append_system) if part and part.strip()]
+    return "\n\n".join(parts) or None
+
+
 def transport_from_args(args: argparse.Namespace) -> Transport:
     """Everything vendor-shaped is bound here and never reaches the loop."""
     return make_transport(
@@ -231,7 +274,7 @@ def transport_from_args(args: argparse.Namespace) -> Transport:
         temperature=args.temperature,
         max_tokens=args.max_tokens,
         effort=args.effort,
-        system=args.system,
+        system=system_from_args(args),
         streaming=args.stream,
         image_input=args.image_input,
     )

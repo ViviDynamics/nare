@@ -64,6 +64,13 @@ model-generated shell commands with your privileges and no sandbox of its
 own, so treat it like piping a script you have not read: run it in a
 container, a VM, or a throwaway checkout.
 
+nare sends a short default system prompt that keeps the agent in scope: no
+installs, long-lived services or commits unless asked, claims limited to what
+tool output showed, and a list of anything it left running. `--system TEXT`
+replaces that prompt, and `--system ''` sends none. `--append-system TEXT`
+adds to whichever prompt is in effect, which is how a caller adds a persona
+and keeps the rules.
+
 Two flags narrow a run. `--tools read,bash` allows only the tools you name,
 and `--tools none` allows no tool at all, which is what a caller wants when
 it needs one answer and no side effects. `--root DIR` confines `read`,

@@ -14,7 +14,13 @@ from fake_provider import (
     text_reply,
     tool_reply,
 )
-from nare.cli import build_parser, main, transport_from_args
+from nare.cli import (
+    DEFAULT_SYSTEM,
+    build_parser,
+    main,
+    system_from_args,
+    transport_from_args,
+)
 from nare.events import Event
 from nare.session import loads
 from nare.transport.anthropic import AnthropicTransport
@@ -40,6 +46,7 @@ def test_defaults_match_the_spec(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.max_tokens is None  # resolved to 8192 inside the transport
     assert args.effort is None
     assert args.system is None
+    assert args.append_system is None
     assert args.max_turns == 50
     assert args.jsonl is False
     assert args.yes is False
@@ -107,6 +114,84 @@ def test_an_unknown_provider_from_the_environment_fails_at_construction(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     with pytest.raises(ValueError, match="anthropic, openai"):
         transport_from_args(parse("go"))
+
+
+def test_a_run_sends_the_default_system_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # nare sent no system prompt, so nothing checked the model's defaults: the
+    # practice run installed Postgres from guessed URLs, left it running, and
+    # committed under an invented git identity.
+    monkeypatch.delenv("NARE_PROVIDER", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    transport = transport_from_args(parse("go"))
+    assert isinstance(transport, AnthropicTransport)
+    assert transport.system == DEFAULT_SYSTEM
+
+
+def test_the_tui_sends_the_same_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NARE_PROVIDER", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    args = build_parser().parse_args(["tui", "--append-system", "be brief", "go"])
+    args.stream = True  # tui.app.prepare sets it; the tui has no --stream flag
+    transport = transport_from_args(args)
+    assert isinstance(transport, AnthropicTransport)
+    assert transport.system == f"{DEFAULT_SYSTEM}\n\nbe brief"
+
+
+def test_system_replaces_the_default() -> None:
+    assert system_from_args(parse("go", "--system", "persona")) == "persona"
+
+
+def test_append_system_extends_the_default() -> None:
+    # Appending keeps the rules for a caller that only adds a persona, and
+    # puts the caller's text last, where it wins a conflict.
+    assert system_from_args(parse("go", "--append-system", "be brief")) == (
+        f"{DEFAULT_SYSTEM}\n\nbe brief"
+    )
+
+
+def test_append_system_extends_a_replaced_prompt_too() -> None:
+    args = parse("go", "--system", "persona", "--append-system", "be brief")
+    assert system_from_args(args) == "persona\n\nbe brief"
+
+
+@pytest.mark.parametrize("blank", ["", "  \n"])
+def test_a_blank_system_sends_no_system_prompt(blank: str) -> None:
+    # The opt-out. None, not "": both transports omit a None system, and a
+    # blank one is a field a vendor may refuse.
+    assert system_from_args(parse("go", "--system", blank)) is None
+
+
+def test_a_blank_system_still_takes_an_append() -> None:
+    args = parse("go", "--system", "", "--append-system", "be brief")
+    assert system_from_args(args) == "be brief"
+
+
+def test_a_blank_append_adds_nothing() -> None:
+    assert system_from_args(parse("go", "--append-system", " ")) == DEFAULT_SYSTEM
+
+
+def test_the_default_prompt_is_short() -> None:
+    # Sent on every turn, so it costs per turn, not per run.
+    assert len(DEFAULT_SYSTEM.split()) < 200
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        "Stay in scope.",
+        "Do not install system software, download and run executables, or "
+        "start long-lived services unless asked.",
+        "Claim only what tool output showed, and say what you did not test.",
+        "Stop what you start.",
+        "Do not commit or push unless asked, and never set a git identity.",
+        "Tool calls in one turn run in order",
+        "When the task is done, stop",
+    ],
+)
+def test_the_default_prompt_carries_each_rule(rule: str) -> None:
+    assert rule in DEFAULT_SYSTEM
 
 
 TIMESTAMP = re.compile(r'"timestamp": "[^"]+"')
@@ -516,7 +601,8 @@ SHARED = [
     "--provider", "openai", "--model", "m", "--base-url", "http://x",
     "--temperature", "0.5", "--max-tokens", "100", "--context-window", "9000",
     "--budget-tokens", "500", "--budget-usd", "1.5", "--effort", "low",
-    "--system", "be brief", "--tools", "read,bash", "--root", ".",
+    "--system", "be brief", "--append-system", "and terse",
+    "--tools", "read,bash", "--root", ".",
     "--resume", "r.json", "--mcp-config", "m.json", "--image-input",
     "--session", "s.json", "--max-turns", "7",
 ]  # fmt: skip
@@ -528,6 +614,7 @@ def test_tui_takes_the_same_run_flags() -> None:
     for name in (
         "provider", "model", "base_url", "temperature", "max_tokens",
         "context_window", "budget_tokens", "budget_usd", "effort", "system",
+        "append_system",
         "tools", "root", "resume", "mcp_config", "image_input", "session",
         "max_turns", "prompt",
     ):  # fmt: skip
