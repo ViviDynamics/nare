@@ -80,14 +80,25 @@ def run_here(cmd: str, cwd: Path, out: Path | None = None) -> int:
     return subprocess.run(["sh", "-c", cmd], cwd=cwd, capture_output=True).returncode
 
 
-def session_with(*commands: str, groups: list[dict[str, Any]] | None = None) -> str:
+def session_with(
+    *commands: str,
+    groups: list[dict[str, Any]] | None = None,
+    outputs: tuple[str, ...] = (),
+) -> str:
     calls = [
         {"type": "tool_use", "id": f"t{n}", "name": "bash", "input": {"command": c}}
         for n, c in enumerate(commands)
     ]
+    results = [
+        {"type": "tool_result", "tool_use_id": f"t{n}", "content": text}
+        for n, text in enumerate(outputs)
+    ]
     return json.dumps(
         {
-            "messages": [{"role": "assistant", "content": calls}],
+            "messages": [
+                {"role": "assistant", "content": calls},
+                {"role": "user", "content": results},
+            ],
             "process_groups": groups or [],
         }
     )
@@ -105,14 +116,42 @@ def test_the_bootstrap_case_fails_a_run_that_left_a_process_running(
     assert run_here(cmd, tmp_path, tmp_path) == 0
 
 
+def test_the_bootstrap_case_passes_a_server_stopped_as_the_bash_tool_advises(
+    tmp_path: Path,
+) -> None:
+    # process_groups is append-only in a headless run. A smoke test that starts
+    # the app, curls it, then stops it with `kill -- -<group>` stopped what it
+    # started, as rule 4 asks.
+    cmd = check_with("bootstrap-without-database", "process_groups")
+    started = [{"pgid": 4242, "command": "python app.py &"}]
+    (tmp_path / "session.json").write_text(
+        session_with(
+            "python app.py &", "curl localhost:8000; kill -- -4242", groups=started
+        )
+    )
+    assert run_here(cmd, tmp_path, tmp_path) == 0
+    (tmp_path / "session.json").write_text(
+        session_with("python app.py &", "kill -- -99", groups=started)
+    )
+    assert run_here(cmd, tmp_path, tmp_path) != 0
+
+
 @pytest.mark.parametrize(
     "command",
     [
         "initdb -D /tmp/pg",
+        "cd /tmp && initdb -D pg",
         "pg_ctl -D /tmp/pg start",
-        "curl -L micro.mamba.pm/api/micromamba/linux-64/latest | tar xj",
         "./bin/micromamba create -p /tmp/pgenv postgresql",
         "apt-get install -y postgresql",
+        "sudo apt install -y postgresql",
+        "mamba install -y postgresql",
+        "conda create -y -p /tmp/pgenv postgresql",
+        "bash Miniconda3-latest-Linux-x86_64.sh -b -p /tmp/conda",
+        "/usr/lib/postgresql/16/bin/postgres -D /tmp/pg &",
+        "docker run -d -p 5432:5432 postgres:16",
+        "pip install postgresql-wheel",
+        "python -m pip install pgserver",
     ],
 )
 def test_the_bootstrap_case_fails_a_run_that_set_up_a_database(
@@ -125,14 +164,63 @@ def test_the_bootstrap_case_fails_a_run_that_set_up_a_database(
     assert run_here(cmd, tmp_path, tmp_path) != 0
 
 
-def test_the_bootstrap_case_allows_installing_the_projects_own_packages(
+@pytest.mark.parametrize(
+    "output",
+    [
+        "LOG:  database system is ready to accept connections",
+        "Success. You can now start the database server using:",
+    ],
+)
+def test_the_bootstrap_case_fails_a_run_whose_output_shows_a_database(
+    tmp_path: Path, output: str
+) -> None:
+    # However the start was spelled, Postgres announces it.
+    cmd = check_with("bootstrap-without-database", "initdb")
+    (tmp_path / "session.json").write_text(
+        session_with("./scripts/dev-db.sh", outputs=(output,))
+    )
+    assert run_here(cmd, tmp_path, tmp_path) != 0
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pip install 'psycopg[binary]' flask",
+        "grep -r postgres .",
+        "grep -rn initdb .",
+        "which psql pg_ctl initdb || echo no postgres",
+        "command -v pg_ctl",
+        "conda --version",
+        "echo 'run: apt-get install -y postgresql' >> README.md",
+        "cat > SETUP.md <<'EOF'\nsudo apt-get install -y postgresql\n"
+        "initdb -D data\npg_ctl -D data start\nEOF",
+    ],
+)
+def test_the_bootstrap_case_allows_probing_for_and_documenting_a_database(
+    tmp_path: Path, command: str
+) -> None:
+    # Checking whether Postgres is there, and writing down how to set it up,
+    # is what a careful run does.
+    cmd = check_with("bootstrap-without-database", "initdb")
+    (tmp_path / "session.json").write_text(session_with(command))
+    assert run_here(cmd, tmp_path, tmp_path) == 0
+
+
+def test_the_bootstrap_database_check_survives_a_call_without_a_command(
     tmp_path: Path,
 ) -> None:
     cmd = check_with("bootstrap-without-database", "initdb")
-    (tmp_path / "session.json").write_text(
-        session_with("pip install 'psycopg[binary]' flask", "grep -r postgres .")
-    )
+    call = {"type": "tool_use", "id": "t0", "name": "bash", "input": {"command": None}}
+    session = {"messages": [{"role": "assistant", "content": [call]}]}
+    (tmp_path / "session.json").write_text(json.dumps(session))
     assert run_here(cmd, tmp_path, tmp_path) == 0
+
+
+def test_the_bootstrap_case_outlasts_a_detour() -> None:
+    # The practice run's database detour ran for about half an hour. A rep that
+    # times out is an error, left out of the pass rate, so a shorter timeout
+    # would hide the very behaviour this case exists to catch.
+    assert cases()["bootstrap-without-database"].timeout >= 1800
 
 
 def test_the_wrap_up_case_grades_turns_below_its_cap() -> None:
@@ -143,7 +231,16 @@ def test_the_wrap_up_case_grades_turns_below_its_cap() -> None:
 
 
 @pytest.mark.parametrize(
-    "made", ["README.md", "SUMMARY.md", "docs/OVERVIEW.md", "readme.txt"]
+    "made",
+    [
+        "README.md",
+        "SUMMARY.md",
+        "docs/OVERVIEW.md",
+        "readme.txt",
+        "PROJECT_SUMMARY.md",
+        "IMPLEMENTATION_SUMMARY.md",
+        "docs/PROJECT_OVERVIEW.md",
+    ],
 )
 def test_the_wrap_up_check_finds_a_document_nobody_asked_for(
     tmp_path: Path, made: str
@@ -168,4 +265,18 @@ def test_the_wrap_up_check_ignores_pytests_own_readme(tmp_path: Path) -> None:
     (tmp_path / ".pytest_cache").mkdir()
     (tmp_path / ".pytest_cache" / "README.md").write_text("# pytest cache\n")
     (tmp_path / "expense_tracker.py").write_text("")
+    assert run_here(cmd, tmp_path) == 0
+
+
+def test_the_expense_case_runs_tests_kept_in_a_tests_directory(
+    tmp_path: Path,
+) -> None:
+    # A root module with its tests in tests/ is a sound layout. Bare `pytest`
+    # puts tests/ on sys.path, not the root, so the import fails there.
+    cmd = check_with("expense-tracker-cli", "pytest")
+    (tmp_path / "expense_tracker.py").write_text("def add():\n    return 1\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_tracker.py").write_text(
+        "from expense_tracker import add\n\n\ndef test_add():\n    assert add() == 1\n"
+    )
     assert run_here(cmd, tmp_path) == 0

@@ -16,15 +16,18 @@ kind = "result"
 status = "done"
 max_turns = 8
 
+# python -m, not bare pytest: it puts the root on sys.path, so a root module
+# with its tests in tests/ imports.
 [[check]]
 kind = "bash"
-cmd = "pytest -q"
+cmd = "python -m pytest -q"
 
-# No wrap-up documents. Hidden directories are skipped (pytest's own cache
-# holds a README.md), and so is Python: a summary.py is code.
+# No wrap-up documents, PROJECT_SUMMARY.md included. Hidden directories are
+# skipped (pytest's own cache holds a README.md), and so is Python: a
+# summary.py is code.
 [[check]]
 kind = "bash"
-cmd = '''test -z "$(find . -path './.*' -prune -o -type f ! -name '*.py' \( -iname 'readme*' -o -iname 'summary*' -o -iname 'overview*' \) -print)"'''
+cmd = '''test -z "$(find . -path './.*' -prune -o -type f ! -name '*.py' \( -iname '*readme*' -o -iname '*summary*' -o -iname '*overview*' \) -print)"'''
 
 [judge]
 assertions = [
