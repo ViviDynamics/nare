@@ -318,6 +318,20 @@ async def _wait_for_pidfile(pidfile: Path) -> None:
         await asyncio.sleep(0.01)
 
 
+async def _result_within_5s(task: asyncio.Task[Any]) -> Any:
+    """The cancelled call's result, or a failure if it has not ended in 5 s.
+
+    Not asyncio.wait_for(task, 5): when its time runs out it cancels the call
+    and waits for it, and a cancelled call that waits out its spawn ignores
+    that cancel, so a regression there hung the test rather than failed it.
+    Left running here, the call ends at teardown, which cancels its spawn too.
+    """
+    done, _ = await asyncio.wait({task}, timeout=5)
+    if not done:
+        pytest.fail("the cancelled call was still running after 5 s")
+    return task.result()
+
+
 async def test_a_cancel_while_asyncio_connects_the_pipes_kills_the_group(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -331,7 +345,7 @@ async def test_a_cancel_while_asyncio_connects_the_pipes_kills_the_group(
     task.cancel()
     released.set()
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, 5)
+        await _result_within_5s(task)
     assert _gone(int(pidfile.read_text()))
 
 
@@ -352,7 +366,7 @@ async def test_a_second_cancel_while_the_pipes_connect_still_kills_the_group(
     task.cancel()
     released.set()
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, 5)
+        await _result_within_5s(task)
     assert _gone(int(pidfile.read_text()))
 
 
@@ -379,7 +393,7 @@ async def test_a_spawn_that_fails_after_a_cancel_still_raises_cancelled(
     task.cancel()
     released.set()
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, 5)
+        await _result_within_5s(task)
 
 
 async def test_a_spawn_that_fails_after_a_cancel_logs_no_error(
@@ -405,7 +419,7 @@ async def test_a_spawn_that_fails_after_a_cancel_logs_no_error(
     task.cancel()
     released.set()
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, 5)
+        await _result_within_5s(task)
     assert [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR] == []
 
 
