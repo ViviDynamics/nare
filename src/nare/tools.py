@@ -291,14 +291,28 @@ async def bash_outcome(
     stdin is DEVNULL because nare's own stdin belongs to conductor: a command
     that reads would either eat conductor's pipe or block until the timeout.
     """
-    proc = await asyncio.create_subprocess_exec(
-        *_shell(command),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-        cwd=cwd,
+    spawn = asyncio.create_task(
+        asyncio.create_subprocess_exec(
+            *_shell(command),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            cwd=cwd,
+        )
     )
+    try:
+        # Shielded: Popen has started the shell before asyncio connects its
+        # pipes. asyncio's own cleanup for a cancel there kills the shell
+        # alone, then waits on pipes a background child holds open, so under
+        # load 1 cancel in 4 hung the cancel or left `sleep 30 &` running.
+        proc = await asyncio.shield(spawn)
+    except asyncio.CancelledError:
+        proc = await spawn
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        await proc.wait()
+        raise
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
         # In here so a cancel during the probe kills the group too: the call

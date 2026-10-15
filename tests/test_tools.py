@@ -292,6 +292,48 @@ async def test_a_cancel_kills_the_whole_process_group(tmp_path: Path) -> None:
     assert _gone(int(pidfile.read_text()))
 
 
+def _hold_pipe_connects(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
+    """Hold asyncio's pipe connects for the next spawn until the Event is set.
+
+    Popen has started the shell by then, so a cancel lands mid-spawn every
+    time, with or without load.
+    """
+    loop = asyncio.get_running_loop()
+    real = loop.connect_read_pipe
+    released = asyncio.Event()
+
+    async def held(*args: Any, **kwargs: Any) -> Any:
+        await released.wait()
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(loop, "connect_read_pipe", held)
+    return released
+
+
+async def _wait_for_pidfile(pidfile: Path) -> None:
+    for _ in range(500):
+        if pidfile.exists() and pidfile.read_text().strip():
+            return
+        await asyncio.sleep(0.01)
+
+
+async def test_a_cancel_while_asyncio_connects_the_pipes_kills_the_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A cancel while asyncio connected the pipes met asyncio's own cleanup,
+    # which kills the shell alone, then waits on the pipes the background
+    # sleep holds open. Under load 1 cancel in 4 hung or left the sleep.
+    released = _hold_pipe_connects(monkeypatch)
+    pidfile = tmp_path / "pid"
+    task = asyncio.create_task(run_bash(f"sleep 30 & echo $! > {pidfile}; wait"))
+    await _wait_for_pidfile(pidfile)
+    task.cancel()
+    released.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5)
+    assert _gone(int(pidfile.read_text()))
+
+
 def test_commands_do_not_inherit_nares_stdin(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
