@@ -61,6 +61,12 @@ The optional `[judge]` block lists binary, objectively checkable claims about
 the diff; `min_met` turns it into a gate. A judge can only ever fail a
 repetition that passed its checks - it can never rescue one that failed.
 
+A bash check runs in a fresh container over the agent's working directory,
+with the run's artifacts mounted read-only at `/out`. `/out/session.json` is
+nare's session, for checks about what the agent did rather than what it left:
+a server it started died with its container, but `process_groups` remembers
+it. `verify` has no session, so such a check fails on the pristine fixture.
+
 Run `bin/bench verify` on any case you add. It proves the checks fail on the
 pristine fixture, which is the difference between a case that measures
 something and a case that is green no matter what the agent does.

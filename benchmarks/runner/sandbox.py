@@ -108,6 +108,7 @@ def _docker_run(
     timeout: int,
     *,
     artifacts: Path | None = None,
+    read_only: bool = False,
     env: dict[str, str] | None = None,
     passthrough: tuple[str, ...] = (),
 ) -> tuple[int, str, str, bool]:
@@ -128,7 +129,8 @@ def _docker_run(
         "/work",
     ]
     if artifacts is not None:
-        command += ["-v", f"{artifacts}:/out"]
+        mount = f"{artifacts}:/out:ro" if read_only else f"{artifacts}:/out"
+        command += ["-v", mount]
     for key, value in (env or {}).items():
         command += ["-e", f"{key}={value}"]
     for key in passthrough:
@@ -193,9 +195,18 @@ def run_agent(
     )
 
 
-def run_check(workdir: Path, cmd: str, timeout: int) -> tuple[int, str]:
-    """Grade one bash check in a second container over the same directory."""
-    code, out, err, _ = _docker_run(workdir, ["sh", "-c", cmd], timeout)
+def run_check(
+    workdir: Path, cmd: str, timeout: int, *, artifacts: Path | None = None
+) -> tuple[int, str]:
+    """Grade one bash check in a second container over the same directory.
+
+    The run's artifacts, when given, are mounted read-only at /out. A server
+    the agent left running died with the agent's container; only the
+    session's process_groups remembers it.
+    """
+    code, out, err, _ = _docker_run(
+        workdir, ["sh", "-c", cmd], timeout, artifacts=artifacts, read_only=True
+    )
     return code, (out + err).strip()
 
 

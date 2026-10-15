@@ -361,7 +361,7 @@ def fake_sandbox(monkeypatch: pytest.MonkeyPatch, result: RunArtifacts) -> None:
         return result
 
     monkeypatch.setattr(bench, "run_agent", agent)
-    monkeypatch.setattr(bench, "run_check", lambda w, c, t: (0, ""))
+    monkeypatch.setattr(bench, "run_check", lambda w, c, t, artifacts=None: (0, ""))
     monkeypatch.setattr(bench, "git_diff", lambda w: "a diff")
 
 
@@ -380,6 +380,29 @@ async def test_a_rep_keeps_its_session_output_and_judge_replies(
     assert (kept / "stdout.jsonl").read_text() == DONE_LINE
     assert (kept / "stderr.txt").read_text() == "a warning"
     assert "stop_reason=end_turn" in (kept / "judge.txt").read_text()
+
+
+async def test_a_reps_checks_can_read_its_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A server the agent left running died with its container. Only the
+    # session's process_groups says it was ever started.
+    import benchmarks.runner.__main__ as bench
+
+    fake_sandbox(monkeypatch, RunArtifacts(DONE_LINE, "", 0, False, 1.0))
+    seen: list[str] = []
+
+    def check(
+        workdir: Path, cmd: str, timeout: int, artifacts: Path | None = None
+    ) -> tuple[int, str]:
+        assert artifacts is not None
+        seen.append((artifacts / "session.json").read_text())
+        return 0, ""
+
+    monkeypatch.setattr(bench, "run_check", check)
+    evidence = tmp_path / "results" / "stamp"
+    await run_rep(sandboxed(tmp_path), CONFIG, cast(Transport, None), 0, evidence)
+    assert seen == ['{"id": "s1"}']
 
 
 async def test_a_judge_that_fails_twice_still_leaves_both_replies(

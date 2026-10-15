@@ -112,6 +112,20 @@ def test_run_check_writes_as_the_invoking_user(tmp_path: Path) -> None:
 
 
 @pytest.mark.docker
+def test_run_check_reads_the_artifacts_but_cannot_change_them(
+    tmp_path: Path,
+) -> None:
+    from benchmarks.runner.sandbox import run_check, sandbox
+
+    with sandbox(make_case(tmp_path)) as (workdir, artifacts):
+        (artifacts / "session.json").write_text('{"process_groups": []}')
+        read = run_check(workdir, "test -s /out/session.json", 60, artifacts=artifacts)
+        assert read[0] == 0
+        assert run_check(workdir, "touch /out/x", 60, artifacts=artifacts)[0] != 0
+        assert not (artifacts / "x").exists()
+
+
+@pytest.mark.docker
 def test_git_diff_shows_the_agents_change_only(tmp_path: Path) -> None:
     from benchmarks.runner.sandbox import git_checkpoint, git_diff, sandbox
 

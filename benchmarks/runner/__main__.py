@@ -271,7 +271,7 @@ async def run_rep(
             if check.kind == "result"
         ]
         for check in case.bash_checks:
-            code, output = run_check(workdir, check.cmd or "", 120)
+            code, output = run_check(workdir, check.cmd or "", 120, artifacts=artifacts)
             graded.append(grade_bash_check(check, code, output))
 
         met: list[bool] | None = None
