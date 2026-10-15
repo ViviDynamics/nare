@@ -21,5 +21,5 @@ Out: constraining tool-using turns (measured incompatible on vLLM: the model can
 - [x] 3. Tool-free runs constrain every turn. Failing test.
 - [x] 4. Library refusal for a transport without support, before any turn. Failing test.
 - [x] 5. CLI flag and startup refusals (no `--schema`, `--provider anthropic`), wiring to the loop; real CLI HTTP proof of a tool turn, a failed answer and a constrained correction. Failing tests.
-- [ ] 6. `nare contract` advertises `structured_output`; docs/contract.md documents it. Failing tests.
+- [x] 6. `nare contract` advertises `structured_output`; docs/contract.md documents it. Failing tests.
 - [ ] 7. Preflight, review, CI, merge, release.

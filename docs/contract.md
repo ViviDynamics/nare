@@ -405,3 +405,47 @@ Chat Completions keeps text tool messages and attaches image URLs in a subsequen
 user message after all tool results. See the provider protocols:
 [Anthropic tool results](https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls),
 [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
+
+## Schema-constrained answers
+
+    nare run --yes --jsonl --contract 2 --provider openai --model MODEL \
+      --base-url "$PROXY" --tools read --root "$PWD" \
+      --schema answer.schema.json --structured-output json_schema "..."
+
+`--structured-output json_schema` asks the backend to enforce the `--schema` at
+decode time on the turns where that is possible. A constrained turn sends the
+OpenAI-compatible response format and **no tools**:
+
+    "response_format": {"type": "json_schema",
+                        "json_schema": {"name": "answer", "schema": {...}, "strict": true}}
+
+Two kinds of turn are constrained:
+
+- the one schema correction turn, after a no-tool answer failed the schema. It
+  replaces the free-text reprompt with tools offered; the reprompt text is the
+  same;
+- every turn of a run whose policy offers no tools.
+
+Tool-using turns are never constrained. Measured on vLLM behind LiteLLM, a
+request carrying both tools and a json_schema response format cannot call a
+tool: the model returns an invented schema-valid answer instead. A first
+answer is known to be final only after it is generated, so a valid
+unconstrained answer is accepted as before. `strict` is true so a backend that
+cannot honour the schema refuses the request instead of answering freely.
+
+nare's validator stays authoritative. A constrained answer is extracted and
+validated like any other, and a correction that still fails ends the run with
+`stop_reason` `schema_violation`. Each constrained turn emits one `progress`
+event whose `detail` is `{"structured_output": {"mode": "json_schema",
+"tools_withheld": true|false}}` before the request is sent. A resumed run
+offers tools again, because the correction round is per-run state.
+
+`--structured-output` without `--schema`, or with `--provider anthropic`,
+never starts (exit 2). In the library, `run(structured_output="json_schema")`
+raises `ValueError` before any turn when there is no schema or the transport
+does not set `supports_structured_output = True`; a supporting transport's
+`turn` and `stream_turn` accept a keyword-only `response_schema`. Without the
+flag every request, event and session field is unchanged, and transports are
+called with `(messages, tools)` only. `nare contract` advertises the capability
+under `structured_output`. The flag, event detail and discovery field are
+additive and keep the contract version.
