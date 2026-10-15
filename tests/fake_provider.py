@@ -8,7 +8,14 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from nare.session import Message, Usage
-from nare.transport import Delta, Reply, StopReason, ToolCall, Transport
+from nare.transport import (
+    Delta,
+    Reply,
+    StopReason,
+    StructuredTransport,
+    ToolCall,
+    Transport,
+)
 
 
 class FakeProvider:
@@ -40,9 +47,53 @@ class StreamingProvider(FakeProvider):
         yield await self.turn(messages, tools)
 
 
+class StructuredProvider(FakeProvider):
+    """Accepts a constrained answer turn and records what each turn asked for."""
+
+    supports_structured_output = True
+
+    def __init__(self, replies: list[Reply]) -> None:
+        super().__init__(replies)
+        self.constraints: list[dict[str, Any] | None] = []
+
+    async def turn(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        response_schema: dict[str, Any] | None = None,
+    ) -> Reply:
+        self.constraints.append(response_schema)
+        return await super().turn(messages, tools)
+
+
+class StreamingStructuredProvider(StructuredProvider):
+    streaming = True
+
+    async def stream_turn(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        response_schema: dict[str, Any] | None = None,
+    ) -> AsyncGenerator[Delta | Reply, None]:
+        yield Delta("progress", "on it ")
+        yield await self.turn(messages, tools, response_schema=response_schema)
+
+
+class StrictArityProvider(FakeProvider):
+    """Fails a turn called with anything beyond (messages, tools)."""
+
+    supports_structured_output = True
+
+    async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
+        return await super().turn(messages, tools)
+
+
 # The whole cost of keeping the double and the protocol honest: mypy fails here
 # if Transport ever drifts away from FakeProvider.
 _check: Transport = FakeProvider([])
+_structured: StructuredTransport = StructuredProvider([])
 
 
 def text_reply(text: str, *, stop_reason: StopReason = "end_turn") -> Reply:
