@@ -261,6 +261,11 @@ def group_label(command: str) -> str:
     return line if len(line) <= 60 else line[:57] + "..."
 
 
+# How long a cancelled call waits for its spawn before giving up on it. A
+# spawn takes about a millisecond.
+_SPAWN_WAIT = 5.0
+
+
 async def _lingers(pgid: int) -> bool:
     """Whether the group outlives the call.
 
@@ -273,6 +278,28 @@ async def _lingers(pgid: int) -> bool:
             return False
         await asyncio.sleep(0.02)
     return True
+
+
+async def _spawn(
+    command: str, cwd: str | None
+) -> asyncio.subprocess.Process | Exception:
+    """Start the shell in its own group, and return a failure, not raise it.
+
+    Returned: on Python 3.14, a shielded task that fails after its shield was
+    cancelled logs "OSError exception in shielded future" at ERROR, though
+    bash_outcome() handles the failure. The TUI showed that as a red line.
+    """
+    try:
+        return await asyncio.create_subprocess_exec(
+            *_shell(command),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            cwd=cwd,
+        )
+    except Exception as exc:
+        return exc
 
 
 async def bash_outcome(
@@ -291,14 +318,50 @@ async def bash_outcome(
     stdin is DEVNULL because nare's own stdin belongs to conductor: a command
     that reads would either eat conductor's pipe or block until the timeout.
     """
-    proc = await asyncio.create_subprocess_exec(
-        *_shell(command),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-        cwd=cwd,
-    )
+    spawn = asyncio.create_task(_spawn(command, cwd))
+    try:
+        # Shielded: Popen has started the shell before asyncio connects its
+        # pipes. asyncio's own cleanup for a cancel there kills the shell
+        # alone, then waits on pipes a background child holds open, so under
+        # load 1 cancel in 4 hung the cancel or left `sleep 30 &` running.
+        started = await asyncio.shield(spawn)
+    except asyncio.CancelledError:
+        # Wait the spawn out, then kill what it started. A loop, not a bare
+        # `await spawn`: a second cancel would reach the spawn and hand it to
+        # asyncio's own cleanup after all.
+        # ponytail: on Python 3.12, which CI runs, asyncio's spawn never
+        # finishes once a pipe connect fails, or once loop shutdown cancels it
+        # mid-connect, and the cancel and asyncio.run waited forever. So the
+        # wait gives up after _SPAWN_WAIT seconds and cancels the spawn again,
+        # which ends it; the shell's background children run on. The upgrade
+        # is Python 3.14.1 or later, whose asyncio finishes that spawn.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _SPAWN_WAIT
+        while not spawn.done() and loop.time() < deadline:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.wait_for(asyncio.shield(spawn), deadline - loop.time())
+        if not spawn.done():
+            spawn.cancel()
+            raise
+        # The caller asked to cancel, so it hears that, not how a spawn it no
+        # longer wants went wrong.
+        # ponytail: a spawn that fails after Popen (a pipe connect), or that
+        # loop shutdown cancels, loses the pid. asyncio's own cleanup kills
+        # the shell only, so its background children can outlive the call.
+        # The upgrade is to own the Popen, so the group is known before any
+        # await.
+        if not spawn.cancelled():
+            started = spawn.result()
+            if not isinstance(started, Exception):
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(started.pid, signal.SIGKILL)
+                await started.wait()
+        raise
+    if isinstance(started, Exception):
+        # A spawn that failed with no cancel, say for a cwd that does not
+        # exist, raises its own error, so dispatch reports it.
+        raise started
+    proc = started
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
         # In here so a cancel during the probe kills the group too: the call
