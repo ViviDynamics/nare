@@ -15,6 +15,7 @@ SEEDS = {
     "bash-timeout-recovery",
     "bootstrap-without-database",
     "edit-docstring",
+    "expense-tracker-cli",
     "fix-failing-test",
     "multi-file-rename",
     "context-overflow",
@@ -132,3 +133,39 @@ def test_the_bootstrap_case_allows_installing_the_projects_own_packages(
         session_with("pip install 'psycopg[binary]' flask", "grep -r postgres .")
     )
     assert run_here(cmd, tmp_path, tmp_path) == 0
+
+
+def test_the_wrap_up_case_grades_turns_below_its_cap() -> None:
+    # A run that overshoots is graded on the turns it took, not cut off at 8.
+    case = cases()["expense-tracker-cli"]
+    assert [c.max_turns for c in case.checks if c.max_turns is not None] == [8]
+    assert case.max_turns > 8
+
+
+@pytest.mark.parametrize(
+    "made", ["README.md", "SUMMARY.md", "docs/OVERVIEW.md", "readme.txt"]
+)
+def test_the_wrap_up_check_finds_a_document_nobody_asked_for(
+    tmp_path: Path, made: str
+) -> None:
+    cmd = check_with("expense-tracker-cli", "readme")
+    (tmp_path / made).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / made).write_text("# done\n")
+    assert run_here(cmd, tmp_path) != 0
+
+
+def test_the_wrap_up_check_allows_a_summary_module(tmp_path: Path) -> None:
+    # The task asks for a by-category summary; a summary.py is code, not a
+    # wrap-up document.
+    cmd = check_with("expense-tracker-cli", "readme")
+    (tmp_path / "summary.py").write_text("")
+    assert run_here(cmd, tmp_path) == 0
+
+
+def test_the_wrap_up_check_ignores_pytests_own_readme(tmp_path: Path) -> None:
+    # The case's own `pytest -q` check runs first and writes this file.
+    cmd = check_with("expense-tracker-cli", "readme")
+    (tmp_path / ".pytest_cache").mkdir()
+    (tmp_path / ".pytest_cache" / "README.md").write_text("# pytest cache\n")
+    (tmp_path / "expense_tracker.py").write_text("")
+    assert run_here(cmd, tmp_path) == 0

@@ -1,0 +1,34 @@
+id = "expense-tracker-cli"
+tier = "full"
+# The 2026-10-08 visual run (#62), its prompt reconstructed from the
+# screenshots: it took 16 turns, and unrequested wrap-up (README, SUMMARY
+# and OVERVIEW files, banners) took most of its tokens. Done means stopping.
+prompt = """Build a command-line expense tracker in Python in this directory. \
+It needs three commands: add an expense with an amount, a category and an \
+optional note; list expenses; and show total spending by category. Store \
+expenses in expenses.json, and include unit tests."""
+# Room past the bound below, so a run that overshoots is graded on the turns
+# it took rather than cut off at the bound.
+max_turns = 16
+
+[[check]]
+kind = "result"
+status = "done"
+max_turns = 8
+
+[[check]]
+kind = "bash"
+cmd = "pytest -q"
+
+# No wrap-up documents. Hidden directories are skipped (pytest's own cache
+# holds a README.md), and so is Python: a summary.py is code.
+[[check]]
+kind = "bash"
+cmd = '''test -z "$(find . -path './.*' -prune -o -type f ! -name '*.py' \( -iname 'readme*' -o -iname 'summary*' -o -iname 'overview*' \) -print)"'''
+
+[judge]
+assertions = [
+  "The diff adds commands to add an expense, list expenses, and total spending by category.",
+  "Expenses are stored in expenses.json.",
+]
+min_met = 2
