@@ -204,8 +204,24 @@ def _argument_error(raw: str) -> str | None:
     return "tool arguments are not a complete JSON object; tool not run"
 
 
+def response_format_from(schema: dict[str, Any]) -> dict[str, Any]:
+    """The json_schema response format for a constrained answer turn.
+
+    `strict` is true so a backend that cannot enforce the schema refuses the
+    request rather than answering unconstrained. vLLM enforces the schema at
+    decode time either way.
+    """
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": "answer", "schema": schema, "strict": True},
+    }
+
+
 class OpenAITransport:
     supports_image_input = True
+    # A constrained turn carries no tools: measured on vLLM, a request with
+    # both cannot call a tool, and the model invents an answer instead.
+    supports_structured_output = True
 
     def __init__(
         self,
@@ -248,7 +264,10 @@ class OpenAITransport:
         )
 
     def _payload(
-        self, messages: list[Message], tools: list[dict[str, Any]]
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        response_schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.model,
@@ -263,7 +282,9 @@ class OpenAITransport:
                 {"role": "system", "content": self.system},
                 *payload["messages"],
             ]
-        if tools:
+        if response_schema is not None:
+            payload["response_format"] = response_format_from(response_schema)
+        elif tools:
             payload["tools"] = tools_from(tools)
         if self.max_tokens is not None:
             payload["max_tokens"] = self.max_tokens
@@ -276,13 +297,21 @@ class OpenAITransport:
 
         return payload
 
-    async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
+    async def turn(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        response_schema: dict[str, Any] | None = None,
+    ) -> Reply:
         if self.streaming:
-            async for item in self.stream_turn(messages, tools):
+            async for item in self.stream_turn(
+                messages, tools, response_schema=response_schema
+            ):
                 if isinstance(item, Reply):
                     return item
             raise RuntimeError("stream ended without a reply")
-        payload = self._payload(messages, tools)
+        payload = self._payload(messages, tools, response_schema)
         response = await self._client.post(
             f"{self._base_url}/chat/completions",
             headers={"authorization": f"Bearer {self._key}"},
@@ -299,10 +328,14 @@ class OpenAITransport:
         return self._reply(response.json(), cost=reported_cost(response.headers))
 
     async def stream_turn(
-        self, messages: list[Message], tools: list[dict[str, Any]]
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        response_schema: dict[str, Any] | None = None,
     ) -> AsyncGenerator[Delta | Reply, None]:
         payload = {
-            **self._payload(messages, tools),
+            **self._payload(messages, tools, response_schema),
             "stream": True,
             "stream_options": {"include_usage": True},
         }
