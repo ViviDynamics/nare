@@ -178,6 +178,25 @@ def messages_from(
     return output
 
 
+def with_cache_breakpoints(
+    messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Mark the newest block and the last tool as prompt-cache breakpoints.
+
+    The practice run re-sent 1.82M tokens with 0 cache reads. The newest
+    block's marker moves forward each turn, and the API finds the previous
+    turn's entry behind it, so the history is read back at the cache price.
+    The tool marker keeps the tools cached when compaction rewrites old
+    messages. `messages` must be messages_from's fresh copy, which this marks
+    in place. `tools` is the caller's own list, so it is copied, not marked.
+    """
+    if messages and messages[-1]["content"]:
+        messages[-1]["content"][-1]["cache_control"] = {"type": "ephemeral"}
+    if tools:
+        tools = [*tools[:-1], {**tools[-1], "cache_control": {"type": "ephemeral"}}]
+    return messages, tools
+
+
 class AnthropicTransport:
     supports_image_input = True
 
@@ -278,24 +297,34 @@ class AnthropicTransport:
     async def prices(self) -> Prices | None:
         return await self._metadata.prices()
 
+    def _wire(
+        self, messages: list[Message], tools: list[dict[str, Any]]
+    ) -> tuple[list[MessageParam], list[ToolParam]]:
+        wire_messages, wire_tools = with_cache_breakpoints(
+            messages_from(
+                messages,
+                image_input=self.image_input,
+                image_model=f"AnthropicTransport/model={self.model}",
+            ),
+            tools,
+        )
+        return (
+            cast("list[MessageParam]", wire_messages),
+            cast("list[ToolParam]", wire_tools),
+        )
+
     async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
         if self.streaming:
             async for item in self.stream_turn(messages, tools):
                 if isinstance(item, Reply):
                     return item
             raise RuntimeError("stream ended without a reply")
+        wire_messages, wire_tools = self._wire(messages, tools)
         raw = await self._client.messages.with_raw_response.create(
             model=self.model,
             max_tokens=self.max_tokens,
-            messages=cast(
-                "list[MessageParam]",
-                messages_from(
-                    messages,
-                    image_input=self.image_input,
-                    image_model=f"AnthropicTransport/model={self.model}",
-                ),
-            ),
-            tools=cast("list[ToolParam]", tools),
+            messages=wire_messages,
+            tools=wire_tools,
             system=self.system if self.system is not None else omit,
             thinking=cast(Any, self.thinking) if self.thinking else omit,
         )
@@ -317,18 +346,12 @@ class AnthropicTransport:
     async def stream_turn(
         self, messages: list[Message], tools: list[dict[str, Any]]
     ) -> AsyncGenerator[Delta | Reply, None]:
+        wire_messages, wire_tools = self._wire(messages, tools)
         async with self._client.messages.stream(
             model=self.model,
             max_tokens=self.max_tokens,
-            messages=cast(
-                "list[MessageParam]",
-                messages_from(
-                    messages,
-                    image_input=self.image_input,
-                    image_model=f"AnthropicTransport/model={self.model}",
-                ),
-            ),
-            tools=cast("list[ToolParam]", tools),
+            messages=wire_messages,
+            tools=wire_tools,
             system=self.system if self.system is not None else omit,
             thinking=cast(Any, self.thinking) if self.thinking else omit,
         ) as stream:

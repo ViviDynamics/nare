@@ -49,6 +49,12 @@ proxy to route them through its OpenAI adapter. The routes use different API
 keys, so nare does not switch automatically. On the openai rail the reasoning
 arrives as a `thinking` event and the answer stays the answer.
 
+On the anthropic rail nare marks the newest message and the last tool for
+prompt caching, so a backend that caches reads each turn's history back at its
+cache price. Thinking that arrives without a signature, which is what a proxy
+makes when it translates a reasoning model, is kept in the session but not sent
+back to the model, and neither is empty text.
+
 There is no `--api-key` flag on either: argv is world-readable through `ps`
 and `/proc`.
 

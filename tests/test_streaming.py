@@ -160,6 +160,33 @@ async def test_stream_normalizes_final_reply_and_usage(provider: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_anthropic_stream_requests_carry_the_cache_breakpoints() -> None:
+    seen: list[dict[str, Any]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(json.loads(request.content))
+        return httpx2.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=Bytes(anthropic_chunks()),
+        )
+
+    transport = AnthropicTransport(
+        model="m",
+        api_key="test",
+        streaming=True,
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+    )
+    await transport.turn(
+        [Message("user", [{"type": "text", "text": "hi"}])],
+        [{"name": "read", "description": "read a file", "input_schema": {}}],
+    )
+    ephemeral = {"type": "ephemeral"}
+    assert seen[0]["messages"][-1]["content"][-1]["cache_control"] == ephemeral
+    assert seen[0]["tools"][-1]["cache_control"] == ephemeral
+
+
+@pytest.mark.asyncio
 async def test_openai_delta_arrives_before_final_chunk() -> None:
     from nare.transport import Delta, Reply
 
