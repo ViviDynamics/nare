@@ -49,6 +49,12 @@ proxy to route them through its OpenAI adapter. The routes use different API
 keys, so nare does not switch automatically. On the openai rail the reasoning
 arrives as a `thinking` event and the answer stays the answer.
 
+On the anthropic rail nare marks the newest message and the last tool for
+prompt caching, so a backend that caches reads each turn's history back at its
+cache price. Thinking that arrives without a signature, which is what a proxy
+makes when it translates a reasoning model, is kept in the session but not sent
+back to the model, and neither is empty text.
+
 There is no `--api-key` flag on either: argv is world-readable through `ps`
 and `/proc`.
 
@@ -213,10 +219,12 @@ and explains that `continue` starts another run with the same turn allowance.
 Token and USD ceilings still apply before a summary request.
 
 Before each model call, old tool output is elided if estimated context reaches
-80% of the window, stopping at 60% where possible. The task, assistant messages,
-last two turns, error results and ask results are protected. Every tool call
-keeps its result. If estimated context still reaches the window, nare stops
-with `stop_reason=context` without calling the model. This character-based
+80% of the window, stopping at 60% where possible. If that is not enough, long
+contents of old `write` calls and long `edit` texts are elided next. The task,
+assistant text and thinking, the last two turns, error results, ask results and
+the inputs of failed calls are protected. Every tool call keeps its result. If
+estimated context still reaches the window, nare stops with
+`stop_reason=context` without calling the model. This character-based
 estimate can undercount; a provider can still reject context as `max_tokens`.
 With a configured base URL, window discovery uses `/v1/model/info` with a
 5 second timeout; failures use 32000. Direct endpoints make no discovery request.
