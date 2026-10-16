@@ -38,6 +38,8 @@ hide a longer prompt.
       stdout.jsonl                            the event stream
       stderr.txt
       judge.txt                               judged cases: every judge reply
+      diff.patch                              the diff, as the judge read it
+      closing.txt                             the closing message, as the judge read it
 
 Each results line names its directory in `artifacts`, relative to
 `benchmarks/results/`. A confirmation re-run rewrites the same files, so
@@ -45,6 +47,11 @@ one run leaves one results file; it also replaces the evidence from that
 case's first pass, as it replaces those reps in the results file. Nothing
 is pruned: a repetition is a few kilobytes, and the directory is
 gitignored.
+
+`diff.patch` and `closing.txt` are kept for every repetition that produced a
+result line and did not break underneath the agent, judged or not. They are
+what lets `compare-judges`, or any other judge, be re-run against a past
+repetition.
 
 The stamp is taken when a run starts, and `compare` and `bless` read the
 newest stamp. If two runs overlap, that is the one that started last, not
