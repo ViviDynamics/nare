@@ -227,8 +227,8 @@ redacted thinking from the first elided message on is removed from the
 session, because newer Claude models reject thinking whose earlier context
 changed; the compaction event counts the blocks removed. If estimated context
 still reaches the window, nare stops with `stop_reason=context` without
-calling the model. This character-based
-estimate can undercount; a provider can still reject context as `max_tokens`.
+calling the model. This character-based estimate can undercount; a provider
+can still reject context as `max_tokens`.
 With a configured base URL, window discovery uses `/v1/model/info` with a
 5 second timeout; failures use 32000. Direct endpoints make no discovery request.
 
