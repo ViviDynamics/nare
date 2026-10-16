@@ -40,8 +40,13 @@ is also what a LiteLLM proxy, vLLM, llama.cpp and Ollama speak, and reads
       --base-url https://your-proxy/v1 --model some/model "..."
 
 Which rail matters for reasoning models. A model whose reasoning and answer
-arrive together can lose the answer in a translation to Anthropic's shape, and
-then it looks silent rather than broken. On the openai rail the reasoning
+arrive together can lose words or whole answers when a proxy translates to
+Anthropic's shape. LiteLLM can drop the start of an answer where reasoning
+switches to text, making replies start mid-sentence or appear silent. nare
+warns once per transport when a reply contains unsigned thinking, a sign of
+proxy translation. Use `--provider openai` for these models, or configure the
+proxy to route them through its OpenAI adapter. The routes use different API
+keys, so nare does not switch automatically. On the openai rail the reasoning
 arrives as a `thinking` event and the answer stays the answer.
 
 There is no `--api-key` flag on either: argv is world-readable through `ps`
