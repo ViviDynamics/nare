@@ -178,7 +178,7 @@ def messages_from(
     return output
 
 
-def with_cache_breakpoints(
+def _with_cache_breakpoints(
     messages: list[dict[str, Any]], tools: list[dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Mark the newest block and the last tool as prompt-cache breakpoints.
@@ -186,12 +186,25 @@ def with_cache_breakpoints(
     The practice run re-sent 1.82M tokens with 0 cache reads. The newest
     block's marker moves forward each turn, and the API finds the previous
     turn's entry behind it, so the history is read back at the cache price.
-    The tool marker keeps the tools cached when compaction rewrites old
-    messages. `messages` must be messages_from's fresh copy, which this marks
-    in place. `tools` is the caller's own list, so it is copied, not marked.
+    The tool marker keeps a long tool list, such as one with MCP tools, cached
+    when compaction rewrites old messages. (nare's 5 built-in schemas are about
+    600 tokens, under the minimum cacheable prefix on most models.) `messages`
+    must be messages_from's fresh copy, which this marks in place. `tools` is
+    the caller's own list, so it is copied, not marked.
     """
-    if messages and messages[-1]["content"]:
-        messages[-1]["content"][-1]["cache_control"] = {"type": "ephemeral"}
+    # The API takes no marker on a thinking block, and `nare run --resume` with
+    # no prompt can end the request on a reply of thinking only, so skip those.
+    newest = next(
+        (
+            block
+            for message in reversed(messages)
+            for block in reversed(message["content"])
+            if block["type"] not in ("thinking", "redacted_thinking")
+        ),
+        None,
+    )
+    if newest is not None:
+        newest["cache_control"] = {"type": "ephemeral"}
     if tools:
         tools = [*tools[:-1], {**tools[-1], "cache_control": {"type": "ephemeral"}}]
     return messages, tools
@@ -300,7 +313,7 @@ class AnthropicTransport:
     def _wire(
         self, messages: list[Message], tools: list[dict[str, Any]]
     ) -> tuple[list[MessageParam], list[ToolParam]]:
-        wire_messages, wire_tools = with_cache_breakpoints(
+        wire_messages, wire_tools = _with_cache_breakpoints(
             messages_from(
                 messages,
                 image_input=self.image_input,

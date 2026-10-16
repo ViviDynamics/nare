@@ -306,12 +306,14 @@ def test_an_assistant_turn_left_empty_is_dropped_and_the_user_turns_join() -> No
             ],
         }
     ]
+    assert len(messages[0].content) == 1, "serialization edited the session"
 
 
 async def test_the_last_tool_and_the_newest_block_are_cache_breakpoints() -> None:
     # The practice run re-sent 1.82M tokens with 0 cache reads. A marker on
     # the newest block caches the history before it; one on the last tool
-    # keeps the tools cached when compaction rewrites old messages.
+    # keeps a long tool list, such as one with MCP tools, cached when
+    # compaction rewrites old messages.
     captured: list[httpx2.Request] = []
     transport = build(http_client=recording_client(captured))
     tools = [
@@ -352,6 +354,38 @@ async def test_the_last_tool_and_the_newest_block_are_cache_breakpoints() -> Non
     # Markers are for the wire: never saved, never left on the caller's tools.
     assert all("cache_control" not in b for m in messages for b in m.content)
     assert tools == unmarked
+
+
+@pytest.mark.parametrize(
+    "thinking",
+    [
+        {"type": "thinking", "thinking": "plan", "signature": "sig"},
+        {"type": "redacted_thinking", "data": "opaque"},
+    ],
+)
+async def test_a_thinking_block_never_carries_a_cache_marker(
+    thinking: dict[str, Any],
+) -> None:
+    # A resume with no prompt sends the saved reply last, and a reply of
+    # thinking with no answer leaves a thinking block there. The API takes no
+    # marker on it, so the marker goes on the newest block that can carry one.
+    captured: list[httpx2.Request] = []
+    transport = build(http_client=recording_client(captured))
+    messages = [
+        Message("user", [{"type": "text", "text": "task"}]),
+        Message("assistant", [thinking, {"type": "text", "text": ""}]),
+    ]
+    await transport.turn(messages, [])
+    body = json.loads(captured[0].content)
+    assert body["messages"][-1] == {"role": "assistant", "content": [thinking]}
+    marked = [
+        block
+        for message in body["messages"]
+        for block in message["content"]
+        if "cache_control" in block
+    ]
+    assert marked == [body["messages"][0]["content"][-1]]
+    assert marked[0]["cache_control"] == {"type": "ephemeral"}
 
 
 # --- Normalization tables, section 4 of the transport spec -------------------

@@ -4,7 +4,7 @@
 
 **Goal:** Long sessions stop paying full price to re-send their history (issue ViviDynamics/nare#67, E1 to E4). The anthropic rail marks the newest block and the last tool for prompt caching (E1). Unsigned thinking and empty text stay in the session but are no longer sent back (E2, E3). Compaction gains a second tier that elides old `write` contents and long `edit` texts when eliding tool results was not enough (E4).
 
-**Architecture:** In `src/nare/transport/anthropic.py`, `messages_from()` filters each saved turn through a new `_sent_back()` and drops an assistant turn left empty, merging the user turns on either side. A new `with_cache_breakpoints()` marks the last block of the last message and a copy of the last tool, and a new `AnthropicTransport._wire()` builds both for `turn()` and `stream_turn()`. In `src/nare/compact.py`, a new `_elide_inputs()` runs after the existing tool-result tier, oldest first and outside the protected tail, and `CompactionReport` gains an `inputs` count that the loop's compaction event reports. The OpenAI rail already reads `cached_tokens` and needs no change (Decision 1).
+**Architecture:** In `src/nare/transport/anthropic.py`, `messages_from()` filters each saved turn through a new `_sent_back()` and drops an assistant turn left empty, merging the user turns on either side. A new `_with_cache_breakpoints()` marks the last block of the last message and a copy of the last tool, and a new `AnthropicTransport._wire()` builds both for `turn()` and `stream_turn()`. In `src/nare/compact.py`, a new `_elide_inputs()` runs after the existing tool-result tier, oldest first and outside the protected tail, and `CompactionReport` gains an `inputs` count that the loop's compaction event reports. The OpenAI rail already reads `cached_tokens` and needs no change (Decision 1).
 
 **Tech Stack:** Python (CI: 3.12 via `astral-sh/setup-uv`; this machine's uv venv: 3.14.2), the `anthropic` SDK on `httpx2`, pytest with `asyncio_mode = "auto"`, ruff, mypy strict. CI is `bin/build`.
 
@@ -47,10 +47,10 @@ These are settled so every task agrees. A reviewer who disagrees should reject t
 
 1. **No change to the OpenAI rail.** The issue asks to "read `cached_tokens` on the OpenAI route". `openai.py` already does, in `usage_from()`, for both the plain and the streamed reply. `tests/test_openai_transport.py::test_cached_prompt_tokens_are_excluded_from_input` and the openai case of `tests/test_streaming.py::test_stream_normalizes_final_reply_and_usage` pin it. Its `messages_from()` already drops all thinking. Owner: Task 4, which records it.
 2. **The live cache check uses the haiku alias the proxy lists today, `claude-haiku-5-5`.** The issue names `claude-haiku-4-5`, which `/v1/models` no longer lists (checked 2026-10-15). The check's prefix is about 11.8k tokens, above the 4,096-token minimum that Haiku 4.5 needs before it caches anything. For spark the answer to "does LiteLLM map `cached_tokens`" is no: spark reports no cache fields on either rail, so there is nothing to map. Owner: Task 4.
-3. **Cache markers go on in request building, not in `messages_from()`.** `messages_from()` stays the serializer that `tests/test_images.py` and the new Task 1 tests pin, and `with_cache_breakpoints()` runs on its output in `_wire()`, the one place both `turn()` and `stream_turn()` build their request. Owner: Task 2.
+3. **Cache markers go on in request building, not in `messages_from()`.** `messages_from()` stays the serializer that `tests/test_images.py` and the new Task 1 tests pin, and `_with_cache_breakpoints()` runs on its output in `_wire()`, the one place both `turn()` and `stream_turn()` build their request. Owner: Task 2.
 4. **Two existing tests change their expected wire body**: `test_tool_schemas_pass_through_anthropic_shaped` and `test_messages_serialize_as_role_plus_blocks` in `tests/test_transport.py`. They pin the exact request body, and the body now carries `cache_control` on purpose. Each keeps its exact-equality assertion, with the marker added to the expected value. That is a new expectation, not a looser one. Owner: Task 2.
 5. **The second marker goes on the last tool, as the issue says, not on the system prompt.** Marking the system prompt would turn `system` from a string into a block list on the wire and change `test_system_reaches_the_wire`. nare's tools are small, so this marker mostly matters after compaction rewrites old messages. Owner: Task 2.
-6. **No guard for a thinking block as the last block.** The API takes no marker on a thinking block, but the loop calls the model only after a user turn, so the last block is always text or a `tool_result`. `reopen()` answers a trailing turn of unanswered calls before anything follows it. Owner: Task 2.
+6. **A thinking block is never marked.** The API takes no marker on a thinking or redacted_thinking block. The loop usually calls the model after a user turn, but `nare run --resume` with no prompt calls `reopen(session, None)`, which appends no user turn, and can end on a saved reply of thinking only. So the marker goes on the newest block that can carry one, found by walking back from the end. Owner: Task 2.
 7. **No flag to turn caching off.** Both backends the proxy offers accept `cache_control`: spark ignores it, and haiku caches. Add a flag only if some backend refuses the field. Owner: Task 2.
 8. **`tools` is copied before marking, never marked in place.** `Policy.schemas()` returns the module-level dicts in `TOOL_SCHEMAS`, so marking in place would put a marker on every later request's tools and leak it into other tests. `messages_from()` returns fresh copies (`asdict`), so marking its output in place is safe. Owner: Task 2.
 9. **E2 and E3 change only what is sent, not what is saved**, as the issue's fix says. The session keeps unsigned thinking and empty text, so the TUI still shows the thinking, and still draws an empty text block as a blank line. That blank line is a TUI rendering fix, outside this issue's scope. Owner: Task 1.
@@ -76,7 +76,7 @@ These are settled so every task agrees. A reviewer who disagrees should reject t
 
 | File | Responsibility | Tasks |
 | --- | --- | --- |
-| `src/nare/transport/anthropic.py` | `_sent_back()`, `messages_from()` filter and merge; `with_cache_breakpoints()`; `AnthropicTransport._wire()` used by `turn()` and `stream_turn()` | 1, 2 |
+| `src/nare/transport/anthropic.py` | `_sent_back()`, `messages_from()` filter and merge; `_with_cache_breakpoints()`; `AnthropicTransport._wire()` used by `turn()` and `stream_turn()` | 1, 2 |
 | `src/nare/compact.py` | `_INPUT_STUBS`, `CompactionReport.inputs`, `_elide_inputs()` | 3 |
 | `src/nare/loop.py` | the compaction event's text in `step()` | 3 |
 | `README.md` | the providers paragraph (caching, unsigned thinking) and the compaction paragraph | 2, 3 |
@@ -289,14 +289,14 @@ git commit -m "fix: stop re-sending unsigned thinking and empty text to the mode
 ### Task 2: Mark the newest block and the last tool for prompt caching (E1)
 
 **Files:**
-- Modify: `src/nare/transport/anthropic.py` (a new `with_cache_breakpoints()` directly before `class AnthropicTransport:`; a new `_wire()` method after `context_window()`; the `messages=` and `tools=` arguments in `turn()` and `stream_turn()`)
+- Modify: `src/nare/transport/anthropic.py` (a new `_with_cache_breakpoints()` directly before `class AnthropicTransport:`; a new `_wire()` method after `context_window()`; the `messages=` and `tools=` arguments in `turn()` and `stream_turn()`)
 - Modify: `README.md:42-45` (a new paragraph after the "Which rail matters for reasoning models" paragraph)
 - Test: `tests/test_transport.py` (two updated expectations; one new test inserted directly before the `# --- Normalization tables` comment, after Task 1's tests)
 - Test: `tests/test_streaming.py` (one new test inserted directly before the `@pytest.mark.asyncio` line above `test_openai_delta_arrives_before_final_chunk`)
 
 **Interfaces:**
 - Consumes: `messages_from()` as Task 1 left it.
-- Produces: `with_cache_breakpoints(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]` and `AnthropicTransport._wire(self, messages: list[Message], tools: list[dict[str, Any]]) -> tuple[list[MessageParam], list[ToolParam]]`. `turn()` and `stream_turn()` keep their signatures.
+- Produces: `_with_cache_breakpoints(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]` and `AnthropicTransport._wire(self, messages: list[Message], tools: list[dict[str, Any]]) -> tuple[list[MessageParam], list[ToolParam]]`. `turn()` and `stream_turn()` keep their signatures.
 
 - [ ] **Step 1: Update the two wire-body expectations (Decision 4)**
 
@@ -441,7 +441,7 @@ Expected: 4 failed. They are the two updated tests, the new transport test (`mar
 In `src/nare/transport/anthropic.py`, insert directly before `class AnthropicTransport:` (after `messages_from()`):
 
 ```python
-def with_cache_breakpoints(
+def _with_cache_breakpoints(
     messages: list[dict[str, Any]], tools: list[dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Mark the newest block and the last tool as prompt-cache breakpoints.
@@ -466,7 +466,7 @@ Add this method to `AnthropicTransport`, directly after `context_window()`:
     def _wire(
         self, messages: list[Message], tools: list[dict[str, Any]]
     ) -> tuple[list[MessageParam], list[ToolParam]]:
-        wire_messages, wire_tools = with_cache_breakpoints(
+        wire_messages, wire_tools = _with_cache_breakpoints(
             messages_from(
                 messages,
                 image_input=self.image_input,
