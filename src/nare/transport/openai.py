@@ -22,13 +22,14 @@ from typing import Any, Literal
 
 import httpx2
 
+from nare.accounting import Prices
 from nare.session import Message, Usage
 from nare.transport import (
     Delta,
+    ModelMetadata,
     Reply,
     StopReason,
     ToolCall,
-    discover_context_window,
     reported_cost,
 )
 
@@ -255,13 +256,18 @@ class OpenAITransport:
         self._key = key
         self._client = http_client or httpx2.AsyncClient(timeout=DEFAULT_TIMEOUT)
 
-    async def context_window(self) -> int | None:
-        return await discover_context_window(
+        self._metadata = ModelMetadata(
             self._client,
             self._discovery_base,
             self.model,
             {"authorization": f"Bearer {self._key}"},
         )
+
+    async def context_window(self) -> int | None:
+        return await self._metadata.context_window()
+
+    async def prices(self) -> Prices | None:
+        return await self._metadata.prices()
 
     def _payload(
         self,
@@ -419,7 +425,7 @@ class OpenAITransport:
                     "choices": [{"message": message, "finish_reason": finish}],
                     "usage": usage,
                 },
-                cost=reported_cost(response.headers),
+                cost=reported_cost(response.headers, streamed=True),
                 strict_arguments=True,
             )
         yield reply

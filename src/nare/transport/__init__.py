@@ -11,11 +11,14 @@ import logging
 import math
 from collections.abc import AsyncGenerator, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import httpx2
 
 from nare.session import Message, Usage
+
+if TYPE_CHECKING:
+    from nare.accounting import Prices
 
 StopReason = Literal["end_turn", "tool_use", "max_tokens", "stop_sequence", "refusal"]
 
@@ -153,7 +156,12 @@ def make_transport(
 __all__ = ["Reply", "StopReason", "ToolCall", "Transport", "make_transport"]
 
 
-def reported_cost(headers: Mapping[str, str]) -> float | None:
+def reported_cost(
+    headers: Mapping[str, str], *, streamed: bool = False
+) -> float | None:
+    # Stream headers precede final usage, even when a proxy reports zero.
+    if streamed:
+        return None
     raw = headers.get("x-litellm-response-cost")
     if raw is None:
         raw = headers.get("x-litellm-response-cost-original")
@@ -166,27 +174,79 @@ def reported_cost(headers: Mapping[str, str]) -> float | None:
     return cost if math.isfinite(cost) and cost >= 0 else None
 
 
-async def discover_context_window(
-    client: httpx2.AsyncClient,
-    base_url: str | None,
-    model: str,
-    headers: dict[str, str],
-) -> int | None:
-    if base_url is None:
+class ModelMetadata:
+    """One best-effort discovery shared by window sizing and price estimates."""
+
+    def __init__(
+        self,
+        client: httpx2.AsyncClient,
+        base_url: str | None,
+        model: str,
+        headers: dict[str, str],
+    ) -> None:
+        self.client = client
+        self.base_url = base_url
+        self.model = model
+        self.headers = headers
+        self.loaded = False
+        self.info: dict[str, Any] = {}
+
+    async def load(self) -> None:
+        if self.loaded:
+            return
+        self.loaded = True
+        if self.base_url is None:
+            return
+        base = self.base_url.rstrip("/").removesuffix("/v1")
+        try:
+            response = await self.client.get(
+                f"{base}/v1/model/info", headers=self.headers, timeout=5.0
+            )
+            response.raise_for_status()
+            for entry in response.json().get("data", []):
+                if entry.get("model_name") == self.model:
+                    info = entry.get("model_info")
+                    if isinstance(info, dict):
+                        self.info = info
+                        return
+            raise ValueError("model info missing/invalid")
+        except (httpx2.HTTPError, ValueError, TypeError, AttributeError) as exc:
+            logging.getLogger(__name__).warning(
+                "context window discovery failed: %s", exc
+            )
+
+    async def context_window(self) -> int | None:
+        await self.load()
+        value = self.info.get("max_input_tokens")
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+        if self.base_url is not None:
+            logging.getLogger(__name__).warning("context window missing/invalid")
         return None
-    base = base_url.rstrip("/").removesuffix("/v1")
-    try:
-        response = await client.get(
-            f"{base}/v1/model/info", headers=headers, timeout=5.0
-        )
-        response.raise_for_status()
-        payload = response.json()
-        for entry in payload.get("data", []):
-            if entry.get("model_name") == model:
-                value = entry.get("model_info", {}).get("max_input_tokens")
-                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-                    return value
-        raise ValueError("model or max_input_tokens missing/invalid")
-    except (httpx2.HTTPError, ValueError, TypeError, AttributeError) as exc:
-        logging.getLogger(__name__).warning("context window discovery failed: %s", exc)
-        return None
+
+    async def prices(self) -> Prices | None:
+        from nare.accounting import Prices
+
+        await self.load()
+        values: dict[str, float] = {}
+        for category, key in (
+            ("input", "input_cost_per_token"),
+            ("output", "output_cost_per_token"),
+            ("cache_read", "cache_read_input_token_cost"),
+            ("cache_write", "cache_creation_input_token_cost"),
+        ):
+            value = self.info.get(key)
+            if value is None and category.startswith("cache_"):
+                continue
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0
+            ):
+                return None
+            values[category] = value * 1_000_000
+        try:
+            return Prices(**values)
+        except ValueError:
+            return None
