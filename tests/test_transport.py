@@ -16,6 +16,7 @@ from nare.transport.anthropic import (
     EFFORT_BUDGETS,
     NONSTREAMING_MAX_TOKENS,
     AnthropicTransport,
+    messages_from,
     stop_reason_from,
     usage_from,
 )
@@ -210,13 +211,27 @@ async def test_effort_renders_thinking_clamped_to_the_ceiling() -> None:
 
 async def test_tool_schemas_pass_through_anthropic_shaped() -> None:
     assert (await outbound())["tools"] == [
-        {"name": "read", "description": "read a file", "input_schema": {}}
+        {
+            "name": "read",
+            "description": "read a file",
+            "input_schema": {},
+            "cache_control": {"type": "ephemeral"},
+        }
     ]
 
 
 async def test_messages_serialize_as_role_plus_blocks() -> None:
     assert (await outbound())["messages"] == [
-        {"role": "user", "content": [{"type": "text", "text": "read a.py"}]}
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "read a.py",
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+        }
     ]
 
 
@@ -229,6 +244,164 @@ async def test_turn_normalizes_the_response() -> None:
     ]
     assert reply.content[0]["text"] == "reading it now"
     assert reply.usage == Usage(input=200, output=50, cache_read=800, cache_write=12)
+
+
+def test_unsigned_thinking_and_empty_text_are_not_sent_back() -> None:
+    # On the practice run all 44 thinking blocks had signature '': a proxy
+    # made them, and re-sending them was 38% of every request. Empty text
+    # blocks were re-sent too. Signed and redacted thinking go back as is.
+    messages = [
+        Message("user", [{"type": "text", "text": "task"}]),
+        Message(
+            "assistant",
+            [
+                {"type": "thinking", "thinking": "plan", "signature": ""},
+                {"type": "thinking", "thinking": "no signature at all"},
+                {"type": "thinking", "thinking": "real", "signature": "sig"},
+                {"type": "redacted_thinking", "data": "opaque"},
+                {"type": "text", "text": ""},
+                {"type": "tool_use", "id": "c1", "name": "read", "input": {}},
+            ],
+        ),
+        Message(
+            "user",
+            [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "c1",
+                    "content": "a",
+                    "is_error": False,
+                }
+            ],
+        ),
+    ]
+    assert messages_from(messages)[1]["content"] == [
+        {"type": "thinking", "thinking": "real", "signature": "sig"},
+        {"type": "redacted_thinking", "data": "opaque"},
+        {"type": "tool_use", "id": "c1", "name": "read", "input": {}},
+    ]
+    assert len(messages[1].content) == 6, "serialization edited the session"
+
+
+def test_an_assistant_turn_left_empty_is_dropped_and_the_user_turns_join() -> None:
+    # A reply of unsigned thinking and empty text leaves nothing to send.
+    # Dropping it puts two user turns side by side, and roles must alternate.
+    messages = [
+        Message("user", [{"type": "text", "text": "task"}]),
+        Message(
+            "assistant",
+            [
+                {"type": "thinking", "thinking": "plan", "signature": ""},
+                {"type": "text", "text": ""},
+            ],
+        ),
+        Message("user", [{"type": "text", "text": "go on"}]),
+    ]
+    assert messages_from(messages) == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "task"},
+                {"type": "text", "text": "go on"},
+            ],
+        }
+    ]
+    assert len(messages[0].content) == 1, "serialization edited the session"
+
+
+async def test_the_last_tool_and_the_newest_block_are_cache_breakpoints() -> None:
+    # The practice run re-sent 1.82M tokens with 0 cache reads. A marker on
+    # the newest block caches the history before it; one on the last tool
+    # keeps a long tool list, such as one with MCP tools, cached when
+    # compaction rewrites old messages.
+    captured: list[httpx2.Request] = []
+    transport = build(http_client=recording_client(captured))
+    tools = [
+        {"name": "read", "description": "read a file", "input_schema": {}},
+        {"name": "write", "description": "write a file", "input_schema": {}},
+    ]
+    unmarked = [dict(tool) for tool in tools]
+    messages = [
+        Message("user", [{"type": "text", "text": "read a.py"}]),
+        Message(
+            "assistant",
+            [{"type": "tool_use", "id": "c1", "name": "read", "input": {}}],
+        ),
+        Message(
+            "user",
+            [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "c1",
+                    "content": "print(1)",
+                    "is_error": False,
+                }
+            ],
+        ),
+    ]
+    await transport.turn(messages, tools)
+    body = json.loads(captured[0].content)
+    ephemeral = {"type": "ephemeral"}
+    marked = [
+        block
+        for message in body["messages"]
+        for block in message["content"]
+        if "cache_control" in block
+    ]
+    assert marked == [body["messages"][-1]["content"][-1]]
+    assert marked[0]["cache_control"] == ephemeral
+    assert [tool.get("cache_control") for tool in body["tools"]] == [None, ephemeral]
+    # Markers are for the wire: never saved, never left on the caller's tools.
+    assert all("cache_control" not in b for m in messages for b in m.content)
+    assert tools == unmarked
+
+
+@pytest.mark.parametrize(
+    "thinking",
+    [
+        {"type": "thinking", "thinking": "plan", "signature": "sig"},
+        {"type": "redacted_thinking", "data": "opaque"},
+    ],
+)
+async def test_a_thinking_block_never_carries_a_cache_marker(
+    thinking: dict[str, Any],
+) -> None:
+    # A resume with no prompt sends the saved reply last, and a reply of
+    # thinking with no answer leaves a thinking block there. The API takes no
+    # marker on it, so the marker goes on the newest block that can carry one.
+    captured: list[httpx2.Request] = []
+    transport = build(http_client=recording_client(captured))
+    messages = [
+        Message("user", [{"type": "text", "text": "task"}]),
+        Message("assistant", [thinking, {"type": "text", "text": ""}]),
+    ]
+    await transport.turn(messages, [])
+    body = json.loads(captured[0].content)
+    assert body["messages"][-1] == {"role": "assistant", "content": [thinking]}
+    marked = [
+        block
+        for message in body["messages"]
+        for block in message["content"]
+        if "cache_control" in block
+    ]
+    assert marked == [body["messages"][0]["content"][-1]]
+    assert marked[0]["cache_control"] == {"type": "ephemeral"}
+
+
+async def test_a_block_with_no_type_still_reaches_the_wire() -> None:
+    # A hand-edited session file can hold one. The cache marker walk read
+    # block["type"] and raised KeyError: 'type' before any request, where the
+    # provider's 400 would have named the missing field.
+    captured: list[httpx2.Request] = []
+    transport = build(http_client=recording_client(captured))
+    messages = [
+        Message("user", [{"type": "text", "text": "task"}, {"text": "hand-edited"}])
+    ]
+    await transport.turn(messages, [])
+    assert len(captured) == 1
+    sent = json.loads(captured[0].content)["messages"][-1]["content"][-1]
+    assert sent["text"] == "hand-edited"
+    assert "type" not in sent
 
 
 # --- Normalization tables, section 4 of the transport spec -------------------

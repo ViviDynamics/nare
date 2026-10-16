@@ -14,7 +14,7 @@ from anthropic import AsyncAnthropic, omit
 from anthropic.types import MessageParam, ToolParam
 
 from nare.accounting import Prices
-from nare.session import Message, Usage
+from nare.session import Message, Usage, sent_back
 from nare.transport import (
     Delta,
     ModelMetadata,
@@ -127,7 +127,18 @@ def messages_from(
     image_input: bool = False,
     image_model: str = "AnthropicTransport/model unspecified",
 ) -> list[dict[str, Any]]:
-    output = [asdict(message) for message in messages]
+    output: list[dict[str, Any]] = []
+    for turn in messages:
+        raw = asdict(turn)
+        raw["content"] = [block for block in raw["content"] if sent_back(block)]
+        if not raw["content"] and turn.role == "assistant":
+            continue
+        if output and output[-1]["role"] == raw["role"]:
+            # A dropped assistant turn leaves two user turns side by side, and
+            # roles must alternate.
+            output[-1]["content"] += raw["content"]
+        else:
+            output.append(raw)
     for message in output:
         for block in message["content"]:
             image = (
@@ -147,6 +158,38 @@ def messages_from(
                     "does not accept image input]"
                 )
     return output
+
+
+def _with_cache_breakpoints(
+    messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Mark the newest block and the last tool as prompt-cache breakpoints.
+
+    The practice run re-sent 1.82M tokens with 0 cache reads. The newest
+    block's marker moves forward each turn, and the API finds the previous
+    turn's entry behind it, so the history is read back at the cache price.
+    The tool marker keeps a long tool list, such as one with MCP tools, cached
+    when compaction rewrites old messages. (nare's 5 built-in schemas are about
+    600 tokens, under the minimum cacheable prefix on most models.) `messages`
+    must be messages_from's fresh copy, which this marks in place. `tools` is
+    the caller's own list, so it is copied, not marked.
+    """
+    # The API takes no marker on a thinking block, and `nare run --resume` with
+    # no prompt can end the request on a reply of thinking only, so skip those.
+    newest = next(
+        (
+            block
+            for message in reversed(messages)
+            for block in reversed(message["content"])
+            if block.get("type") not in ("thinking", "redacted_thinking")
+        ),
+        None,
+    )
+    if newest is not None:
+        newest["cache_control"] = {"type": "ephemeral"}
+    if tools:
+        tools = [*tools[:-1], {**tools[-1], "cache_control": {"type": "ephemeral"}}]
+    return messages, tools
 
 
 class AnthropicTransport:
@@ -249,24 +292,34 @@ class AnthropicTransport:
     async def prices(self) -> Prices | None:
         return await self._metadata.prices()
 
+    def _wire(
+        self, messages: list[Message], tools: list[dict[str, Any]]
+    ) -> tuple[list[MessageParam], list[ToolParam]]:
+        wire_messages, wire_tools = _with_cache_breakpoints(
+            messages_from(
+                messages,
+                image_input=self.image_input,
+                image_model=f"AnthropicTransport/model={self.model}",
+            ),
+            tools,
+        )
+        return (
+            cast("list[MessageParam]", wire_messages),
+            cast("list[ToolParam]", wire_tools),
+        )
+
     async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
         if self.streaming:
             async for item in self.stream_turn(messages, tools):
                 if isinstance(item, Reply):
                     return item
             raise RuntimeError("stream ended without a reply")
+        wire_messages, wire_tools = self._wire(messages, tools)
         raw = await self._client.messages.with_raw_response.create(
             model=self.model,
             max_tokens=self.max_tokens,
-            messages=cast(
-                "list[MessageParam]",
-                messages_from(
-                    messages,
-                    image_input=self.image_input,
-                    image_model=f"AnthropicTransport/model={self.model}",
-                ),
-            ),
-            tools=cast("list[ToolParam]", tools),
+            messages=wire_messages,
+            tools=wire_tools,
             system=self.system if self.system is not None else omit,
             thinking=cast(Any, self.thinking) if self.thinking else omit,
         )
@@ -288,18 +341,12 @@ class AnthropicTransport:
     async def stream_turn(
         self, messages: list[Message], tools: list[dict[str, Any]]
     ) -> AsyncGenerator[Delta | Reply, None]:
+        wire_messages, wire_tools = self._wire(messages, tools)
         async with self._client.messages.stream(
             model=self.model,
             max_tokens=self.max_tokens,
-            messages=cast(
-                "list[MessageParam]",
-                messages_from(
-                    messages,
-                    image_input=self.image_input,
-                    image_model=f"AnthropicTransport/model={self.model}",
-                ),
-            ),
-            tools=cast("list[ToolParam]", tools),
+            messages=wire_messages,
+            tools=wire_tools,
             system=self.system if self.system is not None else omit,
             thinking=cast(Any, self.thinking) if self.thinking else omit,
         ) as stream:

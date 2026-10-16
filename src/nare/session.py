@@ -29,6 +29,25 @@ class Message:
     content: list[dict[str, Any]]
 
 
+def sent_back(block: dict[str, Any]) -> bool:
+    """Whether a saved block goes back to the model.
+
+    Thinking with no signature was made by a proxy translating a reasoning
+    model. It carries no server state, and a Claude backend ignores it, but
+    the proxy hands it back to the model it came from and bills it: on the
+    practice run all 44 thinking blocks were unsigned, 38% of the context,
+    re-sent every turn. Empty text is dead weight too. Signed and redacted
+    thinking go back as they came. The transport sends by this rule and the
+    context estimate measures by it, so the two agree.
+    """
+    kind = block.get("type")
+    if kind == "thinking":
+        return bool(block.get("signature"))
+    if kind == "text":
+        return bool(block.get("text"))
+    return True
+
+
 @dataclass(frozen=True)
 class Usage:
     """Token counts. `input` EXCLUDES cache reads and writes, following Anthropic."""

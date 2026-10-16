@@ -228,8 +228,9 @@ async def step(
         s.events.append(
             Event(
                 "progress",
-                f"compacted: elided {report.elided} tool results, "
-                f"~{report.before:.0f} -> ~{report.after:.0f} tokens",
+                f"compacted: elided {report.elided} tool results"
+                + (f" and {report.inputs} tool inputs" if report.inputs else "")
+                + f", ~{report.before:.0f} -> ~{report.after:.0f} tokens",
                 {"compaction": asdict(report)},
             )
         )
