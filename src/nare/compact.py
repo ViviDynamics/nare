@@ -9,6 +9,16 @@ from nare.session import Message, Session
 
 PREFIX = "[elided by nare:"
 
+# The second tier: the write and edit fields compaction may elide, and what
+# each stub says the call did.
+_INPUT_STUBS: dict[str, dict[str, str]] = {
+    "write": {"content": "wrote {chars} chars to {path}"},
+    "edit": {
+        "old": "replaced {chars} chars in {path}",
+        "new": "wrote {chars} chars into {path}",
+    },
+}
+
 
 def context_chars(messages: list[Message], *, image_input: bool = True) -> int:
     raw = [asdict(m) for m in messages]
@@ -57,6 +67,7 @@ class CompactionReport:
     before: float
     after: float
     window: int
+    inputs: int = 0
 
 
 def compact(
@@ -106,10 +117,68 @@ def compact(
             if image_input:
                 block.pop("image", None)
             elided += 1
+    inputs = _elide_inputs(s, window, protected_from, image_input=image_input)
     # ponytail: model-written summaries may follow elision if measured runs
     # keep reaching the context stop. No extra model call is made here.
     return (
-        CompactionReport(elided, before, estimate(s, image_input=image_input), window)
-        if elided
+        CompactionReport(
+            elided, before, estimate(s, image_input=image_input), window, inputs
+        )
+        if elided or inputs
         else None
     )
+
+
+def _elide_inputs(
+    s: Session, window: int, protected_from: int, *, image_input: bool
+) -> int:
+    """Elide old write contents and edit texts, oldest first; count the calls.
+
+    On the practice run write inputs were 46% of the context and tool results
+    7.5%, so eliding results alone could not reach 60%. A failed call keeps
+    its input: its stub would claim a write that never happened. `input`
+    stays an object, so every call still pairs with its result.
+    """
+    failed = {
+        b.get("tool_use_id")
+        for m in s.messages
+        if m.role == "user"
+        for b in m.content
+        if b.get("type") == "tool_result" and b.get("is_error")
+    }
+    inputs = 0
+    turn = 0
+    for i, message in enumerate(s.messages):
+        if message.role != "assistant":
+            continue
+        turn += 1
+        if i >= protected_from:
+            break
+        for block in message.content:
+            if estimate(s, image_input=image_input) <= window * 0.6:
+                return inputs
+            stubs = _INPUT_STUBS.get(block.get("name", ""))
+            args = block.get("input")
+            if (
+                block.get("type") != "tool_use"
+                or stubs is None
+                or not isinstance(args, dict)
+                or block.get("id") in failed
+            ):
+                continue
+            path = str(args.get("path", ""))
+            touched = False
+            for name, did in stubs.items():
+                value = args.get(name)
+                if not isinstance(value, str) or value.startswith(PREFIX):
+                    continue
+                stub = (
+                    f"{PREFIX} {did.format(chars=len(value), path=path)} "
+                    f"at turn {turn}. Read the file if you need it.]"
+                )
+                if len(stub) < len(value):
+                    args[name] = stub
+                    touched = True
+            if touched:
+                inputs += 1
+    return inputs

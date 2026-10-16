@@ -219,10 +219,12 @@ and explains that `continue` starts another run with the same turn allowance.
 Token and USD ceilings still apply before a summary request.
 
 Before each model call, old tool output is elided if estimated context reaches
-80% of the window, stopping at 60% where possible. The task, assistant messages,
-last two turns, error results and ask results are protected. Every tool call
-keeps its result. If estimated context still reaches the window, nare stops
-with `stop_reason=context` without calling the model. This character-based
+80% of the window, stopping at 60% where possible. If that is not enough, the
+contents of old `write` calls and long `edit` texts are elided next. The task,
+assistant text and thinking, the last two turns, error results, ask results and
+the inputs of failed calls are protected. Every tool call keeps its result. If
+estimated context still reaches the window, nare stops with
+`stop_reason=context` without calling the model. This character-based
 estimate can undercount; a provider can still reject context as `max_tokens`.
 With a configured base URL, window discovery uses `/v1/model/info` with a
 5 second timeout; failures use 32000. Direct endpoints make no discovery request.

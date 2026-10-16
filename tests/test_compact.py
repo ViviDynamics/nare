@@ -5,7 +5,7 @@ import json
 from dataclasses import asdict
 
 from fake_provider import FakeProvider, text_reply
-from nare.compact import compact, estimate
+from nare.compact import PREFIX, compact, estimate
 from nare.loop import run
 from nare.session import Message, new_session
 
@@ -122,3 +122,135 @@ async def test_resume_compacts_before_first_call() -> None:
     assert events[0].detail["context_window"] == {"tokens": 8000, "source": "flag"}
     assert any("compaction" in e.detail for e in events)
     assert s.last_input_tokens == 10
+
+
+def write_transcript(turns: int = 8, chars: int = 4000) -> list[Message]:
+    """A write-heavy session: big write inputs, short results."""
+    messages = [Message("user", [{"type": "text", "text": "task"}])]
+    for turn in range(1, turns + 1):
+        path = f"src/f{turn}.ts"
+        messages += [
+            Message(
+                "assistant",
+                [
+                    {"type": "text", "text": f"writing {path}"},
+                    {
+                        "type": "tool_use",
+                        "id": f"w{turn}",
+                        "name": "write",
+                        "input": {"path": path, "content": "x" * chars},
+                    },
+                ],
+            ),
+            Message(
+                "user",
+                [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": f"w{turn}",
+                        "content": f"wrote {chars} characters to {path}",
+                        "is_error": False,
+                    }
+                ],
+            ),
+        ]
+    return messages
+
+
+def test_a_write_heavy_session_compacts_below_sixty_percent() -> None:
+    # On the practice run write inputs were 46% of the context and tool
+    # results 7.5%, so eliding results alone could not get below 60%.
+    s = new_session("go")
+    s.messages = write_transcript()
+    before = copy.deepcopy(s.messages)
+    window = int(estimate(s) / 0.9)
+    report = compact(s, window)
+    assert report is not None
+    assert report.after <= window * 0.6
+    assert (report.elided, report.inputs) == (0, 3)
+    assert s.messages[1].content[1] == {
+        "type": "tool_use",
+        "id": "w1",
+        "name": "write",
+        "input": {
+            "path": "src/f1.ts",
+            "content": "[elided by nare: wrote 4000 chars to src/f1.ts at turn 1. "
+            "Read the file if you need it.]",
+        },
+    }
+    for i in (3, 5):
+        assert s.messages[i].content[1]["input"]["content"].startswith(PREFIX)
+    # Results, assistant text and the newer writes are untouched.
+    for i, message in enumerate(s.messages):
+        if message.role == "user" or i > 5:
+            assert message == before[i]
+        else:
+            assert message.content[0] == before[i].content[0]
+
+
+def test_long_edit_texts_are_elided_and_short_ones_kept() -> None:
+    s = new_session("go")
+    s.messages = write_transcript()
+    s.messages[1].content[1]["name"] = "edit"
+    s.messages[1].content[1]["input"] = {"path": "a.py", "old": "z" * 3000, "new": "y"}
+    s.messages[3].content[1]["name"] = "edit"
+    s.messages[3].content[1]["input"] = {"path": "b.py", "old": "z", "new": "y" * 3000}
+    report = compact(s, int(estimate(s) / 0.9))
+    assert report is not None
+    assert s.messages[1].content[1]["input"] == {
+        "path": "a.py",
+        "old": "[elided by nare: replaced 3000 chars in a.py at turn 1. "
+        "Read the file if you need it.]",
+        "new": "y",
+    }
+    assert s.messages[3].content[1]["input"] == {
+        "path": "b.py",
+        "old": "z",
+        "new": "[elided by nare: wrote 3000 chars into b.py at turn 2. "
+        "Read the file if you need it.]",
+    }
+
+
+def test_a_failed_write_keeps_its_content() -> None:
+    # Its stub would claim a write that never happened.
+    s = new_session("go")
+    s.messages = write_transcript()
+    s.messages[2].content[0]["content"] = "write was not approved"
+    s.messages[2].content[0]["is_error"] = True
+    report = compact(s, int(estimate(s) / 0.9))
+    assert report is not None
+    assert s.messages[1].content[1]["input"]["content"] == "x" * 4000
+    assert s.messages[3].content[1]["input"]["content"].startswith(PREFIX)
+
+
+def test_tool_results_are_elided_before_tool_inputs() -> None:
+    # The first tier still runs first: an input goes only when eliding old
+    # output was not enough.
+    s = new_session("go")
+    s.messages = write_transcript()
+    for i in range(2, 13, 2):
+        s.messages[i].content[0]["content"] = "r" * 4000
+    report = compact(s, int(estimate(s) / 0.9))
+    assert report is not None
+    assert report.elided > 0
+    assert report.inputs == 0
+    assert all(
+        block["input"]["content"] == "x" * 4000
+        for message in s.messages
+        for block in message.content
+        if block["type"] == "tool_use"
+    )
+
+
+async def test_the_compaction_event_counts_elided_inputs() -> None:
+    s = new_session("go")
+    s.messages = write_transcript()
+    window = int(estimate(s) / 0.9)
+    fake = FakeProvider([text_reply("done")])
+    events = [event async for event in run(s, transport=fake, context_window=window)]
+    notices = [e for e in events if "compaction" in e.detail]
+    assert len(notices) == 1
+    assert notices[0].detail["compaction"]["inputs"] == 3
+    assert notices[0].text.startswith(
+        "compacted: elided 0 tool results and 3 tool inputs, ~"
+    )
