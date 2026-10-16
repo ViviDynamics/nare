@@ -20,6 +20,7 @@ from pathlib import Path
 
 from benchmarks.runner.case import Case
 from benchmarks.runner.config import Config
+from nare.session import new_session, save
 
 IMAGE = "nare-bench:local"
 
@@ -63,15 +64,25 @@ def build_image(root: Path) -> None:
 
 # The agent's script. Values arrive as environment variables rather than
 # interpolated text: a prompt is arbitrary user data, and splicing it into a
-# shell command is how quoting bugs become arbitrary execution.
+# shell command is how quoting bugs become arbitrary execution. nare is not
+# exec'd: what it left running and what it installed die with this
+# container, so the script reads them into /out/after.json after it exits.
 _AGENT_SCRIPT = """\
 set -e
 git init -q -b main
 git add -A
 git -c user.email=bench@nare.invalid -c user.name=nare-bench commit -qm fixture
-exec nare run --yes --jsonl --session /out/session.json \
-     --max-turns "$BENCH_MAX_TURNS" --model "$BENCH_MODEL" -- "$BENCH_PROMPT"
+status=0
+nare run --yes --jsonl --session /out/session.json \
+     --max-turns "$BENCH_MAX_TURNS" --model "$BENCH_MODEL" \
+     ${BENCH_MAX_TOKENS:+--max-tokens "$BENCH_MAX_TOKENS"} -- "$BENCH_PROMPT" \
+     || status=$?
+python3 -I -c "$BENCH_LEFTOVERS" /out/after.json || true
+exit "$status"
 """
+
+# benchmarks/runner/leftovers.py, which the image does not carry.
+_LEFTOVERS = (Path(__file__).parent / "leftovers.py").read_text(encoding="utf-8")
 
 
 @dataclass(frozen=True)
@@ -108,6 +119,7 @@ def _docker_run(
     timeout: int,
     *,
     artifacts: Path | None = None,
+    read_only: bool = False,
     env: dict[str, str] | None = None,
     passthrough: tuple[str, ...] = (),
 ) -> tuple[int, str, str, bool]:
@@ -128,7 +140,8 @@ def _docker_run(
         "/work",
     ]
     if artifacts is not None:
-        command += ["-v", f"{artifacts}:/out"]
+        mount = f"{artifacts}:/out:ro" if read_only else f"{artifacts}:/out"
+        command += ["-v", mount]
     for key, value in (env or {}).items():
         command += ["-e", f"{key}={value}"]
     for key in passthrough:
@@ -177,12 +190,21 @@ def run_agent(
             "BENCH_PROMPT": case.prompt,
             "BENCH_MODEL": config.model,
             "BENCH_MAX_TURNS": str(case.max_turns),
+            "BENCH_LEFTOVERS": _LEFTOVERS,
             "NARE_PROVIDER": config.provider,
             **({"NARE_BASE_URL": config.base_url} if config.base_url else {}),
+            **(
+                {"BENCH_MAX_TOKENS": str(config.max_tokens)}
+                if config.max_tokens
+                else {}
+            ),
         },
         # The key the provider under test actually reads, not always the
         # Anthropic one: an openai run needs OPENAI_API_KEY in the container.
-        passthrough=(config.api_key_var,),
+        # NARE_STREAM too: a proxy behind Cloudflare answers 524 to a turn
+        # that takes over 120 s to return whole, and a streamed turn does not.
+        # It changes how a turn arrives, not what the run measures.
+        passthrough=(config.api_key_var, "NARE_STREAM"),
     )
     return RunArtifacts(
         stdout=out,
@@ -193,9 +215,18 @@ def run_agent(
     )
 
 
-def run_check(workdir: Path, cmd: str, timeout: int) -> tuple[int, str]:
-    """Grade one bash check in a second container over the same directory."""
-    code, out, err, _ = _docker_run(workdir, ["sh", "-c", cmd], timeout)
+def run_check(
+    workdir: Path, cmd: str, timeout: int, *, artifacts: Path | None = None
+) -> tuple[int, str]:
+    """Grade one bash check in a second container over the same directory.
+
+    The run's artifacts, when given, are mounted read-only at /out. A server
+    the agent left running died with the agent's container; only
+    /out/after.json remembers it.
+    """
+    code, out, err, _ = _docker_run(
+        workdir, ["sh", "-c", cmd], timeout, artifacts=artifacts, read_only=True
+    )
     return code, (out + err).strip()
 
 
@@ -211,6 +242,20 @@ def git_checkpoint(workdir: Path) -> None:
             "commit -qm fixture",
         ],
         60,
+    )
+
+
+def idle_artifacts(case: Case, workdir: Path, artifacts: Path) -> None:
+    """What /out holds after a run in which the agent did nothing: the
+    session nare starts with, and the snapshot of a container left idle.
+    Used by `verify`, which never runs the agent.
+    """
+    save(new_session(case.prompt), artifacts / "session.json")
+    _docker_run(
+        workdir,
+        ["python3", "-I", "-c", _LEFTOVERS, "/out/after.json"],
+        60,
+        artifacts=artifacts,
     )
 
 

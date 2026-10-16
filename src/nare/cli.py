@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -39,6 +39,35 @@ from nare.tools import TOOLS, Policy, approve_all
 from nare.transport import Transport, make_transport
 
 log = logging.getLogger(__name__)
+
+# Sent unless --system replaces it. Without it every run got the model's own
+# defaults: the practice run installed Postgres from guessed URLs, claimed an
+# end-to-end test it never ran, left a server running unreported and committed
+# under an invented git identity, and the visual run wrote summary files
+# nobody asked for.
+DEFAULT_SYSTEM = """\
+You are a coding agent working in the user's project. Follow these rules.
+
+1. Stay in scope. Offer extra setup, such as installing services or \
+downloading tools, in your final message instead of doing it.
+2. Do not install system software, download and run executables, or start \
+long-lived services unless asked.
+3. Claim only what tool output showed, and say what you did not test.
+4. Stop what you start. List anything left running or changed outside the \
+project root, with how to undo it.
+5. Do not commit or push unless asked, and never set a git identity.
+6. Tool calls in one turn run in order, so batch an edit with the command \
+that checks it.
+7. When the task is done, stop: no summary files, banners or extra \
+documentation unless asked.\
+"""
+
+
+def stream_from_env(env: Mapping[str, str]) -> bool:
+    """NARE_STREAM, as --stream's default reads it. The benchmark's judge
+    reads it here too, so it streams exactly when the agent does.
+    """
+    return env.get("NARE_STREAM", "").strip().lower() in ("1", "true", "yes")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -74,8 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--stream",
         action="store_true",
-        default=os.environ.get("NARE_STREAM", "").strip().lower()
-        in ("1", "true", "yes"),
+        default=stream_from_env(os.environ),
         help="stream text/reasoning while each model turn runs (env: NARE_STREAM)",
     )
     run_parser.add_argument(
@@ -184,7 +212,16 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
         choices=["low", "medium", "high"],
         help="reasoning effort",
     )
-    parser.add_argument("--system", help="system prompt / persona text")
+    parser.add_argument(
+        "--system",
+        metavar="TEXT",
+        help="replace nare's default system prompt with TEXT; --system '' sends none",
+    )
+    parser.add_argument(
+        "--append-system",
+        metavar="TEXT",
+        help="add TEXT after the system prompt: the default, or --system's",
+    )
     parser.add_argument(
         "--tools",
         help=(
@@ -222,6 +259,23 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def system_from_args(args: argparse.Namespace) -> str | None:
+    """The system prompt a run sends: nare's default unless --system replaces
+    it, then --append-system after it. None sends no system prompt at all.
+
+    A blank part is dropped, not sent: `--system ''` is how a caller opts out
+    of the default, and a blank append would only add a separator. A run
+    with no tools gets no default: every rule in it is about tools, and a
+    caller after one answer would get them back as prose in it.
+    """
+    if args.system is not None:
+        base: str | None = args.system
+    else:
+        base = DEFAULT_SYSTEM if tools_from_args(args) else None
+    parts = [part for part in (base, args.append_system) if part and part.strip()]
+    return "\n\n".join(parts) or None
+
+
 def transport_from_args(args: argparse.Namespace) -> Transport:
     """Everything vendor-shaped is bound here and never reaches the loop."""
     return make_transport(
@@ -231,7 +285,7 @@ def transport_from_args(args: argparse.Namespace) -> Transport:
         temperature=args.temperature,
         max_tokens=args.max_tokens,
         effort=args.effort,
-        system=args.system,
+        system=system_from_args(args),
         streaming=args.stream,
         image_input=args.image_input,
     )
@@ -250,14 +304,19 @@ def schema_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
     return loaded
 
 
+def tools_from_args(args: argparse.Namespace) -> frozenset[str]:
+    """The tools --tools names: all of them by default, none for 'none'."""
+    if args.tools is None:
+        return frozenset(TOOLS)
+    named = [name.strip() for name in args.tools.split(",") if name.strip()]
+    return frozenset() if named == ["none"] else frozenset(named)
+
+
 def policy_from_args(args: argparse.Namespace) -> Policy:
     """Both failures here are startup failures: a caller that asked for a
     narrower session and did not get one must not be handed a wider one.
     """
-    tools = frozenset(TOOLS)
-    if args.tools is not None:
-        named = [name.strip() for name in args.tools.split(",") if name.strip()]
-        tools = frozenset() if named == ["none"] else frozenset(named)
+    tools = tools_from_args(args)
     root = None
     if args.root is not None:
         root = Path(args.root)
