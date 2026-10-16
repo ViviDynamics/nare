@@ -606,3 +606,68 @@ def test_compare_refuses_results_run_at_another_cap(
     capped = replace(record("edit-docstring", model="m"), max_tokens=32000)
     write_results(tmp_path, [capped])
     assert main(["compare", "--model", "m"]) == 2
+
+
+async def test_a_judged_rep_keeps_the_diff_and_closing_message_it_judged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_sandbox(monkeypatch, RunArtifacts(f"{OUTPUT}\n{DONE_LINE}", "", 0, False, 1.0))
+    judge = FakeJudge('{"met": [true], "why": "ok"}')
+    evidence = tmp_path / "results" / "stamp"
+    await run_rep(sandboxed(tmp_path, Judge(("x",), 1)), CONFIG, judge, 0, evidence)
+    kept = evidence / "demo-0"
+    assert (kept / "diff.patch").read_text() == "a diff"
+    assert (kept / "closing.txt").read_text() == "Done: raised it to 60."
+    prompt = judge.calls[0][0].content[0]["text"]
+    assert "a diff" in prompt
+    assert "Done: raised it to 60." in prompt
+
+
+async def test_an_unjudged_rep_keeps_them_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Triage reads the diff of every failure, judged case or not."""
+    fake_sandbox(monkeypatch, RunArtifacts(DONE_LINE, "", 0, False, 1.0))
+    evidence = tmp_path / "results" / "stamp"
+    await run_rep(sandboxed(tmp_path), CONFIG, cast(Transport, None), 0, evidence)
+    kept = evidence / "demo-0"
+    assert (kept / "diff.patch").read_text() == "a diff"
+    assert (kept / "closing.txt").read_text() == ""
+    assert not (kept / "judge.txt").exists()
+
+
+async def test_a_rep_without_a_result_line_keeps_neither(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_sandbox(monkeypatch, RunArtifacts('{"type": "prog', "", 124, True, 600.0))
+    evidence = tmp_path / "results" / "stamp"
+    await run_rep(sandboxed(tmp_path), CONFIG, cast(Transport, None), 0, evidence)
+    assert not (evidence / "demo-0" / "diff.patch").exists()
+    assert not (evidence / "demo-0" / "closing.txt").exists()
+
+
+async def test_an_infrastructure_error_keeps_neither(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    line = json.dumps(
+        {"type": "result", "status": "error", "stop_reason": None, "turns": 1}
+    )
+    fake_sandbox(monkeypatch, RunArtifacts(line, "", 1, False, 1.0))
+    evidence = tmp_path / "results" / "stamp"
+    rec = await run_rep(sandboxed(tmp_path), CONFIG, cast(Transport, None), 0, evidence)
+    assert rec.outcome == "error"
+    assert not (evidence / "demo-0" / "diff.patch").exists()
+    assert not (evidence / "demo-0" / "closing.txt").exists()
+
+
+async def test_a_rerun_rep_clears_the_first_passs_diff_and_closing_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_sandbox(monkeypatch, RunArtifacts("", "", 124, True, 600.0))
+    evidence = tmp_path / "results" / "stamp"
+    (evidence / "demo-0").mkdir(parents=True)
+    (evidence / "demo-0" / "diff.patch").write_text("from the first pass")
+    (evidence / "demo-0" / "closing.txt").write_text("from the first pass")
+    await run_rep(sandboxed(tmp_path), CONFIG, cast(Transport, None), 0, evidence)
+    assert not (evidence / "demo-0" / "diff.patch").exists()
+    assert not (evidence / "demo-0" / "closing.txt").exists()

@@ -270,6 +270,11 @@ async def run_rep(
 
         # Before the bash checks, so nothing a check writes reaches the judge.
         diff = git_diff(workdir)
+        closing = line_text(result.stdout, line.questions)
+        # Kept for every rep, judged or not, so any judge can be re-run against
+        # exactly what this one read. compare-judges reads them back.
+        (kept / "diff.patch").write_text(diff, encoding="utf-8")
+        (kept / "closing.txt").write_text(closing, encoding="utf-8")
 
         graded = [
             grade_result_check(check, line)
@@ -286,10 +291,7 @@ async def run_rep(
             attempts: tuple[JudgeAttempt, ...]
             try:
                 met, why, attempts = await score(
-                    case,
-                    diff,
-                    line_text(result.stdout, line.questions),
-                    transport=transport,
+                    case, diff, closing, transport=transport
                 )
             except JudgeError as exc:
                 why = f"judge failed: {exc}"
