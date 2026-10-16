@@ -16,6 +16,7 @@ from nare.transport.anthropic import (
     EFFORT_BUDGETS,
     NONSTREAMING_MAX_TOKENS,
     AnthropicTransport,
+    messages_from,
     stop_reason_from,
     usage_from,
 )
@@ -229,6 +230,68 @@ async def test_turn_normalizes_the_response() -> None:
     ]
     assert reply.content[0]["text"] == "reading it now"
     assert reply.usage == Usage(input=200, output=50, cache_read=800, cache_write=12)
+
+
+def test_unsigned_thinking_and_empty_text_are_not_sent_back() -> None:
+    # On the practice run all 44 thinking blocks had signature '': a proxy
+    # made them, and re-sending them was 38% of every request. Empty text
+    # blocks were re-sent too. Signed and redacted thinking go back as is.
+    messages = [
+        Message("user", [{"type": "text", "text": "task"}]),
+        Message(
+            "assistant",
+            [
+                {"type": "thinking", "thinking": "plan", "signature": ""},
+                {"type": "thinking", "thinking": "no signature at all"},
+                {"type": "thinking", "thinking": "real", "signature": "sig"},
+                {"type": "redacted_thinking", "data": "opaque"},
+                {"type": "text", "text": ""},
+                {"type": "tool_use", "id": "c1", "name": "read", "input": {}},
+            ],
+        ),
+        Message(
+            "user",
+            [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "c1",
+                    "content": "a",
+                    "is_error": False,
+                }
+            ],
+        ),
+    ]
+    assert messages_from(messages)[1]["content"] == [
+        {"type": "thinking", "thinking": "real", "signature": "sig"},
+        {"type": "redacted_thinking", "data": "opaque"},
+        {"type": "tool_use", "id": "c1", "name": "read", "input": {}},
+    ]
+    assert len(messages[1].content) == 6, "serialization edited the session"
+
+
+def test_an_assistant_turn_left_empty_is_dropped_and_the_user_turns_join() -> None:
+    # A reply of unsigned thinking and empty text leaves nothing to send.
+    # Dropping it puts two user turns side by side, and roles must alternate.
+    messages = [
+        Message("user", [{"type": "text", "text": "task"}]),
+        Message(
+            "assistant",
+            [
+                {"type": "thinking", "thinking": "plan", "signature": ""},
+                {"type": "text", "text": ""},
+            ],
+        ),
+        Message("user", [{"type": "text", "text": "go on"}]),
+    ]
+    assert messages_from(messages) == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "task"},
+                {"type": "text", "text": "go on"},
+            ],
+        }
+    ]
 
 
 # --- Normalization tables, section 4 of the transport spec -------------------
