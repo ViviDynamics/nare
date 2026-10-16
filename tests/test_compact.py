@@ -6,7 +6,7 @@ from dataclasses import asdict
 from typing import Any
 
 from fake_provider import FakeProvider, text_reply
-from nare.compact import PREFIX, compact, estimate
+from nare.compact import PREFIX, compact, context_chars, estimate
 from nare.loop import run
 from nare.session import Message, new_session
 
@@ -246,6 +246,34 @@ def test_a_write_heavy_session_compacts_below_sixty_percent() -> None:
             assert message.content[0] == before[i].content[0]
 
 
+def test_tier_two_stops_once_the_estimate_is_exactly_sixty_percent() -> None:
+    # The stop is `<= window * 0.6`: a session already at 60% loses nothing
+    # more. With `<` in its place every other test still passed.
+    window = 10000
+    assert window * 0.6 == 6000  # exact in floating point
+    s = new_session("go")
+    s.messages = write_transcript()
+    # The session as tier 2 should leave it: the first three writes stubbed.
+    elided = copy.deepcopy(s)
+    for turn in (1, 2, 3):
+        elided.messages[2 * turn - 1].content[1]["input"]["content"] = (
+            f"{PREFIX} wrote 4000 chars to src/f{turn}.ts at turn {turn}. "
+            "Read the file if you need it.]"
+        )
+    # Pad the task so that session is 24000 chars, an uncalibrated estimate of
+    # exactly 24000 / 4 = 6000. Three writes, not two, so that the session
+    # starts above the 80% that sets compaction off.
+    pad = "p" * (24000 - context_chars(elided.messages))
+    for session in (s, elided):
+        session.messages[0].content[0]["text"] += pad
+    assert estimate(elided) == window * 0.6
+    report = compact(s, window)
+    assert report is not None
+    assert (report.elided, report.inputs) == (0, 3)
+    assert s.messages == elided.messages
+    assert s.messages[7].content[1]["input"]["content"] == "x" * 4000
+
+
 def test_long_edit_texts_are_elided_and_short_ones_kept() -> None:
     s = new_session("go")
     s.messages = write_transcript()
@@ -265,6 +293,31 @@ def test_long_edit_texts_are_elided_and_short_ones_kept() -> None:
         "path": "b.py",
         "old": "z",
         "new": "[elided by nare: wrote 3000 chars into b.py at turn 2. "
+        "Read the file if you need it.]",
+    }
+
+
+def test_an_edit_with_both_texts_long_counts_as_one_input() -> None:
+    # `inputs` counts calls, not fields, as the event's "N tool inputs" says.
+    # Counting fields passed every other test, since none had both texts long.
+    # With three turns only turn 1 is outside the protected tail, and a
+    # 100-token window never reaches 60%, so the walk always gets to it.
+    s = new_session("go")
+    s.messages = write_transcript(turns=3)
+    s.messages[1].content[1]["name"] = "edit"
+    s.messages[1].content[1]["input"] = {
+        "path": "a.py",
+        "old": "z" * 3000,
+        "new": "y" * 3000,
+    }
+    report = compact(s, 100)
+    assert report is not None
+    assert (report.elided, report.inputs) == (0, 1)
+    assert s.messages[1].content[1]["input"] == {
+        "path": "a.py",
+        "old": "[elided by nare: replaced 3000 chars in a.py at turn 1. "
+        "Read the file if you need it.]",
+        "new": "[elided by nare: wrote 3000 chars into a.py at turn 1. "
         "Read the file if you need it.]",
     }
 
