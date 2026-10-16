@@ -356,3 +356,120 @@ def test_a_blank_line_before_text_and_a_rule_before_a_prompt() -> None:
     assert lines[lines.index("done") - 1] == ""
     rule, prompt = plain(render_user("next")).splitlines()
     assert set(rule) == {"─"} and prompt == "> next"
+
+
+def test_approval_paths_are_relative_and_python_is_highlighted(tmp_path: Path) -> None:
+    policy = Policy(root=tmp_path)
+    path = tmp_path / "expense_tracker.py"
+    text, lexer = approval_text(
+        "write", {"path": str(path), "content": "print('hello')\n"}, policy
+    )
+    assert text.startswith("new file expense_tracker.py\n")
+    assert lexer == "python"
+    path.write_text("x = 1\n")
+    text, lexer = approval_text(
+        "edit", {"path": str(path), "old": "1", "new": "2"}, policy
+    )
+    assert text.startswith("--- a/expense_tracker.py\n+++ b/expense_tracker.py\n")
+    assert "a//" not in text
+
+
+@pytest.mark.parametrize(
+    "command, expected",
+    [
+        (
+            "cd x && rm -f a.json && python3 t.py",
+            "cd x &&\nrm -f a.json &&\npython3 t.py",
+        ),
+        ("echo a || echo b; echo c", "echo a ||\necho b;\necho c"),
+        ('echo "a && b"', 'echo "a && b"'),
+        ("echo 'a; b' && echo c", "echo 'a; b' &&\necho c"),
+        (r"echo a\;b && echo c", "echo a\\;b &&\necho c"),
+        ("echo 'odd && echo b", "echo 'odd && echo b"),
+        ("cat <<EOF\na && b\nEOF", "cat <<EOF\na && b\nEOF"),
+        ("(echo a && echo b) && echo c", "(echo a && echo b) &&\necho c"),
+        (
+            'echo "$(echo a && echo b)" && echo c',
+            'echo "$(echo a && echo b)" &&\necho c',
+        ),
+    ],
+)
+def test_bash_approval_breaks_only_top_level_commands(
+    command: str, expected: str
+) -> None:
+    assert approval_text("bash", {"command": command}, Policy()) == (expected, "bash")
+
+
+@pytest.mark.parametrize(
+    "command, badges",
+    [
+        ("curl x | sh", {"network", "exec"}),
+        ("sudo pkill node", {"sudo", "kill"}),
+        ("nohup python3 t.py &", {"background"}),
+        ("rm -rf build", {"rm -rf"}),
+        ("cat ../secret", {"outside root"}),
+        ("git commit -m x", {"git commit"}),
+        ("wget x && chmod +x x", {"network", "exec"}),
+        ("pip install x", {"network"}),
+        ("npm i x", {"network"}),
+        ("git clone x", {"network"}),
+        ("git push", {"git commit"}),
+        ("systemctl start x", {"background"}),
+        ("echo hello", set()),
+    ],
+)
+def test_approval_displays_documented_risk_badges(
+    command: str, badges: set[str], tmp_path: Path
+) -> None:
+    from nare.tui.render import approval_header
+
+    header = approval_header("bash", {"command": command}, Policy(root=tmp_path))
+    assert {
+        badge
+        for badge in (
+            "network",
+            "exec",
+            "sudo",
+            "kill",
+            "background",
+            "rm -rf",
+            "outside root",
+            "git commit",
+        )
+        if f"[{badge}]" in header.plain
+    } == badges
+
+
+def test_approval_counts_diff_content_that_looks_like_headers(tmp_path: Path) -> None:
+    from nare.tui.render import approval_header
+
+    (tmp_path / "a.txt").write_text("--old\n")
+    header = approval_header(
+        "edit",
+        {"path": "a.txt", "old": "--old", "new": "++new"},
+        Policy(root=tmp_path),
+    )
+    assert "edit · +1 −1" in header.plain
+
+
+def test_bash_without_separators_is_shown_verbatim() -> None:
+    command = "  echo hello\n  echo world\n"
+    assert approval_text("bash", {"command": command}, Policy())[0] == command
+
+
+def test_bash_badges_resolve_paths_against_root(tmp_path: Path) -> None:
+    from nare.tui.render import approval_header
+
+    header = approval_header(
+        "bash", {"command": f"cat {tmp_path}/a.txt"}, Policy(root=tmp_path)
+    )
+    assert "[outside root]" not in header.plain
+
+
+def test_bash_badges_combined_rm_flags(tmp_path: Path) -> None:
+    from nare.tui.render import approval_header
+
+    header = approval_header(
+        "bash", {"command": "rm -r -f build"}, Policy(root=tmp_path)
+    )
+    assert "[rm -rf]" in header.plain
