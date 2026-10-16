@@ -155,8 +155,6 @@ def _elide_inputs(
         if i >= protected_from:
             break
         for block in message.content:
-            if estimate(s, image_input=image_input) <= window * 0.6:
-                return inputs
             stubs = _INPUT_STUBS.get(block.get("name", ""))
             args = block.get("input")
             if (
@@ -167,7 +165,7 @@ def _elide_inputs(
             ):
                 continue
             path = str(args.get("path", ""))
-            touched = False
+            pending: dict[str, str] = {}
             for name, did in stubs.items():
                 value = args.get(name)
                 if not isinstance(value, str) or value.startswith(PREFIX):
@@ -177,8 +175,14 @@ def _elide_inputs(
                     f"at turn {turn}. Read the file if you need it.]"
                 )
                 if len(stub) < len(value):
-                    args[name] = stub
-                    touched = True
-            if touched:
-                inputs += 1
+                    pending[name] = stub
+            if not pending:
+                continue
+            # estimate() serializes the whole session; run per block it cost
+            # ~3.9 s per model call on a 280-turn session even with nothing
+            # left to elide, so it runs only when this call can be elided.
+            if estimate(s, image_input=image_input) <= window * 0.6:
+                return inputs
+            args.update(pending)
+            inputs += 1
     return inputs

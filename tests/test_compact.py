@@ -254,3 +254,18 @@ async def test_the_compaction_event_counts_elided_inputs() -> None:
     assert notices[0].text.startswith(
         "compacted: elided 0 tool results and 3 tool inputs, ~"
     )
+
+
+def test_the_newest_writes_are_kept_and_a_second_pass_elides_nothing() -> None:
+    # A window too small to ever reach 60% walks the whole history, so only the
+    # protected tail and the already-stubbed skip stop it: without the first the
+    # newest writes are stubbed, without the second a second pass re-stubs the
+    # stubs with a wrong "wrote 88 chars" text and counts them again.
+    s = new_session("go")
+    s.messages = write_transcript()
+    report = compact(s, 100)
+    assert report is not None
+    assert report.inputs == 6
+    for i in (13, 15):
+        assert s.messages[i].content[1]["input"]["content"] == "x" * 4000
+    assert compact(s, 100) is None

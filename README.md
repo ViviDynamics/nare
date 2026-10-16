@@ -219,7 +219,7 @@ and explains that `continue` starts another run with the same turn allowance.
 Token and USD ceilings still apply before a summary request.
 
 Before each model call, old tool output is elided if estimated context reaches
-80% of the window, stopping at 60% where possible. If that is not enough, the
+80% of the window, stopping at 60% where possible. If that is not enough, long
 contents of old `write` calls and long `edit` texts are elided next. The task,
 assistant text and thinking, the last two turns, error results, ask results and
 the inputs of failed calls are protected. Every tool call keeps its result. If
