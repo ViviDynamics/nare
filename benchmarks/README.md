@@ -15,6 +15,7 @@ Docker is required; every repetition runs in a throwaway container.
     export NARE_BASE_URL=https://...    # only if you use a proxy
     export NARE_STREAM=1                # stream agent and judge, for proxies
     export NARE_BENCH_MAX_TOKENS=32000  # agent output cap; default is nare's
+                                        # (anthropic needs NARE_STREAM above 21333)
 
     bin/bench verify                    # free: are the cases well-formed?
     bin/bench run --tier smoke          # measure
@@ -64,10 +65,13 @@ the diff; `min_met` turns it into a gate. A judge can only ever fail a
 repetition that passed its checks - it can never rescue one that failed.
 
 A bash check runs in a fresh container over the agent's working directory,
-with the run's artifacts mounted read-only at `/out`. `/out/session.json` is
-nare's session, for checks about what the agent did rather than what it left:
-a server it started died with its container, but `process_groups` remembers
-it. `verify` has no session, so such a check fails on the pristine fixture.
+with the run's artifacts mounted read-only at `/out`, so a check can see what
+the agent did outside the tree it left. `/out/session.json` is nare's
+session. `/out/after.json` is the agent's container as nare exited, before it
+was thrown away: `processes` lists everything still running, a server that
+escaped with `setsid` included, and `database_files` lists any PostgreSQL
+server binary or data directory anywhere in it. `verify` gives these checks
+the artifacts of a run in which the agent did nothing.
 
 Run `bin/bench verify` on any case you add. It proves the checks fail on the
 pristine fixture, which is the difference between a case that measures

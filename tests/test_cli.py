@@ -18,6 +18,7 @@ from nare.cli import (
     DEFAULT_SYSTEM,
     build_parser,
     main,
+    stream_from_env,
     system_from_args,
     transport_from_args,
 )
@@ -116,6 +117,17 @@ def test_an_unknown_provider_from_the_environment_fails_at_construction(
         transport_from_args(parse("go"))
 
 
+@pytest.mark.parametrize(
+    ("value", "on"),
+    [("1", True), (" TRUE ", True), ("yes", True), ("", False), ("0", False)],
+)
+def test_stream_from_env_reads_nare_stream(value: str, on: bool) -> None:
+    # One reading for the CLI and the benchmark's judge, so the agent and the
+    # judge cannot disagree about whether NARE_STREAM is on.
+    assert stream_from_env({"NARE_STREAM": value}) is on
+    assert stream_from_env({}) is False
+
+
 def test_a_run_sends_the_default_system_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -170,6 +182,23 @@ def test_a_blank_system_still_takes_an_append() -> None:
 
 def test_a_blank_append_adds_nothing() -> None:
     assert system_from_args(parse("go", "--append-system", " ")) == DEFAULT_SYSTEM
+
+
+def test_a_run_with_no_tools_gets_no_default_prompt() -> None:
+    # Every rule is about tools: what a run installed, left running or did
+    # not test. A caller after one answer would get them back as prose.
+    assert system_from_args(parse("go", "--tools", "none")) is None
+
+
+def test_a_run_with_no_tools_still_takes_a_callers_prompt() -> None:
+    args = parse("go", "--tools", "none", "--append-system", "be brief")
+    assert system_from_args(args) == "be brief"
+    args = parse("go", "--tools", "none", "--system", "persona")
+    assert system_from_args(args) == "persona"
+
+
+def test_a_run_with_some_tools_keeps_the_default() -> None:
+    assert system_from_args(parse("go", "--tools", "read")) == DEFAULT_SYSTEM
 
 
 def test_the_default_prompt_is_short() -> None:

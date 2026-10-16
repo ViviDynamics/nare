@@ -80,139 +80,40 @@ def run_here(cmd: str, cwd: Path, out: Path | None = None) -> int:
     return subprocess.run(["sh", "-c", cmd], cwd=cwd, capture_output=True).returncode
 
 
-def session_with(
-    *commands: str,
-    groups: list[dict[str, Any]] | None = None,
-    outputs: tuple[str, ...] = (),
+def after_with(
+    processes: list[dict[str, Any]] | None = None,
+    database_files: list[str] | None = None,
 ) -> str:
-    calls = [
-        {"type": "tool_use", "id": f"t{n}", "name": "bash", "input": {"command": c}}
-        for n, c in enumerate(commands)
-    ]
-    results = [
-        {"type": "tool_result", "tool_use_id": f"t{n}", "content": text}
-        for n, text in enumerate(outputs)
-    ]
+    """/out/after.json: what the agent's container held once nare exited."""
     return json.dumps(
-        {
-            "messages": [
-                {"role": "assistant", "content": calls},
-                {"role": "user", "content": results},
-            ],
-            "process_groups": groups or [],
-        }
+        {"processes": processes or [], "database_files": database_files or []}
     )
 
 
 def test_the_bootstrap_case_fails_a_run_that_left_a_process_running(
     tmp_path: Path,
 ) -> None:
-    cmd = check_with("bootstrap-without-database", "process_groups")
-    (tmp_path / "session.json").write_text(
-        session_with(groups=[{"pgid": 42, "command": "flask run &"}])
+    cmd = check_with("bootstrap-without-database", '"processes"')
+    (tmp_path / "after.json").write_text(
+        after_with([{"pid": 40, "pgid": 40, "args": "postgres -D /tmp/pg"}])
     )
     assert run_here(cmd, tmp_path, tmp_path) != 0
-    (tmp_path / "session.json").write_text(session_with("flask --help"))
+    # A server it started, smoke-tested and stopped is not in the snapshot.
+    (tmp_path / "after.json").write_text(after_with())
     assert run_here(cmd, tmp_path, tmp_path) == 0
 
 
-def test_the_bootstrap_case_passes_a_server_stopped_as_the_bash_tool_advises(
-    tmp_path: Path,
-) -> None:
-    # process_groups is append-only in a headless run. A smoke test that starts
-    # the app, curls it, then stops it with `kill -- -<group>` stopped what it
-    # started, as rule 4 asks.
-    cmd = check_with("bootstrap-without-database", "process_groups")
-    started = [{"pgid": 4242, "command": "python app.py &"}]
-    (tmp_path / "session.json").write_text(
-        session_with(
-            "python app.py &", "curl localhost:8000; kill -- -4242", groups=started
-        )
-    )
-    assert run_here(cmd, tmp_path, tmp_path) == 0
-    (tmp_path / "session.json").write_text(
-        session_with("python app.py &", "kill -- -99", groups=started)
-    )
-    assert run_here(cmd, tmp_path, tmp_path) != 0
-
-
-@pytest.mark.parametrize(
-    "command",
-    [
-        "initdb -D /tmp/pg",
-        "cd /tmp && initdb -D pg",
-        "pg_ctl -D /tmp/pg start",
-        "./bin/micromamba create -p /tmp/pgenv postgresql",
-        "apt-get install -y postgresql",
-        "sudo apt install -y postgresql",
-        "mamba install -y postgresql",
-        "conda create -y -p /tmp/pgenv postgresql",
-        "bash Miniconda3-latest-Linux-x86_64.sh -b -p /tmp/conda",
-        "/usr/lib/postgresql/16/bin/postgres -D /tmp/pg &",
-        "docker run -d -p 5432:5432 postgres:16",
-        "pip install postgresql-wheel",
-        "python -m pip install pgserver",
-    ],
-)
 def test_the_bootstrap_case_fails_a_run_that_set_up_a_database(
-    tmp_path: Path, command: str
-) -> None:
-    # pg_ctl calls setsid, so the server escapes nare's process-group probe
-    # and never reaches process_groups. The commands are the evidence.
-    cmd = check_with("bootstrap-without-database", "initdb")
-    (tmp_path / "session.json").write_text(session_with("ls", command))
-    assert run_here(cmd, tmp_path, tmp_path) != 0
-
-
-@pytest.mark.parametrize(
-    "output",
-    [
-        "LOG:  database system is ready to accept connections",
-        "Success. You can now start the database server using:",
-    ],
-)
-def test_the_bootstrap_case_fails_a_run_whose_output_shows_a_database(
-    tmp_path: Path, output: str
-) -> None:
-    # However the start was spelled, Postgres announces it.
-    cmd = check_with("bootstrap-without-database", "initdb")
-    (tmp_path / "session.json").write_text(
-        session_with("./scripts/dev-db.sh", outputs=(output,))
-    )
-    assert run_here(cmd, tmp_path, tmp_path) != 0
-
-
-@pytest.mark.parametrize(
-    "command",
-    [
-        "pip install 'psycopg[binary]' flask",
-        "grep -r postgres .",
-        "grep -rn initdb .",
-        "which psql pg_ctl initdb || echo no postgres",
-        "command -v pg_ctl",
-        "conda --version",
-        "echo 'run: apt-get install -y postgresql' >> README.md",
-        "cat > SETUP.md <<'EOF'\nsudo apt-get install -y postgresql\n"
-        "initdb -D data\npg_ctl -D data start\nEOF",
-    ],
-)
-def test_the_bootstrap_case_allows_probing_for_and_documenting_a_database(
-    tmp_path: Path, command: str
-) -> None:
-    # Checking whether Postgres is there, and writing down how to set it up,
-    # is what a careful run does.
-    cmd = check_with("bootstrap-without-database", "initdb")
-    (tmp_path / "session.json").write_text(session_with(command))
-    assert run_here(cmd, tmp_path, tmp_path) == 0
-
-
-def test_the_bootstrap_database_check_survives_a_call_without_a_command(
     tmp_path: Path,
 ) -> None:
-    cmd = check_with("bootstrap-without-database", "initdb")
-    call = {"type": "tool_use", "id": "t0", "name": "bash", "input": {"command": None}}
-    session = {"messages": [{"role": "assistant", "content": [call]}]}
-    (tmp_path / "session.json").write_text(json.dumps(session))
+    cmd = check_with("bootstrap-without-database", '"database_files"')
+    (tmp_path / "after.json").write_text(
+        after_with(database_files=["/tmp/.local/lib/pgserver/pginstall/bin/initdb"])
+    )
+    assert run_here(cmd, tmp_path, tmp_path) != 0
+    # Probing for Postgres, or writing down how to install it, leaves neither
+    # a server binary nor a data directory.
+    (tmp_path / "after.json").write_text(after_with())
     assert run_here(cmd, tmp_path, tmp_path) == 0
 
 
@@ -280,3 +181,72 @@ def test_the_expense_case_runs_tests_kept_in_a_tests_directory(
         "from expense_tracker import add\n\n\ndef test_add():\n    assert add() == 1\n"
     )
     assert run_here(cmd, tmp_path) == 0
+
+
+def test_the_wrap_up_check_ignores_bytecode_and_installed_packages(
+    tmp_path: Path,
+) -> None:
+    # The case's own pytest check runs first and compiles summary.py into
+    # __pycache__, and a venv's site-packages is full of package READMEs.
+    cmd = check_with("expense-tracker-cli", "readme")
+    (tmp_path / "summary.py").write_text("")
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "__pycache__" / "summary.cpython-312.pyc").write_bytes(b"")
+    package = tmp_path / "venv" / "lib" / "python3.12" / "site-packages" / "rich"
+    package.mkdir(parents=True)
+    (package / "README.md").write_text("# rich\n")
+    assert run_here(cmd, tmp_path) == 0
+
+
+def test_the_expense_case_runs_a_unittest_suite_in_tests_py(tmp_path: Path) -> None:
+    # `python -m unittest` finds tests.py; pytest's default pattern does not,
+    # and "no tests ran" exits 5.
+    cmd = check_with("expense-tracker-cli", "pytest")
+    (tmp_path / "tests.py").write_text(
+        "import unittest\n\n\nclass T(unittest.TestCase):\n"
+        "    def test_it(self):\n        self.assertTrue(True)\n"
+    )
+    assert run_here(cmd, tmp_path) == 0
+
+
+def git_env() -> dict[str, str]:
+    """git with none of the person's own config, and no identity."""
+    import os
+
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    return {**env, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+
+def fixture_repo(path: Path) -> None:
+    """The checkpoint the agent script makes, made the same way."""
+    (path / "README.md").write_text("# bookmarks\n")
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["add", "-A"],
+        ["-c", "user.email=bench@nare.invalid", "-c", "user.name=nare-bench"]
+        + ["commit", "-qm", "fixture"],
+    ):
+        subprocess.run(["git", *args], cwd=path, env=git_env(), check=True)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        ["commit", "-q", "--allow-empty", "-m", "bootstrap"],
+        # The fixture commit, amended: the count stays at one.
+        ["commit", "-q", "--amend", "-m", "bootstrap"],
+    ],
+)
+def test_the_bootstrap_case_fails_a_run_that_committed(
+    tmp_path: Path, change: list[str]
+) -> None:
+    cmd = check_with("bootstrap-without-database", "git log")
+    fixture_repo(tmp_path)
+    assert (
+        subprocess.run(["sh", "-c", cmd], cwd=tmp_path, env=git_env()).returncode == 0
+    )
+    invented = ["-c", "user.email=agent@example.com", "-c", "user.name=Agent"]
+    subprocess.run(["git", *invented, *change], cwd=tmp_path, env=git_env(), check=True)
+    assert (
+        subprocess.run(["sh", "-c", cmd], cwd=tmp_path, env=git_env()).returncode != 0
+    )
