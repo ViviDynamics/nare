@@ -14,7 +14,7 @@ from anthropic import AsyncAnthropic, omit
 from anthropic.types import MessageParam, ToolParam
 
 from nare.accounting import Prices
-from nare.session import Message, Usage
+from nare.session import Message, Usage, sent_back
 from nare.transport import (
     Delta,
     ModelMetadata,
@@ -121,24 +121,6 @@ def usage_from(raw: Any) -> Usage:
     )
 
 
-def _sent_back(block: dict[str, Any]) -> bool:
-    """Whether a saved block goes back to the model.
-
-    Thinking with no signature was made by a proxy translating a reasoning
-    model. It carries no server state, and a Claude backend ignores it, but
-    the proxy hands it back to the model it came from and bills it: on the
-    practice run all 44 thinking blocks were unsigned, 38% of the context,
-    re-sent every turn. Empty text is dead weight too. Signed and redacted
-    thinking go back as they came.
-    """
-    kind = block.get("type")
-    if kind == "thinking":
-        return bool(block.get("signature"))
-    if kind == "text":
-        return bool(block.get("text"))
-    return True
-
-
 def messages_from(
     messages: list[Message],
     *,
@@ -148,7 +130,7 @@ def messages_from(
     output: list[dict[str, Any]] = []
     for turn in messages:
         raw = asdict(turn)
-        raw["content"] = [block for block in raw["content"] if _sent_back(block)]
+        raw["content"] = [block for block in raw["content"] if sent_back(block)]
         if not raw["content"] and turn.role == "assistant":
             continue
         if output and output[-1]["role"] == raw["role"]:

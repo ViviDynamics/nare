@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 
-from nare.session import Message, Session
+from nare.session import Message, Session, sent_back
 
 PREFIX = "[elided by nare:"
 
@@ -24,6 +24,11 @@ def context_chars(messages: list[Message], *, image_input: bool = True) -> int:
     raw = [asdict(m) for m in messages]
     image_tokens = 0
     for message in raw:
+        # Measure what is sent. Counting unsent thinking, which compaction
+        # cannot elide, put a ~590-token request at 8235 and stopped the run
+        # before its first call. An older nare saved last_input_chars with the
+        # thinking in, so its prefix delta comes out negative by that much.
+        message["content"] = [b for b in message["content"] if sent_back(b)]
         for block in message["content"]:
             image = block.get("image") if block.get("type") == "tool_result" else None
             if isinstance(image, dict):

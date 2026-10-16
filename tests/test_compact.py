@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 from dataclasses import asdict
+from typing import Any
 
 from fake_provider import FakeProvider, text_reply
 from nare.compact import PREFIX, compact, estimate
@@ -24,7 +25,9 @@ def transcript() -> list[Message]:
                         "name": name,
                         "input": {"path": "a"},
                     },
-                    {"type": "thinking", "thinking": "protected"},
+                    # Signed, so it is sent and counts toward the estimate, as
+                    # every thinking block did when these numbers were set.
+                    {"type": "thinking", "thinking": "protected", "signature": "s"},
                 ],
             ),
             Message(
@@ -122,6 +125,61 @@ async def test_resume_compacts_before_first_call() -> None:
     assert events[0].detail["context_window"] == {"tokens": 8000, "source": "flag"}
     assert any("compaction" in e.detail for e in events)
     assert s.last_input_tokens == 10
+
+
+def thinking_transcript(*lead: dict[str, Any]) -> list[Message]:
+    """Ten short replies, each opening with copies of the `lead` blocks."""
+    messages = [Message("user", [{"type": "text", "text": "task"}])]
+    for turn in range(1, 11):
+        messages += [
+            Message(
+                "assistant",
+                [*copy.deepcopy(lead), {"type": "text", "text": f"step {turn}"}],
+            ),
+            Message("user", [{"type": "text", "text": "go on"}]),
+        ]
+    return messages
+
+
+def test_the_estimate_skips_blocks_that_are_not_sent_back() -> None:
+    # Uncalibrated, the estimate is the saved session's size, and it counted
+    # unsigned thinking that messages_from() no longer sends and compaction
+    # cannot elide: a 10-turn session whose request was about 590 tokens was
+    # estimated at 8235.
+    s = new_session("go")
+    s.messages = thinking_transcript(
+        {"type": "thinking", "thinking": "t" * 3000, "signature": ""},
+        {"type": "thinking", "thinking": "t" * 3000},
+        {"type": "text", "text": ""},
+    )
+    bare = new_session("go")
+    bare.messages = thinking_transcript()
+    assert s.last_input_tokens == 0
+    assert estimate(s) == estimate(bare)
+
+
+def test_signed_thinking_still_counts_toward_the_estimate() -> None:
+    # Signed thinking goes back to the model, so it still fills the window.
+    s = new_session("go")
+    s.messages = thinking_transcript(
+        {"type": "thinking", "thinking": "t" * 3000, "signature": "sig"}
+    )
+    bare = new_session("go")
+    bare.messages = thinking_transcript()
+    assert estimate(s) - estimate(bare) > 10 * 3000 / 4
+
+
+async def test_unsent_thinking_does_not_stop_a_run_for_context() -> None:
+    # The 8235-token estimate stopped a run with a 4000-token window with
+    # stop_reason=context and 0 model calls, though its request fit.
+    s = new_session("go")
+    s.messages = thinking_transcript(
+        {"type": "thinking", "thinking": "t" * 3000, "signature": ""}
+    )
+    fake = FakeProvider([text_reply("done")])
+    _ = [event async for event in run(s, transport=fake, context_window=4000)]
+    assert s.stop_reason != "context"
+    assert len(fake.calls) == 1
 
 
 def write_transcript(turns: int = 8, chars: int = 4000) -> list[Message]:
