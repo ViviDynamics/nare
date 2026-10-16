@@ -604,7 +604,12 @@ def test_the_ask_question_states_its_default() -> None:
     assert "the one you will use if it goes unanswered" in questions["description"]
 
 
-needs_pkill = pytest.mark.skipif(shutil.which("pkill") is None, reason="needs pkill")
+# Darwin's pkill excludes its ancestors unless -a is supplied, so plain -f
+# does not kill the shell whose argv contains the tag. These reproduce Linux.
+needs_pkill = pytest.mark.skipif(
+    sys.platform != "linux" or shutil.which("pkill") is None,
+    reason="needs Linux pkill -f ancestor matching (darwin excludes ancestors)",
+)
 
 HINT = (
     "pkill -f also matches the shell running this command; use a pattern "
@@ -802,13 +807,26 @@ async def test_bash_reports_nothing_when_nothing_is_left() -> None:
 
 @needs_pkill
 async def test_a_self_kill_does_not_read_as_a_group_left_running() -> None:
-    # Probed once, right after the shell died, pkill was still a zombie that
-    # init had not reaped in about one run in four.
+    # Real Linux pkill integration. The transient-zombie regression below
+    # controls reap timing instead of hoping repeated runs hit the old race.
     tag = f"nare-self-{uuid.uuid4().hex}"
-    for _ in range(5):
-        text = await run_bash(f"pkill -f {tag}; echo unreachable")
-        assert text.startswith("killed by SIGTERM")
-        assert "still running" not in text
+    text = await run_bash(f"pkill -f {tag}; echo unreachable")
+    assert text.startswith("killed by SIGTERM")
+    assert "still running" not in text
+
+
+async def test_a_self_kill_waits_for_a_zombie_to_be_reaped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A one-shot group probe used to report pkill's unreaped zombie as still
+    # running about one run in four. Model that OS observation deterministically,
+    # including on hosts without /proc, while exercising the real tool path.
+    alive = iter([True, True, True, False])
+    monkeypatch.setattr("nare.tools.group_alive", lambda pgid: next(alive))
+    result = await dispatch(bash_call("kill -TERM $$"), Policy())
+    assert result["is_error"] is True
+    assert result["content"].startswith("killed by SIGTERM")
+    assert "still running" not in result["content"]
 
 
 async def test_dispatch_hands_a_group_left_running_to_its_caller() -> None:
