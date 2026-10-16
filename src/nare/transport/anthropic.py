@@ -177,6 +177,7 @@ class AnthropicTransport:
                 "silently dropping it. Omit --temperature for this provider."
             )
 
+        self._warned_proxy_reasoning = False
         self.streaming = streaming
         self.image_input = image_input
         self.thinking: dict[str, Any] | None = None
@@ -221,6 +222,19 @@ class AnthropicTransport:
             api_key=api_key, base_url=base_url, http_client=http_client
         )
 
+    def _warn_proxy_reasoning(self, content: list[dict[str, Any]]) -> None:
+        # Stream starts can have an empty signature even for native thinking.
+        # Inspect completed blocks, after any signature deltas have arrived.
+        if not self._warned_proxy_reasoning and any(
+            block.get("type") == "thinking" and not block.get("signature")
+            for block in content
+        ):
+            self._warned_proxy_reasoning = True
+            log.warning(
+                "reasoning is translated by a proxy; on this route LiteLLM can drop "
+                "words or whole answers. Use --provider openai for this model."
+            )
+
     async def context_window(self) -> int | None:
         return await discover_context_window(
             self._client._client,
@@ -252,6 +266,7 @@ class AnthropicTransport:
         )
         response = await raw.parse()
         content = [block.model_dump(exclude_none=True) for block in response.content]
+        self._warn_proxy_reasoning(content)
         return Reply(
             content=content,
             tool_calls=[
@@ -322,6 +337,7 @@ class AnthropicTransport:
             content = [
                 block.model_dump(exclude_none=True) for block in response.content
             ]
+            self._warn_proxy_reasoning(content)
             calls: list[ToolCall] = []
             for index, block in enumerate(content):
                 if block.get("type") != "tool_use":
