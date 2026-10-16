@@ -181,7 +181,7 @@ def _with_cache_breakpoints(
             block
             for message in reversed(messages)
             for block in reversed(message["content"])
-            if block["type"] not in ("thinking", "redacted_thinking")
+            if block.get("type") not in ("thinking", "redacted_thinking")
         ),
         None,
     )

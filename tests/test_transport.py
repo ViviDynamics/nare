@@ -388,6 +388,22 @@ async def test_a_thinking_block_never_carries_a_cache_marker(
     assert marked[0]["cache_control"] == {"type": "ephemeral"}
 
 
+async def test_a_block_with_no_type_still_reaches_the_wire() -> None:
+    # A hand-edited session file can hold one. The cache marker walk read
+    # block["type"] and raised KeyError: 'type' before any request, where the
+    # provider's 400 would have named the missing field.
+    captured: list[httpx2.Request] = []
+    transport = build(http_client=recording_client(captured))
+    messages = [
+        Message("user", [{"type": "text", "text": "task"}, {"text": "hand-edited"}])
+    ]
+    await transport.turn(messages, [])
+    assert len(captured) == 1
+    sent = json.loads(captured[0].content)["messages"][-1]["content"][-1]
+    assert sent["text"] == "hand-edited"
+    assert "type" not in sent
+
+
 # --- Normalization tables, section 4 of the transport spec -------------------
 # The OpenAI rows are asserted now, before the OpenAI transport exists. If its
 # spec later contradicts these rows, that contradiction is worth catching.
