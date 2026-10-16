@@ -73,6 +73,32 @@ class CompactionReport:
     after: float
     window: int
     inputs: int = 0
+    thinking: int = 0
+
+
+def _drop_thinking(s: Session, start: int) -> int:
+    """Remove the thinking that goes back to the model from message `start` on.
+
+    On Claude Fable 5.1 and the 5.5 models a signed thinking block stays valid
+    only while everything sent before it is unchanged, and a stale one fails
+    the request with a 400. Elision changes message `start`, so every block
+    from there on is stale. Removing thinking from the end of the history is
+    valid, and putting a removed block back is not, so the blocks leave the
+    session, not just the request. Unsigned thinking is never sent and stays.
+    Each edit calls this, so the estimate sees the space it frees.
+    """
+    dropped = 0
+    for message in s.messages[start:]:
+        kept = [
+            b
+            for b in message.content
+            if b.get("type") not in ("thinking", "redacted_thinking")
+            or not sent_back(b)
+        ]
+        if len(kept) < len(message.content):
+            dropped += len(message.content) - len(kept)
+            message.content = kept
+    return dropped
 
 
 def compact(
@@ -91,6 +117,7 @@ def compact(
         if b.get("type") == "tool_use"
     }
     elided = 0
+    thinking = 0
     turn = 0
     for i, message in enumerate(s.messages):
         if message.role == "assistant":
@@ -122,12 +149,19 @@ def compact(
             if image_input:
                 block.pop("image", None)
             elided += 1
-    inputs = _elide_inputs(s, window, protected_from, image_input=image_input)
+            thinking += _drop_thinking(s, i)
+    inputs, dropped = _elide_inputs(s, window, protected_from, image_input=image_input)
+    thinking += dropped
     # ponytail: model-written summaries may follow elision if measured runs
     # keep reaching the context stop. No extra model call is made here.
     return (
         CompactionReport(
-            elided, before, estimate(s, image_input=image_input), window, inputs
+            elided,
+            before,
+            estimate(s, image_input=image_input),
+            window,
+            inputs,
+            thinking,
         )
         if elided or inputs
         else None
@@ -136,8 +170,10 @@ def compact(
 
 def _elide_inputs(
     s: Session, window: int, protected_from: int, *, image_input: bool
-) -> int:
-    """Elide old write contents and edit texts, oldest first; count the calls.
+) -> tuple[int, int]:
+    """Elide old write contents and edit texts, oldest first.
+
+    Returns the number of calls elided and of thinking blocks dropped.
 
     On the practice run write inputs were 46% of the context and tool results
     7.5%, so eliding results alone could not reach 60%. A failed call keeps
@@ -152,6 +188,7 @@ def _elide_inputs(
         if b.get("type") == "tool_result" and b.get("is_error")
     }
     inputs = 0
+    thinking = 0
     turn = 0
     for i, message in enumerate(s.messages):
         if message.role != "assistant":
@@ -187,7 +224,8 @@ def _elide_inputs(
             # ~3.9 s per model call on a 280-turn session even with nothing
             # left to elide, so it runs only when this call can be elided.
             if estimate(s, image_input=image_input) <= window * 0.6:
-                return inputs
+                return inputs, thinking
             args.update(pending)
             inputs += 1
-    return inputs
+            thinking += _drop_thinking(s, i)
+    return inputs, thinking
