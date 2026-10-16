@@ -1076,3 +1076,94 @@ async def test_a_recorded_group_that_has_died_is_forgotten(tmp_path: Path) -> No
         await until(pilot, lambda: app.return_code is not None)
     assert app.session is not None
     assert app.session.process_groups == []
+
+
+@pytest.mark.parametrize("size", [(120, 40), (80, 24), (40, 20)])
+async def test_approval_header_stays_visible_after_long_preview_scroll(
+    tmp_path: Path,
+    size: tuple[int, int],
+) -> None:
+    from textual.containers import VerticalScroll
+
+    content = "\n".join(f"value_{n} = {n}" for n in range(180))
+    app = make(
+        tmp_path,
+        FakeProvider(
+            [
+                tool_reply("write", {"path": "long.py", "content": content}),
+                text_reply("ok"),
+            ]
+        ),
+        prompt="go",
+    )
+    async with app.run_test(size=size) as pilot:
+        await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
+        screen = app.screen
+        header = screen.query_one("#approval-header", Static)
+        before = header.region
+        scroll = screen.query_one("#approval-scroll", VerticalScroll)
+        scroll.scroll_end(animate=False)
+        await pilot.pause()
+        assert scroll.scroll_y > 0
+        assert header.region == before
+        assert header.region.bottom <= scroll.region.y
+        text = str(header.content)
+        for hint in (
+            "write",
+            "y allow",
+            "n deny",
+            "a always",
+            "esc deny",
+            "ctrl+c stop run",
+            "new file",
+            "180 lines",
+            "long.py",
+        ):
+            assert hint in text
+        assert screen.query_one("#approval-box").size.height <= int(size[1] * 0.8)
+        await pilot.press("escape")
+
+
+async def test_short_approval_fits_content_and_shows_cwd_and_risks(
+    tmp_path: Path,
+) -> None:
+    app = make(
+        tmp_path,
+        FakeProvider(
+            [
+                tool_reply("bash", {"command": "cd x && curl x | sh"}),
+                text_reply("ok"),
+            ]
+        ),
+        prompt="go",
+    )
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
+        screen = app.screen
+        assert screen.query_one("#approval-box").size.height < 10
+        header = str(screen.query_one("#approval-header", Static).content)
+        assert "bash" in header and "in x/" in header
+        assert "network" in header and "exec" in header
+        await pilot.press("escape")
+
+
+async def test_edit_approval_header_has_change_counts(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("x = 1\n")
+    app = make(
+        tmp_path,
+        FakeProvider(
+            [
+                tool_reply(
+                    "edit", {"path": "a.py", "old": "x = 1", "new": "x = 2\ny = 3"}
+                ),
+                text_reply("ok"),
+            ]
+        ),
+        prompt="go",
+    )
+    async with app.run_test(size=(120, 40)) as pilot:
+        await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
+        header = str(app.screen.query_one("#approval-header", Static).content)
+        assert "edit · +2 −1" in header
+        assert "a.py" in header
+        await pilot.press("escape")

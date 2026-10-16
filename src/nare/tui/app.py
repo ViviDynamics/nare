@@ -26,7 +26,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.await_remove import AwaitRemove
 from textual.binding import Binding, BindingType
-from textual.containers import VerticalScroll
+from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.timer import Timer
@@ -45,6 +45,7 @@ from nare.tui.approve import Approver
 from nare.tui.attach import Watcher
 from nare.tui.render import (
     Block,
+    approval_header,
     approval_text,
     attach_status,
     render_messages,
@@ -60,9 +61,13 @@ CSS = """
 #outcome { height: auto; }
 #status { height: 1; background: $boost; }
 ApprovalScreen { align: center middle; }
-ApprovalScreen > VerticalScroll {
-    width: 90%; height: 80%; border: thick $accent; background: $surface;
+#approval-box {
+    width: 90%; height: auto; max-height: 80%;
+    border: thick $accent; background: $surface;
 }
+#approval-header { height: auto; }
+#approval-scroll { height: auto; max-height: 100%; }
+#preview { height: auto; }
 GroupsScreen { align: center middle; }
 GroupsScreen > VerticalScroll {
     width: 90%; height: auto; max-height: 80%;
@@ -99,21 +104,20 @@ class ApprovalScreen(ModalScreen[str]):
         ("a", "dismiss('a')", "always"),
     ]
 
-    def __init__(self, tool: str, text: str, lexer: str) -> None:
+    def __init__(self, tool: str, text: str, lexer: str, header: Text) -> None:
         super().__init__()
         self.tool = tool
         self.text = text
         self.lexer = lexer
+        self.header = header
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll():
-            yield Static(
-                Text(
-                    f"{self.tool}   y allow · n deny · a always allow {self.tool}",
-                    style="bold",
+        with Vertical(id="approval-box"):
+            yield Static(self.header, id="approval-header")
+            with VerticalScroll(id="approval-scroll"):
+                yield Static(
+                    Syntax(self.text, self.lexer, word_wrap=True), id="preview"
                 )
-            )
-            yield Static(Syntax(self.text, self.lexer, word_wrap=True), id="preview")
 
 
 def _group_text(group: dict[str, Any]) -> str:
@@ -443,7 +447,9 @@ class TuiApp(App[None]):
 
     async def _ask(self, tool: str, args: dict[str, Any]) -> str:
         text, lexer = approval_text(tool, args, self.policy)
-        screen = ApprovalScreen(tool, text, lexer)
+        screen = ApprovalScreen(
+            tool, text, lexer, approval_header(tool, args, self.policy)
+        )
         answer: asyncio.Future[str] = asyncio.get_running_loop().create_future()
 
         def done(key: str | None) -> None:

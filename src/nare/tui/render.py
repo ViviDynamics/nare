@@ -11,6 +11,7 @@ import difflib
 import json
 import os
 import re
+import shlex
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -223,16 +224,26 @@ def approval_text(tool: str, args: dict[str, Any], policy: Policy) -> tuple[str,
     """
     raw = (json.dumps(args, indent=2, ensure_ascii=False), "json")
     if tool == "bash":
-        return str(args.get("command", "")), "bash"
+        return _bash_preview(str(args.get("command", ""))), "bash"
     if tool not in ("edit", "write"):
         return raw
     try:
         path = policy.resolve(str(args["path"]))
+        display_path = _relative(
+            str(path), str(policy.root.resolve()) if policy.root else None
+        )
         if tool == "write":
             content = str(args["content"])
             if not path.exists():
-                return f"new file {path}\n\n{content}", "text"
-            return _rewrite(path.read_bytes().decode("utf-8"), content, path)
+                return (
+                    f"new file {display_path}\n\n{content}",
+                    Syntax.guess_lexer(str(path), content),
+                )
+            return _rewrite(
+                path.read_bytes().decode("utf-8"),
+                content,
+                display_path,
+            )
         # Bytes, not read_text: universal newlines would hide the CRLF to LF
         # rewrite edit_file makes. Its match is on the translated text.
         before = path.read_bytes().decode("utf-8")
@@ -240,13 +251,159 @@ def approval_text(tool: str, args: dict[str, Any], policy: Policy) -> tuple[str,
         old = str(args["old"])
         if not old or text.count(old) != 1:
             return raw
-        return _rewrite(before, text.replace(old, str(args["new"])), path)
+        return _rewrite(
+            before,
+            text.replace(old, str(args["new"])),
+            display_path,
+        )
     except (KeyError, ValueError, OSError):
         # ValueError covers a path outside --root and a file that is not UTF-8.
         return raw
 
 
-def _rewrite(before: str, after: str, path: Path) -> tuple[str, str]:
+def _bash_preview(command: str) -> str:
+    """Display-only line breaks, retaining operators and quoted/nested text.
+
+    This is deliberately not a shell parser. Heredocs and unbalanced input
+    stay verbatim rather than suggesting a different command.
+    """
+    if "<<" in command:
+        return command
+    quote = ""
+    depth = 0
+    escaped = False
+    breaks: list[int] = []
+    i = 0
+    while i < len(command):
+        char = command[i]
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = ""
+        elif char in ("'", '"', "`"):
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                return command
+        elif depth == 0:
+            operator = command[i : i + 2]
+            if operator in ("&&", "||"):
+                i += 1
+                breaks.append(i + 1)
+            elif char == ";":
+                breaks.append(i + 1)
+        i += 1
+    if quote or depth or escaped or not breaks:
+        return command
+    parts: list[str] = []
+    start = 0
+    for end in breaks:
+        parts.append(command[start:end].strip())
+        start = end
+    parts.append(command[start:].strip())
+    return "\n".join(part for part in parts if part)
+
+
+def _risk_badges(command: str, policy: Policy) -> list[str]:
+    """Display the categories documented by #63; never grant permission."""
+    try:
+        scan = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+        scan.whitespace_split = True
+        tokens = list(scan)
+    except ValueError:
+        return []
+    # Include nested/wrapped invocations conservatively. This display is not
+    # the approval policy's decision about whether a call may run unasked.
+    words = {Path(token).name for token in tokens}
+    pairs = set(zip(tokens, tokens[1:], strict=False))
+    network = bool(words & {"curl", "wget"}) or bool(
+        pairs
+        & {
+            ("pip", "install"),
+            ("pip3", "install"),
+            ("npm", "i"),
+            ("npm", "install"),
+            ("git", "clone"),
+        }
+    )
+    options = "".join(token[1:] for token in tokens if token.startswith("-"))
+
+    def outside(token: str) -> bool:
+        if not (token.startswith(("/", "~")) or ".." in token.split("/")):
+            return False
+        try:
+            policy.resolve(os.path.expanduser(token))
+        except (ValueError, OSError):
+            return True
+        return False
+
+    flags = {
+        "network": network,
+        "exec": ("chmod", "+x") in pairs
+        or (network and bool(words & {"sh", "bash", "zsh"})),
+        "sudo": "sudo" in words,
+        "kill": bool(words & {"kill", "pkill"}),
+        "background": bool(words & {"nohup", "pg_ctl", "systemctl"}) or "&" in tokens,
+        "rm -rf": "rm" in words and "r" in options and "f" in options,
+        "outside root": any(outside(token) for token in tokens),
+        "git commit": bool(pairs & {("git", "commit"), ("git", "push")}),
+    }
+    return [badge for badge, present in flags.items() if present]
+
+
+def approval_header(tool: str, args: dict[str, Any], policy: Policy) -> Text:
+    """Fixed identity, answer keys, size and warnings above the preview."""
+    text, lexer = approval_text(tool, args, policy)
+    root = str(policy.root.resolve()) if policy.root else None
+    details = tool
+    path = str(args.get("path", ""))
+    if tool == "bash":
+        command = str(args.get("command", ""))
+        cd = _CD.match(command.strip())
+        cwd = Path(root).name if root else Path.cwd().name
+        if cd:
+            cwd = _relative(cd.group(1).strip("'\""), root)
+        elif root:
+            cwd = Path(root).name
+        details += f" · in {cwd.rstrip('/')}/"
+        badges = _risk_badges(command, policy)
+    else:
+        badges = []
+        if path:
+            try:
+                path = _relative(str(policy.resolve(path)), root)
+            except (ValueError, OSError):
+                badges.append("outside root")
+            details += f" · {path}"
+        if tool == "write" and text.startswith("new file "):
+            details += (
+                f" · new file · {len(str(args.get('content', '')).splitlines())} lines"
+            )
+        elif lexer == "diff":
+            # Only hunk bodies carry additions/removals. A content line
+            # beginning with ++ or -- is not a filename header.
+            lines = re.split(r"(?m)^@@[^\n]*\n", text)[1:]
+            changes = [line for hunk in lines for line in hunk.splitlines()]
+            added = sum(line.startswith("+") for line in changes)
+            removed = sum(line.startswith("-") for line in changes)
+            details = f"{tool} · +{added} −{removed}" + (f" · {path}" if path else "")
+    header = Text(
+        f"{tool}   y allow · n deny · a always · esc deny · ctrl+c stop run\n",
+        style="bold",
+    )
+    header.append(details)
+    for badge in badges:
+        header.append(f" [{badge}]", style="bold yellow")
+    return header
+
+
+def _rewrite(before: str, after: str, path: str) -> tuple[str, str]:
     """The diff of a file's exact contents. splitlines() treats CRLF and LF
     alike and drops a final newline, so a change to those is named instead.
     """
