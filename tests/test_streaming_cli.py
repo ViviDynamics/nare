@@ -202,6 +202,7 @@ def test_cli_stream_survives_idle_proxy_and_emits_before_done(
             "cache_read": 3,
             "cache_write": 0,
             "cost": None,
+            "estimated": False,
         }
         assert state["idle_timeouts"] == 0
         assert len(state["requests"]) == 1

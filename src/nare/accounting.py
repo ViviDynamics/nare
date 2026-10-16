@@ -63,4 +63,6 @@ def turn_usage(reply: Reply, prices: Prices | None) -> Usage:
             + u.cache_write
             * (prices.cache_write if prices.cache_write is not None else prices.input)
         ) / 1_000_000
-    return replace(reply.usage, cost=cost)
+    return replace(
+        reply.usage, cost=cost, estimated=reply.cost is None and cost is not None
+    )

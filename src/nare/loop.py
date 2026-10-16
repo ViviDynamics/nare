@@ -310,7 +310,8 @@ async def step(
         Event(
             "cost",
             f"{usage.input} in / {usage.output} out, "
-            + (f"${usage.cost:.6f}" if usage.cost is not None else "cost unknown"),
+            + (f"${usage.cost:.6f}" if usage.cost is not None else "cost unknown")
+            + (" (estimate)" if usage.estimated else ""),
             asdict(usage),
         )
     )
@@ -576,6 +577,9 @@ async def _run(
     if window is None:
         window = 32000
         source = "default"
+    discover_prices = getattr(transport, "prices", None)
+    if prices is None and discover_prices is not None:
+        prices = await discover_prices()
     session.events.append(
         Event(
             "progress",
@@ -617,12 +621,21 @@ async def _run(
     while session.status == "working":
         if check_budget(session):
             pass
-        elif session.turns - budget_from >= max_turns:
-            session.status = "error"
-            session.stop_reason = "max_turns"
-            session.error = f"stopped after {max_turns} turns"
-            session.events.append(Event("error", session.error))
         else:
+            remaining = max_turns - (session.turns - budget_from)
+            summary = remaining <= 0
+            turn_policy = policy
+            if summary:
+                append_user_text(
+                    session,
+                    "Turn limit reached. Tools are disabled. Summarise what was done, "
+                    "what remains, and any processes left running.",
+                )
+                turn_policy = replace(policy, tools=frozenset(), external={})
+            elif remaining <= 5:
+                warning = f"{remaining} turns left: wrap up and summarise."
+                append_user_text(session, warning)
+                session.events.append(Event("progress", warning))
             try:
                 if getattr(transport, "streaming", False):
                     while session.events:
@@ -632,7 +645,7 @@ async def _run(
                             session,
                             transport,
                             approve,
-                            policy,
+                            turn_policy,
                             schema,
                             window,
                             prices,
@@ -646,7 +659,7 @@ async def _run(
                         session,
                         transport,
                         approve,
-                        policy,
+                        turn_policy,
                         schema,
                         window,
                         prices,
@@ -661,6 +674,15 @@ async def _run(
                 session.stop_reason = None
                 session.error = f"{type(exc).__name__}: {exc}"
                 session.events.append(Event("error", session.error))
+            finally:
+                if summary:
+                    session.status = "error"
+                    session.stop_reason = "max_turns"
+                    session.error = (
+                        f"Turn limit reached ({max_turns} per run). "
+                        f"Type `continue` for up to {max_turns} more."
+                    )
+                    session.events.append(Event("error", session.error))
         while session.events:
             yield session.events.pop(0)
 

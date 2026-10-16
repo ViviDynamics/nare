@@ -155,7 +155,10 @@ New stop reasons and additive usage/result/session fields keep the contract vers
 ## Budgets and partial results
 
 `usage` contains cumulative `input`, `output`, `cache_read`, `cache_write`, and
-`cost` (dollars or null). Token categories are disjoint. For OpenAI,
+`cost` (dollars or null), and `estimated` (true when any cost was calculated
+from prices rather than reported by the backend). Streamed cost headers are
+ignored; configured prices override discovered model-info prices. With neither,
+cost is unknown. Token categories are disjoint. For OpenAI,
 `input=prompt_tokens-cached_tokens`, `cache_read=cached_tokens`, and cache_write
 is zero. Anthropic reports uncached input, cache reads and cache creation
 separately. Completion/reasoning tokens reported in output are not counted
@@ -191,6 +194,11 @@ above a limit, resume emits a budget error/result and calls no model, including
 when no flag was supplied or provider construction would fail for lack of credentials. Raising one limit does not remove the other. All
 active limits must allow continuation. USD usage with a historical unknown
 cannot be repaired by adding prices later. `--max-turns` remains per invocation.
+With five or fewer turns remaining, the next user message and a progress event
+carry a wrap-up warning. At the cap, one extra accounted request with tools
+disabled asks for a summary, provided no token/USD ceiling has stopped the run.
+The outcome stays `error`/`max_turns` and includes a `continue` hint. The summary
+counts in `turns` and usage; it does not grant another tool turn.
 A completed/blocked crossing result is successful; reopening it with resume
 still applies the cumulative pre-call guard.
 

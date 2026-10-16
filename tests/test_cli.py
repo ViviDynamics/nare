@@ -260,7 +260,14 @@ def test_golden_jsonl(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Non
     assert target.read_text() == "hi"
 
     emitted = lines(capsys.readouterr().out)
-    usage = {"input": 10, "output": 5, "cache_read": 0, "cache_write": 0, "cost": None}
+    usage = {
+        "input": 10,
+        "output": 5,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cost": None,
+        "estimated": False,
+    }
     assert emitted[0]["detail"] == {
         "context_window": {
             "tokens": 32000,
@@ -301,6 +308,7 @@ def test_golden_jsonl(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Non
         "cache_read": 0,
         "cache_write": 0,
         "cost": None,
+        "estimated": False,
     }
     assert len(emitted) == 7
 
@@ -331,12 +339,17 @@ def test_an_errored_run_exits_one(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_max_turns_is_honoured(capsys: pytest.CaptureFixture[str]) -> None:
-    fake = FakeProvider([tool_reply("bash", {"command": "true"}) for _ in range(5)])
+    fake = FakeProvider(
+        [tool_reply("bash", {"command": "true"}) for _ in range(2)]
+        + [text_reply("Turn limit summary")]
+    )
     code = main(["run", "--yes", "--jsonl", "--max-turns", "2", "loop"], transport=fake)
     assert code == 1
     result = lines(capsys.readouterr().out)[-1]
     assert result["stop_reason"] == "max_turns"
-    assert result["turns"] == 2
+    assert result["turns"] == 3
+    assert fake.calls[-1][1] == []
+    assert "continue" in str(result["error"])
 
 
 def test_without_jsonl_the_output_is_plain_text(
