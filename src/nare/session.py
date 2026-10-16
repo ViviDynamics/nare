@@ -38,6 +38,7 @@ class Usage:
     cache_read: int = 0
     cache_write: int = 0
     cost: float | None = 0.0
+    estimated: bool = False
 
     @property
     def total_tokens(self) -> int:
@@ -50,6 +51,7 @@ class Usage:
             output=self.output + other.output,
             cache_read=self.cache_read + other.cache_read,
             cache_write=self.cache_write + other.cache_write,
+            estimated=self.estimated or other.estimated,
             cost=(self.cost + other.cost)
             if self.cost is not None and other.cost is not None
             else None,

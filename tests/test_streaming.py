@@ -153,7 +153,7 @@ async def test_stream_normalizes_final_reply_and_usage(provider: str) -> None:
     assert reply.usage.input == 7
     assert reply.usage.output == 5
     assert reply.usage.cache_read == 3
-    assert reply.cost == 0.012
+    assert reply.cost is None
     assert reply.stop_reason == "end_turn"
     assert seen[0]["stream"] is True
     assert data.closed

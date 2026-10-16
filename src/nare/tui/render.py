@@ -422,7 +422,7 @@ def _tokens(n: int) -> str:
 def _cost(usage: Usage, limit: float | None) -> str:
     if usage.cost is None:
         return "cost unknown"
-    spent = f"${usage.cost:.2f}"
+    spent = f"${usage.cost:.2f}" + (" (estimate)" if usage.estimated else "")
     return spent if limit is None else f"{spent} / ${limit:.2f}"
 
 

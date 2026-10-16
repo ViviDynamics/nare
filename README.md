@@ -194,13 +194,23 @@ and [offline CLI evidence](docs/evidence/41/README.md).
 | Cache prices | `NARE_PRICE_CACHE_READ`, `NARE_PRICE_CACHE_WRITE` | Optional dollars per million tokens |
 
 Invalid settings exit 2 before transport construction, with no result on stdout.
-Prices must be finite and non-negative. The backend's reported dollar cost wins
-(`x-litellm-response-cost`, then `x-litellm-response-cost-original`), then
-configured prices, then unknown (`usage.cost=null`). Cache prices default to the
+Prices must be finite and non-negative. Nonstreaming replies prefer the backend's
+reported dollar cost (`x-litellm-response-cost`, then
+`x-litellm-response-cost-original`). Streamed replies ignore these headers because
+they arrive before final usage. Without reported cost, explicit prices take
+precedence over prices discovered from `/v1/model/info`, then cost is unknown
+(`usage.cost=null`). Calculated costs are labelled as estimates and carry
+`usage.estimated=true`. Cache prices default to the
 input price, which can overstate cache cost. An unknown turn makes cumulative
 cost unknown. A USD budget stops after the first unknown-cost nonterminal turn
 and names `NARE_PRICE_IN` and `NARE_PRICE_OUT`; done/blocked still win. Legacy
 nonempty sessions without dollar accounting load with unknown cost.
+
+With five or fewer turns left, nare tells the model and the person to wrap up.
+At `--max-turns` (50 by default), one extra, accounted turn with tools disabled
+requests a summary. The run still exits with `error` and `stop_reason=max_turns`,
+and explains that `continue` starts another run with the same turn allowance.
+Token and USD ceilings still apply before a summary request.
 
 Before each model call, old tool output is elided if estimated context reaches
 80% of the window, stopping at 60% where possible. The task, assistant messages,

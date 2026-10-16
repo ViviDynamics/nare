@@ -13,13 +13,14 @@ import httpx2
 from anthropic import AsyncAnthropic, omit
 from anthropic.types import MessageParam, ToolParam
 
+from nare.accounting import Prices
 from nare.session import Message, Usage
 from nare.transport import (
     Delta,
+    ModelMetadata,
     Reply,
     StopReason,
     ToolCall,
-    discover_context_window,
     reported_cost,
 )
 
@@ -222,6 +223,13 @@ class AnthropicTransport:
             api_key=api_key, base_url=base_url, http_client=http_client
         )
 
+        self._metadata = ModelMetadata(
+            self._client._client,
+            self._discovery_base,
+            self.model,
+            {"x-api-key": self._client.api_key or ""},
+        )
+
     def _warn_proxy_reasoning(self, content: list[dict[str, Any]]) -> None:
         # Stream starts can have an empty signature even for native thinking.
         # Inspect completed blocks, after any signature deltas have arrived.
@@ -236,12 +244,10 @@ class AnthropicTransport:
             )
 
     async def context_window(self) -> int | None:
-        return await discover_context_window(
-            self._client._client,
-            self._discovery_base,
-            self.model,
-            {"x-api-key": self._client.api_key or ""},
-        )
+        return await self._metadata.context_window()
+
+    async def prices(self) -> Prices | None:
+        return await self._metadata.prices()
 
     async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
         if self.streaming:
@@ -365,6 +371,6 @@ class AnthropicTransport:
                 tool_calls=calls,
                 usage=usage_from(response.usage),
                 stop_reason=stop_reason_from(response.stop_reason),
-                cost=reported_cost(stream.response.headers),
+                cost=reported_cost(stream.response.headers, streamed=True),
             )
         yield reply

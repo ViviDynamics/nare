@@ -57,3 +57,12 @@ def test_legacy_nonempty_usage_has_unknown_cost() -> None:
     assert loads(json.dumps(raw)).usage.cost is None
     raw["usage"] = {"input": 0, "output": 0}
     assert loads(json.dumps(raw)).usage.cost == 0
+
+
+def test_calculated_cost_is_labelled_estimated_and_survives_serialization() -> None:
+    usage = turn_usage(reply(), Prices(1, 2))
+    assert usage.estimated is True
+    assert turn_usage(reply(0.25), Prices(1, 2)).estimated is False
+    session = new_session("go")
+    session.usage += usage
+    assert loads(dumps(session)).usage.estimated is True

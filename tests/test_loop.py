@@ -258,6 +258,7 @@ async def test_step_emits_progress_and_cost_events() -> None:
         "cache_read": 0,
         "cache_write": 0,
         "cost": None,
+        "estimated": False,
     }
     assert session.events[2].text == "all done"
 
@@ -331,7 +332,7 @@ async def test_max_turns_ends_the_run_honestly(tmp_path: Path) -> None:
     kinds = await drain(session, fake, max_turns=2)
     assert session.status == "error"
     assert session.stop_reason == "max_turns"
-    assert session.turns == 2
+    assert session.turns == 3
     assert "error" in kinds
 
 
@@ -558,3 +559,68 @@ async def test_a_bash_call_that_leaves_nothing_records_nothing() -> None:
     fake = FakeProvider([tool_reply("bash", {"command": "true"})])
     await step(session, fake, approve_all, Policy())
     assert session.process_groups == []
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_turn_cap_warns_and_gets_one_tools_disabled_summary(
+    streaming: bool,
+) -> None:
+    from fake_provider import StreamingProvider
+    from nare.session import reopen
+
+    session = new_session("keep trying")
+    factory = StreamingProvider if streaming else FakeProvider
+    fake = factory(
+        [
+            *[tool_reply("read", {"path": "/missing"}) for _ in range(6)],
+            text_reply("Read failed; nothing changed. Continue to retry."),
+        ]
+    )
+    events = [e async for e in run(session, transport=fake, max_turns=6)]
+    assert len(fake.calls) == 7
+    assert "turns left" not in str(fake.calls[0][0])
+    for index, remaining in enumerate(range(5, 0, -1), 1):
+        assert f"{remaining} turns left: wrap up and summarise." in str(
+            fake.calls[index][0][-1]
+        )
+    assert fake.calls[-1][1] == []
+    assert "summar" in str(fake.calls[-1][0][-1]).lower()
+    assert session.messages[-1].content[0]["text"].startswith("Read failed")
+    assert any(e.type == "output" and "Read failed" in e.text for e in events)
+    assert any("5 turns left" in e.text for e in events)
+    assert session.turns == 7
+    assert session.status == "error"
+    assert session.stop_reason == "max_turns"
+    assert (
+        session.error
+        == "Turn limit reached (6 per run). Type `continue` for up to 6 more."
+    )
+    reopen(session, "continue")
+    await drain(session, FakeProvider([text_reply("done")]), max_turns=6)
+    assert loads(dumps(session)).status == "done"
+
+
+async def test_summary_cannot_execute_a_tool_even_if_model_calls_one(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "must-not-exist"
+    fake = FakeProvider(
+        [
+            tool_reply("read", {"path": "/missing"}),
+            tool_reply("write", {"path": str(target), "content": "bad"}),
+        ]
+    )
+    session = new_session("go")
+    await drain(session, fake, max_turns=1)
+    assert not target.exists()
+    assert len(fake.calls) == 2
+    assert session.stop_reason == "max_turns"
+    assert session.messages[-1].content[0]["is_error"] is True
+
+
+async def test_summary_failure_keeps_max_turns_reason() -> None:
+    session = new_session("go")
+    fake = FakeProvider([tool_reply("read", {"path": "/missing"})])
+    await drain(session, fake, max_turns=1)
+    assert session.stop_reason == "max_turns"
+    assert "continue" in (session.error or "")
