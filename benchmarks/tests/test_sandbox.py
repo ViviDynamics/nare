@@ -112,6 +112,20 @@ def test_run_check_writes_as_the_invoking_user(tmp_path: Path) -> None:
 
 
 @pytest.mark.docker
+def test_run_check_reads_the_artifacts_but_cannot_change_them(
+    tmp_path: Path,
+) -> None:
+    from benchmarks.runner.sandbox import run_check, sandbox
+
+    with sandbox(make_case(tmp_path)) as (workdir, artifacts):
+        (artifacts / "session.json").write_text('{"process_groups": []}')
+        read = run_check(workdir, "test -s /out/session.json", 60, artifacts=artifacts)
+        assert read[0] == 0
+        assert run_check(workdir, "touch /out/x", 60, artifacts=artifacts)[0] != 0
+        assert not (artifacts / "x").exists()
+
+
+@pytest.mark.docker
 def test_git_diff_shows_the_agents_change_only(tmp_path: Path) -> None:
     from benchmarks.runner.sandbox import git_checkpoint, git_diff, sandbox
 
@@ -227,4 +241,180 @@ def test_the_agent_gets_the_key_its_provider_reads(
         judge=None,
     )
     run_agent(case, tmp_path, tmp_path, config)
-    assert seen["passthrough"] == ("OPENAI_API_KEY",)
+    passthrough = seen["passthrough"]
+    assert isinstance(passthrough, tuple)
+    assert "OPENAI_API_KEY" in passthrough
+    assert "ANTHROPIC_API_KEY" not in passthrough
+
+
+def test_the_agent_streams_when_the_host_asks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A proxy behind Cloudflare answered 524 to every turn that took over
+    # 120 s to return whole: the turn where the model writes the app. A
+    # streamed turn sends bytes at once, so NARE_STREAM reaches the agent.
+    from benchmarks.runner import sandbox as mod
+
+    seen: dict[str, object] = {}
+
+    def fake_run(*args: object, **kwargs: object) -> tuple[int, str, str, bool]:
+        seen.update(kwargs)
+        return 0, "", "", False
+
+    monkeypatch.setattr(mod, "_docker_run", fake_run)
+    mod.run_agent(make_case(tmp_path), tmp_path, tmp_path, CONFIG)
+    passthrough = seen["passthrough"]
+    assert isinstance(passthrough, tuple)
+    assert "NARE_STREAM" in passthrough
+
+
+@pytest.mark.parametrize(("cap", "sent"), [(32000, "32000"), (None, None)])
+def test_the_agent_gets_the_output_cap_the_run_sets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cap: int | None, sent: str | None
+) -> None:
+    from dataclasses import replace
+
+    from benchmarks.runner import sandbox as mod
+
+    seen: dict[str, object] = {}
+
+    def fake_run(*args: object, **kwargs: object) -> tuple[int, str, str, bool]:
+        seen.update(kwargs)
+        return 0, "", "", False
+
+    monkeypatch.setattr(mod, "_docker_run", fake_run)
+    config = replace(CONFIG, max_tokens=cap)
+    mod.run_agent(make_case(tmp_path), tmp_path, tmp_path, config)
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert env.get("BENCH_MAX_TOKENS") == sent
+
+
+@pytest.mark.parametrize(
+    ("cap", "expected"), [("32000", ["--max-tokens", "32000"]), ("", [])]
+)
+def test_the_agent_script_passes_the_output_cap_only_when_set(
+    tmp_path: Path, cap: str, expected: list[str]
+) -> None:
+    """The real script under sh, with a stub nare that prints its arguments."""
+    import os
+    import subprocess
+
+    from benchmarks.runner.sandbox import _AGENT_SCRIPT
+
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    (stubs / "nare").write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    (stubs / "nare").chmod(0o755)
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "a.txt").write_text("x\n")
+    env = {
+        **os.environ,
+        "PATH": f"{stubs}:{os.environ['PATH']}",
+        # The person's own git config (commit signing, hooks) stays out of it.
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "BENCH_PROMPT": "do it",
+        "BENCH_MODEL": "m",
+        "BENCH_MAX_TURNS": "3",
+        "BENCH_MAX_TOKENS": cap,
+    }
+    done = subprocess.run(
+        ["sh", "-c", _AGENT_SCRIPT],
+        cwd=work,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    args = done.stdout.splitlines()
+    assert args[args.index("m") + 1 : args.index("--")] == expected
+    assert args[-1] == "do it"
+
+
+def test_the_agent_script_reads_what_was_left_after_nare_exits(tmp_path: Path) -> None:
+    """The real script under sh: the snapshot runs after nare, even when nare
+    fails, and the rep still exits with nare's code."""
+    import os
+    import subprocess
+
+    from benchmarks.runner.sandbox import _AGENT_SCRIPT
+
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    (stubs / "nare").write_text("#!/bin/sh\nexit 3\n")
+    (stubs / "nare").chmod(0o755)
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "a.txt").write_text("x\n")
+    ran = tmp_path / "ran"
+    env = {
+        **os.environ,
+        "PATH": f"{stubs}:{os.environ['PATH']}",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "BENCH_PROMPT": "do it",
+        "BENCH_MODEL": "m",
+        "BENCH_MAX_TURNS": "3",
+        "BENCH_LEFTOVERS": (
+            f"import sys, pathlib; pathlib.Path({str(ran)!r}).write_text(sys.argv[1])"
+        ),
+    }
+    done = subprocess.run(["sh", "-c", _AGENT_SCRIPT], cwd=work, env=env)
+    assert done.returncode == 3
+    assert ran.read_text() == "/out/after.json"
+
+
+def test_the_agent_gets_the_leftovers_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from benchmarks.runner import leftovers
+    from benchmarks.runner import sandbox as mod
+
+    seen: dict[str, object] = {}
+
+    def fake_run(*args: object, **kwargs: object) -> tuple[int, str, str, bool]:
+        seen.update(kwargs)
+        return 0, "", "", False
+
+    monkeypatch.setattr(mod, "_docker_run", fake_run)
+    mod.run_agent(make_case(tmp_path), tmp_path, tmp_path, CONFIG)
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert env["BENCH_LEFTOVERS"] == Path(leftovers.__file__).read_text()
+
+
+@pytest.mark.docker
+def test_the_snapshot_sees_a_server_that_escaped_with_setsid(tmp_path: Path) -> None:
+    """In the real image: pg_ctl's setsid escape, and a data directory outside
+    /work, both of which are gone by the time a check runs."""
+    import json
+
+    from benchmarks.runner import leftovers
+    from benchmarks.runner.sandbox import _AGENT_SCRIPT, _docker_run, sandbox
+
+    with sandbox(make_case(tmp_path)) as (workdir, artifacts):
+        (workdir / "bin").mkdir()
+        (workdir / "bin" / "nare").write_text(
+            "#!/bin/sh\nsetsid sleep 300 &\n"
+            "mkdir -p /tmp/pg && echo 16 > /tmp/pg/PG_VERSION\nexit 3\n"
+        )
+        (workdir / "bin" / "nare").chmod(0o755)
+        code, _, err, _ = _docker_run(
+            workdir,
+            ["sh", "-c", _AGENT_SCRIPT],
+            60,
+            artifacts=artifacts,
+            env={
+                "PATH": "/work/bin:/usr/local/bin:/usr/bin:/bin",
+                "BENCH_PROMPT": "go",
+                "BENCH_MODEL": "m",
+                "BENCH_MAX_TURNS": "1",
+                "BENCH_LEFTOVERS": Path(leftovers.__file__).read_text(),
+            },
+        )
+        assert code == 3, err
+        after = json.loads((artifacts / "after.json").read_text())
+    assert [p["args"] for p in after["processes"]] == ["sleep 300"]
+    assert after["database_files"] == ["/tmp/pg/PG_VERSION"]

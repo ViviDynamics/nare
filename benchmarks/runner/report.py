@@ -32,6 +32,9 @@ class RepRecord:
     # The rep's evidence directory, relative to benchmarks/results/. Empty in
     # results files written before evidence was kept.
     artifacts: str = ""
+    # The agent's --max-tokens; None is nare's own default, which every run
+    # used before the cap could be set.
+    max_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -107,6 +110,9 @@ class BaselineMeta:
     provider: str
     model: str
     judge_model: str
+    # The agent's output cap, None for nare's default. It changes what a run
+    # measures, so numbers from another cap are not comparable.
+    max_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -147,6 +153,8 @@ def dumps_baseline(meta: BaselineMeta, summaries: Sequence[CaseSummary]) -> str:
         f"model       = {_toml_str(meta.model)}",
         f"judge_model = {_toml_str(meta.judge_model)}",
     ]
+    if meta.max_tokens is not None:
+        lines.append(f"max_tokens  = {meta.max_tokens}")
     for summary in summaries:
         if summary.inconclusive or summary.pass_rate is None:
             continue
@@ -175,6 +183,7 @@ def load_baseline(path: Path) -> Baseline:
         provider=str(meta_raw.get("provider", "")),
         model=str(meta_raw.get("model", "")),
         judge_model=str(meta_raw.get("judge_model", "")),
+        max_tokens=meta_raw.get("max_tokens"),
     )
     cases: dict[str, CaseSummary] = {}
     for name, body in raw.get("case", {}).items():

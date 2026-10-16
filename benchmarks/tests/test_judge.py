@@ -189,3 +189,20 @@ async def test_a_transport_failure_is_a_judge_failure() -> None:
 def test_the_diff_not_the_closing_message_decides_file_claims() -> None:
     """Before #30 the judge credited a file claim the diff could not show."""
     assert "true only if the diff shows it" in JUDGE_SYSTEM
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_the_judge_streams_when_the_run_does(stream: bool) -> None:
+    # Through a proxy, a reasoning model's non-streamed reply came back with
+    # no content blocks at all, so every rep's judge failed on an empty reply.
+    # The same call streamed returned the JSON verdict.
+    from benchmarks.runner.config import Config
+    from benchmarks.runner.judge import judge_transport
+    from nare.transport.anthropic import AnthropicTransport
+
+    config = Config(
+        "m", "anthropic", None, "j", "k", "ANTHROPIC_API_KEY", stream=stream
+    )
+    transport = judge_transport(config)
+    assert isinstance(transport, AnthropicTransport)
+    assert transport.streaming is stream

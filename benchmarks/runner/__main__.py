@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -55,6 +55,7 @@ from benchmarks.runner.sandbox import (
     build_image,
     git_checkpoint,
     git_diff,
+    idle_artifacts,
     repo_root,
     run_agent,
     run_check,
@@ -102,7 +103,8 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument(
             "--allow-model-change",
             action="store_true",
-            help="compare against a baseline blessed on a different model",
+            help="compare against a baseline blessed on a different model or "
+            "output cap",
         )
     return parser
 
@@ -121,11 +123,13 @@ def pristine_check(case: Case, cmd: str, timeout: int) -> tuple[int, str]:
     A sandbox per check rather than per case: a check that writes must not
     change what the next check sees, or verify stops measuring the pristine
     tree. The git checkpoint is there so checks see the same repository the
-    agent would.
+    agent would, and the idle run's artifacts so a check that reads /out
+    grades a run that did nothing instead of crashing on a missing file.
     """
-    with sandbox(case) as (workdir, _):
+    with sandbox(case) as (workdir, artifacts):
         git_checkpoint(workdir)
-        return run_check(workdir, cmd, timeout)
+        idle_artifacts(case, workdir, artifacts)
+        return run_check(workdir, cmd, timeout, artifacts=artifacts)
 
 
 def verify(
@@ -212,13 +216,14 @@ def keep_evidence(dest: Path, artifacts: Path, result: RunArtifacts) -> None:
 
     Cleared first: a confirmation re-run reuses the same case-rep names, and a
     judge.txt left from the first pass would describe a different run. The
-    session can be missing when the container died before nare wrote it.
+    session, and what the container held after nare, can be missing when the
+    container died first.
     """
     shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True)
-    session = artifacts / "session.json"
-    if session.is_file():
-        shutil.copyfile(session, dest / "session.json")
+    for name in ("session.json", "after.json"):
+        if (artifacts / name).is_file():
+            shutil.copyfile(artifacts / name, dest / name)
     (dest / "stdout.jsonl").write_text(result.stdout, encoding="utf-8")
     (dest / "stderr.txt").write_text(result.stderr, encoding="utf-8")
 
@@ -260,6 +265,7 @@ async def run_rep(
                 duration_s=result.duration_s,
                 model=config.model,
                 artifacts=kept_ref,
+                max_tokens=config.max_tokens,
             )
 
         # Before the bash checks, so nothing a check writes reaches the judge.
@@ -271,7 +277,7 @@ async def run_rep(
             if check.kind == "result"
         ]
         for check in case.bash_checks:
-            code, output = run_check(workdir, check.cmd or "", 120)
+            code, output = run_check(workdir, check.cmd or "", 120, artifacts=artifacts)
             graded.append(grade_bash_check(check, code, output))
 
         met: list[bool] | None = None
@@ -304,6 +310,7 @@ async def run_rep(
         duration_s=result.duration_s,
         model=config.model,
         artifacts=kept_ref,
+        max_tokens=config.max_tokens,
     )
 
 
@@ -357,19 +364,28 @@ def model_changed(baseline: Baseline, config: Config, allow: bool) -> bool:
 
     Pinning the judge model too is the non-obvious half: if it changes under
     the suite, every score shifts at once and reads as a harness regression.
+    The agent's output cap is pinned for the same reason: a reasoning model
+    cut off at nare's default fails reps it passes with room to think.
     """
     if allow:
         return False
     if (
         baseline.meta.model == config.model
         and baseline.meta.judge_model == config.judge_model
+        and baseline.meta.max_tokens == config.max_tokens
     ):
         return False
+
+    def cap(value: int | None) -> str:
+        return "nare's default" if value is None else str(value)
+
     print(
         f"bench: baseline was blessed on model {baseline.meta.model!r} / "
-        f"judge {baseline.meta.judge_model!r}; this run used "
-        f"{config.model!r} / {config.judge_model!r}. Numbers are not "
-        "comparable across models. Pass --allow-model-change to override.",
+        f"judge {baseline.meta.judge_model!r} / output cap "
+        f"{cap(baseline.meta.max_tokens)}; this run used {config.model!r} / "
+        f"{config.judge_model!r} / {cap(config.max_tokens)}. Numbers are not "
+        "comparable across models or caps. Pass --allow-model-change to "
+        "override.",
         file=sys.stderr,
     )
     return True
@@ -498,6 +514,9 @@ def main(argv: list[str] | None = None) -> int:
         print("bench: no results yet; run `bin/bench run` first", file=sys.stderr)
         return 2
     records = read_results(results_file)
+    # The cap the results were run at, not one in this shell: compare and
+    # bless never run the agent.
+    config = replace(config, max_tokens=next((r.max_tokens for r in records), None))
     produced = sorted({r.model for r in records} - {config.model})
     if produced:
         print(
@@ -529,6 +548,7 @@ def main(argv: list[str] | None = None) -> int:
             provider=config.provider,
             model=config.model,
             judge_model=config.judge_model,
+            max_tokens=config.max_tokens,
         )
         baseline_file.write_text(
             dumps_baseline(meta, merge_baseline(kept, summaries, tier_ids)),
