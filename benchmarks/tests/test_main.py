@@ -385,8 +385,8 @@ async def test_a_rep_keeps_its_session_output_and_judge_replies(
 async def test_a_reps_checks_can_read_its_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A server the agent left running died with its container. Only the
-    # session's process_groups says it was ever started.
+    # A server the agent left running died with its container. What the run
+    # left in /out is all a check can read about it.
     import benchmarks.runner.__main__ as bench
 
     fake_sandbox(monkeypatch, RunArtifacts(DONE_LINE, "", 0, False, 1.0))
@@ -403,6 +403,44 @@ async def test_a_reps_checks_can_read_its_session(
     evidence = tmp_path / "results" / "stamp"
     await run_rep(sandboxed(tmp_path), CONFIG, cast(Transport, None), 0, evidence)
     assert seen == ['{"id": "s1"}']
+
+
+async def test_a_rep_keeps_what_its_container_left(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import benchmarks.runner.__main__ as bench
+
+    fake_sandbox(monkeypatch, RunArtifacts(DONE_LINE, "", 0, False, 1.0))
+
+    def agent(
+        case: Case, workdir: Path, artifacts: Path, config: Config
+    ) -> RunArtifacts:
+        (artifacts / "after.json").write_text('{"processes": []}')
+        return RunArtifacts(DONE_LINE, "", 0, False, 1.0)
+
+    monkeypatch.setattr(bench, "run_agent", agent)
+    evidence = tmp_path / "results" / "stamp"
+    await run_rep(sandboxed(tmp_path), CONFIG, cast(Transport, None), 0, evidence)
+    assert (evidence / "demo-0" / "after.json").read_text() == '{"processes": []}'
+
+
+@pytest.mark.docker
+def test_verify_checks_read_what_an_idle_run_leaves(tmp_path: Path) -> None:
+    """Checks that read /out run for real on the pristine fixture, against a
+    run in which the agent did nothing, rather than crash on a missing file."""
+    from benchmarks.runner.__main__ import pristine_check
+
+    (tmp_path / "fixture").mkdir()
+    case = replace(case_with(), directory=tmp_path)
+    cmd = (
+        "python3 -I -c 'import json; "
+        's = json.load(open("/out/session.json")); '
+        'a = json.load(open("/out/after.json")); '
+        'assert s["messages"], s; '
+        'assert a == {"processes": [], "database_files": []}, a\''
+    )
+    code, output = pristine_check(case, cmd, 60)
+    assert code == 0, output
 
 
 async def test_a_judge_that_fails_twice_still_leaves_both_replies(
@@ -498,3 +536,73 @@ def test_a_confirmation_rerun_leaves_one_results_file(
     assert code == 1  # the drop was confirmed at seven reps
     results = tmp_path / "benchmarks" / "results"
     assert [p.name for p in results.glob("*.jsonl")] == ["2026-09-24T00-00-00Z.jsonl"]
+
+
+async def test_a_rep_records_the_agents_output_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_sandbox(monkeypatch, RunArtifacts(DONE_LINE, "", 0, False, 1.0))
+    evidence = tmp_path / "results" / "stamp"
+    config = replace(CONFIG, max_tokens=32000)
+    rec = await run_rep(sandboxed(tmp_path), config, cast(Transport, None), 0, evidence)
+    assert rec.max_tokens == 32000
+
+
+@pytest.mark.parametrize(("blessed", "now"), [(None, 32000), (32000, None)])
+def test_numbers_from_another_output_cap_are_not_compared(
+    blessed: int | None, now: int | None
+) -> None:
+    from benchmarks.runner.__main__ import model_changed
+    from benchmarks.runner.report import Baseline
+
+    baseline = Baseline(
+        BaselineMeta("t", "abc1234", "anthropic", "m", "m", max_tokens=blessed), {}
+    )
+    assert model_changed(baseline, replace(CONFIG, max_tokens=now), False)
+    assert not model_changed(baseline, replace(CONFIG, max_tokens=blessed), False)
+    assert not model_changed(baseline, replace(CONFIG, max_tokens=now), True)
+
+
+def results_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    import benchmarks.runner.__main__ as bench
+    from benchmarks.runner.sandbox import repo_root
+
+    (tmp_path / "benchmarks").mkdir()
+    (tmp_path / "benchmarks" / "cases").symlink_to(repo_root() / "benchmarks" / "cases")
+    monkeypatch.setattr(bench, "repo_root", lambda: tmp_path)
+    for var in ("NARE_BENCH_MAX_TOKENS", "NARE_BENCH_JUDGE_MODEL", "NARE_PROVIDER"):
+        monkeypatch.delenv(var, raising=False)
+    return tmp_path / "benchmarks" / "baselines"
+
+
+def test_bless_records_the_cap_the_results_were_run_at(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Read from the results, not the shell: bless never runs the agent.
+    from benchmarks.runner.report import baseline_path, load_baseline
+
+    baselines = results_dir(tmp_path, monkeypatch)
+    capped = replace(record("edit-docstring", model="m"), max_tokens=32000)
+    write_results(tmp_path, [capped])
+    assert main(["bless", "--model", "m"]) == 0
+    assert load_baseline(baseline_path(baselines, "m", "smoke")).meta.max_tokens == (
+        32000
+    )
+
+
+def test_compare_refuses_results_run_at_another_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from benchmarks.runner.report import baseline_path
+
+    baselines = results_dir(tmp_path, monkeypatch)
+    baselines.mkdir()
+    baseline_path(baselines, "m", "smoke").write_text(
+        dumps_baseline(
+            BaselineMeta("t", "abc1234", "anthropic", "m", "m"),
+            [summary("edit-docstring", 1.0)],
+        )
+    )
+    capped = replace(record("edit-docstring", model="m"), max_tokens=32000)
+    write_results(tmp_path, [capped])
+    assert main(["compare", "--model", "m"]) == 2

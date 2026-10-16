@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -63,6 +63,13 @@ documentation unless asked.\
 """
 
 
+def stream_from_env(env: Mapping[str, str]) -> bool:
+    """NARE_STREAM, as --stream's default reads it. The benchmark's judge
+    reads it here too, so it streams exactly when the agent does.
+    """
+    return env.get("NARE_STREAM", "").strip().lower() in ("1", "true", "yes")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="nare", description="A standalone agent harness."
@@ -96,8 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--stream",
         action="store_true",
-        default=os.environ.get("NARE_STREAM", "").strip().lower()
-        in ("1", "true", "yes"),
+        default=stream_from_env(os.environ),
         help="stream text/reasoning while each model turn runs (env: NARE_STREAM)",
     )
     run_parser.add_argument(
@@ -258,9 +264,14 @@ def system_from_args(args: argparse.Namespace) -> str | None:
     it, then --append-system after it. None sends no system prompt at all.
 
     A blank part is dropped, not sent: `--system ''` is how a caller opts out
-    of the default, and a blank append would only add a separator.
+    of the default, and a blank append would only add a separator. A run
+    with no tools gets no default: every rule in it is about tools, and a
+    caller after one answer would get them back as prose in it.
     """
-    base = DEFAULT_SYSTEM if args.system is None else args.system
+    if args.system is not None:
+        base: str | None = args.system
+    else:
+        base = DEFAULT_SYSTEM if tools_from_args(args) else None
     parts = [part for part in (base, args.append_system) if part and part.strip()]
     return "\n\n".join(parts) or None
 
@@ -293,14 +304,19 @@ def schema_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
     return loaded
 
 
+def tools_from_args(args: argparse.Namespace) -> frozenset[str]:
+    """The tools --tools names: all of them by default, none for 'none'."""
+    if args.tools is None:
+        return frozenset(TOOLS)
+    named = [name.strip() for name in args.tools.split(",") if name.strip()]
+    return frozenset() if named == ["none"] else frozenset(named)
+
+
 def policy_from_args(args: argparse.Namespace) -> Policy:
     """Both failures here are startup failures: a caller that asked for a
     narrower session and did not get one must not be handed a wider one.
     """
-    tools = frozenset(TOOLS)
-    if args.tools is not None:
-        named = [name.strip() for name in args.tools.split(",") if name.strip()]
-        tools = frozenset() if named == ["none"] else frozenset(named)
+    tools = tools_from_args(args)
     root = None
     if args.root is not None:
         root = Path(args.root)

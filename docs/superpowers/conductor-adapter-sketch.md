@@ -35,7 +35,9 @@ class NareAdapter(BackendAdapter):
         if self._session.exists():
             argv += ["--resume", str(self._session)]
         if score.persona:
-            argv += ["--system", score.persona]
+            # Appended, not --system: that replaces nare's default prompt,
+            # and with it the rules that keep a run in scope.
+            argv += ["--append-system", score.persona]
         for flag, value in (("--model", model), ("--effort", effort),
                             ("--max-tokens", max_tokens)):
             if value is not None:

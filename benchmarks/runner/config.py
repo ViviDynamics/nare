@@ -10,6 +10,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from nare.cli import stream_from_env
+from nare.transport.anthropic import nonstreaming_ceiling
+
 
 class ConfigError(Exception):
     """Configuration that cannot produce a run. Always exit 2."""
@@ -37,7 +40,9 @@ class Config:
     stream: bool = False
 
 
-def _max_tokens_from(env: Mapping[str, str]) -> int | None:
+def _max_tokens_from(
+    env: Mapping[str, str], provider: str, model: str, stream: bool
+) -> int | None:
     raw = env.get("NARE_BENCH_MAX_TOKENS")
     if not raw:
         return None
@@ -47,6 +52,15 @@ def _max_tokens_from(env: Mapping[str, str]) -> int | None:
         value = 0
     if value <= 0:
         raise ConfigError(f"NARE_BENCH_MAX_TOKENS must be a positive integer: {raw!r}")
+    # nare refuses this at startup, so every rep would end with no result
+    # line: a paid run that measures nothing.
+    if provider == "anthropic" and not stream:
+        ceiling = nonstreaming_ceiling(model)
+        if value > ceiling:
+            raise ConfigError(
+                f"NARE_BENCH_MAX_TOKENS {value} is above {ceiling}, the most "
+                f"{model!r} takes without streaming; set NARE_STREAM=1"
+            )
     return value
 
 
@@ -63,7 +77,8 @@ def resolve_config(
 
     `need_key` is False for the subcommands that only read local files.
     Demanding a credential they never spend is how a working checkout gets
-    told to go find an API key before it can print a comparison.
+    told to go find an API key before it can print a comparison. They never
+    run the agent either, so its output cap is not read.
     """
     resolved_model = model or env.get("NARE_MODEL")
     if not resolved_model:
@@ -78,6 +93,7 @@ def resolve_config(
     api_key = env.get(key_var)
     if need_key and not api_key:
         raise ConfigError(f"{key_var} is not set")
+    stream = stream_from_env(env)
     return Config(
         model=resolved_model,
         provider=resolved_provider,
@@ -89,6 +105,10 @@ def resolve_config(
         ),
         api_key=api_key,
         api_key_var=key_var,
-        max_tokens=_max_tokens_from(env),
-        stream=env.get("NARE_STREAM", "").strip().lower() in ("1", "true", "yes"),
+        max_tokens=(
+            _max_tokens_from(env, resolved_provider, resolved_model, stream)
+            if need_key
+            else None
+        ),
+        stream=stream,
     )

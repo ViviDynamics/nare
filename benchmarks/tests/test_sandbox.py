@@ -331,3 +331,90 @@ def test_the_agent_script_passes_the_output_cap_only_when_set(
     args = done.stdout.splitlines()
     assert args[args.index("m") + 1 : args.index("--")] == expected
     assert args[-1] == "do it"
+
+
+def test_the_agent_script_reads_what_was_left_after_nare_exits(tmp_path: Path) -> None:
+    """The real script under sh: the snapshot runs after nare, even when nare
+    fails, and the rep still exits with nare's code."""
+    import os
+    import subprocess
+
+    from benchmarks.runner.sandbox import _AGENT_SCRIPT
+
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    (stubs / "nare").write_text("#!/bin/sh\nexit 3\n")
+    (stubs / "nare").chmod(0o755)
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "a.txt").write_text("x\n")
+    ran = tmp_path / "ran"
+    env = {
+        **os.environ,
+        "PATH": f"{stubs}:{os.environ['PATH']}",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "BENCH_PROMPT": "do it",
+        "BENCH_MODEL": "m",
+        "BENCH_MAX_TURNS": "3",
+        "BENCH_LEFTOVERS": (
+            f"import sys, pathlib; pathlib.Path({str(ran)!r}).write_text(sys.argv[1])"
+        ),
+    }
+    done = subprocess.run(["sh", "-c", _AGENT_SCRIPT], cwd=work, env=env)
+    assert done.returncode == 3
+    assert ran.read_text() == "/out/after.json"
+
+
+def test_the_agent_gets_the_leftovers_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from benchmarks.runner import leftovers
+    from benchmarks.runner import sandbox as mod
+
+    seen: dict[str, object] = {}
+
+    def fake_run(*args: object, **kwargs: object) -> tuple[int, str, str, bool]:
+        seen.update(kwargs)
+        return 0, "", "", False
+
+    monkeypatch.setattr(mod, "_docker_run", fake_run)
+    mod.run_agent(make_case(tmp_path), tmp_path, tmp_path, CONFIG)
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert env["BENCH_LEFTOVERS"] == Path(leftovers.__file__).read_text()
+
+
+@pytest.mark.docker
+def test_the_snapshot_sees_a_server_that_escaped_with_setsid(tmp_path: Path) -> None:
+    """In the real image: pg_ctl's setsid escape, and a data directory outside
+    /work, both of which are gone by the time a check runs."""
+    import json
+
+    from benchmarks.runner import leftovers
+    from benchmarks.runner.sandbox import _AGENT_SCRIPT, _docker_run, sandbox
+
+    with sandbox(make_case(tmp_path)) as (workdir, artifacts):
+        (workdir / "bin").mkdir()
+        (workdir / "bin" / "nare").write_text(
+            "#!/bin/sh\nsetsid sleep 300 &\n"
+            "mkdir -p /tmp/pg && echo 16 > /tmp/pg/PG_VERSION\nexit 3\n"
+        )
+        (workdir / "bin" / "nare").chmod(0o755)
+        code, _, err, _ = _docker_run(
+            workdir,
+            ["sh", "-c", _AGENT_SCRIPT],
+            60,
+            artifacts=artifacts,
+            env={
+                "PATH": "/work/bin:/usr/local/bin:/usr/bin:/bin",
+                "BENCH_PROMPT": "go",
+                "BENCH_MODEL": "m",
+                "BENCH_MAX_TURNS": "1",
+                "BENCH_LEFTOVERS": Path(leftovers.__file__).read_text(),
+            },
+        )
+        assert code == 3, err
+        after = json.loads((artifacts / "after.json").read_text())
+    assert [p["args"] for p in after["processes"]] == ["sleep 300"]
+    assert after["database_files"] == ["/tmp/pg/PG_VERSION"]

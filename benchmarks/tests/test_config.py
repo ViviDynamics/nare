@@ -65,9 +65,9 @@ def test_the_agents_output_cap_can_be_set_by_environment() -> None:
         provider=None,
         base_url=None,
         judge_model=None,
-        env={"ANTHROPIC_API_KEY": "k", "NARE_BENCH_MAX_TOKENS": "32000"},
+        env={"ANTHROPIC_API_KEY": "k", "NARE_BENCH_MAX_TOKENS": "16000"},
     )
-    assert config.max_tokens == 32000
+    assert config.max_tokens == 16000
 
 
 def test_the_agents_output_cap_defaults_to_nares_own() -> None:
@@ -107,6 +107,65 @@ def test_streaming_follows_nares_own_variable(value: str, stream: bool) -> None:
         env={"ANTHROPIC_API_KEY": "k", "NARE_STREAM": value},
     )
     assert config.stream is stream
+
+
+def test_a_cap_above_what_anthropic_takes_unstreamed_needs_streaming() -> None:
+    # nare refuses it at startup without --stream, so every rep would end
+    # with no result line and the whole paid run would measure nothing.
+    env = {"ANTHROPIC_API_KEY": "k", "NARE_BENCH_MAX_TOKENS": "32000"}
+    with pytest.raises(ConfigError, match="NARE_STREAM"):
+        resolve_config(
+            model="m", provider=None, base_url=None, judge_model=None, env=env
+        )
+    config = resolve_config(
+        model="m",
+        provider=None,
+        base_url=None,
+        judge_model=None,
+        env={**env, "NARE_STREAM": "1"},
+    )
+    assert config.max_tokens == 32000
+
+
+def test_the_unstreamed_limit_is_the_models_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nare.transport.anthropic as anthropic
+
+    monkeypatch.setattr(anthropic, "MODEL_NONSTREAMING_TOKENS", {"small": 8192})
+    with pytest.raises(ConfigError, match="8192"):
+        resolve_config(
+            model="small",
+            provider=None,
+            base_url=None,
+            judge_model=None,
+            env={"ANTHROPIC_API_KEY": "k", "NARE_BENCH_MAX_TOKENS": "9000"},
+        )
+
+
+def test_openai_takes_any_cap_unstreamed() -> None:
+    config = resolve_config(
+        model="m",
+        provider="openai",
+        base_url=None,
+        judge_model=None,
+        env={"OPENAI_API_KEY": "k", "NARE_BENCH_MAX_TOKENS": "32000"},
+    )
+    assert config.max_tokens == 32000
+
+
+def test_commands_that_never_run_the_agent_ignore_its_cap() -> None:
+    # compare and bless read local files; a stale cap in the shell must not
+    # stop them.
+    config = resolve_config(
+        model="m",
+        provider=None,
+        base_url=None,
+        judge_model=None,
+        env={"NARE_BENCH_MAX_TOKENS": "lots"},
+        need_key=False,
+    )
+    assert config.max_tokens is None
 
 
 def test_streaming_is_off_by_default() -> None:

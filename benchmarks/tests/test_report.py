@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -299,3 +300,21 @@ def test_render_names_the_regression() -> None:
     text = render(comparison)
     assert "REGRESSION" in text
     assert "c" in text
+
+
+def test_a_baseline_keeps_the_agents_output_cap(tmp_path: Path) -> None:
+    # A cap changes what a run measures: a reasoning model cut off at 8192
+    # fails reps it passes at 32000.
+    meta = replace(META, max_tokens=32000)
+    path = tmp_path / "b.toml"
+    path.write_text(dumps_baseline(meta, summarize([record(case="c")])))
+    assert load_baseline(path).meta == meta
+
+
+def test_a_baseline_from_before_caps_were_recorded_had_nares_default(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "b.toml"
+    path.write_text(dumps_baseline(META, summarize([record(case="c")])))
+    assert "max_tokens" not in path.read_text()
+    assert load_baseline(path).meta.max_tokens is None

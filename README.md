@@ -69,7 +69,10 @@ installs, long-lived services or commits unless asked, claims limited to what
 tool output showed, and a list of anything it left running. `--system TEXT`
 replaces that prompt, and `--system ''` sends none. `--append-system TEXT`
 adds to whichever prompt is in effect, which is how a caller adds a persona
-and keeps the rules.
+and keeps the rules. A run with `--tools none` gets no default, because every
+rule in it is about tools. Some OpenAI-compatible servers refuse a system
+message, such as o1-mini or a model whose chat template has no system role;
+run those with `--system ''`.
 
 Two flags narrow a run. `--tools read,bash` allows only the tools you name,
 and `--tools none` allows no tool at all, which is what a caller wants when
