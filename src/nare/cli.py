@@ -565,4 +565,8 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED
 
-    return asyncio.run(_execute(session, transport, args, policy, schema, prices))
+    try:
+        return asyncio.run(_execute(session, transport, args, policy, schema, prices))
+    except KeyboardInterrupt:
+        print("nare: interrupted", file=sys.stderr)
+        return 130
