@@ -180,8 +180,10 @@ the final error and result follow them. `--session` saves the transcript,
 usage, limits and output atomically. Events are not stored inside the session;
 the caller retains stdout. Context compaction replaces eligible old tool-result
 bodies with stubs, then, if that is not enough, long contents of old `write`
-calls and long `edit` texts, preserving pairs and assistant text; prior streamed
-events are unaffected.
+calls and long `edit` texts, preserving pairs and assistant text. It removes
+signed and redacted thinking from the first message it changes on, and the
+progress event's `detail.compaction.thinking` counts the blocks removed; prior
+streamed events are unaffected.
 
 Budget exhaustion exits 1 with `status=error`, `stop_reason=budget`. Callers
 must branch on that pair, not on the free-text error or exit 1 alone. Provider
