@@ -671,3 +671,24 @@ async def test_a_rerun_rep_clears_the_first_passs_diff_and_closing_message(
     await run_rep(sandboxed(tmp_path), CONFIG, cast(Transport, None), 0, evidence)
     assert not (evidence / "demo-0" / "diff.patch").exists()
     assert not (evidence / "demo-0" / "closing.txt").exists()
+
+
+def test_compare_judges_accepts_its_flags() -> None:
+    args = build_parser().parse_args(
+        [
+            "compare-judges",
+            "--results",
+            "r.jsonl",
+            "--case",
+            "a",
+            "--case",
+            "b",
+            "--jev-model",
+            "jev-1.13.0",
+            "--reference-model",
+            "opus",
+        ]
+    )
+    assert args.command == "compare-judges"
+    assert args.case == ["a", "b"]
+    assert (args.jev_model, args.reference_model) == ("jev-1.13.0", "opus")

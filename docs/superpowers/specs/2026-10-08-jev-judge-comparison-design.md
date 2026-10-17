@@ -68,6 +68,10 @@ caller sends a LiteLLM virtual key, and the response is TypeSafe's own,
 unchanged. LiteLLM books spend under the pinned version the response reports
 (`jev-1.13.0`) even when the request says `jev-latest`.
 
+*Update, from the live check:* the deployed proxy serves Jev at
+`POST <proxy>/jev/decisions`, not at the path above. LiteLLM forwards it to
+OpenRouter's TypeSafe provider, and the body reports `usage.cost`.
+
 ## 3. Step 0: prove access before building anything
 
 Operational, not code. It requires the proxy to run LiteLLM 1.103 or later
@@ -88,6 +92,11 @@ It passes when the status is 200 and the body has `answers.bug.type ==
 "noul"` and a pinned `model` such as `jev-1.13.0`. Record one more fact from
 the headers: whether `x-litellm-response-cost` is present. Section 5 depends
 on it.
+
+*Update, from the live check:* the proxy's front door answered 404 for
+`/typesafe/v1/systemone`. The same request to `/jev/decisions` returned 200,
+with no `x-litellm-response-cost` header and the real cost in the body's
+`usage.cost`.
 
 If the check fails, stop. Sections 4 onward are not built.
 
@@ -133,6 +142,9 @@ no new dependency and no TypeSafe SDK, matching how the `openai` rail works.
 `resolve_config` resolved for the run's provider. Through the proxy that is
 the LiteLLM virtual key; the TypeSafe key never leaves the proxy.
 
+*As built:* the client posts to `{base}/jev/decisions`, the route the deployed
+proxy serves.
+
 **Answers.**
 
     @dataclass(frozen=True)
@@ -160,6 +172,10 @@ the LiteLLM virtual key; the TypeSafe key never leaves the proxy.
 **Cost.** `reported_cost(response.headers)` first. If it returns `None`,
 `input_tokens * JEV_PRICE_IN / 1e6` with `JEV_PRICE_IN = 0.042`, and
 `cost_estimated = True`. Step 0 says which of the two will happen in practice.
+
+*As built:* the live check found no header, so the order is the header, then
+the body's `usage.cost` when it is a finite, non-negative number (not
+estimated), then the token estimate, then unknown.
 
 **Errors.** Every failure raises `JevError(message, body)`:
 
