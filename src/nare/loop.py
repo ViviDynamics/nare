@@ -230,6 +230,11 @@ async def step(
                 "progress",
                 f"compacted: elided {report.elided} tool results"
                 + (f" and {report.inputs} tool inputs" if report.inputs else "")
+                + (
+                    f", dropped {report.thinking} thinking blocks"
+                    if report.thinking
+                    else ""
+                )
                 + f", ~{report.before:.0f} -> ~{report.after:.0f} tokens",
                 {"compaction": asdict(report)},
             )
