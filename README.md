@@ -221,11 +221,14 @@ Token and USD ceilings still apply before a summary request.
 Before each model call, old tool output is elided if estimated context reaches
 80% of the window, stopping at 60% where possible. If that is not enough, long
 contents of old `write` calls and long `edit` texts are elided next. The task,
-assistant text and thinking, the last two turns, error results, ask results and
-the inputs of failed calls are protected. Every tool call keeps its result. If
-estimated context still reaches the window, nare stops with
-`stop_reason=context` without calling the model. This character-based
-estimate can undercount; a provider can still reject context as `max_tokens`.
+assistant text, the last two turns, error results, ask results and the inputs
+of failed calls are protected. Every tool call keeps its result. Signed and
+redacted thinking from the first elided message on is removed from the
+session, because newer Claude models reject thinking whose earlier context
+changed; the compaction event counts the blocks removed. If estimated context
+still reaches the window, nare stops with `stop_reason=context` without
+calling the model. This character-based estimate can undercount; a provider
+can still reject context as `max_tokens`.
 With a configured base URL, window discovery uses `/v1/model/info` with a
 5 second timeout; failures use 32000. Direct endpoints make no discovery request.
 

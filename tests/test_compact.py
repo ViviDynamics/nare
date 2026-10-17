@@ -9,6 +9,7 @@ from fake_provider import FakeProvider, text_reply
 from nare.compact import PREFIX, compact, context_chars, estimate
 from nare.loop import run
 from nare.session import Message, new_session
+from nare.transport.anthropic import messages_from
 
 
 def transcript() -> list[Message]:
@@ -45,6 +46,15 @@ def transcript() -> list[Message]:
     return messages
 
 
+THINKING = ("thinking", "redacted_thinking")
+
+
+def without_thinking(message: Message) -> Message:
+    return Message(
+        message.role, [b for b in message.content if b["type"] not in THINKING]
+    )
+
+
 def test_oldest_elision_preserves_protected_blocks_and_pairs() -> None:
     s = new_session("go")
     s.messages = transcript()
@@ -56,8 +66,10 @@ def test_oldest_elision_preserves_protected_blocks_and_pairs() -> None:
     assert report.after < report.before
     assert s.messages[2].content[0]["content"].startswith("[elided by nare:")
     assert s.messages[4].content[0]["content"].startswith("[elided by nare:")
+    # The thinking after the first edit goes; everything else is kept.
     for i in [0, 1, 3, 5, 6, 7, 8, 9, 10, 11, 12]:
-        assert s.messages[i] == before[i]
+        expected = before[i] if i < 2 else without_thinking(before[i])
+        assert s.messages[i] == expected
     assert [
         b["tool_use_id"]
         for m in s.messages
@@ -380,3 +392,85 @@ def test_the_newest_writes_are_kept_and_a_second_pass_elides_nothing() -> None:
     for i in (13, 15):
         assert s.messages[i].content[1]["input"]["content"] == "x" * 4000
     assert compact(s, 100) is None
+
+
+def test_compaction_drops_the_thinking_sent_after_its_first_edit() -> None:
+    # On Claude Fable 5.1 and the 5.5 models a signed thinking block is valid
+    # only while everything sent before it is unchanged, and a stale one is a
+    # 400. Removing thinking from the end of the history is valid, so the
+    # blocks from the first edited message on go, from the session, since
+    # putting one back later is invalid too. The ones before it stay.
+    s = new_session("go")
+    s.messages = transcript()
+    redacted = {"type": "redacted_thinking", "data": "opaque"}
+    unsigned = {"type": "thinking", "thinking": "proxy", "signature": ""}
+    for i in (1, 5, 11):
+        s.messages[i].content.insert(0, dict(redacted))
+    s.messages[7].content.insert(0, dict(unsigned))
+    before = copy.deepcopy(s.messages)
+    report = compact(s, 8000)
+    assert report is not None
+    assert report.elided == 2  # messages 2 and 4, so the first edit is 2
+    # Signed in 3, 5, 7, 9 and 11, redacted in 5 and 11.
+    assert report.thinking == 7
+    assert s.messages[1] == before[1]
+    # Unsigned thinking is never sent, so it stays as a record.
+    assert [b for b in s.messages[7].content if b["type"] in THINKING] == [unsigned]
+    sent, was_sent = messages_from(s.messages), messages_from(before)
+    assert sent[:2] == was_sent[:2]
+    assert not [b for m in sent[2:] for b in m["content"] if b["type"] in THINKING]
+
+
+def test_elision_stops_once_the_thinking_it_drops_is_enough() -> None:
+    # The thinking goes at the edit, not after the pass, so the estimate sees
+    # it: here one elision and the thinking behind it reach 60%, and the
+    # second old result is kept.
+    s = new_session("go")
+    s.messages = transcript()
+    for message in s.messages[3::2]:
+        message.content[1]["thinking"] = "t" * 6000
+    kept = copy.deepcopy(s.messages[4])
+    report = compact(s, 14000)
+    assert report is not None
+    assert (report.elided, report.thinking) == (1, 5)
+    assert report.after <= 14000 * 0.6
+    assert s.messages[4] == kept
+
+
+def test_an_elided_input_drops_the_thinking_of_its_own_turn_on() -> None:
+    s = new_session("go")
+    s.messages = write_transcript()
+    for message in s.messages[1::2]:
+        message.content.insert(
+            0, {"type": "thinking", "thinking": "plan", "signature": "sig"}
+        )
+    s.messages[2].content[0]["is_error"] = True  # w1 keeps its input
+    before = copy.deepcopy(s.messages)
+    report = compact(s, int(estimate(s) / 0.9))
+    assert report is not None
+    assert (report.elided, report.inputs) == (0, 3)
+    assert s.messages[3].content[1]["input"]["content"].startswith(PREFIX)
+    assert s.messages[1] == before[1]
+    assert report.thinking == 7  # assistant turns 3 to 15
+    assert not [b for m in s.messages[3:] for b in m.content if b["type"] in THINKING]
+
+
+def test_a_compaction_with_no_thinking_after_it_reports_none() -> None:
+    s = new_session("go")
+    s.messages = write_transcript()
+    report = compact(s, int(estimate(s) / 0.9))
+    assert report is not None
+    assert report.thinking == 0
+
+
+async def test_the_compaction_event_counts_dropped_thinking() -> None:
+    s = new_session("go")
+    s.messages = transcript()
+    fake = FakeProvider([text_reply("done")])
+    events = [event async for event in run(s, transport=fake, context_window=8000)]
+    notices = [e for e in events if "compaction" in e.detail]
+    assert len(notices) == 1
+    assert notices[0].detail["compaction"]["thinking"] == 5
+    assert notices[0].text.startswith(
+        "compacted: elided 2 tool results, dropped 5 thinking blocks, ~"
+    )
