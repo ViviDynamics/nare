@@ -1,3 +1,4 @@
+import copy
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -8,6 +9,7 @@ from nare.events import Event
 from nare.session import (
     SESSION_VERSION,
     Message,
+    Session,
     Usage,
     append_user_text,
     dumps,
@@ -15,7 +17,11 @@ from nare.session import (
     new_session,
     reopen,
     save,
+    sent_back,
 )
+from nare.transport.anthropic import messages_from
+
+THINKING = ("thinking", "redacted_thinking")
 
 
 def test_usage_adds_every_field() -> None:
@@ -115,6 +121,99 @@ def test_dumps_redacts_the_transcript() -> None:
     assert "sk-ant-" not in text
     assert "[redacted]" in text
     assert loads(text).status == "working"
+
+
+def env_session(secret: str = "AUTH_TOKEN=Xk92mQ7vLp") -> Session:
+    """A session that read a .env file and thought about what it found."""
+    s = new_session("which port does the app use?")
+    s.messages += [
+        Message(
+            "assistant",
+            [
+                {"type": "thinking", "thinking": "Read .env.", "signature": "sigA"},
+                {"type": "tool_use", "id": "c1", "name": "read", "input": {}},
+            ],
+        ),
+        Message(
+            "user",
+            [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "c1",
+                    "content": f"{secret}\nPORT=8080",
+                    "is_error": False,
+                }
+            ],
+        ),
+        Message(
+            "assistant",
+            [
+                {
+                    "type": "thinking",
+                    "thinking": f"The port is 8080 and {secret} is set.",
+                    "signature": "sigB",
+                },
+                {"type": "redacted_thinking", "data": "opaque"},
+                {"type": "thinking", "thinking": "proxy", "signature": ""},
+                {"type": "text", "text": "Port 8080."},
+            ],
+        ),
+    ]
+    return s
+
+
+def test_a_resumed_session_sends_what_was_sent_up_to_the_first_redaction() -> None:
+    # Newer Claude models reject signed thinking whose earlier context
+    # changed, and a tampered signature always. Redacting the .env read edits
+    # message 2, so the saved copy drops the thinking sent from there on, the
+    # rule compaction follows. The live run keeps its thinking.
+    s = env_session()
+    live = copy.deepcopy(s.messages)
+    saved = loads(dumps(s))
+    assert s.messages == live
+    sent, resumed = messages_from(live), messages_from(saved.messages)
+    assert resumed[:2] == sent[:2]
+    assert resumed[2]["content"][0]["content"] == "[redacted]\nPORT=8080"
+    assert not [b for m in resumed[2:] for b in m["content"] if b["type"] in THINKING]
+    # Unsigned thinking is never sent, so it stays as a record.
+    assert {"type": "thinking", "thinking": "proxy", "signature": ""} in (
+        saved.messages[3].content
+    )
+
+
+def test_a_session_with_nothing_to_redact_keeps_its_thinking() -> None:
+    s = env_session(secret="DEBUG=1")
+    assert loads(dumps(s)) == s
+
+
+def test_redacting_thinking_that_is_never_sent_keeps_the_rest() -> None:
+    s = env_session(secret="DEBUG=1")
+    s.messages[3].content[2]["thinking"] = "AUTH_TOKEN=Xk92mQ7vLp"
+    text = dumps(s)
+    assert "Xk92mQ7vLp" not in text
+    assert messages_from(loads(text).messages) == messages_from(s.messages)
+
+
+@pytest.mark.parametrize(
+    ("block", "key", "value"),
+    [
+        (0, "thinking", "Keep sk-ant-" + "Z" * 30 + " out of the reply."),
+        # Base64 ending in a segment that holds `auth` or `token` matches the
+        # credential rule at its `=` padding, so a signature can change too.
+        (0, "signature", "EqQBCkgIARABAuthQ=="),
+        (1, "data", "opaqueTokenAbc=="),
+    ],
+)
+def test_thinking_that_redaction_changes_is_never_saved(
+    block: int, key: str, value: str
+) -> None:
+    s = env_session(secret="DEBUG=1")
+    s.messages[3].content[block][key] = value
+    saved = loads(dumps(s))
+    assert saved.messages[:3] == s.messages[:3]
+    assert not [
+        b for b in saved.messages[3].content if b["type"] in THINKING and sent_back(b)
+    ]
 
 
 def test_reopen_appends_text_and_resets_per_run_state() -> None:
