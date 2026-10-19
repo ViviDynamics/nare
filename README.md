@@ -64,7 +64,10 @@ and `/proc`.
 
 Stdout is typed JSONL, terminated by one `result` line carrying status,
 questions, usage, and stop_reason. Stderr is logging. `--session PATH` writes
-the session, and `--resume PATH` continues it.
+the session, and `--resume PATH` continues it. The file is redacted, and from
+the first message redaction changes on it leaves out signed and redacted
+thinking, because newer Claude models reject thinking whose earlier context
+changed.
 
 Use `--prompt-file prompt.txt`, or positional `-` with stdin, to send a prompt
 without putting its text in argv. Both routes read UTF-8 exactly and work with

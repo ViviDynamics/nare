@@ -48,6 +48,22 @@ def sent_back(block: dict[str, Any]) -> bool:
     return True
 
 
+def without_sent_thinking(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The blocks minus the thinking that goes back to the model.
+
+    On Claude Fable 5.1 and the 5.5 models a signed thinking block stays valid
+    only while everything sent before it is unchanged, and a stale one fails
+    the request with a 400. Removing thinking from the end of the history is
+    valid, and putting a removed block back is not. Unsigned thinking is never
+    sent and stays.
+    """
+    return [
+        b
+        for b in content
+        if b.get("type") not in ("thinking", "redacted_thinking") or not sent_back(b)
+    ]
+
+
 @dataclass(frozen=True)
 class Usage:
     """Token counts. `input` EXCLUDES cache reads and writes, following Anthropic."""
@@ -148,7 +164,13 @@ def dumps(s: Session) -> str:
     redacted at construction: this file lands in the workdir, which is a git
     checkout, so it cannot be the one surface that keeps secrets in the clear.
     The cost is that a resumed session reads `[redacted]` where a secret was,
-    which is the correct trade — the model should not be re-sent one either.
+    which is the correct trade: the model should not be re-sent one either.
+
+    A resumed session then sends a history that differs from the one its
+    signed thinking was made against, and redaction can rewrite a thinking
+    block's own text or signature. So the saved copy drops the thinking sent
+    from the first message redaction changes on, as compaction does after an
+    edit. The live session keeps its thinking.
     """
     raw = asdict(s)
     raw.pop("events")
@@ -168,9 +190,24 @@ def dumps(s: Session) -> str:
                 except (binascii.Error, ValueError):
                     continue
                 binary.append((mi, bi, source.pop("data")))
-    raw["messages"] = redact_value(raw["messages"])
+    redacted = redact_value(raw["messages"])
+    # Compared without image data, which both copies lack until it goes back.
+    first = next(
+        (
+            i
+            for i, (sent, saved) in enumerate(
+                zip(raw["messages"], redacted, strict=True)
+            )
+            if [b for b in sent["content"] if sent_back(b)]
+            != [b for b in saved["content"] if sent_back(b)]
+        ),
+        len(redacted),
+    )
     for mi, bi, data in binary:
-        raw["messages"][mi]["content"][bi]["image"]["source"]["data"] = data
+        redacted[mi]["content"][bi]["image"]["source"]["data"] = data
+    for message in redacted[first:]:
+        message["content"] = without_sent_thinking(message["content"])
+    raw["messages"] = redacted
     return json.dumps(raw)
 
 

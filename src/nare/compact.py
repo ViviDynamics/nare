@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 
-from nare.session import Message, Session, sent_back
+from nare.session import Message, Session, sent_back, without_sent_thinking
 
 PREFIX = "[elided by nare:"
 
@@ -79,22 +79,14 @@ class CompactionReport:
 def _drop_thinking(s: Session, start: int) -> int:
     """Remove the thinking that goes back to the model from message `start` on.
 
-    On Claude Fable 5.1 and the 5.5 models a signed thinking block stays valid
-    only while everything sent before it is unchanged, and a stale one fails
-    the request with a 400. Elision changes message `start`, so every block
-    from there on is stale. Removing thinking from the end of the history is
-    valid, and putting a removed block back is not, so the blocks leave the
-    session, not just the request. Unsigned thinking is never sent and stays.
-    Each edit calls this, so the estimate sees the space it frees.
+    Elision changes message `start`, so every signed or redacted thinking
+    block from there on is stale (see `without_sent_thinking`). Putting a
+    removed block back is invalid, so the blocks leave the session, not just
+    the request. Each edit calls this, so the estimate sees the space it frees.
     """
     dropped = 0
     for message in s.messages[start:]:
-        kept = [
-            b
-            for b in message.content
-            if b.get("type") not in ("thinking", "redacted_thinking")
-            or not sent_back(b)
-        ]
+        kept = without_sent_thinking(message.content)
         if len(kept) < len(message.content):
             dropped += len(message.content) - len(kept)
             message.content = kept
