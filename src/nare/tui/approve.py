@@ -62,9 +62,10 @@ Ask = Callable[[str, dict[str, Any]], Awaitable[tuple[str, str]]]
 
 def _tokens(command: str) -> list[str]:
     """The line's words and operators, or none when shlex cannot split it.
-    `&>` and `&>>` are read as `>` and `>>`, so their & is not backgrounding.
+    `&>` and `&>>` are read as `>` and `>>`, so their & is not backgrounding,
+    and `>|` as `>`, so its | is not a pipe.
     """
-    line = _DUP.sub("", command).replace("&>", ">")
+    line = _DUP.sub("", command).replace("&>", ">").replace(">|", ">")
     try:
         scan = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
         scan.whitespace_split = True
@@ -218,7 +219,9 @@ def scope(command: str, policy: Policy) -> frozenset[str] | None:
     if commands is None or risks(command, policy):
         return None
     programs = [_program(words) for words in commands if not _read_only(words)]
-    if None in programs:
+    # A read-only program asked about for a redirect or a write flag:
+    # approving it whole would lift the very check that asked.
+    if None in programs or set(programs) & READ_ONLY:
         return None
     return frozenset(program for program in programs if program is not None)
 

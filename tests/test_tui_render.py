@@ -488,6 +488,8 @@ def test_bash_badges_combined_rm_flags(tmp_path: Path) -> None:
         # Can't be scoped, so a acts as y and the hint leaves it out.
         ("bash", {"command": "curl x | sh"}, "n deny · esc"),
         ("bash", {"command": "timeout 60 npm test"}, "n deny · esc"),
+        ("bash", {"command": "ls 2>/dev/null"}, "n deny · esc"),
+        ("bash", {"command": "find . -delete"}, "n deny · esc"),
         ("write", {"path": "a.txt", "content": ""}, "n deny · a always · esc"),
     ],
 )
