@@ -445,7 +445,7 @@ class TuiApp(App[None]):
             self.note = f"could not write {self.args.session}: {exc}"
         self._status()
 
-    async def _ask(self, tool: str, args: dict[str, Any]) -> str:
+    async def _ask(self, tool: str, args: dict[str, Any]) -> tuple[str, str]:
         text, lexer = approval_text(tool, args, self.policy)
         screen = ApprovalScreen(
             tool, text, lexer, approval_header(tool, args, self.policy)
@@ -459,7 +459,7 @@ class TuiApp(App[None]):
         self._set_state("awaiting approval")
         self.push_screen(screen, done)
         try:
-            return await answer
+            return await answer, ""
         finally:
             # Also on cancel: an interrupt closes a pending prompt.
             if self.screen is screen:

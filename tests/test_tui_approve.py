@@ -8,13 +8,16 @@ from nare.tui.approve import Approver, risks, scope
 
 
 class Keys:
-    def __init__(self, *keys: str) -> None:
+    """Answers in order. A plain key is pressed with no reason."""
+
+    def __init__(self, *keys: str | tuple[str, str]) -> None:
         self.keys = list(keys)
         self.asked: list[str] = []
 
-    async def __call__(self, tool: str, args: dict[str, Any]) -> str:
+    async def __call__(self, tool: str, args: dict[str, Any]) -> tuple[str, str]:
         self.asked.append(tool)
-        return self.keys.pop(0)
+        key = self.keys.pop(0)
+        return (key, "") if isinstance(key, str) else key
 
 
 async def test_read_and_ask_never_prompt() -> None:
@@ -33,6 +36,15 @@ async def test_y_allows_once_and_n_denies() -> None:
     assert keys.asked == ["bash", "bash"]
     assert approver.always == set()
     assert approver.programs == set()
+
+
+async def test_n_carries_the_reason_typed_with_it() -> None:
+    keys = Keys(("n", "use the write tool"), ("n", ""), ("n", "  "))
+    approver = Approver(keys)
+    write = {"path": "a", "content": ""}
+    assert await approver("write", write) == "use the write tool"
+    assert await approver("write", write) is False
+    assert await approver("write", write) is False
 
 
 async def test_a_allows_this_tool_from_now_on() -> None:

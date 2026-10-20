@@ -53,7 +53,8 @@ _KEYWORDS = frozenset(
     | {"for", "select", "while", "until", "do", "done", "function", "coproc"}
 )
 
-Ask = Callable[[str, dict[str, Any]], Awaitable[str]]
+# The key a person pressed, and the reason they typed with an n.
+Ask = Callable[[str, dict[str, Any]], Awaitable[tuple[str, str]]]
 
 
 def _tokens(command: str) -> list[str]:
@@ -186,18 +187,21 @@ class Approver:
         self.always: set[str] = set()
         self.programs: set[str] = set()
 
-    async def __call__(self, tool: str, args: dict[str, Any]) -> bool:
+    async def __call__(self, tool: str, args: dict[str, Any]) -> bool | str:
+        """True to run the call; a denial is False, or the reason given."""
         if tool in EXEMPT or tool in self.always:
             return True
         command = str(args.get("command", ""))
         if tool == "bash" and self._unasked(command):
             return True
-        key = await self.ask(tool, args)
+        key, reason = await self.ask(tool, args)
         if key == "a" and tool == "bash":
             self.programs |= scope(command, self.policy) or set()
         elif key == "a":
             self.always.add(tool)
-        return key in ("y", "a")
+        if key in ("y", "a"):
+            return True
+        return reason.strip() or False
 
     def _unasked(self, command: str) -> bool:
         commands = _commands(command)

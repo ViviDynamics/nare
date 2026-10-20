@@ -25,3 +25,11 @@ Slice 3 uses the seam as reserved. `Approve` also accepts an async callable,
 `(tool, args) -> bool | Awaitable[bool]`, and `dispatch()` awaits the result
 when it is awaitable: a person answering a prompt is an await, not a blocking
 call. `approve_all` and every synchronous approver are unchanged.
+
+## Note (2026-10-19)
+
+A denial can carry a reason. `Approve` returns `bool | str`, or an awaitable of
+one, and a str means denied: `dispatch()` sends the model
+`<tool> was not approved: <reason>`, or the plain denial when the reason is
+blank. A reason is truthy, so the str is tested for before anything runs.
+`approve_all`, `--yes`, and every approver that returns `bool` are unchanged.
