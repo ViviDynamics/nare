@@ -31,7 +31,11 @@ _BRACE_LIMIT = 64
 # heredoc. shlex hands back a quoted or escaped `;` as the same token as a
 # real one, so `find . \; python3 -delete` would look like two commands. An
 # escaped `>` is a word to bash, but `\>|` would read as `>|`, hiding the pipe.
-_UNREADABLE = re.compile(r"""[\n\r`]|\$\(|<\(|>\(|<<|(['"])[;&|()]+\1|\\[;&|()<>]""")
+# A brace sequence is not expanded, and `--har{d..d}` makes `--hard`.
+_UNREADABLE = re.compile(
+    r"""[\n\r`]|\$\(|<\(|>\(|<<|(['"])[;&|()]+\1|\\[;&|()<>]"""
+    r"|\{-?\w+\.\.-?\w+(?:\.\.-?\d+)?\}"
+)
 _OPERATOR = frozenset(";&|()")
 _SEPARATORS = frozenset({"|", "|&", "||", "&&", ";", "&"})
 
@@ -46,6 +50,19 @@ _WRITES = frozenset(
     | {"-fprint", "-fprint0", "-fprintf", "-fls", "--pre", "--hostname-bin"}
     | {"--output"}
 )
+# The subcommands that fetch from the network, with npm's aliases for them.
+_PIP_FETCHES = frozenset({"install", "download"})
+_FETCHES = {
+    "npm": frozenset(
+        {"i", "in", "ins", "inst", "insta", "instal", "install", "add"}
+        | {"isnt", "isnta", "isntal", "isntall", "it", "install-test"}
+        | {"ci", "clean-install", "ic", "install-clean", "isntall-clean"}
+        | {"cit", "install-ci-test", "update", "up", "upgrade", "udpate"}
+        | {"exec", "x"}
+    ),
+    "pip": _PIP_FETCHES,
+    "pip3": _PIP_FETCHES,
+}
 # Programs that run another: approving one would approve whatever it runs.
 WRAPPERS = frozenset(
     {"bash", "sh", "zsh", "env", "xargs", "timeout", "nice", "time", "command"}
@@ -78,8 +95,10 @@ def _tokens(command: str) -> list[str]:
         return []
 
 
-def _brace_step(word: str) -> list[str] | None:
-    """`word` with its first brace list expanded, or None when it has none."""
+def _brace_list(word: str) -> list[int] | None:
+    """Where `word`'s first brace list opens, splits and closes, or None
+    when it has none.
+    """
     depth = start = 0
     commas: list[int] = []
     for i, char in enumerate(word):
@@ -92,28 +111,29 @@ def _brace_step(word: str) -> list[str] | None:
         elif char == "}" and depth:
             depth -= 1
             if depth == 0 and commas:
-                cuts = [start, *commas, i]
-                head, tail = word[:start], word[i + 1 :]
-                return [head + word[a + 1 : b] + tail for a, b in pairwise(cuts)]
+                return [start, *commas, i]
     return None
 
 
 def _braces(word: str) -> list[str] | None:
     """The words bash's brace expansion makes of `word`, or None past
-    _BRACE_LIMIT of them. Lists only: a sequence like {1..3} makes no `/`,
-    `.` or `~`. A quoted or escaped comma splits here too, which only adds
-    paths to check.
+    _BRACE_LIMIT of them. Lists only: a line with a sequence like {1..3} is
+    not read at all. A quoted or escaped comma splits here too, which only
+    adds words to check.
     """
     done: list[str] = []
     todo = [word]
     while todo:
-        if len(done) + len(todo) > _BRACE_LIMIT:
-            return None
-        expanded = _brace_step(word := todo.pop(0))
-        if expanded is None:
+        cuts = _brace_list(word := todo.pop(0))
+        if cuts is None:
             done.append(word)
-        else:
-            todo[:0] = expanded  # first, so the words keep bash's order
+            continue
+        # Counted before it is built: one wide list of long words is large.
+        if len(done) + len(todo) + len(cuts) - 1 > _BRACE_LIMIT:
+            return None
+        head, tail = word[: cuts[0]], word[cuts[-1] + 1 :]
+        # First, so the words keep bash's order.
+        todo[:0] = [head + word[a + 1 : b] + tail for a, b in pairwise(cuts)]
     return done
 
 
@@ -126,6 +146,8 @@ def _outside(token: str, policy: Policy) -> bool:
             continue
         if not (path.startswith(("/", "~")) or ".." in path.split("/")):
             continue
+        if path.startswith("~") and os.path.expanduser(path) == path:
+            return True  # ~- and ~+ are bash's last and current directory
         try:
             policy.resolve(os.path.expanduser(path))
         except (ValueError, OSError):
@@ -147,15 +169,8 @@ def risks(command: str, policy: Policy) -> list[str]:
     # Include nested/wrapped invocations conservatively.
     words = {Path(token).name for token in tokens}
     pairs = set(zip(tokens, tokens[1:], strict=False))
-    network = bool(words & {"curl", "wget"}) or bool(
-        pairs
-        & {
-            ("pip", "install"),
-            ("pip3", "install"),
-            ("npm", "i"),
-            ("npm", "install"),
-            ("git", "clone"),
-        }
+    network = (
+        bool(words & {"curl", "wget"}) or ("git", "clone") in pairs or _fetches(tokens)
     )
     # Short options only: the letters of --force are not -r and -f.
     short = [token for token in tokens if token[:1] == "-" and token[:2] != "--"]
@@ -172,7 +187,8 @@ def risks(command: str, policy: Policy) -> list[str]:
         "background": bool(words & {"nohup", "pg_ctl", "systemctl"}) or "&" in tokens,
         # Without a terminal rm never asks, so -r alone deletes as -rf does.
         "rm -r": "rm" in words and recursive,
-        "outside root": any(_outside(token, bounded) for token in tokens),
+        "outside root": _cd_away(tokens)
+        or any(_outside(token, bounded) for token in tokens),
         "git commit": bool(pairs & {("git", "commit"), ("git", "push")}),
         "git discard": ("git", "clean") in pairs
         or (("git", "reset") in pairs and _spelled(tokens, "--hard")),
@@ -185,6 +201,80 @@ def _spelled(tokens: list[str], option: str) -> bool:
     as `--recursive`, and git `--har` as `--hard`.
     """
     return any(len(token) > 2 and option.startswith(token) for token in tokens)
+
+
+def _option_glob(command: str) -> bool:
+    """Whether an unquoted glob could expand to an option: one that starts a
+    word, or a brace alternative, or sits in a word that starts with `-`.
+    bash hands `rm *` a file named `-r` as an option; `find . -name '*.py'`
+    gives find its own pattern, and `src/*.py` cannot start with `-`.
+    """
+    quote = ""
+    start, dash, escaped = True, False, False
+    for char in command:
+        if escaped:
+            escaped = False
+        elif quote:
+            if char == quote:
+                quote = ""
+            elif char == "\\" and quote == '"':
+                escaped = True
+            continue
+        elif char == "\\":
+            escaped = True
+        elif char in "'\"":
+            quote = char
+        elif char.isspace() or char in ";&|()<>":
+            start, dash = True, False
+            continue
+        elif char in "{,":
+            start = True  # `{*,x}` puts `*` first in a word of its own
+            continue
+        elif char in "*?[" and (start or dash):
+            return True
+        elif start:
+            dash = char == "-"
+        start = False
+    return False
+
+
+def _segments(tokens: list[str]) -> list[list[str]]:
+    """The tokens between operators: one command each, roughly."""
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if set(token) <= _OPERATOR:
+            segments.append([])
+        else:
+            segments[-1].append(token)
+    return segments
+
+
+def _fetches(tokens: list[str]) -> bool:
+    """Whether npm or pip is told to fetch, under any of its names for it and
+    after any options: `npm -g add x` installs as `npm i x` does.
+    """
+    for segment in _segments(tokens):
+        names = [Path(token).name for token in segment]
+        for program, fetches in _FETCHES.items():
+            if program in names:
+                if set(segment[names.index(program) + 1 :]) & fetches:
+                    return True
+    return False
+
+
+def _cd_away(tokens: list[str]) -> bool:
+    """Whether a cd goes somewhere the line does not name: home with no
+    directory, the last one with `-`, or a CDPATH entry for a bare name.
+    """
+    for i, token in enumerate(tokens):
+        if Path(token).name not in ("cd", "pushd"):
+            continue
+        target = tokens[i + 1] if i + 1 < len(tokens) else ""
+        if not target or set(target) <= _OPERATOR or target.startswith("-"):
+            return True
+        if os.environ.get("CDPATH") and not target.startswith(("/", ".", "~")):
+            return True
+    return False
 
 
 def _commands(command: str) -> list[list[str]] | None:
@@ -276,7 +366,7 @@ class Approver:
 
     def _unasked(self, command: str) -> bool:
         commands = _commands(command)
-        if not commands or risks(command, self.policy):
+        if not commands or risks(command, self.policy) or _option_glob(command):
             return False
         return all(_read_only(words) or self._approved(words) for words in commands)
 

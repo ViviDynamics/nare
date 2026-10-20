@@ -44,7 +44,8 @@ In order:
 Scan rules:
 
 - Before scanning, remove fd duplications (`2>&1`, `>&2`, `2>&-`) and read `&>` and `&>>` as `>`, so their `&` is not taken for backgrounding. Read `>|` as `>`, so its `|` is not taken for a pipe.
-- The scan cannot read a line with a shlex error, a newline, a `(` or `)` token, a backtick, `$(`, `<(`, `>(` or `<<`, or (added in review) a quoted or escaped operator or redirection, such as `";"`, `\;` or `\>`: shlex returns `";"` as a bare `;`, and `\>|` would read as `>|`.
+- The scan cannot read a line with a shlex error, a newline, a `(` or `)` token, a backtick, `$(`, `<(`, `>(` or `<<`, or (added in review) a quoted or escaped operator or redirection, such as `";"`, `\;` or `\>`: shlex returns `";"` as a bare `;`, and `\>|` would read as `>|`. Also a brace sequence such as `{1..3}`, which is not expanded: `--har{d..d}` makes `--hard`.
+- Added in review: a line with an unquoted glob that could expand to an option never runs unasked. That is a glob that starts a word or a brace alternative, or sits in a word that starts with `-`: bash hands `rm *` a file named `-r`. `ls *.py` asks, while `ls src/*.py` and `find . -name '*.py'` do not.
 - Commands are split on `|`, `|&`, `||`, `&&`, `;` and `&`.
 - A command's program is its first word exactly as written, with no basename: `./python3` is not `python3`. For git it is `git <second word>`.
 - A command is read-only when its program is on the spec's list, no token contains `<` or `>`, there is no `$`, and none of these flags appear: find `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint`, `-fprint0`, `-fprintf`, `-fls`; rg `--pre`; git `--output`.
@@ -59,6 +60,7 @@ Fixes to the risk check, found while planning:
 - Added after verification: the `rm -rf` badge becomes `rm -r` and fires on `-r`, `-R` or `--recursive` alone, since rm without a terminal never asks either way. Of the options, only short ones and `--recursive` count, so `rm --force` is no longer flagged.
 - Added after verification: a `git discard` badge for `git reset --hard` and `git clean`, so they ask even after `a` on `git reset` or `git clean`.
 - Added in review: the risk check reads brace lists expanded, as bash will (`npm {i,} x` runs `npm i x`), and long options by their prefixes (`--rec`, `--har`). A command that runs only because its program was approved asks when a word holds `$`, since the check cannot see what it expands to.
+- Added in review: `cd` or `pushd` with no directory, with `-` or another option, or with a bare name while `CDPATH` is set, counts as outside the root, and so does a `~` form that names no home (`~-`, `~+`). npm and pip fetch under any of their names for it, after options too: `npm add`, `npm ci`, `npm -g i`, `pip3 -q install`.
 
 ## Review Focus
 

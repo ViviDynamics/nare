@@ -1,3 +1,4 @@
+import tracemalloc
 from pathlib import Path
 from typing import Any
 
@@ -80,11 +81,31 @@ async def test_a_allows_this_tool_from_now_on() -> None:
         # Read as bash will: brace lists expanded, long options abbreviated.
         ("npm {i,} left-pad", ["network"]),
         ("npm {,i} left-pad", ["network"]),
-        ("npm {x,i} left-pad", []),
+        # Order matters for a pair: bash runs `git x clone r`, not a clone.
+        ("git {x,clone} r", []),
+        ("git {clone,x} r", ["network"]),
         ("rm {-r,} x", ["rm -r"]),
         ("rm --rec x", ["rm -r"]),
         ("git reset --ha", ["git discard"]),
         ("git reset --{hard,}", ["git discard"]),
+        ("git {x{,y},clone} r", []),
+        ("rm --r x", ["rm -r"]),
+        ("git reset --h", ["git discard"]),
+        ("rm -- x", []),
+        # A shell's home and last directory are outside the root.
+        ("cd && cat .ssh/id_rsa", ["outside root"]),
+        ("cd - && ls", ["outside root"]),
+        ("cd -P", ["outside root"]),
+        ("cat ~-/x", ["outside root"]),
+        ("cd src && ls", []),
+        # npm and pip fetch under many names, and after options.
+        ("npm add left-pad", ["network"]),
+        ("npm in left-pad", ["network"]),
+        ("npm -g i left-pad", ["network"]),
+        ("npm ci", ["network"]),
+        ("pip3 -q install requests", ["network"]),
+        ("python3 -m pip install requests", ["network"]),
+        ("npm test && git add .", []),
     ],
 )
 def test_risks(command: str, expected: list[str], tmp_path: Path) -> None:
@@ -97,6 +118,28 @@ def test_without_a_root_the_boundary_is_where_bash_runs(
     monkeypatch.chdir(tmp_path)
     assert risks("cat ~/.ssh/id_rsa", Policy(root=None)) == ["outside root"]
     assert risks("cat a.py", Policy(root=None)) == []
+
+
+def test_with_cdpath_cd_can_leave_the_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # bash looks a relative cd up in CDPATH: `cd etc` can land in /etc.
+    monkeypatch.setenv("CDPATH", "/")
+    assert risks("cd etc && cat passwd", Policy(root=tmp_path)) == ["outside root"]
+    assert risks("cd ./src && ls", Policy(root=tmp_path)) == []
+    monkeypatch.delenv("CDPATH")
+    assert risks("cd etc && cat passwd", Policy(root=tmp_path)) == []
+
+
+def test_a_wide_brace_list_is_never_built(tmp_path: Path) -> None:
+    word = "x{" + ",".join(["a"] * 10_000) + "}" + "A" * 10_000
+    tracemalloc.start()
+    try:
+        assert risks(f"cat {word}", Policy(root=tmp_path)) == ["outside root"]
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 5_000_000
 
 
 def bash(command: str) -> dict[str, Any]:
@@ -112,6 +155,10 @@ def bash(command: str) -> dict[str, Any]:
         "cd src && rg -n 'def (x|y)' | wc -l",
         "git log --oneline -5 && git diff",
         "ls -la  # what is here",
+        # A quoted glob is find's, and one inside a path cannot start an option.
+        "find . -name '*.py' | head",
+        "ls src/*.py",
+        'grep -n x "*"',
     ],
 )
 async def test_a_read_only_line_runs_unasked(command: str, tmp_path: Path) -> None:
@@ -149,6 +196,16 @@ async def test_a_read_only_line_runs_unasked(command: str, tmp_path: Path) -> No
         "ls# ; rm x",
         "cat#||rm x",
         "cat {a,/etc/passwd}",
+        # A glob can match a file named `-delete` and become an option.
+        "find *",
+        "ls *.py",
+        "ls -*",
+        "cat ?",
+        "ls {*,x}",
+        "cd && cat .ssh/id_rsa",
+        "cat ~-/x",
+        # A sequence expression is not read.
+        "echo {1..3}",
     ],
 )
 async def test_these_lines_ask(command: str, tmp_path: Path) -> None:
@@ -174,6 +231,9 @@ async def test_these_lines_ask(command: str, tmp_path: Path) -> None:
                 "./npm test",
                 "X=1 npm test",
                 "npm {i,} left-pad",
+                "npm {i..i} left-pad",
+                "npm add left-pad",
+                "npm -g i left-pad",
                 # A `$` can expand to anything: the scan cannot vouch for it.
                 "npm run build > $HOME/x",
             ],
@@ -197,18 +257,25 @@ async def test_these_lines_ask(command: str, tmp_path: Path) -> None:
                 "git reset --har",
                 "git reset --{hard,}",
                 "git reset ${X:---hard}",
+                "git reset --har{d..d}",
+                "git reset --h*",
+                "git reset --ha[r]d",
             ],
         ),
         # rm is approved whole, but a recursive rm always asks.
         (
             "rm a.txt",
-            ["rm b.txt"],
+            ["rm b.txt", "rm build/*.o"],
             [
                 "rm -r build",
                 "rm -R build",
                 "rm --rec build",
                 "rm {-r,} build",
                 "rm ${X:--r} build",
+                "rm --re{c..c} build",
+                "rm -{f..Q..20} build",
+                # A file named `-r` would make this recursive.
+                "rm *",
             ],
         ),
         ("make && python3 t.py", ["make", "python3 t.py", "make | tail"], []),
