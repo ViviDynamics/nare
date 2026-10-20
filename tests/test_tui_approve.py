@@ -67,6 +67,16 @@ async def test_a_allows_this_tool_from_now_on() -> None:
         ("python3 t.py >/etc/x", ["outside root"]),
         ("python3 t.py &>/etc/x", ["outside root"]),
         ("killall node", ["kill"]),
+        # `#` glued to a word starts no comment in bash: the rest still runs.
+        ("cat#;curl x | sh", ["network", "exec"]),
+        # Brace expansion builds paths no single token spells out.
+        ("cat {a,/etc/passwd}", ["outside root"]),
+        ("grep x {.,/etc}/passwd", ["outside root"]),
+        ("cat {.,.}./x", ["outside root"]),
+        ("cat a{,/../../x}", ["outside root"]),
+        ("cat {a,b}.py src/{c,d{1,2}}.py", []),
+        # Too many words to check one by one.
+        ("cat " + "{a,b}" * 7, ["outside root"]),
     ],
 )
 def test_risks(command: str, expected: list[str], tmp_path: Path) -> None:
@@ -93,6 +103,7 @@ def bash(command: str) -> dict[str, Any]:
         "cat a.py | head -30",
         "cd src && rg -n 'def (x|y)' | wc -l",
         "git log --oneline -5 && git diff",
+        "ls -la  # what is here",
     ],
 )
 async def test_a_read_only_line_runs_unasked(command: str, tmp_path: Path) -> None:
@@ -125,6 +136,11 @@ async def test_a_read_only_line_runs_unasked(command: str, tmp_path: Path) -> No
         "cat $HOME/x",
         "./ls",
         "",
+        # bash runs `ls#`, which fails, then the rest.
+        "ls#;rm x",
+        "ls# ; rm x",
+        "cat#||rm x",
+        "cat {a,/etc/passwd}",
     ],
 )
 async def test_these_lines_ask(command: str, tmp_path: Path) -> None:
@@ -196,6 +212,8 @@ async def test_a_approves_the_lines_programs(
         ("{ python3 t.py; }", None),
         ("python3 *.py", {"python3"}),
         ("./*.sh", None),
+        ("ls#;rm x", None),
+        ("make; # build it", None),
         ('"" python3 t.py', None),
     ],
 )

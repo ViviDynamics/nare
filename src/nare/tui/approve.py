@@ -11,6 +11,7 @@ import os
 import re
 import shlex
 from collections.abc import Awaitable, Callable
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,8 @@ EXEMPT = frozenset({"read", "ask"})
 _DUP = re.compile(r"(?<![^\s;&|])\d*[<>]&(?:\d+|-)(?=[\s;&|)]|$)")
 # The redirection a token can start with: `2>/dev/null` names /dev/null.
 _REDIRECT = re.compile(r"^\d*(?:>>|>|<)")
+# A token whose brace lists make more words than this counts as outside.
+_BRACE_LIMIT = 64
 # What the scan cannot read: a second line, a subshell or substitution, a
 # heredoc. shlex hands back a quoted or escaped `;` as the same token as a
 # real one, so `find . \; python3 -delete` would look like two commands.
@@ -65,21 +68,66 @@ def _tokens(command: str) -> list[str]:
     try:
         scan = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
         scan.whitespace_split = True
+        # shlex drops all from a `#` on, but bash only starts a comment at
+        # the start of a word: `ls#;rm x` runs `ls#`, then `rm x`.
+        scan.commenters = ""
         return list(scan)
     except ValueError:
         return []
 
 
+def _brace_step(word: str) -> list[str] | None:
+    """`word` with its first brace list expanded, or None when it has none."""
+    depth = start = 0
+    commas: list[int] = []
+    for i, char in enumerate(word):
+        if char == "{":
+            if depth == 0:
+                start, commas = i, []
+            depth += 1
+        elif char == "," and depth == 1:
+            commas.append(i)
+        elif char == "}" and depth:
+            depth -= 1
+            if depth == 0 and commas:
+                cuts = [start, *commas, i]
+                head, tail = word[:start], word[i + 1 :]
+                return [head + word[a + 1 : b] + tail for a, b in pairwise(cuts)]
+    return None
+
+
+def _braces(word: str) -> list[str] | None:
+    """The words bash's brace expansion makes of `word`, or None past
+    _BRACE_LIMIT of them. Lists only: a sequence like {1..3} makes no `/`,
+    `.` or `~`. A quoted or escaped comma splits here too, which only adds
+    paths to check.
+    """
+    done: list[str] = []
+    todo = [word]
+    while todo:
+        if len(done) + len(todo) > _BRACE_LIMIT:
+            return None
+        expanded = _brace_step(word := todo.pop())
+        if expanded is None:
+            done.append(word)
+        else:
+            todo += expanded
+    return done
+
+
 def _outside(token: str, policy: Policy) -> bool:
-    path = _REDIRECT.sub("", token)
-    if path == os.devnull:
-        return False
-    if not (path.startswith(("/", "~")) or ".." in path.split("/")):
-        return False
-    try:
-        policy.resolve(os.path.expanduser(path))
-    except (ValueError, OSError):
+    paths = _braces(_REDIRECT.sub("", token))
+    if paths is None:
         return True
+    for path in paths:
+        if path == os.devnull:
+            continue
+        if not (path.startswith(("/", "~")) or ".." in path.split("/")):
+            continue
+        try:
+            policy.resolve(os.path.expanduser(path))
+        except (ValueError, OSError):
+            return True
     return False
 
 
@@ -139,8 +187,8 @@ def _commands(command: str) -> list[list[str]] | None:
 
 def _program(words: list[str]) -> str | None:
     """What `a` would approve for one command: its first word as written, or
-    `git <subcommand>`. None for a wrapper, a keyword, a `VAR=` prefix, an
-    expansion or redirection, or git with an option before its subcommand.
+    `git <subcommand>`. None for a wrapper, a keyword, a `VAR=` prefix, a `#`,
+    an expansion or redirection, or git with an option before its subcommand.
     """
     program = words[0]
     if program == "git" and len(words) > 1:
@@ -149,7 +197,7 @@ def _program(words: list[str]) -> str | None:
         program = f"git {words[1]}"
     if words[0] in WRAPPERS or words[0] in _KEYWORDS or program.startswith("-"):
         return None
-    if not program or set(program) & set("=<>$*?[]{}~"):
+    if not program or set(program) & set("=<>$*?[]{}~#"):
         return None
     return program
 
