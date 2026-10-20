@@ -188,8 +188,18 @@ async def test_a_allows_the_tool_for_the_rest_of_the_process(tmp_path: Path) -> 
     assert (tmp_path / "b.txt").read_text() == "b"
 
 
+async def test_a_read_only_command_runs_without_a_prompt(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("A-CONTENT\n")
+    replies = [tool_reply("bash", {"command": "cat a.txt"}), text_reply("ok")]
+    fake = FakeProvider(replies)
+    app = make(tmp_path, fake, prompt="go")
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: app.run_state == "done")
+    assert "A-CONTENT" in fake.calls[-1][0][-1].content[0]["content"]
+
+
 async def test_ctrl_c_during_approval_interrupts_then_follow_up(tmp_path: Path) -> None:
-    replies = [tool_reply("bash", {"command": "echo hi"}), text_reply("resumed")]
+    replies = [tool_reply("bash", {"command": "touch a.txt"}), text_reply("resumed")]
     fake = FakeProvider(replies)
     app = make(tmp_path, fake, prompt="go")
     async with app.run_test() as pilot:

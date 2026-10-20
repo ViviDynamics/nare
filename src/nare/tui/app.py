@@ -199,7 +199,7 @@ class TuiApp(App[None]):
         self.prices = prices
         self.prompt = prompt
         self.root = str(Path(args.root or ".").resolve())
-        self.approver = Approver(self._ask)
+        self.approver = Approver(self._ask, self.policy)
         self.run_state = "idle"
         if session is not None:
             # A file left `working` is a run that died: treat it as stopped.

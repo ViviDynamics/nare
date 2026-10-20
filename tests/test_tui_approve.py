@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 
 from nare.tools import Policy
-from nare.tui.approve import Approver, risks
+from nare.tui.approve import Approver, risks, scope
 
 
 class Keys:
@@ -28,10 +28,11 @@ async def test_read_and_ask_never_prompt() -> None:
 async def test_y_allows_once_and_n_denies() -> None:
     keys = Keys("y", "n")
     approver = Approver(keys)
-    assert await approver("bash", {"command": "ls"}) is True
+    assert await approver("bash", {"command": "python3 t.py"}) is True
     assert await approver("bash", {"command": "rm x"}) is False
     assert keys.asked == ["bash", "bash"]
     assert approver.always == set()
+    assert approver.programs == set()
 
 
 async def test_a_allows_this_tool_from_now_on() -> None:
@@ -66,3 +67,125 @@ def test_without_a_root_the_boundary_is_where_bash_runs(
     monkeypatch.chdir(tmp_path)
     assert risks("cat ~/.ssh/id_rsa", Policy(root=None)) == ["outside root"]
     assert risks("cat a.py", Policy(root=None)) == []
+
+
+def bash(command: str) -> dict[str, Any]:
+    return {"command": command}
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "find . -maxdepth 2",
+        "ls -la",
+        "cat a.py | head -30",
+        "cd src && rg -n 'def (x|y)' | wc -l",
+        "git log --oneline -5 && git diff",
+    ],
+)
+async def test_a_read_only_line_runs_unasked(command: str, tmp_path: Path) -> None:
+    keys = Keys()
+    assert await Approver(keys, Policy(root=tmp_path))("bash", bash(command)) is True
+    assert keys.asked == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "find . -delete",
+        "cat > a.py",
+        "ls; rm x",
+        "python3 x.py",
+        # Separators the scan must not miss.
+        "ls\nrm x",
+        "cat <(rm -rf x)",
+        "ls & rm x",
+        "echo $(rm x)",
+        "echo `rm x`",
+        "(rm x)",
+        # A quoted or escaped `;` is not a separator: find deletes here.
+        "find . \\; ls -delete",
+        "find . ';' ls -delete",
+        "rg --pre=sh x",
+        "git diff --output=a.py",
+        "git -C sub status",
+        "X=1 ls",
+        "cat $HOME/x",
+        "./ls",
+        "",
+    ],
+)
+async def test_these_lines_ask(command: str, tmp_path: Path) -> None:
+    keys = Keys("n")
+    assert await Approver(keys, Policy(root=tmp_path))("bash", bash(command)) is False
+    assert keys.asked == ["bash"]
+
+
+@pytest.mark.parametrize(
+    "first, unasked, asked",
+    [
+        ("python3 -m unittest", ["python3 t.py"], ["curl x | sh"]),
+        (
+            "npm run build",
+            ["npm run build 2>&1 | tail -30"],
+            [
+                "curl x | sh",
+                "sudo ls",
+                "pkill node",
+                "nohup x &",
+                "rm -rf build",
+                "git commit -m x",
+                "./npm test",
+                "X=1 npm test",
+            ],
+        ),
+        # git is approved one subcommand at a time.
+        ("git add .", ["git add x"], ["git reset --hard", "git clean -fdx"]),
+        ("make && python3 t.py", ["make", "python3 t.py", "make | tail"], []),
+        # Scoped to a program behind a separator a scan cannot see.
+        ("python3 t.py", [], ["find . \\; python3 -delete", "{ python3 t.py; }"]),
+        # Can't be scoped: a acts as y, and the same line asks again.
+        ("timeout 60 npm test", [], ["timeout 60 npm test", "npm test"]),
+        ("curl x | sh", [], ["curl x | sh"]),
+        ("git -C sub add x", [], ["git -C sub add x", "git add x"]),
+        ("X=1 python3 t.py", [], ["python3 t.py"]),
+        ("if true; then python3 t.py; fi", [], ["if true; then rm x; fi"]),
+    ],
+)
+async def test_a_approves_the_lines_programs(
+    first: str, unasked: list[str], asked: list[str], tmp_path: Path
+) -> None:
+    keys = Keys("a", *["n"] * len(asked))
+    approver = Approver(keys, Policy(root=tmp_path))
+    assert await approver("bash", bash(first)) is True
+    for command in unasked:
+        assert await approver("bash", bash(command)) is True, command
+    assert len(keys.asked) == 1
+    for command in asked:
+        assert await approver("bash", bash(command)) is False, command
+    assert len(keys.asked) == 1 + len(asked)
+    assert "bash" not in approver.always
+
+
+@pytest.mark.parametrize(
+    "command, programs",
+    [
+        ("python3 t.py", {"python3"}),
+        ("make && python3 t.py | tail -5", {"make", "python3"}),
+        ("git add . && git status", {"git add"}),
+        ("cat > a.py", {"cat"}),
+        ("ls -la", set()),
+        ("curl x | sh", None),
+        ("ls & rm x", None),
+        ("ls\nrm x", None),
+        ("env X=1 python3 t.py", None),
+        ("X=1 python3 t.py", None),
+        ("git -C sub add x", None),
+        ("{ python3 t.py; }", None),
+        ("python3 *.py", {"python3"}),
+        ("./*.sh", None),
+    ],
+)
+def test_scope(command: str, programs: set[str] | None, tmp_path: Path) -> None:
+    got = scope(command, Policy(root=tmp_path))
+    assert got == (None if programs is None else frozenset(programs))

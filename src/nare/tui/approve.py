@@ -24,6 +24,34 @@ EXEMPT = frozenset({"read", "ask"})
 _DUP = re.compile(r"(?<![^\s;&|])\d*[<>]&(?:\d+|-)(?=[\s;&|)]|$)")
 # The redirection a token can start with: `2>/dev/null` names /dev/null.
 _REDIRECT = re.compile(r"^\d*(?:>>|>|<)")
+# What the scan cannot read: a second line, a subshell or substitution, a
+# heredoc. shlex hands back a quoted or escaped `;` as the same token as a
+# real one, so `find . \; python3 -delete` would look like two commands.
+_UNREADABLE = re.compile(r"""[\n\r`]|\$\(|<\(|>\(|<<|(['"])[;&|()]+\1|\\[;&|()]""")
+_OPERATOR = frozenset(";&|()")
+_SEPARATORS = frozenset({"|", "|&", "||", "&&", ";", "&"})
+
+# Run unasked. Widen this only from prompts people answered y.
+READ_ONLY = frozenset(
+    {"cd", "ls", "cat", "head", "tail", "wc", "find", "grep", "rg", "pwd", "echo"}
+    | {"git status", "git diff", "git log", "git show"}
+)
+# Flags that make a read-only program write or run something.
+_WRITES = frozenset(
+    {"-exec", "-execdir", "-ok", "-okdir", "-delete"}
+    | {"-fprint", "-fprint0", "-fprintf", "-fls", "--pre", "--hostname-bin"}
+    | {"--output"}
+)
+# Programs that run another: approving one would approve whatever it runs.
+WRAPPERS = frozenset(
+    {"bash", "sh", "zsh", "env", "xargs", "timeout", "nice", "time", "command"}
+    | {"builtin", "exec", "eval", "source", "."}
+)
+# Shell grammar, not programs: `{ rm x; }` would otherwise approve `{`.
+_KEYWORDS = frozenset(
+    {"!", "{", "}", "[[", "]]", "if", "then", "elif", "else", "fi", "case", "esac"}
+    | {"for", "select", "while", "until", "do", "done", "function", "coproc"}
+)
 
 Ask = Callable[[str, dict[str, Any]], Awaitable[str]]
 
@@ -90,19 +118,91 @@ def risks(command: str, policy: Policy) -> list[str]:
     return [badge for badge, present in flags.items() if present]
 
 
+def _commands(command: str) -> list[list[str]] | None:
+    """The line's commands, split on its separators, or None when the scan
+    cannot read it.
+    """
+    tokens = _tokens(command)
+    if not tokens or _UNREADABLE.search(command):
+        return None
+    commands: list[list[str]] = [[]]
+    for token in tokens:
+        if token and set(token) <= _OPERATOR:
+            if token not in _SEPARATORS:  # `(`, `)`, or `;;`
+                return None
+            commands.append([])
+        else:
+            commands[-1].append(token)
+    return [words for words in commands if words]
+
+
+def _program(words: list[str]) -> str | None:
+    """What `a` would approve for one command: its first word as written, or
+    `git <subcommand>`. None for a wrapper, a keyword, a `VAR=` prefix, an
+    expansion or redirection, or git with an option before its subcommand.
+    """
+    program = words[0]
+    if program == "git" and len(words) > 1:
+        if words[1].startswith("-"):
+            return None
+        program = f"git {words[1]}"
+    if words[0] in WRAPPERS or words[0] in _KEYWORDS or program.startswith("-"):
+        return None
+    if set(program) & set("=<>$*?[]{}~"):
+        return None
+    return program
+
+
+def _read_only(words: list[str]) -> bool:
+    return (
+        _program(words) in READ_ONLY
+        and not any(set(word) & set("<>$") for word in words)
+        and not any(word.split("=")[0] in _WRITES for word in words)
+    )
+
+
+def scope(command: str, policy: Policy) -> frozenset[str] | None:
+    """The programs `a` approves on this line: each one that is not
+    read-only. None when it cannot be scoped, and `a` acts as `y`.
+    """
+    commands = _commands(command)
+    if commands is None or risks(command, policy):
+        return None
+    programs = [_program(words) for words in commands if not _read_only(words)]
+    if None in programs:
+        return None
+    return frozenset(program for program in programs if program is not None)
+
+
 class Approver:
-    """The "always" set lives for this process only and is never written to
-    the session: a saved file must not grant a later run anything.
+    """What `a` grants lives for this process only and is never written to
+    the session: a saved file must not grant a later run anything. A tool is
+    approved whole; bash is approved one program at a time, in `programs`.
     """
 
-    def __init__(self, ask: Ask) -> None:
+    def __init__(self, ask: Ask, policy: Policy | None = None) -> None:
         self.ask = ask
+        self.policy = policy or Policy()
         self.always: set[str] = set()
+        self.programs: set[str] = set()
 
     async def __call__(self, tool: str, args: dict[str, Any]) -> bool:
         if tool in EXEMPT or tool in self.always:
             return True
+        command = str(args.get("command", ""))
+        if tool == "bash" and self._unasked(command):
+            return True
         key = await self.ask(tool, args)
-        if key == "a":
+        if key == "a" and tool == "bash":
+            self.programs |= scope(command, self.policy) or set()
+        elif key == "a":
             self.always.add(tool)
         return key in ("y", "a")
+
+    def _unasked(self, command: str) -> bool:
+        commands = _commands(command)
+        if not commands or risks(command, self.policy):
+            return False
+        return all(
+            _read_only(words) or _program(words) in self.programs for words in commands
+        )
