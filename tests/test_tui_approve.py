@@ -196,6 +196,7 @@ async def test_a_approves_the_lines_programs(
         ("{ python3 t.py; }", None),
         ("python3 *.py", {"python3"}),
         ("./*.sh", None),
+        ('"" python3 t.py', None),
     ],
 )
 def test_scope(command: str, programs: set[str] | None, tmp_path: Path) -> None:

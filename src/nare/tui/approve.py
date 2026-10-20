@@ -149,7 +149,7 @@ def _program(words: list[str]) -> str | None:
         program = f"git {words[1]}"
     if words[0] in WRAPPERS or words[0] in _KEYWORDS or program.startswith("-"):
         return None
-    if set(program) & set("=<>$*?[]{}~"):
+    if not program or set(program) & set("=<>$*?[]{}~"):
         return None
     return program
 
