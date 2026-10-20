@@ -55,6 +55,8 @@ Fixes to the risk check, found while planning:
 - `killall` joins `kill` and `pkill` under the `kill` flag.
 - The outside-root check strips a leading redirection (`>`, `>>`, `2>`, `<`) from a token before testing it, and `/dev/null` is never outside the root.
 - With no `--root`, the boundary is the current directory, where bash runs. Today nothing is outside, so `cat ~/.ssh/id_rsa` would run unasked.
+- Added after verification: the `rm -rf` badge becomes `rm -r` and fires on `-r`, `-R` or `--recursive` alone, since rm without a terminal never asks either way. Only short options count, so `rm --force` is no longer flagged.
+- Added after verification: a `git discard` badge for `git reset --hard` and `git clean`, so they ask even after `a` on `git reset` or `git clean`.
 
 ## Review Focus
 

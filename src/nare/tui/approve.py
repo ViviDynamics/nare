@@ -151,7 +151,10 @@ def risks(command: str, policy: Policy) -> list[str]:
             ("git", "clone"),
         }
     )
-    options = "".join(token[1:] for token in tokens if token.startswith("-"))
+    # Short options only: the letters of --force are not -r and -f.
+    short = [token for token in tokens if token[:1] == "-" and token[:2] != "--"]
+    letters = {letter for token in short for letter in token[1:]}
+    recursive = bool(letters & {"r", "R"}) or "--recursive" in tokens
     # Without a root, bash runs in the current directory: that is the boundary.
     bounded = policy if policy.root is not None else Policy(root=Path.cwd())
     flags = {
@@ -161,9 +164,12 @@ def risks(command: str, policy: Policy) -> list[str]:
         "sudo": "sudo" in words,
         "kill": bool(words & {"kill", "pkill", "killall"}),
         "background": bool(words & {"nohup", "pg_ctl", "systemctl"}) or "&" in tokens,
-        "rm -rf": "rm" in words and "r" in options and "f" in options,
+        # Without a terminal rm never asks, so -r alone deletes as -rf does.
+        "rm -r": "rm" in words and recursive,
         "outside root": any(_outside(token, bounded) for token in tokens),
         "git commit": bool(pairs & {("git", "commit"), ("git", "push")}),
+        "git discard": ("git", "clean") in pairs
+        or (("git", "reset") in pairs and "--hard" in tokens),
     }
     return [badge for badge, present in flags.items() if present]
 

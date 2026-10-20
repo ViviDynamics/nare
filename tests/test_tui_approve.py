@@ -169,6 +169,9 @@ async def test_these_lines_ask(command: str, tmp_path: Path) -> None:
         ),
         # git is approved one subcommand at a time.
         ("git add .", ["git add x"], ["git reset --hard", "git clean -fdx"]),
+        ("git reset HEAD a.py", ["git reset b.py"], ["git reset --hard"]),
+        # rm is approved whole, but a recursive rm always asks.
+        ("rm a.txt", ["rm b.txt"], ["rm -r build", "rm -R build"]),
         ("make && python3 t.py", ["make", "python3 t.py", "make | tail"], []),
         # Scoped to a program behind a separator a scan cannot see.
         ("python3 t.py", [], ["find . \\; python3 -delete", "{ python3 t.py; }"]),
