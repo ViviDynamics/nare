@@ -16,8 +16,9 @@ These go beyond the spec:
 
 1. `a` on git approves `git <subcommand>`, not all of git. `a` on `git add` must not allow `git reset --hard` or `git clean -fdx`. Every other program is approved whole, as the spec says.
 2. `a` on a line with several programs approves every program in it that is not read-only, and the hint lists them: `a always npm, python3`.
-3. When `a` cannot be scoped, it acts as `y` and the hint leaves `a` out. That covers a line with a risk flag, a line the scan cannot read, a wrapper program, a `VAR=` prefix, git with an option before the subcommand, and (added after verification) a read-only program asked about for a redirect, a `$` or a write flag, such as `cat > a.py` or `find . -delete`: approving it whole would lift the check that asked.
+3. When `a` cannot be scoped, it acts as `y` and the hint leaves `a` out. That covers a line with a risk flag, a line the scan cannot read, a wrapper program, a `VAR=` prefix, git with an option before the subcommand, and a line with nothing left to approve once decision 5 applies.
 4. Writes under `.git/` are out of scope here and tracked in #101.
+5. Added after verification and review: `a` never approves a program on the read-only list. A read-only program asked about for a redirect, a `$` or a write flag (`cat > a.py`, `find . -delete`, `echo "exit=$?"`) is left out, since approving it whole would lift the check that asked. The line's other programs are still approved, and the line asks again next time. Other git subcommands that discard work are tracked in #103.
 
 ## Global Constraints
 

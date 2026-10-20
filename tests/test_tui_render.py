@@ -498,6 +498,12 @@ def test_bash_badges_combined_rm_flags(tmp_path: Path) -> None:
         ("bash", {"command": "timeout 60 npm test"}, "n deny · esc"),
         ("bash", {"command": "ls 2>/dev/null"}, "n deny · esc"),
         ("bash", {"command": "find . -delete"}, "n deny · esc"),
+        # The read-only echo is left out; python3 is still offered.
+        (
+            "bash",
+            {"command": 'python3 t.py; echo "exit=$?"'},
+            "n deny · a always python3 · esc",
+        ),
         ("write", {"path": "a.txt", "content": ""}, "n deny · a always · esc"),
     ],
 )

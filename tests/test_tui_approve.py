@@ -221,12 +221,18 @@ async def test_these_lines_ask(command: str, tmp_path: Path) -> None:
         ("X=1 python3 t.py", [], ["python3 t.py"]),
         ("if true; then python3 t.py; fi", [], ["if true; then rm x; fi"]),
         # Approving a read-only program whole would lift the very check that
-        # asked: a acts as y.
+        # asked, so a leaves it out: alone on the line, a acts as y.
         ("find . -name '*.tmp' -delete", [], ["find . -type f -delete"]),
         ("cat b.txt > c.txt", [], ["cat b.txt > a.py"]),
         ("ls 2>/dev/null", [], ["ls > a.py", "ls 2>/dev/null"]),
         ("git diff --output=d.txt", [], ["git diff --output=a.py"]),
-        ("python3 t.py && echo ok > log", [], ["python3 t.py"]),
+        # Beside another program, a still approves that one.
+        (
+            'python3 t.py; echo "exit=$?"',
+            ["python3 t.py", "python3 u.py | tail -5"],
+            ['python3 t.py; echo "exit=$?"', "echo ok > log"],
+        ),
+        ("make && cat > a.py", ["make"], ["cat > b.py"]),
     ],
 )
 async def test_a_approves_the_lines_programs(
@@ -250,10 +256,12 @@ async def test_a_approves_the_lines_programs(
         ("python3 t.py", {"python3"}),
         ("make && python3 t.py | tail -5", {"make", "python3"}),
         ("git add . && git status", {"git add"}),
-        ("cat > a.py", None),
-        ("find . -delete", None),
-        ("rg --pre=sh x", None),
-        ("cd $DIR && python3 t.py", None),
+        # A read-only program is never approved, whatever made it ask.
+        ("cat > a.py", set()),
+        ("find . -delete", set()),
+        ("rg --pre=sh x", set()),
+        ("cd $DIR && python3 t.py", {"python3"}),
+        ('python3 t.py; echo "exit=$?"', {"python3"}),
         ("ls -la", set()),
         ("curl x | sh", None),
         ("ls & rm x", None),

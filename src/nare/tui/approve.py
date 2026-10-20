@@ -232,17 +232,18 @@ def _read_only(words: list[str]) -> bool:
 
 def scope(command: str, policy: Policy) -> frozenset[str] | None:
     """The programs `a` approves on this line: each one that is not
-    read-only. None when it cannot be scoped, and `a` acts as `y`.
+    read-only. None when it cannot be scoped, and `a` acts as `y`; so it does
+    when the set is empty.
     """
     commands = _commands(command)
     if commands is None or risks(command, policy):
         return None
     programs = [_program(words) for words in commands if not _read_only(words)]
-    # A read-only program asked about for a redirect, a `$` or a write flag:
-    # approving it whole would lift the very check that asked.
-    if None in programs or set(programs) & READ_ONLY:
+    if None in programs:
         return None
-    return frozenset(program for program in programs if program is not None)
+    # A read-only program asked about for a redirect, a `$` or a write flag
+    # is left out: approving it whole would lift the very check that asked.
+    return frozenset(p for p in programs if p is not None and p not in READ_ONLY)
 
 
 class Approver:
