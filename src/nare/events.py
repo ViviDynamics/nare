@@ -23,7 +23,7 @@ REDACTION_RULES: tuple[str, ...] = (
     "credential-assignment",
 )
 
-_REDACTED = "[redacted]"
+REDACTED = "[redacted]"
 
 # Keys and tokens are anchored at their own prefixes, so a failed match attempt
 # costs bounded work no matter how long the text is.
@@ -77,7 +77,7 @@ def _redact_credentials(text: str) -> str:
         if tail is None:
             continue
         pieces.append(text[replaced : run.start()])
-        pieces.append(_REDACTED)
+        pieces.append(REDACTED)
         replaced = tail.end()
     pieces.append(text[replaced:])
     return "".join(pieces)
@@ -85,7 +85,7 @@ def _redact_credentials(text: str) -> str:
 
 def redact(text: str) -> str:
     for _, pattern in _PREFIX_PATTERNS:
-        text = pattern.sub(_REDACTED, text)
+        text = pattern.sub(REDACTED, text)
     return _redact_credentials(text)
 
 
