@@ -1,6 +1,10 @@
+from pathlib import Path
 from typing import Any
 
-from nare.tui.approve import Approver
+import pytest
+
+from nare.tools import Policy
+from nare.tui.approve import Approver, risks
 
 
 class Keys:
@@ -38,3 +42,27 @@ async def test_a_allows_this_tool_from_now_on() -> None:
     assert await approver("edit", {"path": "a", "old": "x", "new": "y"}) is True
     assert keys.asked == ["write", "edit"]
     assert approver.always == {"write"}
+
+
+@pytest.mark.parametrize(
+    "command, expected",
+    [
+        # 2>&1 copies a descriptor: its & is not backgrounding.
+        ("npm run build 2>&1 | tail -30", []),
+        ("ls & rm x", ["background"]),
+        ("ls 2>/dev/null", []),
+        ("python3 t.py >/etc/x", ["outside root"]),
+        ("python3 t.py &>/etc/x", ["outside root"]),
+        ("killall node", ["kill"]),
+    ],
+)
+def test_risks(command: str, expected: list[str], tmp_path: Path) -> None:
+    assert risks(command, Policy(root=tmp_path)) == expected
+
+
+def test_without_a_root_the_boundary_is_where_bash_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert risks("cat ~/.ssh/id_rsa", Policy(root=None)) == ["outside root"]
+    assert risks("cat a.py", Policy(root=None)) == []

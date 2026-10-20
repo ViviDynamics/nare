@@ -11,7 +11,6 @@ import difflib
 import json
 import os
 import re
-import shlex
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -27,6 +26,7 @@ from rich.text import Text
 from nare.session import Message, Session, Usage, unanswered
 from nare.tools import Policy, questions_from
 from nare.transport import ToolCall
+from nare.tui.approve import risks
 
 RESULT_LINES = 5
 DIFF_LINES = 20
@@ -310,53 +310,6 @@ def _bash_preview(command: str) -> str:
     return "\n".join(part for part in parts if part)
 
 
-def _risk_badges(command: str, policy: Policy) -> list[str]:
-    """Display the categories documented by #63; never grant permission."""
-    try:
-        scan = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
-        scan.whitespace_split = True
-        tokens = list(scan)
-    except ValueError:
-        return []
-    # Include nested/wrapped invocations conservatively. This display is not
-    # the approval policy's decision about whether a call may run unasked.
-    words = {Path(token).name for token in tokens}
-    pairs = set(zip(tokens, tokens[1:], strict=False))
-    network = bool(words & {"curl", "wget"}) or bool(
-        pairs
-        & {
-            ("pip", "install"),
-            ("pip3", "install"),
-            ("npm", "i"),
-            ("npm", "install"),
-            ("git", "clone"),
-        }
-    )
-    options = "".join(token[1:] for token in tokens if token.startswith("-"))
-
-    def outside(token: str) -> bool:
-        if not (token.startswith(("/", "~")) or ".." in token.split("/")):
-            return False
-        try:
-            policy.resolve(os.path.expanduser(token))
-        except (ValueError, OSError):
-            return True
-        return False
-
-    flags = {
-        "network": network,
-        "exec": ("chmod", "+x") in pairs
-        or (network and bool(words & {"sh", "bash", "zsh"})),
-        "sudo": "sudo" in words,
-        "kill": bool(words & {"kill", "pkill"}),
-        "background": bool(words & {"nohup", "pg_ctl", "systemctl"}) or "&" in tokens,
-        "rm -rf": "rm" in words and "r" in options and "f" in options,
-        "outside root": any(outside(token) for token in tokens),
-        "git commit": bool(pairs & {("git", "commit"), ("git", "push")}),
-    }
-    return [badge for badge, present in flags.items() if present]
-
-
 def approval_header(tool: str, args: dict[str, Any], policy: Policy) -> Text:
     """Fixed identity, answer keys, size and warnings above the preview."""
     text, lexer = approval_text(tool, args, policy)
@@ -372,7 +325,7 @@ def approval_header(tool: str, args: dict[str, Any], policy: Policy) -> Text:
         elif root:
             cwd = Path(root).name
         details += f" · in {cwd.rstrip('/')}/"
-        badges = _risk_badges(command, policy)
+        badges = risks(command, policy)
     else:
         badges = []
         if path:
