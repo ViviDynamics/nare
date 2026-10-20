@@ -1,10 +1,12 @@
 import copy
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from nare.compact import PREFIX
 from nare.events import Event
 from nare.session import (
     SESSION_VERSION,
@@ -214,6 +216,72 @@ def test_thinking_that_redaction_changes_is_never_saved(
     assert not [
         b for b in saved.messages[3].content if b["type"] in THINKING and sent_back(b)
     ]
+
+
+def older_file(s: Session) -> str:
+    """`s` as saved by a nare from before stale thinking was dropped on save."""
+    raw = json.loads(dumps(s))
+    del raw["stale_thinking_dropped"]
+    return json.dumps(raw)
+
+
+@pytest.mark.parametrize(
+    ("message", "block", "key", "value"),
+    [
+        # What an older nare saved for the .env read: redacted, thinking kept.
+        (2, 0, "content", "[redacted]\nPORT=8080"),
+        # Compaction kept the thinking after its stubs before it dropped it.
+        (2, 0, "content", f"{PREFIX} 30 chars of output from turn 1. Rerun it.]"),
+        (1, 1, "input", {"path": "a.py", "content": f"{PREFIX} wrote 900 chars.]"}),
+        # Redaction that rewrote a signature or payload left the block itself.
+        (3, 0, "signature", "[redacted]"),
+        (3, 1, "data", "[redacted]"),
+    ],
+)
+def test_an_older_file_drops_thinking_from_its_first_marked_message(
+    message: int, block: int, key: str, value: object
+) -> None:
+    # The text that was sent is gone, so the markers redaction and compaction
+    # leave stand in for the comparison dumps() makes.
+    s = env_session(secret="DEBUG=1")
+    s.messages[message].content[block][key] = value
+    loaded = loads(older_file(s))
+    assert loaded.messages[:message] == s.messages[:message]
+    assert not [
+        b
+        for m in loaded.messages[message:]
+        for b in m.content
+        if b["type"] in THINKING and sent_back(b)
+    ]
+    # Unsigned thinking is never sent, so it stays as a record.
+    assert {"type": "thinking", "thinking": "proxy", "signature": ""} in (
+        loaded.messages[3].content
+    )
+
+
+@pytest.mark.parametrize("saved", [dumps, older_file])
+@pytest.mark.parametrize("content", ["go", ["go"], None])
+def test_junk_content_is_malformed_not_a_crash(
+    saved: Callable[[Session], str], content: object
+) -> None:
+    # The attach view catches ValueError only, and draws every block.
+    raw = json.loads(saved(new_session("go")))
+    raw["messages"][0]["content"] = content
+    with pytest.raises(ValueError, match="malformed session file"):
+        loads(json.dumps(raw))
+
+
+def test_an_older_file_with_no_markers_keeps_its_thinking() -> None:
+    s = env_session(secret="DEBUG=1")
+    assert loads(older_file(s)) == s
+
+
+def test_a_file_this_nare_saved_keeps_thinking_after_a_quoted_marker() -> None:
+    # Reading nare's own source, or a log `nare redact` wrote, puts the marker
+    # in a result that redaction did not change, so the thinking after it is
+    # still valid, and this nare's save already dropped any that was not.
+    s = env_session(secret="[redacted]")
+    assert loads(dumps(s)) == s
 
 
 def test_reopen_appends_text_and_resets_per_run_state() -> None:
