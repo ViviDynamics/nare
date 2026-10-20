@@ -185,7 +185,10 @@ signed and redacted thinking from the first message it changes on, and the
 progress event's `detail.compaction.thinking` counts the blocks removed; prior
 streamed events are unaffected. The saved transcript is redacted, and from the
 first message redaction changes on it leaves out signed and redacted thinking,
-which the running session keeps.
+which the running session keeps. Each save writes
+`stale_thinking_dropped: true`. A file without it, from an older nare, has that
+thinking removed on load from the first message whose blocks sent to the model
+hold `[redacted]` or a compaction stub.
 
 Budget exhaustion exits 1 with `status=error`, `stop_reason=budget`. Callers
 must branch on that pair, not on the free-text error or exit 1 alone. Provider

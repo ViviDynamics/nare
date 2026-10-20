@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from nare.contract import CONTRACT_VERSION, NARE_VERSION
-from nare.events import Event, redact_value
+from nare.events import REDACTED, Event, redact_value
 
 SESSION_VERSION = 1
 
@@ -119,6 +119,10 @@ class Session:
     # offers to kill the live ones at turn end and on quit. A record, so
     # reopen() keeps it.
     process_groups: list[dict[str, Any]] = field(default_factory=list)
+    # Written by every save, which drops stale thinking. A file without it
+    # comes from an older nare and may hold thinking that redaction or
+    # compaction made stale, so loads() drops it by the markers they leave.
+    stale_thinking_dropped: bool = True
     contract: int = CONTRACT_VERSION
     nare: str = NARE_VERSION
     events: list[Event] = field(default_factory=list, compare=False)
@@ -211,6 +215,25 @@ def dumps(s: Session) -> str:
     return json.dumps(raw)
 
 
+def _drop_marked_thinking(messages: list[Message]) -> None:
+    """Drop sent thinking from the first marked message on, in an unvetted file.
+
+    A file without `stale_thinking_dropped` may come from a nare that kept
+    stale thinking, and it holds no copy of what was sent, so the markers
+    redaction and compaction leave stand in for the comparison dumps() makes.
+    Text that only quotes a marker loses thinking that was still valid, which
+    is safe; stale thinking is a 400.
+    """
+    from nare.compact import PREFIX  # compact imports this module
+
+    for i, message in enumerate(messages):
+        sent = json.dumps([b for b in message.content if sent_back(b)])
+        if REDACTED in sent or PREFIX in sent:
+            for later in messages[i:]:
+                later.content = without_sent_thinking(later.content)
+            return
+
+
 def loads(text: str) -> Session:
     raw: dict[str, Any] = json.loads(text)
     if not isinstance(raw, dict):
@@ -229,6 +252,8 @@ def loads(text: str) -> Session:
             f"{CONTRACT_VERSION}. Resuming it would mean reading shapes this "
             "nare does not define."
         )
+    # Popped like version: once loaded, a session holds only valid thinking.
+    vetted = raw.pop("stale_thinking_dropped", False) is True
     try:
         if "cost" not in raw["usage"]:
             raw["usage"]["cost"] = (
@@ -236,12 +261,21 @@ def loads(text: str) -> Session:
             )
         raw["usage"] = Usage(**raw["usage"])
         raw["messages"] = [Message(**m) for m in raw["messages"]]
+        # Every reader walks the blocks as objects: the transports, the
+        # attach view's renderer and the thinking drop below.
+        for message in raw["messages"]:
+            if not isinstance(message.content, list) or not all(
+                isinstance(b, dict) for b in message.content
+            ):
+                raise TypeError("message content must be a list of blocks")
+        if not vetted:
+            _drop_marked_thinking(raw["messages"])
         # The TUI vets each entry and drops junk; a junk container records
         # nothing either, so a bash call can still append to it.
         if not isinstance(raw.get("process_groups", []), list):
             raw["process_groups"] = []
         return Session(**raw)
-    except (KeyError, TypeError) as exc:
+    except (AttributeError, KeyError, TypeError) as exc:
         raise ValueError(f"malformed session file: {exc}") from exc
 
 
