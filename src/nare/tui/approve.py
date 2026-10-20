@@ -29,8 +29,9 @@ _REDIRECT = re.compile(r"^\d*(?:>>|>|<)")
 _BRACE_LIMIT = 64
 # What the scan cannot read: a second line, a subshell or substitution, a
 # heredoc. shlex hands back a quoted or escaped `;` as the same token as a
-# real one, so `find . \; python3 -delete` would look like two commands.
-_UNREADABLE = re.compile(r"""[\n\r`]|\$\(|<\(|>\(|<<|(['"])[;&|()]+\1|\\[;&|()]""")
+# real one, so `find . \; python3 -delete` would look like two commands. An
+# escaped `>` is a word to bash, but `\>|` would read as `>|`, hiding the pipe.
+_UNREADABLE = re.compile(r"""[\n\r`]|\$\(|<\(|>\(|<<|(['"])[;&|()]+\1|\\[;&|()<>]""")
 _OPERATOR = frozenset(";&|()")
 _SEPARATORS = frozenset({"|", "|&", "||", "&&", ";", "&"})
 
@@ -108,11 +109,11 @@ def _braces(word: str) -> list[str] | None:
     while todo:
         if len(done) + len(todo) > _BRACE_LIMIT:
             return None
-        expanded = _brace_step(word := todo.pop())
+        expanded = _brace_step(word := todo.pop(0))
         if expanded is None:
             done.append(word)
         else:
-            todo += expanded
+            todo[:0] = expanded  # first, so the words keep bash's order
     return done
 
 
@@ -137,7 +138,12 @@ def risks(command: str, policy: Policy) -> list[str]:
     policy alike. A risk always asks, even about an approved program; this
     never allows a call.
     """
-    tokens = _tokens(command)
+    # Brace lists expanded, as bash will: `npm {,i} x` runs `npm i x`, since
+    # bash drops the empty word. A token that makes too many words stays
+    # whole, and _outside flags it.
+    tokens = [
+        word for token in _tokens(command) for word in _braces(token) or [token] if word
+    ]
     # Include nested/wrapped invocations conservatively.
     words = {Path(token).name for token in tokens}
     pairs = set(zip(tokens, tokens[1:], strict=False))
@@ -154,7 +160,7 @@ def risks(command: str, policy: Policy) -> list[str]:
     # Short options only: the letters of --force are not -r and -f.
     short = [token for token in tokens if token[:1] == "-" and token[:2] != "--"]
     letters = {letter for token in short for letter in token[1:]}
-    recursive = bool(letters & {"r", "R"}) or "--recursive" in tokens
+    recursive = bool(letters & {"r", "R"}) or _spelled(tokens, "--recursive")
     # Without a root, bash runs in the current directory: that is the boundary.
     bounded = policy if policy.root is not None else Policy(root=Path.cwd())
     flags = {
@@ -169,9 +175,16 @@ def risks(command: str, policy: Policy) -> list[str]:
         "outside root": any(_outside(token, bounded) for token in tokens),
         "git commit": bool(pairs & {("git", "commit"), ("git", "push")}),
         "git discard": ("git", "clean") in pairs
-        or (("git", "reset") in pairs and "--hard" in tokens),
+        or (("git", "reset") in pairs and _spelled(tokens, "--hard")),
     }
     return [badge for badge, present in flags.items() if present]
+
+
+def _spelled(tokens: list[str], option: str) -> bool:
+    """Whether a token is `option` or names it by a prefix: rm reads `--rec`
+    as `--recursive`, and git `--har` as `--hard`.
+    """
+    return any(len(token) > 2 and option.startswith(token) for token in tokens)
 
 
 def _commands(command: str) -> list[list[str]] | None:
@@ -225,7 +238,7 @@ def scope(command: str, policy: Policy) -> frozenset[str] | None:
     if commands is None or risks(command, policy):
         return None
     programs = [_program(words) for words in commands if not _read_only(words)]
-    # A read-only program asked about for a redirect or a write flag:
+    # A read-only program asked about for a redirect, a `$` or a write flag:
     # approving it whole would lift the very check that asked.
     if None in programs or set(programs) & READ_ONLY:
         return None
@@ -264,6 +277,9 @@ class Approver:
         commands = _commands(command)
         if not commands or risks(command, self.policy):
             return False
-        return all(
-            _read_only(words) or _program(words) in self.programs for words in commands
-        )
+        return all(_read_only(words) or self._approved(words) for words in commands)
+
+    def _approved(self, words: list[str]) -> bool:
+        # risks() reads words, not what a `$` expands to: `rm ${X:--r}` may be
+        # recursive, and `> $HOME/x` outside the root.
+        return _program(words) in self.programs and not any("$" in w for w in words)

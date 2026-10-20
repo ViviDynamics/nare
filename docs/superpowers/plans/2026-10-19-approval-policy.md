@@ -16,7 +16,7 @@ These go beyond the spec:
 
 1. `a` on git approves `git <subcommand>`, not all of git. `a` on `git add` must not allow `git reset --hard` or `git clean -fdx`. Every other program is approved whole, as the spec says.
 2. `a` on a line with several programs approves every program in it that is not read-only, and the hint lists them: `a always npm, python3`.
-3. When `a` cannot be scoped, it acts as `y` and the hint leaves `a` out. That covers a line with a risk flag, a line the scan cannot read, a wrapper program, a `VAR=` prefix, git with an option before the subcommand, and (added after verification) a read-only program asked about for a redirect or a write flag, such as `cat > a.py` or `find . -delete`: approving it whole would lift the check that asked.
+3. When `a` cannot be scoped, it acts as `y` and the hint leaves `a` out. That covers a line with a risk flag, a line the scan cannot read, a wrapper program, a `VAR=` prefix, git with an option before the subcommand, and (added after verification) a read-only program asked about for a redirect, a `$` or a write flag, such as `cat > a.py` or `find . -delete`: approving it whole would lift the check that asked.
 4. Writes under `.git/` are out of scope here and tracked in #101.
 
 ## Global Constraints
@@ -42,8 +42,8 @@ In order:
 
 Scan rules:
 
-- Before scanning, remove fd duplications (`2>&1`, `>&2`, `2>&-`) and read `&>` and `&>>` as `>`, so their `&` is not taken for backgrounding.
-- The scan cannot read a line with a shlex error, a newline, a `(` or `)` token, a backtick, `$(`, `<(`, `>(` or `<<`.
+- Before scanning, remove fd duplications (`2>&1`, `>&2`, `2>&-`) and read `&>` and `&>>` as `>`, so their `&` is not taken for backgrounding. Read `>|` as `>`, so its `|` is not taken for a pipe.
+- The scan cannot read a line with a shlex error, a newline, a `(` or `)` token, a backtick, `$(`, `<(`, `>(` or `<<`, or (added in review) a quoted or escaped operator or redirection, such as `";"`, `\;` or `\>`: shlex returns `";"` as a bare `;`, and `\>|` would read as `>|`.
 - Commands are split on `|`, `|&`, `||`, `&&`, `;` and `&`.
 - A command's program is its first word exactly as written, with no basename: `./python3` is not `python3`. For git it is `git <second word>`.
 - A command is read-only when its program is on the spec's list, no token contains `<` or `>`, there is no `$`, and none of these flags appear: find `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint`, `-fprint0`, `-fprintf`, `-fls`; rg `--pre`; git `--output`.
@@ -55,8 +55,9 @@ Fixes to the risk check, found while planning:
 - `killall` joins `kill` and `pkill` under the `kill` flag.
 - The outside-root check strips a leading redirection (`>`, `>>`, `2>`, `<`) from a token before testing it, and `/dev/null` is never outside the root.
 - With no `--root`, the boundary is the current directory, where bash runs. Today nothing is outside, so `cat ~/.ssh/id_rsa` would run unasked.
-- Added after verification: the `rm -rf` badge becomes `rm -r` and fires on `-r`, `-R` or `--recursive` alone, since rm without a terminal never asks either way. Only short options count, so `rm --force` is no longer flagged.
+- Added after verification: the `rm -rf` badge becomes `rm -r` and fires on `-r`, `-R` or `--recursive` alone, since rm without a terminal never asks either way. Of the options, only short ones and `--recursive` count, so `rm --force` is no longer flagged.
 - Added after verification: a `git discard` badge for `git reset --hard` and `git clean`, so they ask even after `a` on `git reset` or `git clean`.
+- Added in review: the risk check reads brace lists expanded, as bash will (`npm {i,} x` runs `npm i x`), and long options by their prefixes (`--rec`, `--har`). A command that runs only because its program was approved asks when a word holds `$`, since the check cannot see what it expands to.
 
 ## Review Focus
 
@@ -65,7 +66,7 @@ Fixes to the risk check, found while planning:
 3. **`2>&1` is not backgrounding.** `npm run build 2>&1 | tail -30` after `a` on `npm run build` runs unasked. Pinned in Tasks 1 and 2.
 4. **A read-only program with a redirect.** `cat > a.py` asks even though `cat` is on the list. Pinned in Task 2.
 5. **The reason field.** The screen stops its `Input.Submitted`, so the app never treats a reason as a message. y, a and n typed into the field don't answer the prompt. Esc sends the plain denial. Ctrl-C still interrupts. Pinned in Task 4.
-6. **The move keeps the badges.** The badge tests in `tests/test_tui_render.py` pass unchanged after `_risk_badges` moves. Pinned in Task 1.
+6. **The move keeps the badges.** The badge tests in `tests/test_tui_render.py` pass unchanged after `_risk_badges` moves. Pinned in Task 1. (A later fix renames `rm -rf` to `rm -r`; see the risk fixes above.)
 
 ---
 

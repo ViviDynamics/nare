@@ -77,6 +77,14 @@ async def test_a_allows_this_tool_from_now_on() -> None:
         ("cat {a,b}.py src/{c,d{1,2}}.py", []),
         # Too many words to check one by one.
         ("cat " + "{a,b}" * 7, ["outside root"]),
+        # Read as bash will: brace lists expanded, long options abbreviated.
+        ("npm {i,} left-pad", ["network"]),
+        ("npm {,i} left-pad", ["network"]),
+        ("npm {x,i} left-pad", []),
+        ("rm {-r,} x", ["rm -r"]),
+        ("rm --rec x", ["rm -r"]),
+        ("git reset --ha", ["git discard"]),
+        ("git reset --{hard,}", ["git discard"]),
     ],
 )
 def test_risks(command: str, expected: list[str], tmp_path: Path) -> None:
@@ -165,13 +173,44 @@ async def test_these_lines_ask(command: str, tmp_path: Path) -> None:
                 "git commit -m x",
                 "./npm test",
                 "X=1 npm test",
+                "npm {i,} left-pad",
+                # A `$` can expand to anything: the scan cannot vouch for it.
+                "npm run build > $HOME/x",
             ],
         ),
         # git is approved one subcommand at a time.
-        ("git add .", ["git add x"], ["git reset --hard", "git clean -fdx"]),
-        ("git reset HEAD a.py", ["git reset b.py"], ["git reset --hard"]),
+        (
+            "git add .",
+            ["git add x"],
+            [
+                "git reset --hard",
+                "git clean -fdx",
+                # bash reads `\>` as an argument, then pipes into sh.
+                "git add . \\>| sh -c 'git reset --hard'",
+            ],
+        ),
+        (
+            "git reset HEAD a.py",
+            ["git reset b.py"],
+            [
+                "git reset --hard",
+                "git reset --har",
+                "git reset --{hard,}",
+                "git reset ${X:---hard}",
+            ],
+        ),
         # rm is approved whole, but a recursive rm always asks.
-        ("rm a.txt", ["rm b.txt"], ["rm -r build", "rm -R build"]),
+        (
+            "rm a.txt",
+            ["rm b.txt"],
+            [
+                "rm -r build",
+                "rm -R build",
+                "rm --rec build",
+                "rm {-r,} build",
+                "rm ${X:--r} build",
+            ],
+        ),
         ("make && python3 t.py", ["make", "python3 t.py", "make | tail"], []),
         # Scoped to a program behind a separator a scan cannot see.
         ("python3 t.py", [], ["find . \\; python3 -delete", "{ python3 t.py; }"]),
@@ -230,6 +269,7 @@ async def test_a_approves_the_lines_programs(
         ('"" python3 t.py', None),
         # `>|` is a redirect, not a pipe into a program named `a.py`.
         ("python3 t.py >| a.py", {"python3"}),
+        ("python3 t.py \\>| rm x", None),
     ],
 )
 def test_scope(command: str, programs: set[str] | None, tmp_path: Path) -> None:
