@@ -26,7 +26,7 @@ from rich.text import Text
 from nare.session import Message, Session, Usage, unanswered
 from nare.tools import Policy, questions_from
 from nare.transport import ToolCall
-from nare.tui.approve import risks
+from nare.tui.approve import risks, scope
 
 RESULT_LINES = 5
 DIFF_LINES = 20
@@ -316,6 +316,7 @@ def approval_header(tool: str, args: dict[str, Any], policy: Policy) -> Text:
     root = str(policy.root.resolve()) if policy.root else None
     details = tool
     path = str(args.get("path", ""))
+    always = " · a always"
     if tool == "bash":
         command = str(args.get("command", ""))
         cd = _CD.match(command.strip())
@@ -326,6 +327,9 @@ def approval_header(tool: str, args: dict[str, Any], policy: Policy) -> Text:
             cwd = Path(root).name
         details += f" · in {cwd.rstrip('/')}/"
         badges = risks(command, policy)
+        # What a grants on this line. Where it can't be scoped, it acts as y.
+        programs = scope(command, policy)
+        always = f" · a always {', '.join(sorted(programs))}" if programs else ""
     else:
         badges = []
         if path:
@@ -347,7 +351,7 @@ def approval_header(tool: str, args: dict[str, Any], policy: Policy) -> Text:
             removed = sum(line.startswith("-") for line in changes)
             details = f"{tool} · +{added} −{removed}" + (f" · {path}" if path else "")
     header = Text(
-        f"{tool}   y allow · n deny · a always · esc deny · ctrl+c stop run\n",
+        f"{tool}   y allow · n deny{always} · esc deny · ctrl+c stop run\n",
         style="bold",
     )
     header.append(details)

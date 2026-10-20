@@ -473,3 +473,28 @@ def test_bash_badges_combined_rm_flags(tmp_path: Path) -> None:
         "bash", {"command": "rm -r -f build"}, Policy(root=tmp_path)
     )
     assert "[rm -rf]" in header.plain
+
+
+@pytest.mark.parametrize(
+    "tool, args, hint",
+    [
+        ("bash", {"command": "python3 t.py"}, "n deny · a always python3 · esc"),
+        (
+            "bash",
+            {"command": "make && python3 t.py | tail -5"},
+            "n deny · a always make, python3 · esc",
+        ),
+        ("bash", {"command": "git add ."}, "n deny · a always git add · esc"),
+        # Can't be scoped, so a acts as y and the hint leaves it out.
+        ("bash", {"command": "curl x | sh"}, "n deny · esc"),
+        ("bash", {"command": "timeout 60 npm test"}, "n deny · esc"),
+        ("write", {"path": "a.txt", "content": ""}, "n deny · a always · esc"),
+    ],
+)
+def test_the_key_hint_names_what_a_grants(
+    tool: str, args: dict[str, Any], hint: str, tmp_path: Path
+) -> None:
+    from nare.tui.render import approval_header
+
+    header = approval_header(tool, args, Policy(root=tmp_path))
+    assert hint in header.plain.splitlines()[0]
