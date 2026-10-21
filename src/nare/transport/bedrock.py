@@ -13,6 +13,7 @@ import re
 import httpx2
 from anthropic import AsyncAnthropic, AsyncAnthropicBedrock
 
+from nare.accounting import Prices
 from nare.transport.anthropic import (
     MODEL_NONSTREAMING_TOKENS,
     NONSTREAMING_MAX_TOKENS,
@@ -109,4 +110,7 @@ class BedrockTransport(AnthropicTransport):
         )
 
     async def context_window(self) -> int | None:
+        return None
+
+    async def prices(self) -> Prices | None:
         return None

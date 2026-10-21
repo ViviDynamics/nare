@@ -300,6 +300,7 @@ async def test_no_context_window_discovery_request() -> None:
         http_client=recording(captured),
     )
     assert await t.context_window() is None
+    assert await t.prices() is None
     assert captured == []
 
 
@@ -321,7 +322,7 @@ async def test_a_turn_is_sigv4_signed_and_normalized_like_anthropic() -> None:
     body = json.loads(request.content)
     assert body["anthropic_version"].startswith("bedrock-")
     assert body["thinking"] == {"type": "enabled", "budget_tokens": 1024}
-    assert body["tools"] == TOOLS
+    assert body["tools"] == [{**TOOLS[0], "cache_control": {"type": "ephemeral"}}]
     assert reply.tool_calls[0].args == {"path": "a"}
     assert reply.stop_reason == "tool_use"
     assert (
