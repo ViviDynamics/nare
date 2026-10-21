@@ -50,6 +50,14 @@ else:
     MODEL_NONSTREAMING_TOKENS = dict(_SDK_MODEL_CAPS)
 
 
+def nonstreaming_ceiling(model: str) -> int:
+    """The largest max_tokens this model takes without streaming."""
+    return min(
+        NONSTREAMING_MAX_TOKENS,
+        MODEL_NONSTREAMING_TOKENS.get(model, NONSTREAMING_MAX_TOKENS),
+    )
+
+
 EFFORT_BUDGETS: dict[str, int] = {"low": 1024, "medium": 4096, "high": 16384}
 
 Effort = Literal["low", "medium", "high"]
