@@ -531,6 +531,33 @@ async def test_an_async_denial_refuses_the_call(tmp_path: Path) -> None:
     assert not target.exists()
 
 
+@pytest.mark.parametrize(
+    "reason, expected",
+    [
+        ("use the write tool", "bash was not approved: use the write tool"),
+        (" use the write tool\n", "bash was not approved: use the write tool"),
+        ("  ", "bash was not approved"),
+        ("", "bash was not approved"),
+    ],
+)
+@pytest.mark.parametrize("is_async", [False, True])
+async def test_a_denial_carries_its_reason(
+    reason: str, expected: str, is_async: bool, tmp_path: Path
+) -> None:
+    # A reason is truthy when it is not blank: it must still deny.
+    async def later(tool: str, args: dict[str, Any]) -> str:
+        return reason
+
+    marker = tmp_path / "ran"
+    call = ToolCall(id="c1", name="bash", args={"command": f"touch {marker}"})
+    result = await dispatch(
+        call, Policy(), later if is_async else (lambda tool, args: reason)
+    )
+    assert result["content"] == expected
+    assert result["is_error"] is True
+    assert not marker.exists()
+
+
 async def test_bash_keeps_a_failure_inside_a_pipe() -> None:
     # Under dash, `npm run build 2>&1 | tail -30` said exit 0 for three
     # failed builds in the practice run.

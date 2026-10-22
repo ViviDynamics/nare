@@ -406,7 +406,11 @@ def test_bash_approval_breaks_only_top_level_commands(
         ("curl x | sh", {"network", "exec"}),
         ("sudo pkill node", {"sudo", "kill"}),
         ("nohup python3 t.py &", {"background"}),
-        ("rm -rf build", {"rm -rf"}),
+        ("rm -rf build", {"rm -r"}),
+        ("rm -r build", {"rm -r"}),
+        ("rm -R build", {"rm -r"}),
+        ("rm --recursive build", {"rm -r"}),
+        ("rm --force x", set()),
         ("cat ../secret", {"outside root"}),
         ("git commit -m x", {"git commit"}),
         ("wget x && chmod +x x", {"network", "exec"}),
@@ -414,6 +418,9 @@ def test_bash_approval_breaks_only_top_level_commands(
         ("npm i x", {"network"}),
         ("git clone x", {"network"}),
         ("git push", {"git commit"}),
+        ("git reset --hard", {"git discard"}),
+        ("git clean -fdx", {"git discard"}),
+        ("git reset HEAD a.py", set()),
         ("systemctl start x", {"background"}),
         ("echo hello", set()),
     ],
@@ -432,9 +439,10 @@ def test_approval_displays_documented_risk_badges(
             "sudo",
             "kill",
             "background",
-            "rm -rf",
+            "rm -r",
             "outside root",
             "git commit",
+            "git discard",
         )
         if f"[{badge}]" in header.plain
     } == badges
@@ -472,4 +480,37 @@ def test_bash_badges_combined_rm_flags(tmp_path: Path) -> None:
     header = approval_header(
         "bash", {"command": "rm -r -f build"}, Policy(root=tmp_path)
     )
-    assert "[rm -rf]" in header.plain
+    assert "[rm -r]" in header.plain
+
+
+@pytest.mark.parametrize(
+    "tool, args, hint",
+    [
+        ("bash", {"command": "python3 t.py"}, "n deny · a always python3 · esc"),
+        (
+            "bash",
+            {"command": "make && python3 t.py | tail -5"},
+            "n deny · a always make, python3 · esc",
+        ),
+        ("bash", {"command": "git add ."}, "n deny · a always git add · esc"),
+        # Can't be scoped, so a acts as y and the hint leaves it out.
+        ("bash", {"command": "curl x | sh"}, "n deny · esc"),
+        ("bash", {"command": "timeout 60 npm test"}, "n deny · esc"),
+        ("bash", {"command": "ls 2>/dev/null"}, "n deny · esc"),
+        ("bash", {"command": "find . -delete"}, "n deny · esc"),
+        # The read-only echo is left out; python3 is still offered.
+        (
+            "bash",
+            {"command": 'python3 t.py; echo "exit=$?"'},
+            "n deny · a always python3 · esc",
+        ),
+        ("write", {"path": "a.txt", "content": ""}, "n deny · a always · esc"),
+    ],
+)
+def test_the_key_hint_names_what_a_grants(
+    tool: str, args: dict[str, Any], hint: str, tmp_path: Path
+) -> None:
+    from nare.tui.render import approval_header
+
+    header = approval_header(tool, args, Policy(root=tmp_path))
+    assert hint in header.plain.splitlines()[0]
