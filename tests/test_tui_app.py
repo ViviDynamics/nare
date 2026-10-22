@@ -154,8 +154,53 @@ async def test_n_denies_and_the_run_continues(tmp_path: Path) -> None:
     async with app.run_test() as pilot:
         await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
         await pilot.press("n")
+        # Esc in the reason field: the screen's deny, not the app's interrupt.
+        await pilot.press("escape")
         await until(pilot, lambda: app.run_state == "done")
         assert "write was not approved" in shown(app)
+        assert "write was not approved:" not in shown(app)
+    assert not (tmp_path / "a.txt").exists()
+
+
+async def test_n_sends_the_reason_typed_into_its_field(tmp_path: Path) -> None:
+    replies = [
+        tool_reply("write", {"path": "a.txt", "content": "hi\n"}),
+        text_reply("ok"),
+    ]
+    fake = FakeProvider(replies)
+    app = make(tmp_path, fake, prompt="go")
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
+        await pilot.press("n")
+        field = app.screen.query_one("#deny-reason", Input)
+        assert field.has_focus
+        # Letters typed there are the reason, not answers.
+        await pilot.press("y", "a", "n")
+        assert isinstance(app.screen, ApprovalScreen)
+        assert field.value == "yan"
+        field.value = ""
+        await pilot.press(*"use the write tool", "enter")
+        await until(pilot, lambda: app.run_state == "done")
+        assert "write was not approved: use the write tool" in shown(app)
+        # Not taken for a message by the app's own input handler.
+        assert "> use the write tool" not in shown(app)
+    assert not (tmp_path / "a.txt").exists()
+    result = fake.calls[-1][0][-1].content[0]
+    assert result["content"] == "write was not approved: use the write tool"
+
+
+async def test_ctrl_c_with_the_reason_field_open_interrupts(tmp_path: Path) -> None:
+    replies = [
+        tool_reply("write", {"path": "a.txt", "content": "hi\n"}),
+        text_reply("ok"),
+    ]
+    app = make(tmp_path, FakeProvider(replies), prompt="go")
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
+        await pilot.press("n", "w")
+        await pilot.press("ctrl+c")
+        await until(pilot, lambda: app.run_state == "interrupted")
+        assert not isinstance(app.screen, ApprovalScreen)
     assert not (tmp_path / "a.txt").exists()
 
 
@@ -188,8 +233,18 @@ async def test_a_allows_the_tool_for_the_rest_of_the_process(tmp_path: Path) -> 
     assert (tmp_path / "b.txt").read_text() == "b"
 
 
+async def test_a_read_only_command_runs_without_a_prompt(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("A-CONTENT\n")
+    replies = [tool_reply("bash", {"command": "cat a.txt"}), text_reply("ok")]
+    fake = FakeProvider(replies)
+    app = make(tmp_path, fake, prompt="go")
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: app.run_state == "done")
+    assert "A-CONTENT" in fake.calls[-1][0][-1].content[0]["content"]
+
+
 async def test_ctrl_c_during_approval_interrupts_then_follow_up(tmp_path: Path) -> None:
-    replies = [tool_reply("bash", {"command": "echo hi"}), text_reply("resumed")]
+    replies = [tool_reply("bash", {"command": "touch a.txt"}), text_reply("resumed")]
     fake = FakeProvider(replies)
     app = make(tmp_path, fake, prompt="go")
     async with app.run_test() as pilot:

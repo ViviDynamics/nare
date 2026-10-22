@@ -27,6 +27,7 @@ from textual.app import App, ComposeResult
 from textual.await_remove import AwaitRemove
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.timer import Timer
@@ -96,12 +97,17 @@ class Transcript(VerticalScroll):
         return self.remove_children()
 
 
-class ApprovalScreen(ModalScreen[str]):
+class ApprovalScreen(ModalScreen[tuple[str, str]]):
+    """Answers with a key and a reason. n opens a field for a reason the model
+    reads: Enter sends it, Esc the plain denial. Letters typed there are the
+    reason, not answers: the field takes them before the bindings see them.
+    """
+
     BINDINGS: ClassVar[list[BindingType]] = [
-        ("y", "dismiss('y')", "allow"),
-        ("n", "dismiss('n')", "deny"),
-        ("escape", "dismiss('n')", "deny"),
-        ("a", "dismiss('a')", "always"),
+        ("y", "answer('y')", "allow"),
+        ("n", "deny", "deny"),
+        ("escape", "answer('n')", "deny"),
+        ("a", "answer('a')", "always"),
     ]
 
     def __init__(self, tool: str, text: str, lexer: str, header: Text) -> None:
@@ -118,6 +124,27 @@ class ApprovalScreen(ModalScreen[str]):
                 yield Static(
                     Syntax(self.text, self.lexer, word_wrap=True), id="preview"
                 )
+
+    def action_answer(self, key: str) -> None:
+        self.dismiss((key, ""))
+
+    async def action_deny(self) -> None:
+        try:
+            field = self.query_one("#deny-reason", Input)
+        except NoMatches:
+            field = Input(
+                placeholder="reason for the model (enter sends, esc skips)",
+                id="deny-reason",
+            )
+            # Under the header, not the preview: a long one scrolls.
+            box = self.query_one("#approval-box")
+            await box.mount(field, after="#approval-header")
+        field.focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        # Stopped here, or the app would read the reason as a message.
+        event.stop()
+        self.dismiss(("n", event.value))
 
 
 def _group_text(group: dict[str, Any]) -> str:
@@ -199,7 +226,7 @@ class TuiApp(App[None]):
         self.prices = prices
         self.prompt = prompt
         self.root = str(Path(args.root or ".").resolve())
-        self.approver = Approver(self._ask)
+        self.approver = Approver(self._ask, self.policy)
         self.run_state = "idle"
         if session is not None:
             # A file left `working` is a run that died: treat it as stopped.
@@ -445,16 +472,17 @@ class TuiApp(App[None]):
             self.note = f"could not write {self.args.session}: {exc}"
         self._status()
 
-    async def _ask(self, tool: str, args: dict[str, Any]) -> str:
+    async def _ask(self, tool: str, args: dict[str, Any]) -> tuple[str, str]:
         text, lexer = approval_text(tool, args, self.policy)
         screen = ApprovalScreen(
             tool, text, lexer, approval_header(tool, args, self.policy)
         )
-        answer: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        loop = asyncio.get_running_loop()
+        answer: asyncio.Future[tuple[str, str]] = loop.create_future()
 
-        def done(key: str | None) -> None:
+        def done(result: tuple[str, str] | None) -> None:
             if not answer.done():
-                answer.set_result(key or "n")
+                answer.set_result(result or ("n", ""))
 
         self._set_state("awaiting approval")
         self.push_screen(screen, done)

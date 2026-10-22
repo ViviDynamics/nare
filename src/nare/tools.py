@@ -528,8 +528,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
 ]
 
-# Async so a person can answer: the TUI's approver awaits a key press.
-Approve = Callable[[str, dict[str, Any]], bool | Awaitable[bool]]
+# Async so a person can answer: the TUI's approver awaits a key press. A str
+# is a denial with the person's reason, which the model reads.
+Approve = Callable[[str, dict[str, Any]], bool | str | Awaitable[bool | str]]
 
 
 def approve_all(tool: str, args: dict[str, Any]) -> bool:
@@ -650,6 +651,11 @@ async def dispatch(
         approved = approve(call.name, call.args)
         if inspect.isawaitable(approved):
             approved = await approved
+        # A reason denies, though a non-empty str is truthy.
+        if isinstance(approved, str):
+            reason = approved.strip()
+            text = f"{call.name} was not approved" + (f": {reason}" if reason else "")
+            return tool_result(call.id, text, is_error=True)
         if not approved:
             return tool_result(call.id, f"{call.name} was not approved", is_error=True)
         if call.name in policy.external:
