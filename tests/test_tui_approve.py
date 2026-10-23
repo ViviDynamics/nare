@@ -106,6 +106,102 @@ async def test_a_allows_this_tool_from_now_on() -> None:
         ("pip3 -q install requests", ["network"]),
         ("python3 -m pip install requests", ["network"]),
         ("npm test && git add .", []),
+        # git throws work away under many spellings.
+        ("git checkout .", ["git discard"]),
+        ("git checkout -- a.py", ["git discard"]),
+        ("git checkout -f main", ["git discard"]),
+        ("git checkout -qf main", ["git discard"]),
+        ("git checkout --forc main", ["git discard"]),
+        ("git checkout -p", ["git discard"]),
+        ("git checkout --pathspec-from-file=paths", ["git discard"]),
+        ("git checkout main a.py", ["git discard"]),
+        ("git checkout '*.py'", ["git discard"]),
+        ("git checkout :/", ["git discard"]),
+        # -B resets a branch that exists, and its own commits are left behind.
+        ("git checkout -B main", ["git discard"]),
+        ("git checkout main", []),
+        ("git checkout -", []),
+        ("git checkout -b feat origin/main", []),
+        ("git checkout --orphan=gh-pages", []),
+        ("git checkout main 2>/dev/null", []),
+        ("git restore a.py", ["git discard"]),
+        ("git restore --staged --worktree a.py", ["git discard"]),
+        ("git restore -SW a.py", ["git discard"]),
+        # After `--` a word is a path, never an option.
+        ("git restore -- --staged", ["git discard"]),
+        ("git restore --staged a.py", []),
+        ("git restore -S --source=HEAD~ a.py", []),
+        ("git switch -f main", ["git discard"]),
+        ("git switch --discard-changes main", ["git discard"]),
+        ("git switch --disc main", ["git discard"]),
+        ("git switch -C feat", ["git discard"]),
+        ("git switch -c feat", []),
+        ("git stash drop", ["git discard"]),
+        ("git stash clear", ["git discard"]),
+        ("git stash", []),
+        ("git stash pop", []),
+        ("git branch -D main", ["git discard"]),
+        ("git branch -d --force main", ["git discard"]),
+        ("git branch -f main HEAD~", ["git discard"]),
+        ("git branch -M feat main", ["git discard"]),
+        ("git branch -d feat", []),
+        ("git branch new", []),
+        # git named by its path is still git.
+        ("bin/git checkout .", ["git discard"]),
+        ("bin/git push", ["git commit"]),
+        # git reads these as the paths they normalize or unescape to.
+        ("git checkout zzz/..", ["git discard"]),
+        ("git checkout zzz/../a.py", ["git discard"]),
+        ("git checkout 'a\\.py'", ["git discard"]),
+        ("git reset --merge", ["git discard"]),
+        ("git reset --mer", ["git discard"]),
+        ("git reset --keep HEAD~", []),
+        # An option that takes a value can take `--` as it, and git reads on.
+        ("git branch --sort -- -D main", ["git discard"]),
+        ("git branch --format -- -f x main", ["git discard"]),
+        ("git reset --pathspec-from-file -- --hard", ["git discard"]),
+        ("git restore --staged --pathspec-from-file -- --worktree", ["git discard"]),
+        # Here `--staged` is the file the paths are read from.
+        ("git restore --pathspec-from-file --staged", ["git discard"]),
+        ("git restore --staged --source HEAD~ a.py", []),
+        # A short option that takes a value takes the rest of its word.
+        ("git restore -sStable a.py", ["git discard"]),
+        ("git checkout -bfeat", []),
+        ("git switch -cfix-login", []),
+        ("git branch -ufork/main", []),
+        # git's own options and a redirection can come before the subcommand.
+        ("git -C . checkout .", ["git discard"]),
+        ("git --git-dir .git branch -D main", ["git discard"]),
+        ("git --no-pager stash drop", ["git discard"]),
+        ("git 2>/dev/null clean -fdx", ["git discard"]),
+        ("git -c core.pager=cat push", ["git commit"]),
+        # A redirection's target is not a name for checkout.
+        ("git checkout main > /dev/null", []),
+        ("git checkout main > /dev/null 2>&1", []),
+        ("git checkout main &> /dev/null", []),
+        ("git checkout -b fix origin/main > /dev/null", []),
+        # bash ends a word at an unquoted `<` or `>`: git is handed `.`.
+        ("git checkout .>/dev/null", ["git discard"]),
+        ("git stash drop>/dev/null", ["git discard"]),
+        ("git reset --hard>/dev/null", ["git discard"]),
+        ("git switch --discard-changes>/dev/null main", ["git discard"]),
+        ("python3 t.py>/etc/x", ["outside root"]),
+        ("git checkout main>/dev/null", []),
+        # A quoted `>` is a word, and the word after it is no redirection's.
+        ("git reset '>' --hard", ["git discard"]),
+        ("git branch '>' -D feat", ["git discard"]),
+        # A redirection's target is not an option: bash writes a file `-b`.
+        ("git checkout > -b main a.py", ["git discard"]),
+        ("git restore > --staged a.py", ["git discard"]),
+        ("git checkout --orphan side --no-orphan a.py", ["git discard"]),
+        # A quoted `&>` is a word, not a redirection.
+        ("git checkout '&>' a.py", ["git discard"]),
+        # bash's `{name}>` redirects a descriptor it names.
+        ("git {fd}>/dev/null checkout .", ["git discard"]),
+        # bash splits words on spaces and tabs only.
+        ("python3 t.py >/etc/x", ["outside root"]),
+        ("pushd >/dev/null - && ls", ["outside root"]),
+        ("pushd>/dev/null - && ls", ["outside root"]),
     ],
 )
 def test_risks(command: str, expected: list[str], tmp_path: Path) -> None:
@@ -129,6 +225,58 @@ def test_with_cdpath_cd_can_leave_the_root(
     assert risks("cd ./src && ls", Policy(root=tmp_path)) == []
     monkeypatch.delenv("CDPATH")
     assert risks("cd etc && cat passwd", Policy(root=tmp_path)) == []
+
+
+def test_checkout_of_a_file_or_directory_discards_its_changes(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("")
+    (tmp_path / "src" / "lib").mkdir(parents=True)
+    (tmp_path / "src" / "app.py").write_text("")
+    (tmp_path / "src" / "lib" / "x.py").write_text("")
+    policy = Policy(root=tmp_path)
+    assert risks("git checkout a.py", policy) == ["git discard"]
+    assert risks("git checkout src", policy) == ["git discard"]
+    assert risks("git checkout src/./app.py", policy) == ["git discard"]
+    assert risks("git checkout main", policy) == []
+    # A new branch may share a name with a file.
+    assert risks("git checkout -b src", policy) == []
+    # A name is looked up wherever the line's cds may leave bash.
+    assert risks("cd src && git checkout app.py", policy) == ["git discard"]
+    assert risks("cd src && cd lib && git checkout x.py", policy) == ["git discard"]
+    assert risks("cd src || git checkout a.py", policy) == ["git discard"]
+    assert risks("cd src && git checkout main", policy) == []
+    assert risks(f"cd {tmp_path} && git checkout main", policy) == []
+    # A cd the scan cannot follow makes any name a path.
+    assert risks("cd $DIR && git checkout main", policy) == ["git discard"]
+    # A redirection is not where pushd goes.
+    line = "pushd src>/dev/null && git checkout app.py"
+    assert risks(line, policy) == ["git discard"]
+    line = "pushd > /dev/null src && git checkout app.py"
+    assert risks(line, policy) == ["git discard"]
+    line = "pushd {fd}>/dev/null src && git checkout app.py"
+    assert risks(line, policy) == ["git discard"]
+
+
+def test_a_cd_through_a_link_is_read_both_ways(tmp_path: Path) -> None:
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "x.py").write_text("")
+    (tmp_path / "other" / "deep").mkdir(parents=True)
+    (tmp_path / "other" / "y.py").write_text("")
+    (tmp_path / "sub" / "link").symlink_to(tmp_path / "other" / "deep")
+    policy = Policy(root=tmp_path)
+    # bash's cd takes `..` off the path as typed and lands in sub; cd -P
+    # follows the link first and lands in other.
+    assert risks("cd sub/link/.. && git checkout x.py", policy) == ["git discard"]
+    assert risks("cd sub/link/.. && git checkout y.py", policy) == ["git discard"]
+    assert risks("cd sub/link/.. && git checkout main", policy) == []
+
+
+async def test_a_cd_into_the_root_does_not_make_checkout_ask(tmp_path: Path) -> None:
+    keys = Keys("a")
+    approver = Approver(keys, Policy(root=tmp_path))
+    assert await approver("bash", bash("git checkout -b feat")) is True
+    line = f"cd {tmp_path} && git checkout main"
+    assert await approver("bash", bash(line)) is True
+    assert keys.asked == ["bash"]
 
 
 def test_a_wide_brace_list_is_never_built(tmp_path: Path) -> None:
@@ -159,6 +307,8 @@ def bash(command: str) -> dict[str, Any]:
         "find . -name '*.py' | head",
         "ls src/*.py",
         'grep -n x "*"',
+        # A copy of a descriptor, once its word is split off.
+        "echo done>&2",
     ],
 )
 async def test_a_read_only_line_runs_unasked(command: str, tmp_path: Path) -> None:
@@ -262,6 +412,63 @@ async def test_these_lines_ask(command: str, tmp_path: Path) -> None:
                 "git reset --ha[r]d",
             ],
         ),
+        # A subcommand that can discard work asks in the forms that do.
+        (
+            "git checkout -b feat",
+            ["git checkout main", "git checkout -b fix main", "git checkout main>log"],
+            [
+                "git checkout .",
+                "git checkout -- .",
+                "git checkout -f main",
+                "git checkout .>/dev/null",
+                # A quoted `>` is a branch name here, and a.py a path.
+                "git checkout '>' a.py",
+                "git checkout 2'>' a.py",
+                "git checkout main >'>' a.py",
+                "git checkout > -b main a.py",
+                "git checkout '&>' a.py",
+                "git checkout '{fd}>x' a.py",
+                # bash does not expand quoted braces: no `>` comes of them.
+                "git checkout '{,>}' a.py",
+                "git checkout --orphan side --no-orphan a.py",
+            ],
+        ),
+        (
+            "git restore --staged a.py",
+            ["git restore --staged b.py"],
+            ["git restore .", "git restore b.py", "git restore > --staged a.py"],
+        ),
+        (
+            "pushd src > /dev/null",
+            ["pushd lib>/dev/null"],
+            ["pushd >/dev/null -", "pushd>/dev/null -"],
+        ),
+        (
+            "git switch main",
+            ["git switch -c feat"],
+            ["git switch -f main", "git switch --discard-changes main"],
+        ),
+        (
+            "git stash",
+            ["git stash", "git stash >/dev/null"],
+            ["git stash drop", "git stash clear", "git stash drop>/dev/null"],
+        ),
+        (
+            "git branch new",
+            ["git branch -d new"],
+            ["git branch -D main", "git branch '>' -D feat"],
+        ),
+        # git named by a path is approved one subcommand at a time too.
+        (
+            "bin/git checkout -b feat",
+            ["bin/git checkout main"],
+            [
+                "bin/git checkout .",
+                "bin/git -C . checkout .",
+                "bin/git -c x=y checkout -b fix",
+                "bin/git status",
+            ],
+        ),
         # rm is approved whole, but a recursive rm always asks.
         (
             "rm a.txt",
@@ -336,6 +543,8 @@ async def test_a_approves_the_lines_programs(
         ("env X=1 python3 t.py", None),
         ("X=1 python3 t.py", None),
         ("git -C sub add x", None),
+        ("bin/git add .", {"bin/git add"}),
+        ("bin/git -C sub add x", None),
         ("{ python3 t.py; }", None),
         ("python3 *.py", {"python3"}),
         ("./*.sh", None),
