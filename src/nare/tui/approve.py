@@ -22,18 +22,23 @@ EXEMPT = frozenset({"read", "ask"})
 
 # 2>&1, >&2, 2>&-: a copy of a descriptor, not a file, and its & is not
 # backgrounding. A word after >& (`>&out`) is a file, so it stays.
-_DUP = re.compile(r"(?<![^\s;&|])\d*[<>]&(?:\d+|-)(?=[\s;&|)]|$)")
+_DUP = re.compile(r"(?<![^ \t;&|])\d*[<>]&(?:\d+|-)(?=[ \t;&|)]|$)")
+# A word that names the descriptor a redirection after it redirects: `2`, or
+# `{fd}`, for which bash picks one.
+_FD = re.compile(r"[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\}")
 # The redirection a token can start with: `2>/dev/null` names /dev/null.
-_REDIRECT = re.compile(r"^\d*(?:>>|>|<)")
+_REDIRECT = re.compile(rf"^(?:{_FD.pattern})?(?:>>|<>|>|<)")
 # A token whose brace lists make more words than this counts as outside.
 _BRACE_LIMIT = 64
 # What the scan cannot read: a second line, a subshell or substitution, a
 # heredoc. shlex hands back a quoted or escaped `;` as the same token as a
 # real one, so `find . \; python3 -delete` would look like two commands. An
 # escaped `>` is a word to bash, but `\>|` would read as `>|`, hiding the pipe.
-# A brace sequence is not expanded, and `--har{d..d}` makes `--hard`.
+# A quoted `>` reads as a redirection, so `git checkout '>' a.py` would hide
+# a.py. A brace sequence is not expanded, and `--har{d..d}` makes `--hard`.
 _UNREADABLE = re.compile(
     r"""[\n\r`]|\$\(|<\(|>\(|<<|(['"])[;&|()]+\1|\\[;&|()<>]"""
+    rf"""|['"](?:{_FD.pattern})?[<>]"""
     r"|\{-?\w+\.\.-?\w+(?:\.\.-?\d+)?\}"
 )
 _OPERATOR = frozenset(";&|()")
@@ -63,6 +68,18 @@ _FETCHES = {
     "pip": _PIP_FETCHES,
     "pip3": _PIP_FETCHES,
 }
+# git's short options that take a value, which is the rest of the word or
+# the next word: `-bfix` is `-b fix`.
+_VALUE_LETTERS = {"checkout": "bB", "switch": "cC", "restore": "s", "branch": "u"}
+# restore's long options that take the next word as their value.
+_RESTORE_VALUES = frozenset({"--source", "--conflict", "--pathspec-from-file"})
+# git's own options that take the next word: `git -C sub status`.
+_GIT_GLOBALS = frozenset(
+    {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"}
+    | {"--attr-source"}
+)
+# Past this many places a line's cds may leave bash, any name may be a path.
+_DIR_LIMIT = 16
 # Programs that run another: approving one would approve whatever it runs.
 WRAPPERS = frozenset(
     {"bash", "sh", "zsh", "env", "xargs", "timeout", "nice", "time", "command"}
@@ -81,9 +98,11 @@ Ask = Callable[[str, dict[str, Any]], Awaitable[tuple[str, str]]]
 def _tokens(command: str) -> list[str]:
     """The line's words and operators, or none when shlex cannot split it.
     `&>` and `&>>` are read as `>` and `>>`, so their & is not backgrounding,
-    and `>|` as `>`, so its | is not a pipe.
+    and `>|` as `>`, so its | is not a pipe. The & ends a word, so a space
+    takes its place: `1&>x` hands `1` on, and a quoted `'&>'` stays a word.
     """
-    line = _DUP.sub("", command).replace("&>", ">").replace(">|", ">")
+    line = command.replace("&>", " >").replace(">|", ">")
+    line = _DUP.sub("", _split_redirections(line))
     try:
         scan = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
         scan.whitespace_split = True
@@ -93,6 +112,41 @@ def _tokens(command: str) -> list[str]:
         return list(scan)
     except ValueError:
         return []
+
+
+def _split_redirections(line: str) -> str:
+    """`line` with a space before each unquoted `<` or `>` that ends a word,
+    since bash ends it there: `git checkout .>/dev/null` hands git `.`, which
+    shlex would keep whole. A word that names a descriptor stays with it:
+    `2>/dev/null`. Words end at spaces and tabs only, as in bash and shlex.
+    """
+    out: list[str] = []
+    word, quote, escaped = "", "", False
+    for char in line:
+        if escaped:
+            escaped = False
+        elif quote:
+            if char == quote:
+                quote = ""
+            elif char == "\\" and quote == '"':
+                escaped = True
+        elif char == "\\":
+            escaped = True
+        elif char in "'\"":
+            quote = char
+        elif char in " \t;&|()":
+            word = ""
+            out.append(char)
+            continue
+        elif char in "<>":
+            if word and not _FD.fullmatch(word):
+                out.append(" ")
+            word = ""
+            out.append(char)
+            continue
+        word += char
+        out.append(char)
+    return "".join(out)
 
 
 def _brace_list(word: str) -> list[int] | None:
@@ -178,6 +232,8 @@ def risks(command: str, policy: Policy) -> list[str]:
     recursive = bool(letters & {"r", "R"}) or _spelled(tokens, "--recursive")
     # Without a root, bash runs in the current directory: that is the boundary.
     bounded = policy if policy.root is not None else Policy(root=Path.cwd())
+    git = _git(tokens)
+    dirs = _dirs(tokens, bounded.root or Path.cwd())
     flags = {
         "network": network,
         "exec": ("chmod", "+x") in pairs
@@ -189,18 +245,199 @@ def risks(command: str, policy: Policy) -> list[str]:
         "rm -r": "rm" in words and recursive,
         "outside root": _cd_away(tokens)
         or any(_outside(token, bounded) for token in tokens),
-        "git commit": bool(pairs & {("git", "commit"), ("git", "push")}),
-        "git discard": ("git", "clean") in pairs
-        or (("git", "reset") in pairs and _spelled(tokens, "--hard")),
+        "git commit": any(sub in ("commit", "push") for sub, _ in git),
+        "git discard": any(_discards(sub, args, dirs) for sub, args in git),
     }
     return [badge for badge, present in flags.items() if present]
 
 
 def _spelled(tokens: list[str], option: str) -> bool:
-    """Whether a token is `option` or names it by a prefix: rm reads `--rec`
-    as `--recursive`, and git `--har` as `--hard`.
+    """Whether a token is `option` or names it by a prefix, with or without a
+    value: rm reads `--rec` as `--recursive`, and git `--har` as `--hard`.
     """
-    return any(len(token) > 2 and option.startswith(token) for token in tokens)
+    return any(
+        len(name := token.split("=")[0]) > 2 and option.startswith(name)
+        for token in tokens
+    )
+
+
+def _git(tokens: list[str]) -> list[tuple[str, list[str]]]:
+    """Each git command on the line, as its subcommand and every word after
+    it, past git's own options and redirections. git is known by name, so
+    `bin/git push` is one too.
+    """
+    found: list[tuple[str, list[str]]] = []
+    for segment in _segments(tokens):
+        for i, word in enumerate(segment):
+            if Path(word).name != "git":
+                continue
+            sub = i + 1
+            while sub < len(segment):
+                before = segment[sub]
+                if before in _GIT_GLOBALS or _REDIRECT.fullmatch(before):
+                    sub += 2  # and the word it takes
+                elif before[:1] == "-" or _REDIRECT.match(before):
+                    sub += 1
+                else:
+                    break
+            if sub < len(segment):
+                found.append((segment[sub], segment[sub + 1 :]))
+    return found
+
+
+def _unredirected(words: list[str]) -> list[str]:
+    """`words` without their redirections: `2>/dev/null`, or `>` and the
+    word after it.
+    """
+    kept: list[str] = []
+    target = False
+    for word in words:
+        if target:
+            target = False
+        elif _REDIRECT.match(word):
+            target = bool(_REDIRECT.fullmatch(word))
+        else:
+            kept.append(word)
+    return kept
+
+
+def _discards(sub: str, args: list[str], dirs: list[Path] | None) -> bool:
+    """Whether a git subcommand throws work away: uncommitted changes, a
+    stash, or the commits only a branch holds. An option counts wherever it
+    is, past `--` too: an option that takes a value can take `--` as it,
+    and git reads on. `dirs` are where a relative path is looked up.
+    """
+    values = _VALUE_LETTERS.get(sub, "")
+    letters = _letters(args, values)
+    # An option that makes a command safe counts only where git is handed
+    # it: `git checkout > -b a.py` writes a file named -b.
+    handed = _unredirected(args)
+
+    def spelled(*names: str) -> bool:
+        return any(_spelled(args, name) for name in names)
+
+    if sub == "clean":
+        return True
+    if sub == "reset":
+        return spelled("--hard", "--merge")
+    if sub == "stash":
+        return bool({"drop", "clear"} & set(args))
+    if sub == "branch":
+        # -D, -M and -C are -d, -m and -c with --force.
+        return bool(letters & set("DMCf")) or spelled("--force")
+    if sub == "switch":
+        return bool(letters & set("fC")) or spelled(
+            "--force", "--discard-changes", "--force-create"
+        )
+    if sub == "restore":
+        # It restores the working tree unless told to restore the index
+        # alone, and only as git reads it: in `-sStable` the S is part of a
+        # source, and in `--pathspec-from-file --staged` it names a file.
+        given = _option_words(handed, values, _RESTORE_VALUES)
+        staged = "S" in _letters(given, values) or _spelled(given, "--staged")
+        return not staged or "W" in letters or spelled("--worktree")
+    if sub == "checkout":
+        if "--" in args or letters & set("fpB"):
+            return True
+        if spelled("--force", "--patch", "--pathspec-from-file"):
+            return True
+        names = [arg for arg in handed if arg[:1] != "-"]
+        # A new branch takes a name and a start; a switch takes one branch.
+        # Any other word is a path, whose changes checkout throws away.
+        orphan = _spelled(handed, "--orphan") and not _spelled(handed, "--no-orphan")
+        if "b" in _letters(handed, values) or orphan:
+            return len(names) > 2
+        return len(names) > 1 or any(_a_path(name, dirs) for name in names)
+    return False
+
+
+def _letters(words: list[str], values: str = "") -> set[str]:
+    """The short options in `words`. A bundle ends at its first letter in
+    `values`, which takes the rest of the word as its value: `-bfix` is
+    `-b fix`, with no -f.
+    """
+    letters: set[str] = set()
+    for word in words:
+        if word[:1] == "-" and word[:2] != "--":
+            for letter in word[1:]:
+                letters.add(letter)
+                if letter in values:
+                    break
+    return letters
+
+
+def _option_words(
+    args: list[str], values: str, long_values: frozenset[str]
+) -> list[str]:
+    """The words git reads as options, for an option that makes a command
+    safe, which a value or a path must not pass for. They end at `--`,
+    unless an option takes it as its value. `values` are the short options
+    that take one, and `long_values` the long ones.
+    """
+    words: list[str] = []
+    value = False
+    for arg in args:
+        if value:
+            value = False
+        elif arg == "--":
+            break
+        elif arg[:2] == "--":
+            words.append(arg)
+            name = arg.split("=")[0]
+            value = "=" not in arg and any(o.startswith(name) for o in long_values)
+        elif arg[:1] == "-":
+            words.append(arg)
+            for i, letter in enumerate(arg):
+                if i and letter in values:
+                    # At the end of the word, its value is the next word.
+                    value = i == len(arg) - 1
+                    break
+    return words
+
+
+def _dirs(tokens: list[str], root: Path) -> list[Path] | None:
+    """Where bash may be when a command on the line runs: the root, or
+    wherever its cds, in order, may have taken it. None when a cd goes
+    somewhere the scan cannot name.
+    """
+    dirs = [root]
+    for target in _cd_targets(tokens):
+        if not target or target[:1] == "-" or set(target) & set("$*?["):
+            return None
+        # A cd can fail, or run in a pipeline's subshell: it may not apply.
+        # bash's cd takes `..` off the path as typed, and cd -P off the path
+        # the links lead to: either may be where it lands.
+        for path in list(dirs):
+            moved = path / os.path.expanduser(target)
+            dirs += {moved, Path(os.path.normpath(moved))}
+        if len(dirs) > _DIR_LIMIT:
+            return None
+    return dirs
+
+
+def _cd_targets(tokens: list[str]) -> list[str]:
+    """Where each cd or pushd on the line goes, as written, in order: "" for
+    none. A redirection is not where it goes: `pushd >/dev/null src`.
+    """
+    targets: list[str] = []
+    for segment in _segments(tokens):
+        words = _unredirected(segment)
+        for i, word in enumerate(words):
+            if Path(word).name in ("cd", "pushd"):
+                targets.append(words[i + 1] if i + 1 < len(words) else "")
+    return targets
+
+
+def _a_path(name: str, dirs: list[Path] | None) -> bool:
+    """Whether git could read `name` as a path, not a branch: a pathspec no
+    branch name can be (`*.py`, `:/`, `x/..`, `a\\.py`), or a file or
+    directory in one of `dirs`. Unless `dirs` are known, any name could be
+    a file there.
+    """
+    if dirs is None or ".." in name or set(name) & set("*?[:\\"):
+        return True
+    path = os.path.expanduser(name)
+    return any(os.path.lexists(where / path) for where in dirs)
 
 
 def _option_glob(command: str) -> bool:
@@ -266,11 +503,8 @@ def _cd_away(tokens: list[str]) -> bool:
     """Whether a cd goes somewhere the line does not name: home with no
     directory, the last one with `-`, or a CDPATH entry for a bare name.
     """
-    for i, token in enumerate(tokens):
-        if Path(token).name not in ("cd", "pushd"):
-            continue
-        target = tokens[i + 1] if i + 1 < len(tokens) else ""
-        if not target or set(target) <= _OPERATOR or target.startswith("-"):
+    for target in _cd_targets(tokens):
+        if not target or target.startswith("-"):
             return True
         if os.environ.get("CDPATH") and not target.startswith(("/", ".", "~")):
             return True
@@ -284,6 +518,10 @@ def _commands(command: str) -> list[list[str]] | None:
     tokens = _tokens(command)
     if not tokens or _UNREADABLE.search(command):
         return None
+    # The scan expands braces bash leaves quoted, so `'{,>}'` would make a
+    # `>` that hides the word after it.
+    if any(set(token) & set("<>") and _brace_list(token) for token in tokens):
+        return None
     commands: list[list[str]] = [[]]
     for token in tokens:
         if token and set(token) <= _OPERATOR:
@@ -296,15 +534,16 @@ def _commands(command: str) -> list[list[str]] | None:
 
 
 def _program(words: list[str]) -> str | None:
-    """What `a` would approve for one command: its first word as written, or
-    `git <subcommand>`. None for a wrapper, a keyword, a `VAR=` prefix, a `#`,
-    an expansion or redirection, or git with an option before its subcommand.
+    """What `a` would approve for one command: its first word as written, and
+    git's subcommand (`git add`, `bin/git add`). None for a wrapper, a
+    keyword, a `VAR=` prefix, a `#`, an expansion or redirection, or git with
+    an option before its subcommand.
     """
     program = words[0]
-    if program == "git" and len(words) > 1:
+    if Path(program).name == "git" and len(words) > 1:
         if words[1].startswith("-"):
             return None
-        program = f"git {words[1]}"
+        program = f"{program} {words[1]}"
     if words[0] in WRAPPERS or words[0] in _KEYWORDS or program.startswith("-"):
         return None
     if not program or set(program) & set("=<>$*?[]{}~#"):
