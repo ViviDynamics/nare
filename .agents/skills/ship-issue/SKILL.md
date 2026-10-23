@@ -204,8 +204,9 @@ stage; read them before writing anything.
 6. Push and open the PR:
    - Body: `Closes #<issue>`, plus a description of what shipped and test counts.
    - Assign the PR to the login that claimed the issue: `$S/claim <issue> --pr <pr>`.
-     It reads the assignment back; `not-assigned` goes in `unresolved`. The issue was
-     assigned at the claim; `assigned` in SHIP_RESULT reports both read-backs.
+     It reads the assignment back and reports `claimed`; `not-assigned` goes in
+     `unresolved`. The issue was assigned at the claim; `assigned` in SHIP_RESULT
+     reports both read-backs.
 
 Stop conditions at this stage:
 - The issue is held by someone else (the claim exited 1).
