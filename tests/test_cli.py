@@ -113,7 +113,7 @@ def test_an_unknown_provider_from_the_environment_fails_at_construction(
     # NARE_PROVIDER reaches the factory and is refused there instead.
     monkeypatch.setenv("NARE_PROVIDER", "gemini")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    with pytest.raises(ValueError, match="anthropic, openai"):
+    with pytest.raises(ValueError, match="anthropic, bedrock, openai"):
         transport_from_args(parse("go"))
 
 
@@ -646,7 +646,7 @@ SHARED = [
     "--system", "be brief", "--append-system", "and terse",
     "--tools", "read,bash", "--root", ".",
     "--resume", "r.json", "--mcp-config", "m.json", "--image-input",
-    "--session", "s.json", "--max-turns", "7",
+    "--session", "s.json", "--max-turns", "7", "--region", "eu-west-1",
 ]  # fmt: skip
 
 
@@ -658,7 +658,7 @@ def test_tui_takes_the_same_run_flags() -> None:
         "context_window", "budget_tokens", "budget_usd", "effort", "system",
         "append_system",
         "tools", "root", "resume", "mcp_config", "image_input", "session",
-        "max_turns", "prompt",
+        "max_turns", "prompt", "region",
     ):  # fmt: skip
         assert tui_args[name] == run_args[name], name
     assert tui_args["attach"] is None

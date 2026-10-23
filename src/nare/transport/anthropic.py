@@ -10,7 +10,7 @@ from dataclasses import asdict
 from typing import Any, Literal, cast
 
 import httpx2
-from anthropic import AsyncAnthropic, omit
+from anthropic import AsyncAnthropic, AsyncAnthropicBedrock, omit
 from anthropic.types import MessageParam, ToolParam
 
 from nare.accounting import Prices
@@ -209,11 +209,7 @@ class AnthropicTransport:
         streaming: bool = False,
         image_input: bool = False,
     ) -> None:
-        if api_key is None and not os.environ.get("ANTHROPIC_API_KEY"):
-            raise ValueError(
-                "no Anthropic API key: set ANTHROPIC_API_KEY in the environment "
-                "(there is no --api-key flag; argv is world-readable)"
-            )
+        self._check_credentials(api_key)
         if temperature is not None:
             raise ValueError(
                 "anthropic no longer accepts temperature: the parameter was "
@@ -226,7 +222,7 @@ class AnthropicTransport:
         self.image_input = image_input
         self.thinking: dict[str, Any] | None = None
         budget = EFFORT_BUDGETS[effort] if effort is not None else None
-        ceiling = nonstreaming_ceiling(model)
+        ceiling = min(NONSTREAMING_MAX_TOKENS, self._model_cap(model))
 
         if budget is None:
             resolved = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
@@ -262,15 +258,33 @@ class AnthropicTransport:
         self._discovery_base = base_url
         self.model = model
         self.system = system
-        self._client = AsyncAnthropic(
-            api_key=api_key, base_url=base_url, http_client=http_client
-        )
+        self._client = self._build_client(api_key, base_url, http_client)
 
         self._metadata = ModelMetadata(
             self._client._client,
             self._discovery_base,
             self.model,
             {"x-api-key": self._client.api_key or ""},
+        )
+
+    def _check_credentials(self, api_key: str | None) -> None:
+        if api_key is None and not os.environ.get("ANTHROPIC_API_KEY"):
+            raise ValueError(
+                "no Anthropic API key: set ANTHROPIC_API_KEY in the environment "
+                "(there is no --api-key flag; argv is world-readable)"
+            )
+
+    def _model_cap(self, model: str) -> int:
+        return MODEL_NONSTREAMING_TOKENS.get(model, NONSTREAMING_MAX_TOKENS)
+
+    def _build_client(
+        self,
+        api_key: str | None,
+        base_url: str | None,
+        http_client: httpx2.AsyncClient | None,
+    ) -> AsyncAnthropic | AsyncAnthropicBedrock:
+        return AsyncAnthropic(
+            api_key=api_key, base_url=base_url, http_client=http_client
         )
 
     def _warn_proxy_reasoning(self, content: list[dict[str, Any]]) -> None:
@@ -299,7 +313,7 @@ class AnthropicTransport:
             messages_from(
                 messages,
                 image_input=self.image_input,
-                image_model=f"AnthropicTransport/model={self.model}",
+                image_model=f"{type(self).__name__}/model={self.model}",
             ),
             tools,
         )
