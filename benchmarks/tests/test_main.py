@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, replace
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -766,13 +766,23 @@ def test_bless_reads_its_models_file_from_a_matrix_run(
     from benchmarks.runner.report import baseline_path, load_baseline
 
     baselines = results_dir(tmp_path, monkeypatch)
-    for model in ("claude-haiku-5-5", "gpt-5-nano"):
-        ran = record("edit-docstring", model=model)
+    providers = {"claude-haiku-5-5": "anthropic", "gpt-5-nano": "openai"}
+    for model, provider in providers.items():
+        ran = replace(
+            record("edit-docstring", model=model),
+            provider=provider,
+            judge_model="claude-sonnet-5-5",
+        )
         write_results(tmp_path, [ran], f"{MATRIX_STAMP}.{model}")
-    for model in ("claude-haiku-5-5", "gpt-5-nano"):
+    for model, provider in providers.items():
+        # No --provider or --judge-model: the shell would give anthropic and
+        # the model itself, so both must come from the matrix run's results.
         assert main(["bless", "--model", model]) == 0
-        assert load_baseline(baseline_path(baselines, model, "smoke")).meta.model == (
-            model
+        meta = load_baseline(baseline_path(baselines, model, "smoke")).meta
+        assert (meta.model, meta.provider, meta.judge_model) == (
+            model,
+            provider,
+            "claude-sonnet-5-5",
         )
     assert f"from {MATRIX_STAMP}.claude-haiku-5-5.jsonl" in capsys.readouterr().out
 
@@ -887,11 +897,13 @@ def matrix(
     *metas: BaselineMeta,
     failing: str = "",
     served: tuple[str, ...] | None = None,
+    changed: dict[str, dict[str, Any]] | None = None,
 ) -> list[Config]:
     """A checkout whose baselines are `metas`, each passing edit-docstring.
 
-    Every model passes every rep except `failing`, which fails them all. The
-    endpoint lists `served`, by default every baseline's model and judge.
+    Every model passes every rep except `failing`, which fails them all, and
+    `changed` overrides fields of a model's reps. The endpoint lists `served`,
+    by default every baseline's model and judge.
     Returns the config of every run_case call; the image build is one too.
     """
     import benchmarks.runner.__main__ as bench
@@ -921,6 +933,7 @@ def matrix(
             provider=config.provider,
             judge_model=config.judge_model,
         )
+        base = replace(base, **(changed or {}).get(config.model, {}))
         return [replace(base, rep=rep) for rep in range(n)]
 
     monkeypatch.setattr(bench, "new_stamp", lambda: MATRIX_STAMP)
@@ -1271,3 +1284,78 @@ def test_compare_judges_asks_for_a_file_after_a_matrix_run(
     # Named, one model's file goes on as before: here, to nothing to compare.
     one = tmp_path / "benchmarks" / "results" / f"{MATRIX_STAMP}.gpt-5-nano.jsonl"
     assert main(["compare-judges", "--results", str(one)]) == 1
+
+
+def write_matrix_run(
+    tmp_path: Path, *metas: BaselineMeta, change: dict[str, Any] | None = None
+) -> None:
+    """A matrix run's files, one per model, as each baseline would have run it.
+
+    `change` overrides fields of the first model's reps.
+    """
+    for meta in metas:
+        ran = replace(
+            record("edit-docstring", model=meta.model),
+            provider=meta.provider,
+            judge_model=meta.judge_model,
+        )
+        if meta is metas[0]:
+            ran = replace(ran, **(change or {}))
+        write_results(tmp_path, [ran], f"{MATRIX_STAMP}.{meta.model}")
+
+
+@pytest.mark.parametrize(
+    ("change", "code"),
+    [
+        ({}, 0),
+        ({"judge_model": "gpt-5-nano"}, 2),
+        ({"max_tokens": 32000}, 2),
+        ({"provider": "openai"}, 2),
+    ],
+)
+def test_compare_matrix_refuses_results_its_baseline_cannot_compare(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    change: dict[str, Any],
+    code: int,
+) -> None:
+    ran = matrix(tmp_path, monkeypatch, HAIKU, NANO)
+    write_matrix_run(tmp_path, HAIKU, NANO, change=change)
+    assert main(["compare", "--matrix"]) == code
+    assert ran == []
+    if code == 2:
+        assert "baseline was blessed on" in capsys.readouterr().err
+
+
+def test_compare_matrix_takes_no_model_provider_or_judge_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    matrix(tmp_path, monkeypatch, HAIKU)
+    write_matrix_run(tmp_path, HAIKU)
+    assert main(["compare", "--matrix"]) == 0
+    capsys.readouterr()
+    for flag in (["--model", "m"], ["--provider", "openai"], ["--judge-model", "j"]):
+        assert main(["compare", "--matrix", *flag]) == 2
+        assert "--matrix takes the model" in capsys.readouterr().err
+
+
+def test_an_inconclusive_case_fails_the_matrix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    changed = {"gpt-5-nano": {"outcome": "error"}}
+    matrix(tmp_path, monkeypatch, HAIKU, NANO, changed=changed)
+    assert main(["run", "--matrix", "--case", "edit-docstring"]) == 1
+    row = table_row(capsys.readouterr().out, "edit-docstring")
+    assert row == ["edit-docstring", "3/3", "inconclusive"]
+
+
+@pytest.mark.parametrize(("flags", "code"), [([], 0), (["--strict-tokens"], 1)])
+def test_a_token_rise_fails_the_matrix_only_under_strict_tokens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str], code: int
+) -> None:
+    # The baselines' median is 100 tokens a rep; this is ten times that.
+    heavy = {"input": 1000, "output": 0, "cache_read": 0, "cache_write": 0}
+    changed = {"gpt-5-nano": {"usage": heavy}}
+    matrix(tmp_path, monkeypatch, HAIKU, NANO, changed=changed)
+    assert main(["run", "--matrix", "--case", "edit-docstring", *flags]) == code
