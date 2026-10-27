@@ -777,7 +777,10 @@ A rebase on 2026-10-27 gave the commits new hashes, which this section uses:
 section 6's text is `947cc4c`, A `6b2eb75`, B `7a4b5cb`, and PR 1's tip
 `6ca24f5`. The evidence names them `54f175f`, `3d1fee5`, `d3edf82` and
 `477160c`. Each pair holds the same `src`, `tests`, cases and baselines;
-only docs differ.
+only docs differ. Every run of this section is made on this stacked branch
+as it stands, which is rebased onto `main` only when PR 2 is assembled,
+after #116 merges; the trees match, and the evidence names the commit each
+run was made at.
 
 **What the reps show,** from the evidence's tables:
 
@@ -847,34 +850,35 @@ commands, and none. `bin/bench verify` now checks the case instead of
 exempting it. The pristine fixture's session has no questions, so the check
 fails there, as `verify` requires.
 
-**The "before" numbers are re-scored, not re-run.** The check reads only the
-questions, and every kept rep has them in its `session.json`. So the check
-is run on each ambiguous-request rep of section 5's five baseline files
-(named in the evidence), and a pass whose questions fail it becomes a fail.
-A fail stays a fail, and an error stays an error. A baseline's medians are
-over judged reps (`summarize`), so only `pass_rate` can move. The re-graded
-reps are written as one run with a file per model, as a matrix run writes
-them, and `bin/bench bless --case ambiguous-request` re-blesses each of the
-five from it, one model at a time. From the kept questions, one number
-moves: nano's, from 1/3 to 0/3. The first measurement and A's and B's loops,
-re-scored the same way, lose only nano's blind passes (1, 1 and 3), and
-every score above stands.
+**The "before" numbers are re-run.** At the before commit (below),
+ambiguous-request alone is run for each of the five models, 3 reps with the
+runner's 7-rep confirmation, and `bin/bench bless --case ambiguous-request`
+blesses it, one model at a time, as the two ambiguous cases were re-blessed
+at 12 turns (section 4.1). No results file is written by hand.
+
+The kept reps are also re-scored, read-only, as evidence of what the check
+alone changes: a script outside the bench runs the check on each kept
+`session.json` and writes nothing the bench reads. A pass whose questions
+fail the check becomes a fail, and nothing else moves. On section 5's five
+baseline files, one number moves: nano's, from 1/3 to 0/3. The first
+measurement and A's and B's loops lose only nano's blind passes (1, 1 and
+3), and every score above stands.
 
 **The before commit.** The check lands in one commit on
 `45-ask-description` that also returns `src/nare/tools.py` and
-`tests/test_tools.py` to `main`'s, so B's code leaves the tip. The re-bless
-runs at that commit, so each baseline's `[meta] commit` names a tree whose
-case has the check and whose `src/nare` is `main`'s. PR 1's side of any new
-pool runs there too. The PR 1 pool above still serves: neither its code nor
-ambiguous-after-reading changed. Each candidate is one commit on top of the
-before commit.
+`tests/test_tools.py` to `main`'s, so B's code leaves the tip. The re-runs
+and re-blesses are made at that commit, so each baseline's `[meta] commit`
+names a tree whose case has the check and whose `src/nare` is `main`'s.
+PR 1's side of any new pool runs there too. The PR 1 pool above still
+serves: neither its code nor ambiguous-after-reading changed. Each
+candidate is one commit on top of the before commit.
 
 #### Step 1: where the drop came from
 
 spark on ambiguous-after-reading is pooled to at least 14 judged reps on
 section 6's text, `947cc4c`, from fresh runs made as section 6.1's pools
-were. spark is free on this proxy, so only the judge costs anything. The
-pool's fail rate decides which candidates are built:
+were. spark is free in practice (see Cost below), so the judge is the only
+real spend. The pool's fail rate decides which candidates are built:
 
 | section 6's fail rate | Reading | Built |
 | --- | --- | --- |
@@ -992,7 +996,7 @@ cell, the pool already reads it and no new runs are made.
 #### Step 3 on: the loop, the pick, the gate
 
 Section 6.1's "Measuring it", steps 2 to 5, run on the candidates step 2
-kept, with C in A's place and D in B's, against the re-scored baselines.
+kept, with C in A's place and D in B's, against the re-blessed baselines.
 Its step 1 pools any confirmed regression they find, with PR 1's side at the
 before commit. Section 6.1's readings of a guard drop, of fix-failing-test
 and of an ambiguous-after-reading drop, its rule for making pools, and "When
@@ -1017,7 +1021,7 @@ leaves none, or the pick fails the gate. A revert returns the tip's code to
 the before commit's. #45 records each pool and table and the labels of every
 failing ambiguous rep, and names the next lever: a rule about `ask` in the
 default system prompt (section 9), in its own change. The check and its
-re-scored baselines stay, since they hold whatever the description says.
+re-blessed baselines stay, since they hold whatever the description says.
 Whether PR 2 goes up with them alone is the user's call.
 
 #### Cost
@@ -1026,22 +1030,25 @@ The judge, `gpt-6.1-sol`, is called on every rep that ends with a result
 line. It reads under 2k tokens and writes at most 1,024
 (`JUDGE_MAX_TOKENS`), so at section 3.4's prices a call costs at most about
 1.4 cents, and a retry doubles that for its rep. The agents' own tokens,
-from the usage kept on 2026-10-27, cost about 1 cent a rep on sol, under
-half a cent on gemini, nano and luna, and nothing on spark.
+from the usage kept on 2026-10-27, cost about 1 cent a rep on sol and
+under half a cent on gemini, nano and luna. spark is free in practice: at
+the $0.15 and $0.50 per million the proxy publishes (section 3.4), it would
+cost about 0.2 cents a rep.
 
 | Step | Reps run | Paid | Dollars, at most |
 | --- | --- | --- | --- |
+| the "before" re-run, five models | 15, or 36 with three confirmations | the judge, four paid agents | 0.70 |
 | 1, section 6's text | 14 to 21 | the judge | 0.30 |
 | 2, per candidate | 14 to 21 | the judge | 0.30 |
 | cheap loop, per candidate | 30, or 58 with four confirmations | the judge, four paid agents | 1.10 |
 | a flagged cell, pooled on both sides | 28 to 42 | the judge, that model | 1.10 |
 | gate | 90, or 118 with four confirmations | the judge, four paid agents | 2.30 |
 | nano on read-only-question | 7 to 18 | the judge, nano | 0.30 |
-| re-score and re-blesses | 0 | nothing | 0 |
+| the read-only re-score, and the blesses | 0 | nothing | 0 |
 
-One candidate and no flagged cell is at most about 240 reps and $4.30. A
+One candidate and no flagged cell is at most about 270 reps and $5.00. A
 second candidate adds up to 80 reps and $1.40, and each flagged cell up to
-42 reps and $1.10. If step 2 keeps nothing, the pass ends under $1.
+42 reps and $1.10. If step 2 keeps nothing, the pass ends under $2.
 Streamed turns report a cost of 0.0 through this proxy, so the PR reads the
 spend from the proxy.
 
@@ -1132,7 +1139,7 @@ a gate failure, and the nudge does not ship.
 | PR | Contains | Changes nare? |
 | --- | --- | --- |
 | 1 | `--matrix`, `compare --matrix`, `models` and its pointer in `benchmarks/README.md`, the preflight, both cases, five baselines, the `ada/qwen3-14b` baseline deleted, `docs/evidence/45/` | No |
-| 2 | Section 6 as revised in 6.1 and 6.2: 6.1's candidates and their record, ambiguous-request's check and the re-scored baselines, 6.2's step 1 and each built candidate's spark pool and cheap loop, then the matrix table before and after on the one picked, and all five baselines re-blessed after the change | The description only, or nothing if 6.2 picks none |
+| 2 | Section 6 as revised in 6.1 and 6.2: 6.1's candidates and their record, ambiguous-request's check and its re-blessed baselines, 6.2's step 1 and each built candidate's spark pool and cheap loop, then the matrix table before and after on the one picked, and all five baselines re-blessed after the change | The description only, or nothing if 6.2 picks none |
 | 3 | Section 7, only if section 7's first paragraph calls for it | The loop, under `nare run` only |
 
 PR 1 is useful on its own. #43's benchmark for the compaction point needs to
@@ -1181,10 +1188,11 @@ run across models too.
 - [ ] ambiguous-request has a `bash` check that its questions name
       `TIMEOUT` or its value 30, a test runs it with `run_here`, and
       `bin/bench verify` checks the case rather than exempting it
-- [ ] The five baselines' ambiguous-request numbers are re-scored under
-      that check from section 5's runs and re-blessed at a commit whose
-      `src/nare` is `main`'s, and the evidence lists each rep whose outcome
-      changed
+- [ ] ambiguous-request is re-run for all five models at a commit whose
+      `src/nare` is `main`'s and whose case has that check, and each
+      baseline is re-blessed from it with `--case ambiguous-request`; no
+      results file is written by hand, and the evidence gives the
+      read-only re-score of the kept reps beside the new numbers
 - [ ] spark on ambiguous-after-reading has at least 14 judged reps on
       section 6's text (`947cc4c`), and the section 6 PR states which row
       of section 6.2's step 1 it fell in and which candidates were built
