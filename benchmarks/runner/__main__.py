@@ -289,6 +289,8 @@ async def run_rep(
                 model=config.model,
                 artifacts=kept_ref,
                 max_tokens=config.max_tokens,
+                provider=config.provider,
+                judge_model=config.judge_model,
             )
 
         # Before the bash checks, so nothing a check writes reaches the judge.
@@ -336,6 +338,8 @@ async def run_rep(
         model=config.model,
         artifacts=kept_ref,
         max_tokens=config.max_tokens,
+        provider=config.provider,
+        judge_model=config.judge_model,
     )
 
 
@@ -551,6 +555,20 @@ def compare_judges(args: argparse.Namespace, root: Path) -> int:
     return 0
 
 
+def as_recorded(config: Config, records: Sequence[RepRecord]) -> Config:
+    """The cap, provider and judge the results were run with, not the ones in
+    this shell: compare and bless never run the agent. Results written before
+    the provider and judge were recorded keep the flags' values."""
+    return replace(
+        config,
+        max_tokens=next((r.max_tokens for r in records), None),
+        provider=next((r.provider for r in records if r.provider), config.provider),
+        judge_model=next(
+            (r.judge_model for r in records if r.judge_model), config.judge_model
+        ),
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command is None:
@@ -662,9 +680,7 @@ def main(argv: list[str] | None = None) -> int:
         print("bench: no results yet; run `bin/bench run` first", file=sys.stderr)
         return 2
     records = read_results(results_file)
-    # The cap the results were run at, not one in this shell: compare and
-    # bless never run the agent.
-    config = replace(config, max_tokens=next((r.max_tokens for r in records), None))
+    config = as_recorded(config, records)
     produced = sorted({r.model for r in records} - {config.model})
     if produced:
         print(
@@ -702,7 +718,10 @@ def main(argv: list[str] | None = None) -> int:
             dumps_baseline(meta, merge_baseline(kept, summaries, tier_ids)),
             encoding="utf-8",
         )
-        print(f"blessed {baseline_file} from {results_file.name}")
+        print(
+            f"blessed {baseline_file} from {results_file.name} "
+            f"(provider {config.provider}, judge {config.judge_model})"
+        )
         return 0
 
     if not baseline_file.exists():

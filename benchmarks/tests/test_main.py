@@ -692,3 +692,66 @@ def test_compare_judges_accepts_its_flags() -> None:
     assert args.command == "compare-judges"
     assert args.case == ["a", "b"]
     assert (args.jev_model, args.reference_model) == ("jev-1.13.0", "opus")
+
+
+async def test_a_rep_records_its_provider_and_judge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_sandbox(monkeypatch, RunArtifacts(DONE_LINE, "", 0, False, 1.0))
+    evidence = tmp_path / "results" / "stamp"
+    config = replace(CONFIG, provider="openai", judge_model="claude-sonnet-5-5")
+    rec = await run_rep(sandboxed(tmp_path), config, cast(Transport, None), 0, evidence)
+    assert (rec.provider, rec.judge_model) == ("openai", "claude-sonnet-5-5")
+
+
+def test_bless_writes_the_provider_and_judge_the_results_were_run_with(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A matrix run takes both from the baseline, not the shell, so bless must
+    # read them back from the results, as it reads the cap.
+    from benchmarks.runner.report import baseline_path, load_baseline
+
+    baselines = results_dir(tmp_path, monkeypatch)
+    ran = replace(
+        record("edit-docstring", model="m"),
+        provider="openai",
+        judge_model="claude-sonnet-5-5",
+    )
+    write_results(tmp_path, [ran])
+    assert main(["bless", "--model", "m"]) == 0
+    meta = load_baseline(baseline_path(baselines, "m", "smoke")).meta
+    assert (meta.provider, meta.judge_model) == ("openai", "claude-sonnet-5-5")
+
+
+def test_bless_takes_the_flags_for_results_written_before_they_were_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from benchmarks.runner.report import baseline_path, load_baseline
+
+    baselines = results_dir(tmp_path, monkeypatch)
+    write_results(tmp_path, [record("edit-docstring", model="m")])
+    flags = ["--provider", "openai", "--judge-model", "j"]
+    assert main(["bless", "--model", "m", *flags]) == 0
+    meta = load_baseline(baseline_path(baselines, "m", "smoke")).meta
+    assert (meta.provider, meta.judge_model) == ("openai", "j")
+
+
+def test_compare_reads_the_judge_from_the_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from benchmarks.runner.report import baseline_path
+
+    baselines = results_dir(tmp_path, monkeypatch)
+    baselines.mkdir()
+    baseline_path(baselines, "m", "smoke").write_text(
+        dumps_baseline(
+            BaselineMeta("t", "abc1234", "openai", "m", "claude-sonnet-5-5"),
+            [summary("edit-docstring", 1.0)],
+        )
+    )
+    judged = replace(
+        record("edit-docstring", model="m"), judge_model="claude-sonnet-5-5"
+    )
+    write_results(tmp_path, [judged])
+    # No --judge-model: the default, the model under test, is not the judge.
+    assert main(["compare", "--model", "m"]) == 0

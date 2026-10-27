@@ -35,6 +35,10 @@ class RepRecord:
     # The agent's --max-tokens; None is nare's own default, which every run
     # used before the cap could be set.
     max_tokens: int | None = None
+    # The agent's provider and the judge, so bless and compare read them from
+    # the results as they read the cap. Empty in results written before.
+    provider: str = ""
+    judge_model: str = ""
 
 
 @dataclass(frozen=True)
