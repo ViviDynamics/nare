@@ -631,6 +631,23 @@ def test_the_ask_question_states_its_default() -> None:
     assert "the one you will use if it goes unanswered" in questions["description"]
 
 
+def test_the_ask_description_says_where_a_prose_question_goes() -> None:
+    # Haiku saw the ambiguity and asked in its closing text, so the session
+    # ended done and a headless caller moved on (#45).
+    assert (
+        "Ask only with this tool: a text reply ends the session as finished, so "
+        "a question written there may never be answered."
+    ) in schema_of("ask")["description"]
+
+
+def test_the_ask_example_is_no_benchmark_cases_answer() -> None:
+    # The old example was ambiguous-request's fixture and the answer its judge
+    # looks for, so a model could pass that case by copying it (#45).
+    questions = schema_of("ask")["input_schema"]["properties"]["questions"]
+    assert "TIMEOUT" not in questions["description"]
+    assert "Set the log level to INFO or to WARNING?" in questions["description"]
+
+
 # Darwin's pkill excludes its ancestors unless -a is supplied, so plain -f
 # does not kill the shell whose argv contains the tag. These reproduce Linux.
 needs_pkill = pytest.mark.skipif(

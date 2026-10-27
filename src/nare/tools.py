@@ -503,11 +503,13 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "Stop and ask the caller to resolve an ambiguous request. Use this "
             "only when the request can reasonably be read more than one way and "
             "the readings lead to different changes, and only after reading the "
-            "files involved. Do not use it for anything you can find out by "
-            "reading files or running commands, for details you can decide "
-            "yourself such as wording, style or names, to ask permission, or to "
-            "offer follow-up work. Call ask on its own, before making any "
-            "change. This ends the session."
+            "files involved. Ask only with this tool: a text reply ends the "
+            "session as finished, so a question written there may never be "
+            "answered. Do not use it for anything you can find out by reading "
+            "files or running commands, for details you can decide yourself "
+            "such as wording, style or names, to ask permission, or to offer "
+            "follow-up work. Call ask on its own, before making any change. "
+            "This ends the session."
         ),
         "input_schema": {
             "type": "object",
@@ -518,8 +520,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "description": (
                         "One question per item, naming the readings you are "
                         "choosing between and the one you will use if it goes "
-                        "unanswered, e.g. 'Raise TIMEOUT from 30 to what: 60, "
-                        "120, or another value? Unanswered, I will use 60.'"
+                        "unanswered, e.g. 'Set the log level to INFO or to "
+                        "WARNING? Unanswered, I will use WARNING.'"
                     ),
                 }
             },
