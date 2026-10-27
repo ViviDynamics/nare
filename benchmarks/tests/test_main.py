@@ -755,3 +755,64 @@ def test_compare_reads_the_judge_from_the_results(
     write_results(tmp_path, [judged])
     # No --judge-model: the default, the model under test, is not the judge.
     assert main(["compare", "--model", "m"]) == 0
+
+
+MATRIX_STAMP = "2026-10-26T00-00-00Z"
+
+
+def test_bless_reads_its_models_file_from_a_matrix_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from benchmarks.runner.report import baseline_path, load_baseline
+
+    baselines = results_dir(tmp_path, monkeypatch)
+    for model in ("claude-haiku-5-5", "gpt-5-nano"):
+        ran = record("edit-docstring", model=model)
+        write_results(tmp_path, [ran], f"{MATRIX_STAMP}.{model}")
+    for model in ("claude-haiku-5-5", "gpt-5-nano"):
+        assert main(["bless", "--model", model]) == 0
+        assert load_baseline(baseline_path(baselines, model, "smoke")).meta.model == (
+            model
+        )
+    assert f"from {MATRIX_STAMP}.claude-haiku-5-5.jsonl" in capsys.readouterr().out
+
+
+def test_a_matrix_run_without_the_model_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    results_dir(tmp_path, monkeypatch)
+    ran = record("edit-docstring", model="gpt-5-nano")
+    write_results(tmp_path, [ran], f"{MATRIX_STAMP}.gpt-5-nano")
+    assert main(["bless", "--model", "claude-haiku-5-5"]) == 2
+    assert "no results for 'claude-haiku-5-5'" in capsys.readouterr().err
+
+
+def test_a_single_run_after_a_matrix_run_is_the_newest_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    results_dir(tmp_path, monkeypatch)
+    write_results(tmp_path, [record("edit-docstring", model="m")], f"{MATRIX_STAMP}.m")
+    write_results(
+        tmp_path, [record("edit-docstring", model="m")], "2026-10-26T01-00-00Z"
+    )
+    assert main(["bless", "--model", "m"]) == 0
+    assert "from 2026-10-26T01-00-00Z.jsonl" in capsys.readouterr().out
+
+
+def test_the_newest_matrix_run_skips_a_newer_single_run(tmp_path: Path) -> None:
+    from benchmarks.runner.__main__ import latest_run
+
+    directory = tmp_path / "benchmarks" / "results"
+    directory.mkdir(parents=True)
+    for name in (
+        "2026-10-25T00-00-00Z.a.jsonl",
+        f"{MATRIX_STAMP}.a.jsonl",
+        f"{MATRIX_STAMP}.b.jsonl",
+        "2026-10-26T01-00-00Z.jsonl",
+    ):
+        (directory / name).write_text("")
+    assert [p.name for p in latest_run(tmp_path)] == ["2026-10-26T01-00-00Z.jsonl"]
+    assert [p.name for p in latest_run(tmp_path, matrix=True)] == [
+        f"{MATRIX_STAMP}.a.jsonl",
+        f"{MATRIX_STAMP}.b.jsonl",
+    ]

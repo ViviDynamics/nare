@@ -56,6 +56,7 @@ from benchmarks.runner.report import (
     dumps_baseline,
     load_baseline,
     render,
+    slugify,
     summarize,
 )
 from benchmarks.runner.sandbox import (
@@ -375,6 +376,44 @@ def latest_results(root: Path) -> Path | None:
     return files[-1] if files else None
 
 
+def stamp_of(path: Path) -> str:
+    """The run a results file belongs to.
+
+    A run writes `<stamp>.jsonl`. A matrix run writes one file per model under
+    one stamp, `<stamp>.<model slug>.jsonl`, so the matrix stays one run.
+    """
+    return path.name.split(".", 1)[0]
+
+
+def is_matrix_file(path: Path) -> bool:
+    return path.name.count(".") == 2
+
+
+def latest_run(root: Path, *, matrix: bool = False) -> list[Path]:
+    """Every results file of the newest run, or with `matrix`, of the newest
+    matrix run."""
+    directory = root / "benchmarks" / "results"
+    if not directory.is_dir():
+        return []
+    files = sorted(directory.glob("*.jsonl"))
+    if matrix:
+        files = [p for p in files if is_matrix_file(p)]
+    if not files:
+        return []
+    newest = stamp_of(files[-1])
+    return [p for p in files if stamp_of(p) == newest]
+
+
+def results_for(files: Sequence[Path], model: str) -> Path | None:
+    """One model's results in a run: its own file from a matrix run, or the
+    run's single file, which the caller still checks was this model's."""
+    for path in files:
+        if is_matrix_file(path) and path.name.split(".")[1] == slugify(model):
+            return path
+    single = [p for p in files if not is_matrix_file(p)]
+    return single[0] if single else None
+
+
 def read_results(path: Path) -> list[RepRecord]:
     records: list[RepRecord] = []
     for raw in path.read_text(encoding="utf-8").splitlines():
@@ -675,9 +714,17 @@ def main(argv: list[str] | None = None) -> int:
         print(render(final))
         return final.exit_code
 
-    results_file = latest_results(root)
-    if results_file is None:
+    run_files = latest_run(root)
+    if not run_files:
         print("bench: no results yet; run `bin/bench run` first", file=sys.stderr)
+        return 2
+    results_file = results_for(run_files, config.model)
+    if results_file is None:
+        print(
+            f"bench: the newest run, {stamp_of(run_files[0])}, is a matrix run "
+            f"with no results for {config.model!r}",
+            file=sys.stderr,
+        )
         return 2
     records = read_results(results_file)
     config = as_recorded(config, records)
