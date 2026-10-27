@@ -144,7 +144,7 @@ spells it:
 
 After a matrix run, `compare --model M` and `bless --model M` read M's file
 from it. `compare-judges` reads one model's run, so pass it that file with
-`--results`.
+`--results`; without it, a matrix run as the newest run exits 2.
 
 ## Comparing judges
 

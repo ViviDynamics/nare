@@ -566,6 +566,13 @@ def compare_judges(args: argparse.Namespace, root: Path) -> int:
     jev_model = args.jev_model or env.get("NARE_BENCH_JEV_MODEL") or "jev-latest"
 
     results_file = Path(args.results) if args.results else latest_results(root)
+    if not args.results and results_file is not None and is_matrix_file(results_file):
+        print(
+            f"bench: the newest run, {stamp_of(results_file)}, is a matrix run "
+            "with one results file per model; pass one with --results",
+            file=sys.stderr,
+        )
+        return 2
     records = (
         read_results(results_file)
         if results_file is not None and results_file.is_file()

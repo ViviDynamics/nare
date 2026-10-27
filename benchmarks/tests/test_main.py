@@ -1250,3 +1250,24 @@ def test_a_flag_that_contradicts_the_results_is_refused(
     assert blessed.read_text() == before
     # A flag that agrees with the results is fine.
     assert main([command, "--model", "gpt-5-nano", flag, recorded]) == 0
+
+
+def test_compare_judges_asks_for_a_file_after_a_matrix_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A matrix run is one file per model, so "the newest results" would be
+    # whichever model's name sorts last.
+    results_dir(tmp_path, monkeypatch)
+    for model in ("claude-haiku-5-5", "gpt-5-nano"):
+        ran = record("edit-docstring", model=model)
+        write_results(tmp_path, [ran], f"{MATRIX_STAMP}.{model}")
+    monkeypatch.setenv("NARE_BASE_URL", "https://proxy.example")
+    monkeypatch.setenv("NARE_BENCH_REFERENCE_MODEL", "opus")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    assert main(["compare-judges"]) == 2
+    err = capsys.readouterr().err
+    assert MATRIX_STAMP in err
+    assert "--results" in err
+    # Named, one model's file goes on as before: here, to nothing to compare.
+    one = tmp_path / "benchmarks" / "results" / f"{MATRIX_STAMP}.gpt-5-nano.jsonl"
+    assert main(["compare-judges", "--results", str(one)]) == 1
