@@ -1056,6 +1056,16 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.command == "run":
+        baseline_file = baseline_path(
+            root / "benchmarks" / "baselines", config.model, args.tier
+        )
+        baseline = load_baseline(baseline_file) if baseline_file.exists() else None
+        # Before the image and the reps: numbers the baseline cannot be
+        # compared with would be paid for and then thrown away.
+        if baseline is not None and model_changed(
+            baseline, config, args.allow_model_change
+        ):
+            return 2
         try:
             build_image(root)
         except SandboxError as exc:
@@ -1063,19 +1073,12 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         stamp = new_stamp()
         transport, records = run_model(root, cases, config, stamp)
-        baseline_file = baseline_path(
-            root / "benchmarks" / "baselines", config.model, args.tier
-        )
-        if not baseline_file.exists():
+        if baseline is None:
             print(render_first_run(summarize(records)))
             print(
                 f"\nno baseline yet; bless one with: bin/bench bless --tier {args.tier}"
             )
             return 0
-
-        baseline = load_baseline(baseline_file)
-        if model_changed(baseline, config, args.allow_model_change):
-            return 2
         final = confirm(
             root, cases, config, transport, stamp, records, baseline, args.strict_tokens
         )

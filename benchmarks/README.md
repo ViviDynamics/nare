@@ -16,6 +16,8 @@ change without notice. See "Which models the endpoint serves" below.
 
     export ANTHROPIC_API_KEY=...        # OPENAI_API_KEY for NARE_PROVIDER=openai
     export NARE_MODEL=...               # one that `bin/bench models` lists
+    export NARE_BENCH_JUDGE_MODEL=...   # the judge its baseline names; unset,
+                                        # the judge is NARE_MODEL itself
     export NARE_BASE_URL=https://...    # only if you use a proxy
     export NARE_STREAM=1                # stream agent and judge, for proxies
     export NARE_BENCH_MAX_TOKENS=32000  # agent output cap; default is nare's
@@ -39,8 +41,9 @@ exits 2, for `compare` too.
 
 `run` and `compare` refuse, with exit 2, a baseline blessed on another
 provider, model, judge or output cap, since those numbers are not comparable;
-`--allow-model-change` overrides. Results that never recorded their provider
-are compared on the others alone, unless `--provider` names it.
+`run` does so before it builds anything, and `--allow-model-change` overrides.
+Results that never recorded their provider are compared on the others alone,
+unless `--provider` names it.
 
 Tokens are `input + output + cache_read + cache_write` from nare's result
 line. A proxy serves most input from cache, so counting only `input` would

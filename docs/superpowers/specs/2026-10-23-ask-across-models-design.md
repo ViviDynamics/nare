@@ -80,10 +80,11 @@ The issue asks for three things:
 A baseline already records `provider`, `model`, `judge_model` and the output
 cap in `[meta]` (the cap only when one was set), and `run` already refuses a
 baseline blessed on a different model, judge or output cap (`model_changed`
-in `benchmarks/runner/__main__.py`). It checks after the reps have run, and
-before PR 1 it did not compare the provider. PR 1 adds the provider to that
-check, since the same model on the other route is a different measurement.
-So the matrix needs no new configuration:
+in `benchmarks/runner/__main__.py`). Before PR 1 it checked only after the
+reps had run, and did not compare the provider. PR 1 checks before the image
+is built, so a mismatch costs nothing, and adds the provider, since the same
+model on the other route is a different measurement. So the matrix needs no
+new configuration:
 **the matrix for a tier is the set of `benchmarks/baselines/*.<tier>.toml`
 files.** Adding a model means blessing a baseline for it. Dropping one means
 deleting its baseline. Both are reviewed like any committed file, which is

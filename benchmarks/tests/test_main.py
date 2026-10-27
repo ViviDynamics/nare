@@ -1155,24 +1155,38 @@ def test_baselines_goes_with_matrix(
     assert main(["compare", "--baselines", "--model", "claude-haiku-5-5"]) == 2
 
 
-def test_run_refuses_a_baseline_blessed_on_another_provider(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("flags", "env", "named"),
+    [
+        # The same model on the other route can lose a reasoning model's
+        # thinking on the way, so the numbers are not comparable.
+        (["--provider", "anthropic", "--judge-model", SONNET], {}, "'anthropic'"),
+        # No judge set: it defaults to the model under test.
+        (["--provider", "openai"], {}, "'gpt-5-nano' / 'gpt-5-nano'"),
+        (
+            ["--provider", "openai", "--judge-model", SONNET],
+            {"NARE_BENCH_MAX_TOKENS": "32000"},
+            "/ 32000",
+        ),
+    ],
+)
+def test_run_refuses_a_baseline_it_cannot_compare_before_spending_anything(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+    env: dict[str, str],
+    named: str,
 ) -> None:
-    # The same model on the other route can lose a reasoning model's thinking
-    # on the way, so the numbers are not comparable.
-    matrix(tmp_path, monkeypatch, NANO)
-    flags = [
-        "--model",
-        "gpt-5-nano",
-        "--provider",
-        "anthropic",
-        "--judge-model",
-        SONNET,
-    ]
-    assert main(["run", "--case", "edit-docstring", *flags]) == 2
+    ran = matrix(tmp_path, monkeypatch, NANO)
+    for var, value in env.items():
+        monkeypatch.setenv(var, value)
+    args = ["run", "--case", "edit-docstring", "--model", "gpt-5-nano", *flags]
+    assert main(args) == 2
+    assert ran == []
     err = capsys.readouterr().err
-    assert "provider 'openai'" in err
-    assert "'anthropic'" in err
+    assert "baseline was blessed on provider 'openai'" in err
+    assert named in err
 
 
 def provider_baseline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
