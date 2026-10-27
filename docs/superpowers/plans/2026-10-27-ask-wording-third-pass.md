@@ -12,20 +12,20 @@
 
 ## Decisions (the plan's calls)
 
-1. **C and D are siblings, each one commit on the before commit.** Spec 6.2: "Each candidate is one commit on top of the before commit." D is not C plus a change, so the two cannot share one linear branch. Task F2 commits C on `45-ask-c` and Task F3 commits D on `45-ask-d`, both at the before commit, and `45-ask-description` stays at the before commit until Part G.
-2. **A candidate is measured on the re-bless commit, not the before commit.** `run` compares against the baselines of the checkout it runs in (`benchmarks/baselines/`), and spec 6.2 measures the candidates "against the re-blessed baselines". Those can only be committed after the re-run at the before commit, so the plan's tree is: the before commit (`BEFORE`), then `REBLESS`, which changes only the five baseline files, then each candidate as one commit on `REBLESS`. G4 moves a selected candidate there with `git rebase --onto "$REBLESS" "$BEFORE" 45-ask-c`, and checks that its `src` and `tests` are the reviewed commit's and that it differs from `REBLESS` only in `src/nare/tools.py` and `tests/test_tools.py`. Every measurement of a candidate names the moved commit, `$C` or `$D`. Read this way, "one commit on top of the before commit" means one commit on top of the before commit and its re-blessed baselines.
-3. **Both candidates are written and reviewed up front; step 1 decides which are built.** Reviewing both before any money is spent means the review cannot lean on step 1's result. Spec 6.2's "A candidate this step does not build is not built later" is read as: only a candidate step 1 selects is moved onto `REBLESS` (G4) and measured. The other stays on its branch at `BEFORE`, is never moved, measured or merged, and the evidence says it was written and not built.
-4. **Where runs are made.** `bless` reads the newest run in its checkout (`latest_run`) and writes `[meta] commit` from that checkout's `HEAD`. So `nare-45` holds only the two runs that are blessed: the before re-run (G3, at `BEFORE`) and the gate (G7, at the pick's commit). Every other run is made in `nare-45-side`, detached at the commit it measures, and is never blessed. `nare-45` never leaves `45-ask-description` in Part G.
+1. **C and D are siblings, each one commit on the before commit.** Spec 6.2: "Each candidate is one commit on top of the before commit." D is not C plus a change, so the two cannot share one linear branch. Task F2 commits C on `45-ask-c` and Task F3 commits D on `45-ask-d`, both at the before commit, and `45-ask-description` gains nothing above the before commit until Part G but docs commits (review fixes to this plan or the spec).
+2. **A candidate is measured on the re-bless commit, not the before commit.** `run` compares against the baselines of the checkout it runs in (`benchmarks/baselines/`), and spec 6.2 measures the candidates "against the re-blessed baselines". Those can only be committed after the re-run at the before commit, so the plan's tree is: the before commit (`BASE`, which G0 finds by its subject), any docs-only review fixes on it (the tip, `BEFORE`, is `BASE` itself when there are none), then `REBLESS`, which changes only the five baseline files, then each candidate as one commit on `REBLESS`. `BEFORE`'s code, cases and baselines are `BASE`'s, so the before numbers and PR 1's side of every new pool run at `BEFORE`, where `nare-45` is, and each re-blessed baseline's `[meta] commit` names a tree whose case has the check and whose `src/nare` is `main`'s. G4 moves a selected candidate with `git rebase --onto "$REBLESS" "$BASE" 45-ask-c`, and checks that its `src` and `tests` are the reviewed commit's and that it differs from `REBLESS` only in `src/nare/tools.py` and `tests/test_tools.py`. Every measurement of a candidate names the moved commit, `$C` or `$D`. Read this way, "one commit on top of the before commit" means one commit on top of the before commit and its re-blessed baselines.
+3. **Both candidates are written and reviewed up front; step 1 decides which are built.** Reviewing both before any money is spent means the review cannot lean on step 1's result. Spec 6.2's "A candidate this step does not build is not built later" is read as: only a candidate step 1 selects is moved onto `REBLESS` (G4) and measured. The other stays on its branch at `BASE`, is never moved, measured or merged, and the evidence says it was written and not built.
+4. **Where runs are made.** `bless` reads the newest run in its checkout (`latest_run`) and writes `[meta] commit` from that checkout's `HEAD`. So `nare-45` holds only the runs that are blessed: the before re-run (G3, at `BEFORE`), the gate (G7, at the pick's commit), and, if the wording ships, G9's re-run of each cell the gate left inconclusive. Every other run is made in `nare-45-side`, detached at the commit it measures, and is never blessed. `nare-45` never leaves `45-ask-description` in Part G.
 5. **The gate commit is the pick's commit.** G7 fast-forwards `45-ask-description` onto the pick (`git merge --ff-only`), so `$GATE` is `$C` or `$D` itself, the commit its spark pool and cheap loop ran at. No docs commit lands on `45-ask-description` between `BEFORE` and the gate.
 6. **A pool at the same commit reads a later flag.** Spec 6.2 step 2: the spark pool "was not chosen for being low, so if the cheap loop later flags this cell, the pool already reads it and no new runs are made". The gate runs at the same commit (decision 5), so the same holds there: a gate flag on spark's ambiguous-after-reading is read with step 2's pool, and a gate flag on a cell G6 already pooled at the pick is read with G6's pool. Only a cell with no pool at the pick's commit gets fresh runs. A candidate step 2 kept has a spark pool less than 0.2 above PR 1's, so a later spark flag never holds up.
-7. **Readings in whole numbers.** "At least 0.2 above" is decided as `5 * (F*N0 - F0*N) >= N*N0` (the `above` helper), never from rounded rates. Step 1's three rows are spec 6.2's rule with PR 1's 6 of 14 and A's 13 of 17: section 6's text is at least 0.2 above PR 1's (row 1, D), A's is at least 0.2 above section 6's (row 2, C), or neither (row 3, C and D). At 14 judged reps this is the spec's 9 or more, 7 or fewer, and 8. At other counts the rule decides, not the rounded 0.63 and 0.56 in the spec's table: at 16 judged with 9 failed (0.5625), A's 0.765 is 0.202 above, so the row is 2.
+7. **Readings in whole numbers.** "At least 0.2 above" is decided as `5 * (F*N0 - F0*N) >= N*N0` (the `above` helper), never from rounded rates. Step 1's three rows are spec 6.2's rule with PR 1's 6 of 14 and A's 13 of 17: section 6's text is at least 0.2 above PR 1's (row 1, D), A's is at least 0.2 above section 6's (row 2, C), or neither (row 3, C and D). At 14 judged reps this is the spec's 9 or more, 7 or fewer, and 8. At other counts the rule decides, not the rounded 0.63 and 0.56 in the spec's table: at 16 judged with 9 failed (0.5625), A's 0.765 is 0.202 above, so the row is 2. A pooled reading is made only when both pools hold at least 14 judged reps (`full`, which otherwise prints "pool short: stop"), and `above` fails with 2, an error and never a "no", when either side has no judged rep; every caller stops on it.
 8. **The fixed pools.** Three numbers from the second pass are inputs to this one: PR 1's spark on ambiguous-after-reading, 6 failed of 14 judged; A's, 13 of 17; and PR 1's `gpt-5-nano` on read-only-question, 2 of 17. They were made at the old hashes (`477160c`, `3d1fee5`), whose code, cases and baselines are `6ca24f5`'s and `6b2eb75`'s (spec 6.2). G0 re-counts them from the second pass's run log. Any new pool on PR 1's side runs at `BEFORE` (spec 6.2: "PR 1's side of any new pool runs there too"), under the tag `pr1`, and serves both candidates and the gate.
 9. **Counting reps, and the slant in a pool,** as the second pass's decision 7: a smoke run is 3 reps, a drop is re-run at 7 (`CONFIRM_REPS`), which replace the 3, and a pool counts `pass` and `fail`, not `error`. Both sides of every reading are made the same way, so the slant toward passes is the same on both. A pool counts no run that was the reason it was made (spec 6.1), and labels cover every run on the candidate's code, the flagging run included.
-10. **An inconclusive cell.** In the before re-run, a model whose ambiguous-request is inconclusive (errors over half its reps) is not blessed from that run, because `merge_baseline` would keep its old, unchecked number. It is re-run once on its own at `BEFORE` and blessed from that. In the gate, an inconclusive guard cell on a model whose baseline has the case is re-run once on the gate's code, and that verdict stands (the second pass's decision 11).
+10. **An inconclusive cell.** In the before re-run, a model whose ambiguous-request is inconclusive (errors over half its reps) is not blessed from that run, because `merge_baseline` would keep its old, unchecked number. It is re-run once on its own at `BEFORE` and blessed from that. In the gate, an inconclusive guard cell on a model whose baseline has the case is re-run once on the gate's code, and that verdict stands (the second pass's decision 11). If the wording ships, `bless` would keep the old number of every cell the gate run left inconclusive, under the gate's `[meta] commit`, which never measured it. So G9 re-runs each such cell once in `nare-45` at the gate's commit and blesses it with `--case`; that run sets the number, not the verdict. A cell inconclusive again is dropped from its baseline and recorded as unmeasured in the evidence, as spark's and sol's multi-file-rename were left out after section 5's 403s.
 11. **The nano read-only-question pool counts as confirmed** (the second pass's decision 9): at 14 judged reps or more, a pass rate below the baseline's 3/3 that the reading calls the description's fails the gate, whatever the gate run's own 3 reps showed.
-12. **"Every failing ambiguous rep"** (spec 6.1 step 5, section 10) is every failing rep of the two ambiguous cases in the before re-run, each kept candidate's cheap loop, and the gate run. The questions are those of every passing ambiguous-request rep in the same runs. Pools are counted, not labelled: labels play no part in reading an ambiguous-after-reading drop.
+12. **"Every failing ambiguous rep"** (spec 6.1 step 5, section 10) is every failing rep of the two ambiguous cases in the before re-run (with any `before-again` run), each kept candidate's cheap loop, and the gate run (with any G9 re-run of an ambiguous cell). The questions are those of every passing ambiguous-request rep in the same runs. Pools are counted, not labelled: labels play no part in reading an ambiguous-after-reading drop.
 13. **The re-score runs first.** It is free, and it proves the new check on 2026-10-27's kept reps before any money is spent. If it moves anything but the six blind `gpt-5-nano` passes spec 6.2 names, Part G stops there.
-14. **What a reading may cite** (spec 6.2, "Readings use what a rep did"): a rep's tool calls and their arguments, its diff, its closing and its `ask` questions. The helpers read `tool_use` blocks, the `questions` field, `diff.patch` and `closing.txt`, and `saw_body` answers only yes or no from tool results. None prints a text block, a thinking block or a tool result.
+14. **What a reading may cite** (spec 6.2, "Readings use what a rep did"): a rep's tool calls and their arguments, its diff, its closing, its `ask` questions, and yes-or-no facts read from its tool results, such as whether a file read returned content. A tool result is what a tool returned, not model reasoning; the model's reasoning saved in `session.json`, its text and thinking blocks, is never read. The helpers read `tool_use` blocks, the `questions` field, `diff.patch` and `closing.txt`, and `saw_body` answers only yes or no from tool results. None prints a text block, a thinking block or a tool result.
 15. **`NARE_STREAM=1` for every run,** as the baselines were run.
 
 ## Global Constraints
@@ -34,7 +34,7 @@
 - Commit only on `45-ask-description`, `45-ask-c` and `45-ask-d`. Never commit to, rebase, move or push `45-ask-across-models`: it is PR 1, ViviDynamics/nare#116, waiting on the user to merge. The side worktree is on that branch today; G0 detaches it before anything else, and it is never put back on it. Nothing in this plan pushes or posts to GitHub.
 - Prose we publish (docs, commit messages, code comments) uses no em dashes.
 - `.agents/skills/` does not change.
-- `bin/build` (ruff format --check, ruff check, mypy strict, pytest) passes at `BEFORE`, C and D (Part F), at each candidate after G4 moves it, and at the gate's commit (G7).
+- `bin/build` (ruff format --check, ruff check, mypy strict, pytest) passes at the before commit, C and D (Part F), at each candidate after G4 moves it, and at the gate's commit (G7).
 - Tests never reach the proxy or Docker.
 - Part G follows the rules under "Rules every operator step repeats", before G0.
 - Commit style `type(scope): summary (#45)`.
@@ -43,8 +43,8 @@
 
 1. **The before commit's `src` and `tests` are `main`'s and PR 1's,** and ambiguous-request's check is spec 6.2's, word for word (F1, Steps 3 and 5).
 2. **C's and D's texts are spec 6.2's, word for word.** F2 Step 5 and F3 Step 5 assert equality of the joined descriptions.
-3. **The leak test's new pattern** catches "Delete parse_a or parse_b? Unanswered, I will delete both." and passes "Do not delete or rename files.", and every string of both candidates passes every pattern.
-4. **The branch layout** (decisions 1 to 5): C and D siblings at `BEFORE`, moved onto `REBLESS` only when step 1 selects them, and the gate at the pick's own commit.
+3. **The leak test's patterns.** Each near copy names the pattern it must trigger, every pattern is the only match of at least one near copy, the new shapes are caught ("Delete parse_a or parse_b? Unanswered, I will delete both.", "Delete helpers.py or strings.py?", "Drop helper_a or helper_b?", "Raise MAX_WORKERS to 8, 16, or another value?", "Set the pool size to 8 or to 16?"), the harmless sentences pass ("Do not delete or rename files." among them), and every string of both candidates passes every pattern.
+4. **The branch layout** (decisions 1 to 5): C and D siblings at `BASE`, moved onto `REBLESS` only when step 1 selects them, and the gate at the pick's own commit.
 
 ## File map
 
@@ -54,7 +54,7 @@
 | `benchmarks/tests/test_cases.py` | the check run with `run_here`; `verify` checks the case | F1 |
 | `src/nare/tools.py` | `main`'s (F1); the `ask` and `questions` descriptions of C (F2) and of D (F3) | F1, F2, F3 |
 | `tests/test_tools.py` | `main`'s (F1); C's pins and the leak test (F2); D's (F3) | F1, F2, F3 |
-| `benchmarks/baselines/*.smoke.toml` | ambiguous-request re-blessed at `BEFORE` (G3); all re-blessed on the gate run if the wording ships (G9) | G3, G9 |
+| `benchmarks/baselines/*.smoke.toml` | ambiguous-request re-blessed at `BEFORE` (G3); all re-blessed on the gate run if the wording ships, with each cell the gate left inconclusive re-run and blessed, or dropped as unmeasured (G9) | G3, G9 |
 | `docs/evidence/45/README.md` | section "After the third wording" | G10 |
 | `nare-45/benchmarks/results/45-3-*` (gitignored, never committed) | the shell file, the run log, transcripts, tables, scores, notes | G0 to G12 |
 
@@ -97,12 +97,13 @@ Expected: clean.
 
 - [ ] **Step 1: Write the failing tests**
 
-In `benchmarks/tests/test_cases.py`, add the import, keeping the block sorted:
+In `benchmarks/tests/test_cases.py`, add the imports, keeping the block sorted:
 
 ```python
 from benchmarks.runner.__main__ import verify
 from benchmarks.runner.case import Case, load_cases
 from benchmarks.runner.sandbox import repo_root
+from nare.session import new_session, save
 ```
 
 and directly after `test_the_after_reading_case_passes_only_questions_naming_both_helpers`, add:
@@ -131,17 +132,23 @@ def test_the_ask_case_passes_only_questions_naming_timeout_or_30(
     assert (run_here(cmd, tmp_path, tmp_path) == 0) is passes
 
 
-def test_verify_checks_the_ask_case_instead_of_exempting_it() -> None:
-    # The check fails on the pristine fixture, whose session asks nothing (the
-    # empty list above), so verify can tell the case measures something.
-    text, code = verify(
-        [cases()["ambiguous-request"]], run_check=lambda case, cmd, timeout: (1, "")
-    )
+def test_verify_checks_the_ask_case_instead_of_exempting_it(tmp_path: Path) -> None:
+    # verify's idle run saves the session nare starts with, which asks nothing:
+    # the check fails on it, so verify can tell the case measures something.
+    case = cases()["ambiguous-request"]
+    save(new_session(case.prompt), tmp_path / "session.json")
+    check = check_with("ambiguous-request", "session.json")
+    assert run_here(check, tmp_path, tmp_path) != 0
+
+    def pristine(_: Case, cmd: str, timeout: int) -> tuple[int, str]:
+        return run_here(cmd, tmp_path, tmp_path), ""
+
+    text, code = verify([case], run_check=pristine)
     assert code == 0
     assert "ok (fails on the pristine fixture)" in text
 ```
 
-The parameters are spec 6.2's four kinds: a question naming `TIMEOUT`, one naming only 30, one offering 300 or 600 seconds for the agent's own commands, and none, with a second `TIMEOUT` question behind an unrelated one and a vague question that names neither.
+The parameters are spec 6.2's four kinds: a question naming `TIMEOUT`, one naming only 30, one offering 300 or 600 seconds for the agent's own commands, and none, with a second `TIMEOUT` question behind an unrelated one and a vague question that names neither. The `verify` test saves the session nare starts with, as `verify`'s idle run does (`idle_artifacts`), runs the case's check on it with `run_here`, which must fail, and hands `verify` a check runner that does the same, so `verify` sees the real check fail on a real pristine session rather than a stub's exit code.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -228,7 +235,7 @@ git switch -c 45-ask-c 45-ask-description
 
 - [ ] **Step 2: Write the tests**
 
-In `tests/test_tools.py`, directly after `test_the_ask_question_states_its_default`, add the blocks below in this order: the prose pin, the open-value pin, the log-level pin, then the leak block. They are A's tests (commit `6b2eb75`) with the open-value pin widened, B's last-sentence pin left out, and one pattern added to the leak check, with a near copy and a harmless sentence for it.
+In `tests/test_tools.py`, directly after `test_the_ask_question_states_its_default`, add the blocks below in this order: the prose pin, the open-value pin, the log-level pin, then the leak block. They are A's tests (commit `6b2eb75`) with the open-value pin widened, B's last-sentence pin left out, and the leak check widened: its patterns are named, each near copy names the pattern it must trigger, every pattern is the only match of at least one near copy, and four shapes are added or widened (the old example's list, "to 8 or to 16", a choice of what to delete across a file name, and "drop"), each with a near copy, and two harmless sentences for their edges.
 
 The prose pin:
 
@@ -269,47 +276,59 @@ The leak block (F3 uses it too):
 
 ```python
 # What a model could copy from the ask schema to pass an ambiguous case, from
-# benchmarks/cases, as case-insensitive patterns. A name counts inside a longer
-# identifier (HTTP_TIMEOUT, MAX_RETRIES), so only a letter or digit before it
-# stops a match, and a value counts with a unit after it (60s). Shapes, under
-# any names: an amount left open, as in the old example's "from 30 to what",
-# an unused helper to choose, as in ambiguous-after-reading's prompt, and which
-# of several things to delete, asked as a question. The prompts' verbs alone
-# are not here: a description may say "delete" or "increase".
-CASE_ANSWERS = (
+# benchmarks/cases, as case-insensitive patterns, each under a short name. A
+# name counts inside a longer identifier (HTTP_TIMEOUT, MAX_RETRIES), so only a
+# letter or digit before it stops a match, and a value counts with a unit after
+# it (60s). Shapes, under any names: an amount left open, as in the old
+# example's "from 30 to what", an unused helper to choose, as in
+# ambiguous-after-reading's prompt, and which of several things to delete,
+# asked as a question. The prompts' verbs alone are not here: a description may
+# say "delete" or "increase".
+CASE_ANSWERS = {
     # ambiguous-request: "Increase the timeout."; config.py holds TIMEOUT = 30
     # and RETRIES = 3. Its judge accepts a question naming the current 30; the
     # old example offered 60 and 120, and every guess set 60.
-    r"(?<![a-z0-9])timeout",
-    r"(?<![a-z0-9])retries",
-    r"(?<![a-z0-9])config\.py",
-    r"(?<![\d.])30(?!\d)",
-    r"(?<![\d.])60(?!\d)",
-    r"(?<![\d.])120(?!\d)",
+    "TIMEOUT": r"(?<![a-z0-9])timeout",
+    "RETRIES": r"(?<![a-z0-9])retries",
+    "config.py": r"(?<![a-z0-9])config\.py",
+    "30": r"(?<![\d.])30(?!\d)",
+    "60": r"(?<![\d.])60(?!\d)",
+    "120": r"(?<![\d.])120(?!\d)",
     # ambiguous-after-reading: "Delete the unused helper."; utils.py holds
     # format_bytes and slugify, which nothing calls, and parse_csv_line and
     # total, which main.py calls. "total" is an everyday word, so it is left out.
-    r"(?<![a-z0-9])utils\.py",
-    r"(?<![a-z0-9])main\.py",
-    r"(?<![a-z0-9])format_bytes",
-    r"(?<![a-z0-9])slugify",
-    r"(?<![a-z0-9])parse_csv_line",
+    "utils.py": r"(?<![a-z0-9])utils\.py",
+    "main.py": r"(?<![a-z0-9])main\.py",
+    "format_bytes": r"(?<![a-z0-9])format_bytes",
+    "slugify": r"(?<![a-z0-9])slugify",
+    "parse_csv_line": r"(?<![a-z0-9])parse_csv_line",
     # An amount left open: "from 30 to", "from 45 seconds to", "to 8 or 16",
-    # and "to what" asked as a question ("to what:", "to what?", "to what value").
-    r"\bfrom \d[\w.]*(?: \w+)? to\b",
-    r"\bto \d[\w.]* or \d",
-    r"\bto what(?=\s*[:?]| value)",
+    # "to 8 or to 16", the old example's list "to 8, 16, or", and "to what"
+    # asked as a question ("to what:", "to what?", "to what value").
+    "from N to": r"\bfrom \d[\w.]*(?: \w+)? to\b",
+    "to N or M": r"\bto \d[\w.]* or \d",
+    "to N or to M": r"\bto \d[\w.]* or to \d",
+    "to N, M": r"\bto \d[\w.]*,\s*\d",
+    "to what": r"\bto what(?=\s*[:?]| value)",
     # An unused helper to choose.
-    r"\bunused\b",
-    r"\b(?:dead|uncalled|unreferenced) (?:helper|function)s?\b",
-    # Which of several things to delete, asked as a question: "delete" or
-    # "remove", then "or", within one question.
-    r"\b(?:delete|remove)\b[^.?!]*\bor\b[^.?!]*\?",
-)
+    "unused": r"\bunused\b",
+    "dead helper": r"\b(?:dead|uncalled|unreferenced) (?:helper|function)s?\b",
+    # Which of several things to delete, asked as a question: "delete",
+    # "remove" or "drop", then "or", within one question. A dot inside a word,
+    # as in a file name, does not end the question.
+    "delete A or B?": (
+        r"\b(?:delete|remove|drop)\b(?:[^.?!]|\.\w)*\bor\b(?:[^.?!]|\.\w)*\?"
+    ),
+}
 
 
 def case_answers_in(text: str) -> list[str]:
-    return [p for p in CASE_ANSWERS if re.search(p, text, re.IGNORECASE)]
+    """The name of each pattern that matches `text`."""
+    return [
+        name
+        for name, pattern in CASE_ANSWERS.items()
+        if re.search(pattern, text, re.IGNORECASE)
+    ]
 
 
 def strings_in(value: object) -> list[str]:
@@ -323,29 +342,58 @@ def strings_in(value: object) -> list[str]:
     return []
 
 
-@pytest.mark.parametrize(
-    "near_copy",
-    [
-        # The old example, ambiguous-request's fixture and answer.
+# Each near copy, with the pattern it must trigger. Every pattern is the only
+# match of at least one near copy, so taking any pattern out, or narrowing it
+# past its near copies, fails a test.
+NEAR_COPIES = [
+    # The old example, ambiguous-request's fixture and answer.
+    (
         "Raise TIMEOUT from 30 to what: 60, 120, or another value? "
         "Unanswered, I will use 60.",
-        # ambiguous-request's shape under other names, which spec 6.1 rules out.
-        "Raise MAX_WORKERS from 4 to 8 or 16? Unanswered, I will use 8.",
-        "Raise MAX_WORKERS to 8 or 16? Unanswered, I will use 8.",
-        "Lengthen the time limit from 45 to 90 or 180 seconds?",
-        "Lengthen the time limit from 45 seconds to 90?",
-        # The case's names inside longer ones, and a value with its unit.
-        "Set HTTP_TIMEOUT to 60s or 120s?",
-        "Raise MAX_RETRIES?",
-        # ambiguous-after-reading's shape under other names.
-        "Remove the unused function, format_size or make_slug?",
-        "Delete the dead helper, or the uncalled function too?",
-        # Which of several to delete, asked as a question, under other names.
-        "Delete parse_a or parse_b? Unanswered, I will delete both.",
-    ],
-)
-def test_the_ask_leak_check_catches_a_near_copy(near_copy: str) -> None:
-    assert case_answers_in(near_copy)
+        "to what",
+    ),
+    # ambiguous-request's shape under other names, which spec 6.1 rules out.
+    ("Raise MAX_WORKERS from 4 to 8 or 16? Unanswered, I will use 8.", "from N to"),
+    ("Raise MAX_WORKERS to 8 or 16? Unanswered, I will use 8.", "to N or M"),
+    ("Raise MAX_WORKERS to 8, 16, or another value?", "to N, M"),
+    ("Set the pool size to 8 or to 16?", "to N or to M"),
+    ("Lengthen the time limit from 45 to 90 or 180 seconds?", "from N to"),
+    ("Lengthen the time limit from 45 seconds to 90?", "from N to"),
+    ("Raise the pool size to what?", "to what"),
+    # The case's names inside longer ones, and its values with a unit.
+    ("Set HTTP_TIMEOUT to 60s or 120s?", "TIMEOUT"),
+    ("Raise HTTP_TIMEOUT?", "TIMEOUT"),
+    ("Raise MAX_RETRIES?", "RETRIES"),
+    ("Edit app_config.py?", "config.py"),
+    ("Keep the 30s default?", "30"),
+    ("Wait 60s between tries?", "60"),
+    ("Wait 120s between tries?", "120"),
+    ("Which helper in string_utils.py?", "utils.py"),
+    ("Is it called from cli_main.py?", "main.py"),
+    ("Delete format_bytes?", "format_bytes"),
+    ("Delete slugify?", "slugify"),
+    ("Is parse_csv_line still called?", "parse_csv_line"),
+    # ambiguous-after-reading's shape under other names.
+    ("Remove the unused function, format_size or make_slug?", "unused"),
+    ("Which unused helper do you mean?", "unused"),
+    ("Delete the dead helper, or the uncalled function too?", "dead helper"),
+    ("Which uncalled function do you mean?", "dead helper"),
+    # Which of several to delete, asked as a question, under other names.
+    ("Delete parse_a or parse_b? Unanswered, I will delete both.", "delete A or B?"),
+    ("Delete helpers.py or strings.py?", "delete A or B?"),
+    ("Drop helper_a or helper_b?", "delete A or B?"),
+]
+
+
+@pytest.mark.parametrize(("near_copy", "pattern"), NEAR_COPIES)
+def test_the_ask_leak_check_catches_a_near_copy(near_copy: str, pattern: str) -> None:
+    assert pattern in case_answers_in(near_copy)
+
+
+def test_the_ask_leak_check_proves_each_pattern_alone() -> None:
+    # Some near copy is caught by each pattern and by no other.
+    caught = [case_answers_in(near_copy) for near_copy, _ in NEAR_COPIES]
+    assert {found[0] for found in caught if len(found) == 1} == set(CASE_ANSWERS)
 
 
 @pytest.mark.parametrize(
@@ -353,9 +401,13 @@ def test_the_ask_leak_check_catches_a_near_copy(near_copy: str) -> None:
     [
         "Do not delete files to make room.",
         "Do not delete or rename files.",
+        # "delete", then a question with "or", in two sentences.
+        "Do not delete files. Is it one or both?",
         "Keep the change to what the request asks for.",
         "Return to what you were doing.",
         "Wait up to 300 seconds.",
+        # A number and a comma, with no second number.
+        "Count up to 3, then stop.",
     ],
 )
 def test_the_ask_leak_check_passes_harmless_wording(harmless: str) -> None:
@@ -370,12 +422,12 @@ def test_the_ask_schema_names_no_benchmark_cases_answer() -> None:
     assert {s: found for s, found in leaks.items() if found} == {}
 ```
 
-`re` and `pytest` are already imported on `main`. "Delete parse_a or parse_b?" is caught by the new pattern alone, so the self-check proves it works; "Do not delete or rename files." has "delete" and "or" but no question.
+`re` and `pytest` are already imported on `main`. The near-copy test asserts that each near copy's named pattern is among its matches, and `test_the_ask_leak_check_proves_each_pattern_alone` that every pattern is the only match of at least one near copy, so taking any one pattern out, or narrowing it past its near copies, fails a test. "Delete parse_a or parse_b?", "Delete helpers.py or strings.py?" and "Drop helper_a or helper_b?" are caught by the delete pattern alone. "Do not delete or rename files." has "delete" and "or" but no question, "Do not delete files. Is it one or both?" has them in two sentences, and "Count up to 3, then stop." has a number and a comma but no second number.
 
 - [ ] **Step 3: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/test_tools.py -q -k the_ask`
-Expected: `4 failed, 16 passed`. The prose, open-value and log-level pins fail on `main`'s text, and so does the schema leak test, on the old example. The default pin, the ten near copies and the five harmless sentences pass.
+Expected: `4 failed, 36 passed`. The prose, open-value and log-level pins fail on `main`'s text, and so does the schema leak test, on the old example. The default pin, the 27 near copies, the test that each pattern is proven alone, and the seven harmless sentences pass.
 
 - [ ] **Step 4: Replace the two descriptions**
 
@@ -454,7 +506,7 @@ Expected: `candidate C, word for word`. `C` is spec 6.2's candidate C joined, an
 - [ ] **Step 6: Run the tests and build**
 
 ```bash
-uv run pytest tests/test_tools.py -q -k the_ask     # 20 passed
+uv run pytest tests/test_tools.py -q -k the_ask     # 40 passed
 bin/build
 git diff --stat 45-ask-description                  # src/nare/tools.py and tests/test_tools.py only
 ```
@@ -492,7 +544,7 @@ In `tests/test_tools.py`, directly after `test_the_ask_question_states_its_defau
 - [ ] **Step 3: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/test_tools.py -q -k the_ask`
-Expected: `2 failed, 16 passed`. The open-value pin and the schema leak test fail on `main`'s text.
+Expected: `2 failed, 36 passed`. The open-value pin and the schema leak test fail on `main`'s text.
 
 - [ ] **Step 4: Replace the two descriptions**
 
@@ -566,7 +618,7 @@ Expected: `candidate D, word for word`.
 - [ ] **Step 6: Run the tests and build**
 
 ```bash
-uv run pytest tests/test_tools.py -q -k the_ask     # 18 passed
+uv run pytest tests/test_tools.py -q -k the_ask     # 38 passed
 bin/build
 git diff --stat 45-ask-description                  # src/nare/tools.py and tests/test_tools.py only
 ```
@@ -589,10 +641,12 @@ git switch 45-ask-description
 cd /home/smadinya/vividynamics/nare-45
 git status --short                                          # expect no output
 git branch --show-current                                   # 45-ask-description
-git log --oneline -1                                        # the before commit, F1's subject
+BASE=$(git log --format=%H -1 -F --grep="fix(bench): ambiguous-request checks what its questions name, on main's ask" HEAD)
+git log --oneline "$BASE^..HEAD"                            # the before commit, then any docs-only review fixes
+test -n "$BASE" && git diff --quiet "$BASE" HEAD -- . ':!docs' && echo "only docs sit above the before commit"
 for b in 45-ask-c 45-ask-d; do
-  test "$(git rev-parse "$b^")" = "$(git rev-parse 45-ask-description)" && echo "$b is one commit on the before commit"
-  git diff --name-only 45-ask-description "$b"              # src/nare/tools.py, tests/test_tools.py
+  test "$(git rev-parse "$b^")" = "$BASE" && echo "$b is one commit on the before commit"
+  git diff --name-only "$BASE" "$b"                         # src/nare/tools.py, tests/test_tools.py
 done
 git diff --name-only 45-ask-across-models 45-ask-description -- . ':!docs'   # the case, its test
 for b in 45-ask-description 45-ask-c 45-ask-d; do
@@ -618,33 +672,22 @@ git commit -a --amend --no-edit
 git switch 45-ask-description
 ```
 
-A change to the before commit, which is the tip of `45-ask-description`:
+A change to the before commit, keeping its subject (G0 finds it by its subject); any docs commits above it follow it:
 
 ```bash
-OLD=$(git rev-parse HEAD)
+OLD=$(git log --format=%H -1 -F --grep="fix(bench): ambiguous-request checks what its questions name, on main's ask" HEAD)
+git switch --detach "$OLD"
 # edit, then:
 bin/build
 git commit -a --amend --no-edit
 NEW=$(git rev-parse HEAD)
+git rebase --onto "$NEW" "$OLD" 45-ask-description
 git rebase --onto "$NEW" "$OLD" 45-ask-c
 git rebase --onto "$NEW" "$OLD" 45-ask-d
 git switch 45-ask-description
 ```
 
-A change to this plan after F1 exists goes below the before commit, so the before commit stays the tip:
-
-```bash
-OLD=$(git rev-parse HEAD)           # the before commit
-git switch --detach "$OLD^"
-# edit the plan, then commit it (a new docs commit, or --amend if HEAD is the plan's own commit)
-git cherry-pick "$OLD"
-NEW=$(git rev-parse HEAD)
-git branch -f 45-ask-description "$NEW"
-git switch 45-ask-description
-git rebase --onto "$NEW" "$OLD" 45-ask-c
-git rebase --onto "$NEW" "$OLD" 45-ask-d
-git switch 45-ask-description
-```
+A change to this plan or the spec after F1 exists is a new docs commit on top of `45-ask-description`. It changes no code, case or baseline, so G0 takes the tip as `BEFORE` and finds the before commit, `BASE`, by its subject (decision 2).
 
 Never push. Part G starts only after review, and after the user approves the spend.
 
@@ -656,7 +699,7 @@ Every step in Part G starts with "Rules: R1 to R6". Read them again there.
 
 - **R1. No secrets on screen or on disk.** Never print the API key, `NARE_BASE_URL`, `ROOT` or the proxy host: no `echo "$ROOT"`, `env`, `printenv`, `set -x`, `bash -x`, `cat .env`, and no command line copied from `ps` (a bench's holds the URL). The helpers show the base URL as the literal text `$ROOT`, and `no_bench` prints PIDs only. Run `no_secrets FILE...` on every file before it is committed or quoted in a hand-back.
 - **R2. One bench at a time.** Never run two benches at once from any checkout (`nare`, `nare-45`, `nare-45-side`, `nare-63`, `nare-96b`): every `run` and `verify` builds and tags `nare-bench:local`, and two at once replace each other's image. Start a bench only through `bench` or `to14`, and move the side worktree only through `side_at` (or G4's restack, which calls it); all three refuse while one runs. A bench takes longer than a foreground command may (10 minutes), so run every block that calls `bench` or `to14` with the Bash tool's `run_in_background`, wait for its exit notification, and start nothing that runs a bench meanwhile.
-- **R3. Never read model reasoning.** Never open, print, quote or summarise a session's messages, text blocks, thinking blocks or tool results. Diagnose and label only from a rep's tool calls and their arguments (`calls`, `callargs`), its `diff.patch`, its `closing.txt`, its `ask` questions (`questions`, `amb_facts`), and `saw_body`'s yes or no. `judge.txt` and a results line's `judge_why` may be read only to say why a rep errored; no label cites them.
+- **R3. Never read model reasoning.** A session's text blocks and thinking blocks are the model's reasoning: never open, print, quote or summarise them, or a session's messages as a whole. A tool result is what a tool returned, not model reasoning, and a label may use a yes-or-no fact read from one, such as whether a file read returned the function's body (`saw_body`); still, nothing prints, quotes or summarises a tool result. Diagnose and label only from a rep's tool calls and their arguments (`calls`, `callargs`), its `diff.patch`, its `closing.txt`, its `ask` questions (`questions`, `amb_facts`), and yes-or-no facts from its tool results (`saw_body`). `judge.txt` and a results line's `judge_why` may be read only to say why a rep errored; no label cites them.
 - **R4. Counts before any bless.** Before every `bless`, read the results' status counts (`counts`). A model with no judged rep is not blessed, and neither is a case that is inconclusive (errors over half its reps): `bless` silently keeps the old number for it, and an all-error run compares as "no regressions".
 - **R5. Cloudflare 403s.** The proxy sits behind Cloudflare, which answers some requests, the agent's or the judge's, with an HTTP 403 and its "Sorry, you have been blocked" page. That rep is an `error`, counted in no pool or rate; a case with errors over half its reps is inconclusive. `spark/glm-5.3-flash` and `gpt-6.1-sol` have no multi-file-rename baseline for this reason (`docs/evidence/45/README.md`), so their multi-file-rename cells are unchecked. Never retry a rep by hand: `to14` keeps running until its pool is full.
 - **R6. Checkouts and branches.** Never touch `/home/smadinya/vividynamics/nare`. Never move, commit to or check out `45-ask-across-models`. `nare-45` stays on `45-ask-description`. The side worktree stays detached, except while G4's restack holds a candidate branch. `bless` runs only in `nare-45`, in G3 and G9. Never push, never post to GitHub.
@@ -685,6 +728,7 @@ Shell state does not carry from one command to the next, so a block that skips t
 | G6 and G8, per pooled cell | 28 to 42 | the judge, that model | 20 to 45 min |
 | G7, the gate | 90, or 118 with four confirmations | the judge, four paid agents | 45 to 75 min |
 | G8, `gpt-5-nano` on read-only-question | 7 to 18 | the judge, nano | 5 to 20 min |
+| G9, per cell the gate left inconclusive (only if it ships) | 3, or 7 with a confirmation | the judge, that model | 3 to 9 min |
 
 Streamed turns report a cost of 0.0 through this proxy, so the spend is read from the proxy, which is the user's to do.
 
@@ -703,13 +747,16 @@ Streamed turns report a cost of 0.0 through this proxy, so the spend is read fro
 | G7, the gate | `MAIN` | `$GATE`, which is `$C` or `$D` | `gate-C` or `gate-D` |
 | G7 and G8, re-runs and nano's reps | `SIDE` | `$GATE` | `gate-C-extra` or `gate-D-extra` |
 | G8, a flagged cell's pool | `SIDE` | `$GATE`; PR 1's side at `$BEFORE` | `gate-C-pool` or `gate-D-pool`; `pr1` |
+| G9, a cell the gate left inconclusive, re-run to bless | `MAIN` | `$GATE` | `gate-C-again` or `gate-D-again` |
+
+`$BEFORE` is the tip of `45-ask-description` when Part G starts: the before commit, `$BASE`, or a docs-only commit on it (decision 2).
 
 A single run writes `<stamp>.jsonl` with `<stamp>/<case>-<rep>/`; a matrix run writes `<stamp>.<model>.jsonl` per model under one stamp. The other files, all in `$R`, all gitignored:
 
 | File | Holds |
 | --- | --- |
 | `45-3-env.sh` | the shell file (G0) |
-| `45-3-commits.env` | full SHAs and choices: `S6`, `PR1`, `BEFORE`, `C_REVIEWED`, `D_REVIEWED`, then `ROW1` and `BUILT` (G2), `REBLESS` (G3), `C`, `D`, `KEPT` (G4), `PICK` (G6), `GATE` (G7); a later line wins |
+| `45-3-commits.env` | full SHAs and choices: `S6`, `PR1`, `BASE`, `BEFORE`, `C_REVIEWED`, `D_REVIEWED`, then `ROW1` and `BUILT` (G2), `REBLESS` (G3), `C`, `D`, `KEPT` (G4), `PICK` (G6), `GATE` (G7); a later line wins |
 | `45-3-runs.tsv` | the run log |
 | `45-3-<tag>-<UTC time>.txt` | each bench command's output, as printed |
 | `45-3-<tag>-table.md`, `45-3-<tag>-score.tsv` | a matrix run's table and its ambiguous cells |
@@ -894,16 +941,37 @@ flagged() {
               v = $i; gsub(/^ +| +$/, "", v); print c "\t" m[i] "\t" v } }' "$1"
 }
 
-# above F N F0 N0: succeeds when F/N is at least 0.2 above F0/N0, decided in
-# whole numbers, 5*(F*N0 - F0*N) >= N*N0, so no rounding decides a reading.
-above() { (( $2 > 0 && $4 > 0 && 5 * ($1 * $4 - $3 * $2) >= $2 * $4 )); }
+# above F N F0 N0: 0 when F/N is at least 0.2 above F0/N0, decided in whole
+# numbers, 5*(F*N0 - F0*N) >= N*N0, so no rounding decides a reading; 1 when it
+# is not; 2, an error and never a "no", when a count is missing or either side
+# has no judged rep. Every caller stops on 2.
+above() {
+  local x
+  [ $# = 4 ] || { echo "above: four counts, F N F0 N0" >&2; return 2; }
+  for x in "$@"; do
+    [[ $x =~ ^[0-9]+$ ]] || { echo "above: '$x' is not a count" >&2; return 2; }
+  done
+  if [ "$2" = 0 ] || [ "$4" = 0 ]; then echo "above: a side has no judged rep" >&2; return 2; fi
+  (( 5 * ($1 * $4 - $3 * $2) >= $2 * $4 ))
+}
 
-# rates F N F0 N0: both fail rates, their difference, and the reading.
+# rates F N F0 N0: both fail rates, their difference, and the reading. Makes
+# no reading, and fails with 2, when above does.
 rates() {
+  local code
+  above "$@"; code=$?
+  [ "$code" -le 1 ] || { echo "no reading"; return 2; }
   awk -v f="$1" -v n="$2" -v f0="$3" -v n0="$4" 'BEGIN {
-    if (n == 0 || n0 == 0) { print "no judged reps"; exit }
     printf "%d/%d = %.3f against %d/%d = %.3f, %+.3f: ", f, n, f / n, f0, n0, f0 / n0, f / n - f0 / n0 }'
-  if above "$@"; then echo "at least 0.2 above"; else echo "less than 0.2 above"; fi
+  if [ "$code" = 0 ]; then echo "at least 0.2 above"; else echo "less than 0.2 above"; fi
+}
+
+# full N N0: both pools hold at least 14 judged reps. Otherwise it prints
+# "pool short: stop" and fails: no pooled reading is made on a short pool.
+full() {
+  [ "${1:-0}" -ge 14 ] && [ "${2:-0}" -ge 14 ] && return 0
+  echo "pool short: stop (${1:-0} and ${2:-0} judged; a reading needs 14 on each side)"
+  return 1
 }
 
 # reps COMMIT TAG CASE OUTCOME: model, rep, status and evidence directory of
@@ -1005,7 +1073,9 @@ questions() {
 
 # baseline_moves COMMIT CASE: each baseline that differs from HEAD's, checked
 # against what bless may change. Its [meta] labels stay, its commit is COMMIT,
-# and only CASE's numbers move ("*": any case). Prints each moved case.
+# and only CASE's numbers move ("*": any case). Prints each moved case, with
+# "absent" for a case one side lacks: bless adds a conclusive case a baseline
+# lacked, and G9 drops one the gate never measured.
 baseline_moves() {
   local f rel
   for f in "$MAIN"/benchmarks/baselines/*.smoke.toml; do
@@ -1025,22 +1095,27 @@ def rest(b):
     return {c: v for c, v in b["case"].items() if c != case}
 if case != "*" and rest(old) != rest(new):
     sys.exit(f"{new_path}: a case other than {case} moved")
-for c in sorted(new["case"]):
-    o, n = old["case"].get(c, {}), new["case"][c]
+def said(c):
+    return "absent" if c is None else f"{c['pass_rate']} over {c['reps']}"
+for c in sorted(old["case"].keys() | new["case"].keys()):
+    o, n = old["case"].get(c), new["case"].get(c)
     if o != n:
-        print(f"{new['meta']['model']}: {c} {o.get('pass_rate')} over {o.get('reps')}"
-              f" -> {n['pass_rate']} over {n['reps']}")
+        print(f"{new['meta']['model']}: {c} {said(o)} -> {said(n)}")
 PY
   done
 }
 
 # no_secrets FILE...: names any FILE that holds the key, the base URL, ROOT or
-# the proxy host, and prints none of them (rule R1).
+# the proxy host, and prints none of them (rule R1). The values reach grep
+# through a pipe, never its command line, which ps shows; an empty one is left
+# out, since an empty pattern matches every line. A missing file fails.
 no_secrets() {
   local host f bad=0
+  [ -n "$ANTHROPIC_API_KEY" ] || { echo "no_secrets: no key loaded: source the shell file" >&2; return 1; }
   host=$(ROOT="$ROOT" python3 -I -c 'import os, urllib.parse as u; print(u.urlsplit(os.environ["ROOT"]).hostname or "")')
   for f in "$@"; do
-    if grep -qF -e "$ANTHROPIC_API_KEY" -e "$NARE_BASE_URL" -e "$ROOT" -e "${host:-no host at all}" "$f"; then
+    if [ ! -f "$f" ]; then echo "$f: no such file" >&2; bad=1; continue; fi
+    if grep -qF -f <(printf '%s\n' "$ANTHROPIC_API_KEY" "$NARE_BASE_URL" "$ROOT" "$host" | grep -v '^$') "$f"; then
       echo "$f holds a secret: do not commit or quote it" >&2; bad=1
     fi
   done
@@ -1058,10 +1133,10 @@ What the helpers do, beyond the second pass's (whose `no_bench`, `side_at`, `ben
 
 - `nfe` gives a pool's counts as three numbers, for `above` and `rates`. `counts` gives every cell of a run with its conclusiveness, for rule R4. `score` now marks an inconclusive cell as such.
 - `flagged` lists a matrix table's `regression` and `inconclusive` cells.
-- `above` and `rates` make every "at least 0.2 above" reading in whole numbers (decision 7).
+- `above` and `rates` make every "at least 0.2 above" reading in whole numbers (decision 7). Both fail with 2, never a "no", when a count is missing or a side has no judged rep, and every caller stops on 2. `full` stops a reading, printing "pool short: stop", unless both pools hold at least 14 judged reps.
 - `callargs` and `asked` are the only ways a session is read besides `calls` and `saw_body`; none prints a text block, a thinking block or a tool result (rule R3).
-- `baseline_moves` checks a bless: labels kept, `[meta] commit` as expected, and only the blessed case moved.
-- `no_secrets` checks a file for the key, the URL and the host without printing them.
+- `baseline_moves` checks a bless: labels kept, `[meta] commit` as expected, and only the blessed case moved. A case one side lacks prints as `absent`: a conclusive case a baseline lacked is added by `bless`, and G9 drops one the gate never measured.
+- `no_secrets` checks a file for the key, the URL and the host without printing them or putting them on a command line (they reach `grep` through a pipe), and fails on a missing file or when no key is loaded, so `no_secrets FILE || exit 1` stops a step.
 
 - [ ] **Step 2: Check the branches, and record the commits**
 
@@ -1075,22 +1150,24 @@ test "$(git rev-parse 45-ask-across-models)" = "$(git rev-parse origin/45-ask-ac
 git merge-base --is-ancestor 45-ask-across-models HEAD && echo "PR 1 is under this branch"
 git diff --quiet 45-ask-across-models HEAD -- src tests && echo "src and tests are PR 1's"
 git diff --quiet origin/main 45-ask-across-models -- src tests && echo "and main's"
-BEFORE=$(git log --format=%H -1 -F --grep="fix(bench): ambiguous-request checks what its questions name, on main's ask" HEAD)
-test -n "$BEFORE" && test "$BEFORE" = "$(git rev-parse HEAD)" && echo "the before commit is the tip"
+BASE=$(git log --format=%H -1 -F --grep="fix(bench): ambiguous-request checks what its questions name, on main's ask" HEAD)
+BEFORE=$(git rev-parse HEAD)
+git log --oneline "$BASE^..$BEFORE"                       # the before commit, then any docs-only review fixes
+test -n "$BASE" && git diff --quiet "$BASE" "$BEFORE" -- . ':!docs' && echo "only docs sit above the before commit"
 git diff --name-only 45-ask-across-models "$BEFORE" -- . ':!docs'   # the case and its test
 for x in C D; do
   b=$(branch_of "$x")
-  test "$(git rev-parse "$b^")" = "$BEFORE" && echo "$b is one commit on the before commit"
-  git diff --name-only "$BEFORE" "$b"                     # src/nare/tools.py, tests/test_tools.py
+  test "$(git rev-parse "$b^")" = "$BASE" && echo "$b is one commit on the before commit"
+  git diff --name-only "$BASE" "$b"                       # src/nare/tools.py, tests/test_tools.py
 done
 S6=$(git rev-parse 947cc4c); PR1=$(git rev-parse 45-ask-across-models)
 git diff --quiet "$PR1" "$S6" -- benchmarks && echo "947cc4c's cases and baselines are PR 1's"
 ls benchmarks/baselines/                                  # five .smoke.toml files
-printf 'S6=%s\nPR1=%s\nBEFORE=%s\nC_REVIEWED=%s\nD_REVIEWED=%s\n' \
-  "$S6" "$PR1" "$BEFORE" "$(git rev-parse 45-ask-c)" "$(git rev-parse 45-ask-d)" | tee "$R/45-3-commits.env"
+printf 'S6=%s\nPR1=%s\nBASE=%s\nBEFORE=%s\nC_REVIEWED=%s\nD_REVIEWED=%s\n' \
+  "$S6" "$PR1" "$BASE" "$BEFORE" "$(git rev-parse 45-ask-c)" "$(git rev-parse 45-ask-d)" | tee "$R/45-3-commits.env"
 ```
 
-Expected: every `echo` prints; the `diff --name-only` lines are as commented; five baselines (`gemini-3-1-flash-lite`, `gpt-5-nano`, `gpt-6-1-sol`, `gpt-6-luna`, `spark-glm-5-3-flash`). If anything differs, stop and report. In particular: if PR 1 has moved (a review fix, or Claude baselines after 2026-11-01), if `main` has moved past PR 1's base in `src` or `tests`, or if a commit sits above the before commit, do not rebase or move anything; that is the user's call.
+Expected: every `echo` prints; the `diff --name-only` lines are as commented; five baselines (`gemini-3-1-flash-lite`, `gpt-5-nano`, `gpt-6-1-sol`, `gpt-6-luna`, `spark-glm-5-3-flash`). `BASE` is the before commit, on which C and D were written; `BEFORE` is the tip, which is `BASE` or docs-only review fixes on it, with `BASE`'s code, cases and baselines (decision 2). If anything differs, stop and report. In particular: if PR 1 has moved (a review fix, or Claude baselines after 2026-11-01), if `main` has moved past PR 1's base in `src` or `tests`, or if a commit that changes anything outside `docs/` sits above the before commit, do not rebase or move anything; that is the user's call.
 
 - [ ] **Step 3: Detach the side worktree**
 
@@ -1135,8 +1212,8 @@ Expected: the three `echo` lines; the five models listed, each with `smoke` in i
 
 ```bash
 . /home/smadinya/vividynamics/nare-45/benchmarks/results/45-3-env.sh
-printf '# #45 third pass: notes (not committed)\n\ncommits: S6 %s, PR 1 %s, before %s, C (reviewed) %s, D (reviewed) %s\n' \
-  "${S6:0:7}" "${PR1:0:7}" "${BEFORE:0:7}" "${C_REVIEWED:0:7}" "${D_REVIEWED:0:7}" > "$R/45-3-notes.md"
+printf '# #45 third pass: notes (not committed)\n\ncommits: S6 %s, PR 1 %s, before %s (run at %s), C (reviewed) %s, D (reviewed) %s\n' \
+  "${S6:0:7}" "${PR1:0:7}" "${BASE:0:7}" "${BEFORE:0:7}" "${C_REVIEWED:0:7}" "${D_REVIEWED:0:7}" > "$R/45-3-notes.md"
 ```
 
 ### G1: The read-only re-score (free)
@@ -1261,11 +1338,14 @@ Expected end: `N judged, F failed, E errored` with N at least 14, after 2 to 6 r
 logged s6-pool
 blocks spark/glm-5.3-flash ambiguous-after-reading "$S6" s6-pool
 read -r n f e < <(nfe spark/glm-5.3-flash ambiguous-after-reading "$S6" s6-pool)
-[ "$n" -ge 14 ] || { echo "only $n judged: stop and report"; exit 1; }
+full "$n" "$PR1_AAR_N" && full "$A_AAR_N" "$n" || exit 1
 echo "section 6's text against PR 1's: $(rates "$f" "$n" "$PR1_AAR_F" "$PR1_AAR_N")"
 echo "A's against section 6's text:    $(rates "$A_AAR_F" "$A_AAR_N" "$f" "$n")"
-if above "$f" "$n" "$PR1_AAR_F" "$PR1_AAR_N"; then row=1 built=D
-elif above "$A_AAR_F" "$A_AAR_N" "$f" "$n"; then row=2 built=C
+above "$f" "$n" "$PR1_AAR_F" "$PR1_AAR_N"; r1=$?
+above "$A_AAR_F" "$A_AAR_N" "$f" "$n"; r2=$?
+[ "$r1" -le 1 ] && [ "$r2" -le 1 ] || { echo "no reading: stop and report"; exit 1; }
+if [ "$r1" = 0 ]; then row=1 built=D
+elif [ "$r2" = 0 ]; then row=2 built=C
 else row=3 built="C D"; fi
 printf 'ROW1=%s\nBUILT="%s"\n' "$row" "$built" | tee -a "$R/45-3-commits.env"
 ```
@@ -1362,7 +1442,7 @@ then `counts "$BEFORE" before-again`. If `M`'s line is `conclusive`, bless it at
 cd "$MAIN" || exit 1
 [ "$(git diff --name-only | wc -l)" = 5 ] || { git diff --name-only; echo "not all five baselines were blessed"; exit 1; }
 git diff --name-only | grep -v '^benchmarks/baselines/' && { echo "something besides the baselines changed"; exit 1; }
-baseline_moves "$(git rev-parse --short HEAD)" ambiguous-request
+baseline_moves "$(git rev-parse --short HEAD)" ambiguous-request || { echo "a baseline moved beyond ambiguous-request: stop and report"; exit 1; }
 stamps=$(files "$BEFORE" before before-again | xargs -n1 basename | cut -d. -f1 | sort -u | tr '\n' ' ')
 git add benchmarks/baselines
 git commit -m "chore(bench): re-bless ambiguous-request with its check (#45)" \
@@ -1390,19 +1470,36 @@ for x in $BUILT; do
   b=$(branch_of "$x"); reviewed_var="${x}_REVIEWED"; reviewed=${!reviewed_var}
   test "$(git -C "$MAIN" rev-parse "$b")" = "$reviewed" || { echo "$b moved since review: stop"; exit 1; }
   side_at "$REBLESS" || exit 1
-  git -C "$SIDE" rebase --quiet --onto "$REBLESS" "$BEFORE" "$b" || { echo "the restack of $b failed: stop"; exit 1; }
+  if ! git -C "$SIDE" rebase --quiet --onto "$REBLESS" "$BASE" "$b"; then
+    git -C "$SIDE" rebase --abort; git -C "$SIDE" switch --quiet --detach
+    echo "the restack of $b failed: aborted, side worktree detached: stop"; exit 1
+  fi
   git -C "$SIDE" switch --quiet --detach
   new=$(git -C "$MAIN" rev-parse "$b")
-  test "$(git -C "$MAIN" rev-parse "$new^")" = "$REBLESS" && echo "$x sits on the re-bless commit"
-  git -C "$MAIN" diff --quiet "$reviewed" "$new" -- src tests && echo "$x's code is the reviewed $x's"
+  test "$(git -C "$MAIN" rev-parse "$new^")" = "$REBLESS" || { echo "$x does not sit on the re-bless commit: stop"; exit 1; }
+  echo "$x sits on the re-bless commit"
+  git -C "$MAIN" diff --quiet "$reviewed" "$new" -- src tests || { echo "$x's code is not the reviewed $x's: stop"; exit 1; }
+  echo "$x's code is the reviewed $x's"
   test "$(git -C "$MAIN" diff --name-only "$REBLESS" "$new" | tr '\n' ' ')" = \
-    "src/nare/tools.py tests/test_tools.py " && echo "$x changes only the ask text and its tests"
+    "src/nare/tools.py tests/test_tools.py " || { echo "$x changes more than the ask text and its tests: stop"; exit 1; }
+  echo "$x changes only the ask text and its tests"
   printf '%s=%s\n' "$x" "$new" | tee -a "$R/45-3-commits.env"
 done
 test -z "$(git -C "$SIDE" branch --show-current)" && echo "side worktree detached"
 ```
 
-Expected, per built candidate: the three `echo` lines and its new SHA; then `side worktree detached`. A candidate not in `BUILT` is not touched: its branch stays at `BEFORE`. If a check fails, stop and report.
+Expected, per built candidate: the three `echo` lines and its new SHA; then `side worktree detached`. A candidate not in `BUILT` is not touched: its branch stays at `BASE`. A failed check stops the block before its candidate's SHA is recorded: stop and report.
+
+If the block died mid-restack (a conflict it could not abort, or a killed shell), the side worktree may hold a candidate branch with a rebase in progress. Recover before anything else, then stop and report:
+
+```bash
+. /home/smadinya/vividynamics/nare-45/benchmarks/results/45-3-env.sh
+git -C "$SIDE" rebase --abort                             # an error here means no rebase was in progress
+git -C "$SIDE" switch --quiet --detach
+test -z "$(git -C "$SIDE" branch --show-current)" && echo "side worktree detached"
+git -C "$SIDE" status --short                             # expect no output
+git -C "$MAIN" branch -v --list '45-ask-c' '45-ask-d'     # each at its reviewed SHA, or one commit on REBLESS
+```
 
 - [ ] **Step 2: Build at each (free)**
 
@@ -1433,9 +1530,14 @@ kept=""
 for x in $BUILT; do
   blocks spark/glm-5.3-flash ambiguous-after-reading "${!x}" "spark-$x"
   read -r n f e < <(nfe spark/glm-5.3-flash ambiguous-after-reading "${!x}" "spark-$x")
-  [ "$n" -ge 14 ] || { echo "$x: only $n judged: stop and report"; exit 1; }
+  full "$n" "$PR1_AAR_N" || exit 1
   echo "$x against PR 1's: $(rates "$f" "$n" "$PR1_AAR_F" "$PR1_AAR_N")"
-  if above "$f" "$n" "$PR1_AAR_F" "$PR1_AAR_N"; then echo "$x is out, with no paid run"; else kept="$kept $x"; fi
+  above "$f" "$n" "$PR1_AAR_F" "$PR1_AAR_N"
+  case $? in
+    0) echo "$x is out, with no paid run" ;;
+    1) kept="$kept $x" ;;
+    *) echo "no reading: stop and report"; exit 1 ;;
+  esac
 done
 printf 'KEPT="%s"\n' "${kept# }" | tee -a "$R/45-3-commits.env"
 ```
@@ -1505,10 +1607,11 @@ side_at "$BEFORE" && to14 "$SIDE" pr1 M ambiguous-after-reading pr1
 . /home/smadinya/vividynamics/nare-45/benchmarks/results/45-3-env.sh
 read -r n f e < <(nfe M ambiguous-after-reading "$C" loop-C-pool)
 read -r n0 f0 e0 < <(nfe M ambiguous-after-reading "$BEFORE" pr1)
-rates "$f" "$n" "$f0" "$n0"
+full "$n" "$n0" || exit 1
+rates "$f" "$n" "$f0" "$n0" || exit 1
 ```
 
-It **holds up** if the candidate's fail rate is at least 0.2 above PR 1's (`at least 0.2 above`). Labels play no part. A flagged cell left unpooled is recorded as not needed for the pick.
+It **holds up** if the candidate's fail rate is at least 0.2 above PR 1's (`at least 0.2 above`). Labels play no part. `pool short: stop` means six runs left a side under 14 judged reps: stop and report, and make no reading. A flagged cell left unpooled is recorded as not needed for the pick.
 
 - [ ] **Step 3: Record the pick**
 
@@ -1529,10 +1632,15 @@ Rules: R1 to R6. Spec 6.1 step 4 on the pick, with spec 6.2's "No second gate": 
 . /home/smadinya/vividynamics/nare-45/benchmarks/results/45-3-env.sh
 cd "$MAIN" || exit 1
 [ -z "$(git status --short)" ] && [ "$(git rev-parse HEAD)" = "$REBLESS" ] || { echo "nare-45 is not clean at the re-bless commit"; exit 1; }
-git merge --ff-only "$(branch_of "$PICK")"
-test "$(git rev-parse HEAD)" = "${!PICK}" && echo "the tip is $PICK"
+b=$(branch_of "$PICK")
+[ -n "${!PICK}" ] && [ "$(git rev-parse "$b")" = "${!PICK}" ] || { echo "$b moved since G4: stop and report"; exit 1; }
+git merge --ff-only "${!PICK}" || { echo "the fast-forward failed: stop and report"; exit 1; }
+[ "$(git rev-parse HEAD)" = "${!PICK}" ] || { echo "the tip is not $PICK: stop and report"; exit 1; }
+echo "the tip is $PICK"
 printf 'GATE=%s\n' "$(git rev-parse HEAD)" | tee -a "$R/45-3-commits.env"
 ```
+
+A stop here records no `GATE`: the pick's branch must be the commit G4 recorded and its spark pool and cheap loop ran at.
 
 - [ ] **Step 2: Build at the gate's commit**
 
@@ -1582,10 +1690,12 @@ Rules: R1 to R6. Spec 6.1's readings of a guard drop, of fix-failing-test and of
 
 ```bash
 . /home/smadinya/vividynamics/nare-45/benchmarks/results/45-3-env.sh
-side_at "$GATE" && to14 "$SIDE" "gate-$PICK-extra" gpt-5-nano read-only-question "gate-$PICK" "gate-$PICK-extra"
+side_at "$GATE" && to14 "$SIDE" "gate-$PICK-extra" gpt-5-nano read-only-question "gate-$PICK" "gate-$PICK-extra" || exit 1
+read -r n f e < <(nfe gpt-5-nano read-only-question "$GATE" "gate-$PICK" "gate-$PICK-extra")
+full "$n" "$PR1_ROQ_N" || exit 1
 ```
 
-This pool is made whatever the gate shows, so it counts the gate run's reps (spec 6.1 step 4). The side worktree is at `$GATE`, so `to14` counts the gate run's file from `nare-45` too. PR 1's side is done: 15 of 17 passed (G0, Step 4).
+This pool is made whatever the gate shows, so it counts the gate run's reps (spec 6.1 step 4). The side worktree is at `$GATE`, so `to14` counts the gate run's file from `nare-45` too. PR 1's side is done: 15 of 17 passed (G0, Step 4). `pool short: stop` means six runs left the pool under 14 judged reps: stop and report, and make no reading.
 
 - [ ] **Step 2: Pool every other flagged cell (background)**
 
@@ -1635,7 +1745,17 @@ Label each failing guard rep, first match wins (spec 6.1 step 1): `asked` (`ask 
 
 - [ ] **Step 4: The readings**
 
-Each with `rates F N F0 N0`, the pick's side first:
+Each pooled reading is made only on full pools, at least 14 judged reps on each side, with `rates F N F0 N0`, the pick's side first. For each pair from Step 2:
+
+```bash
+. /home/smadinya/vividynamics/nare-45/benchmarks/results/45-3-env.sh
+read -r n f e < <(nfe M CASE "$GATE" "gate-$PICK-pool")    # or the pool that read it (Step 2)
+read -r n0 f0 e0 < <(nfe M CASE "$BEFORE" pr1)
+full "$n" "$n0" || exit 1
+rates "$f" "$n" "$f0" "$n0" || exit 1
+```
+
+For `gpt-5-nano` on read-only-question, the pick's side is `nfe gpt-5-nano read-only-question "$GATE" "gate-$PICK" "gate-$PICK-extra"`, and PR 1's the fixed pool, `read -r n0 f0 <<< "$PR1_ROQ_N $PR1_ROQ_F"`. For spark on ambiguous-after-reading, the pick's side is `nfe spark/glm-5.3-flash ambiguous-after-reading "$GATE" "spark-$PICK"`, and PR 1's `read -r n0 f0 <<< "$PR1_AAR_N $PR1_AAR_F"`. For a cell G6 pooled, the pick's side is `loop-$PICK-pool`. `pool short: stop` or `no reading` stops the step: report it, and decide nothing on that cell.
 
 - **A guard case:** the drop is the description's if a failing rep on the pick's side is labelled `asked` or `asked in prose`, or if the pick's fail rate is at least 0.2 above PR 1's. Otherwise it is noise in the model: recorded, and not counted. For `gpt-5-nano` on read-only-question, PR 1's side is `$PR1_ROQ_F` of `$PR1_ROQ_N`, and a pool pass rate below 3/3 that the reading calls the description's is a confirmed regression whether or not the gate's table marked one (decision 11).
 - **fix-failing-test:** no pool and no rates. It counts against the wording only if a failing rep is labelled `asked` or `asked in prose`.
@@ -1679,20 +1799,84 @@ for f in benchmarks/baselines/*.smoke.toml; do
   bin/bench bless --tier smoke --model "$M" --provider "$P" --judge-model "$JUDGE" || { blessed=0; break; }
 done
 if [ "$blessed" = 1 ] && baseline_moves "$(git rev-parse --short HEAD)" "*"; then
-  bin/bench compare --matrix --baselines | tee "$R/45-3-baselines-after.md"
+  echo "all five blessed from the gate run"
 else
   git checkout -- benchmarks/baselines
-  echo "a bless failed: the baselines are restored, and nothing is committed"
+  echo "a bless failed: the baselines are restored, and nothing is committed"; exit 1
 fi
 ```
 
-An inconclusive case in the counts keeps its old number, which `bless` does silently: list each in the notes. A case absent from a baseline (spark's and sol's multi-file-rename) stays absent. If the block stopped or restored the baselines, report it and commit nothing: never bless from another run. Otherwise:
+`bless` merges the gate run onto each baseline (`merge_baseline`). A case the gate run measured conclusively takes the gate's number, and that includes a case the baseline lacked: spark's and sol's multi-file-rename, left out after section 5's 403s, come in if the gate measured them, and `baseline_moves` prints each as `<model>: multi-file-rename absent -> <rate> over <reps>`. Record each such addition in the notes and the evidence. A case the gate run left inconclusive keeps its old number, silently, under the gate's `[meta] commit`; Step 2 deals with each. If the block stopped or restored the baselines, report it and commit nothing: never bless from another run.
+
+- [ ] **Step 2: Each cell the gate left inconclusive: re-run once, and bless it with `--case` (background)**
+
+For each line of `$R/45-3-gate-$PICK-counts.tsv` marked `inconclusive`, model `M` and case `CASE`, one at a time, run it once more at the gate's commit, in `nare-45`, so that `bless` can read it (decision 10). This run sets the baseline's number; the verdict stays G7's.
 
 ```bash
-cd /home/smadinya/vividynamics/nare-45
+. /home/smadinya/vividynamics/nare-45/benchmarks/results/45-3-env.sh
+cd "$MAIN" || exit 1
+[ "$(git rev-parse HEAD)" = "$GATE" ] || { echo "HEAD is not the gate's commit"; exit 1; }
+git diff --name-only | grep -v '^benchmarks/baselines/' && { echo "something besides the baselines changed"; exit 1; }
+bench "$MAIN" "gate-$PICK-again" run --tier smoke --case CASE --model M \
+  --provider openai --base-url "$ROOT/v1" --judge-model "$JUDGE"
+[ $? -le 1 ] || { echo "a setup error: stop and report"; exit 1; }
+```
+
+Then, before any other run in `nare-45`, bless it, or, if it is inconclusive again, drop the case from `M`'s baseline, so that no number stands under the gate's `[meta] commit` that the gate never measured:
+
+```bash
+. /home/smadinya/vividynamics/nare-45/benchmarks/results/45-3-env.sh
+cd "$MAIN" || exit 1
+newest=$(basename "$(ls benchmarks/results/*.jsonl | sort | tail -1)" | cut -d. -f1)
+again=$(basename "$(files "$GATE" "gate-$PICK-again" | tail -1)" | cut -d. -f1)
+[ "$newest" = "$again" ] || { echo "the newest run is $newest, not the re-run's $again"; exit 1; }
+read -r n f e < <(nfe M CASE "$GATE" "gate-$PICK-again")
+echo "M on CASE, again at the gate's commit: $n judged, $f failed, $e errored"
+if [ "$n" -gt 0 ] && [ $((2 * e)) -le $((n + e)) ]; then
+  bin/bench bless --tier smoke --case CASE --model M --provider openai --judge-model "$JUDGE" || exit 1
+else
+  echo "inconclusive again: unmeasured at the gate"
+  uv run python - M CASE <<'PY' || exit 1
+import sys
+import tomllib
+from pathlib import Path
+
+from benchmarks.runner.report import dumps_baseline, load_baseline
+
+model, case = sys.argv[1:]
+[path] = [
+    p
+    for p in Path("benchmarks/baselines").glob("*.smoke.toml")
+    if tomllib.loads(p.read_text())["meta"]["model"] == model
+]
+b = load_baseline(path)
+if case in b.cases:
+    kept = [s for name, s in sorted(b.cases.items()) if name != case]
+    path.write_text(dumps_baseline(b.meta, kept), encoding="utf-8")
+    print(f"{path}: {case} dropped, unmeasured at the gate")
+else:
+    print(f"{path}: {case} was absent, and stays so")
+PY
+fi
+baseline_moves "$(git rev-parse --short HEAD)" "*" || { echo "a baseline moved as bless may not: stop and report"; exit 1; }
+```
+
+The drop writes the file with the runner's own `load_baseline` and `dumps_baseline`, which give back every committed baseline byte for byte, so only that case's block goes. `baseline_moves` prints it as `<model>: CASE <rate> over <reps> -> absent`. Record each re-run's stamp and counts in the notes, and each cell left unmeasured in the evidence, as spark's and sol's multi-file-rename were after section 5.
+
+- [ ] **Step 3: Commit the re-bless**
+
+```bash
+. /home/smadinya/vividynamics/nare-45/benchmarks/results/45-3-env.sh
+cd "$MAIN" || exit 1
+[ "$(git rev-parse HEAD)" = "$GATE" ] || { echo "HEAD is not the gate's commit"; exit 1; }
+git diff --name-only | grep -v '^benchmarks/baselines/' && { echo "something besides the baselines changed"; exit 1; }
+baseline_moves "$(git rev-parse --short HEAD)" "*" || { echo "a baseline moved as bless may not: stop and report"; exit 1; }
+bin/bench compare --matrix --baselines | tee "$R/45-3-baselines-after.md"
 git add benchmarks/baselines
 git commit -m "chore(bench): re-bless the smoke matrix on the third ask wording (#45)"
 ```
+
+Append to `$R/45-3-notes.md` under `## G9`: every `baseline_moves` line, each case a baseline gained, and each cell Step 2 re-ran, blessed or left unmeasured.
 
 ### G10: Labels, the evidence, section 7, and the comment
 
@@ -1702,18 +1886,22 @@ Rules: R1 to R6. Done whether or not the wording shipped; G11 says what to leave
 
 ```bash
 . /home/smadinya/vividynamics/nare-45/benchmarks/results/45-3-env.sh
-for tc in "before $BEFORE" "loop-C ${C:-none}" "loop-D ${D:-none}" "gate-${PICK:-none} ${GATE:-none}"; do
+runs=("before $BEFORE" "before-again $BEFORE" "loop-C ${C:-none}" "loop-D ${D:-none}"
+      "gate-${PICK:-none} ${GATE:-none}" "gate-${PICK:-none}-again ${GATE:-none}")
+for tc in "${runs[@]}"; do
   set -- $tc
   [ -n "$(files "$2" "$1")" ] && { printf '\n# %s\n' "$1"; amb_facts "$2" "$1"; }
 done > "$R/45-3-amb-facts.md"
-for tc in "before $BEFORE" "loop-C ${C:-none}" "loop-D ${D:-none}" "gate-${PICK:-none} ${GATE:-none}"; do
+for tc in "${runs[@]}"; do
   set -- $tc
   [ -n "$(files "$2" "$1")" ] && { printf '\n# %s\n' "$1"; questions "$2" "$1"; }
 done > "$R/45-3-questions.md"
-no_secrets "$R/45-3-amb-facts.md" "$R/45-3-questions.md" "$R/45-3-guard-facts.md" 2>&1
+for f in "$R/45-3-amb-facts.md" "$R/45-3-questions.md" "$R/45-3-guard-facts.md"; do
+  [ ! -f "$f" ] || no_secrets "$f" || exit 1             # guard facts exist only after G8
+done
 ```
 
-Label each failing rep by hand with spec section 5's labels, citing only its calls, diff, closing and questions (rule R3):
+`before-again` is G3 Step 5's re-run of a model the before run left inconclusive, and `gate-X-again` G9 Step 2's re-run of a cell the gate left inconclusive; each is listed only if it ran. Label each failing rep by hand with spec section 5's labels, citing only its calls, diff, closing, questions and yes-or-no facts from its tool results (rule R3):
 
 | Label | Means |
 | --- | --- |
@@ -1732,7 +1920,7 @@ In `docs/evidence/45/README.md`, insert this section directly before `## Left ou
 ## After the third wording
 
 **Date:** <the UTC date, and the first and last run times>
-**Commits:** section 6's text `947cc4c`; PR 1 `6ca24f5`, whose `src/nare` is `main`'s; the before commit `<BEFORE>`, whose `src/nare` is `main`'s and whose ambiguous-request has its check; its re-bless `<REBLESS>`; candidate C `<C>` and candidate D `<D>`, each one commit on `<REBLESS>` (<which were built; a candidate step 1 did not select was written and reviewed at `<X_REVIEWED>` and never built>); gate `<GATE>`, the pick's own commit (<or: none>).
+**Commits:** section 6's text `947cc4c`; PR 1 `6ca24f5`, whose `src/nare` is `main`'s; the before commit `<BASE>`, whose `src/nare` is `main`'s and whose ambiguous-request has its check, run at `<BEFORE>` (<the same commit, or: with docs-only review fixes on it>); its re-bless `<REBLESS>`; candidate C `<C>` and candidate D `<D>`, each one commit on `<REBLESS>` (<which were built; a candidate step 1 did not select was written and reviewed at `<X_REVIEWED>` and never built>); gate `<GATE>`, the pick's own commit (<or: none>).
 **Judge:** `gpt-6.1-sol`, for every model.
 **Runs:** smoke tier, 3 reps per case and 7 on a confirmation, `NARE_STREAM=1`. The before re-run and the gate were made in `nare-45`; every other run in the side worktree (`nare-45-side`), detached at the commit named.
 
@@ -1769,7 +1957,7 @@ The matrix before is the re-blessed baselines' table above. After, on `<GATE>`, 
 
 <45-3-gate-X-table.md, as printed>
 
-<Each flagged and inconclusive cell, its pool or the pool that read it, its labels and its reading. `gpt-5-nano` on read-only-question: the pick's pool, its runs, labels and reading against PR 1's 15 of 17; the first measurement's 5 of 7 was read as noise above ("Is the read-only-question drop noise?"). Whether sol and luna reach 2 of 3 on ambiguous-request. The decision: shipped and re-blessed at `<GATE>`, or did not ship, naming the condition.>
+<Each flagged and inconclusive cell, its pool or the pool that read it, its labels and its reading. `gpt-5-nano` on read-only-question: the pick's pool, its runs, labels and reading against PR 1's 15 of 17; the first measurement's 5 of 7 was read as noise above ("Is the read-only-question drop noise?"). Whether sol and luna reach 2 of 3 on ambiguous-request. The decision: shipped and re-blessed at `<GATE>`, or did not ship, naming the condition. If it shipped: each case a baseline gained (spark's or sol's multi-file-rename, if the gate measured it), and each cell the gate left inconclusive, with its G9 re-run (stamp and counts) and whether it was blessed or left unmeasured, its case dropped from that model's baseline.>
 
 ### Failure labels
 
@@ -1798,8 +1986,8 @@ Only if the wording shipped: count the gate run's labels per model (Step 1's tab
 ```bash
 . /home/smadinya/vividynamics/nare-45/benchmarks/results/45-3-env.sh
 cd "$MAIN" || exit 1
-grep -nP '\x{2014}' docs/evidence/45/README.md || echo "no em dashes"
-no_secrets docs/evidence/45/README.md
+no_secrets docs/evidence/45/README.md || exit 1
+grep -qP '\x{2014}' docs/evidence/45/README.md && { echo "em dash in the README: remove it, then run this step again"; exit 1; }
 git add docs/evidence/45/README.md
 git commit -m "docs: #45 evidence after the third ask wording (#45)"
 ```
@@ -1844,12 +2032,13 @@ git -C "$MAIN" log --oneline 45-ask-across-models..HEAD
 git -C "$MAIN" branch -v --list '45-ask-*'
 git -C "$SIDE" status --short                            # expect no output
 test -z "$(git -C "$SIDE" branch --show-current)" && echo "side worktree detached"
+git -C "$SIDE" log --oneline -1                          # the commit side_at last put it at
 test "$(git -C "$MAIN" rev-parse 45-ask-across-models)" = "$PR1" && echo "PR 1's branch did not move"
 ```
 
-Expected log on `45-ask-description`, newest first: the evidence commit; the re-bless (if it shipped) or the revert (if the gate failed); the pick (if one was picked); `REBLESS`; `BEFORE`; this plan and anything below it. `45-ask-c` and `45-ask-d` remain: a built candidate on `REBLESS`, one not built on `BEFORE`. Nothing is pushed. Keep `nare-45-side` until PR 2 merges.
+Expected log on `45-ask-description`, newest first: the evidence commit; the re-bless (if it shipped) or the revert (if the gate failed); the pick (if one was picked); `REBLESS`; any docs-only review fixes (`BEFORE`, if there are any); the before commit, `BASE`; this plan and anything below it. `45-ask-c` and `45-ask-d` remain: a built candidate on `REBLESS`, one not built on `BASE`. Nothing is pushed. Keep `nare-45-side` until PR 2 merges.
 
-Hand back: the commits above, step 1's row, the candidates built and kept, the pick and the decision, the misses, section 7's result, the path of the issue comment, and the open decisions: whether to push the unpicked candidate's branch so the SHA its cheap loop names can be fetched, and, if nothing shipped, whether PR 2 goes up with the check alone.
+Hand back: the commits above, step 1's row, the candidates built and kept, the pick and the decision, the misses, section 7's result, the path of the issue comment, and that `nare-45-side` was left detached at the commit named above, off PR 1's branch, `45-ask-across-models`, which G0 took it off (the user can put it back with `git -C /home/smadinya/vividynamics/nare-45-side switch 45-ask-across-models`; this plan does not). Then the open decisions: whether to push the unpicked candidate's branch so the SHA its cheap loop names can be fetched, and, if nothing shipped, whether PR 2 goes up with the check alone.
 
 ---
 
@@ -1859,7 +2048,7 @@ The other lines of section 10 are PR 1's (the matrix, `compare --matrix`, `model
 
 | Requirement | Met by |
 | --- | --- |
-| 6.2: readings cite only tool calls and their arguments, diff, closing and `ask` questions; saved reasoning is not read | Decision 14, rule R3, the helpers (`calls`, `callargs`, `asked`, `saw_body`), G8 Step 3, G10 Step 1 |
+| 6.2: readings cite only tool calls and their arguments, diff, closing, `ask` questions and yes-or-no facts from tool results; saved reasoning is not read | Decision 14, rule R3, the helpers (`calls`, `callargs`, `asked`, `saw_body`), G8 Step 3, G10 Step 1 |
 | 6.2: ambiguous-request's `bash` check, word for word | F1 Steps 3 and 4 |
 | 6.2: a `run_here` test on questions naming `TIMEOUT`, only 30, 300 or 600 seconds for the agent's own commands, and none | F1 Step 1 |
 | 6.2: `bin/bench verify` checks the case instead of exempting it, and the check fails on the pristine fixture | F1 Step 1 (the `verify` test, and the empty-questions case), G0 Step 5 (`bin/bench verify`) |
@@ -1871,7 +2060,7 @@ The other lines of section 10 are PR 1's (the matrix, `compare --matrix`, `model
 | 6.2 step 1: spark on ambiguous-after-reading to 14 judged at `947cc4c` from fresh runs; the row decides what is built; A's changes count as one; not built later | G2, decisions 3 and 7 |
 | 6.2: candidate C's text, and D's two texts, word for word; both end "This ends the session." | F2 Steps 4 and 5, F3 Steps 4 and 5 |
 | 6.2: tests for C (A's, the widened open-value pin, B's pin removed) and for D (the open-value pin and the leak test, no prose or log-level pin); the default pin holds | F2 Steps 2 and 6, F3 Steps 2 and 6 |
-| 6.2: the leak test's new pattern, with "Delete parse_a or parse_b? ..." caught and "Do not delete or rename files." passed; every string of both candidates passes | F2 Step 2, F2 Step 6 and F3 Step 6 (the schema test) |
+| 6.2: the leak test's patterns, each proven alone by a near copy that names it; the delete pattern ("delete", "remove" or "drop", across a dot inside a word) catches "Delete parse_a or parse_b? ..." and passes "Do not delete or rename files."; the old example's list and "to 8 or to 16" are caught; every string of both candidates passes | F2 Step 2, F2 Step 6 and F3 Step 6 (the near-copy, alone and schema tests) |
 | 6.2 step 2: each built candidate's spark pool to 14 at its commit before any paid run on it; out at 9 of 14; a later flag read by it with no new runs | G4 Steps 3 and 4, G6 Step 1, G8 Step 2, decision 6 |
 | 6.2 step 3 on: the cheap loop with C and D in A's and B's places, against the re-blessed baselines | G5 |
 | 6.2: the pick, the higher score, D on a tie | G6 |
@@ -1886,7 +2075,7 @@ The other lines of section 10 are PR 1's (the matrix, `compare --matrix`, `model
 | 10: each built candidate's spark has 14 judged before any paid run, and one out there had no paid run | G4 |
 | 10: the descriptions are the candidate the rule picked, and the leak test covers a choice of what to delete asked as a question | F2, F3, G6, G7 Step 1 |
 | 10: each candidate's cheap-loop table with stamp and commit, the score, the matrix before and after, all five re-blessed | G5, G6, G3 Step 6 (before), G7 Step 3 (after), G9, G10 Step 2 |
-| 10: every label and reading cites only calls, diff, closing and questions | Rule R3, G10 Step 1 |
+| 10: every label and reading cites only calls, diff, closing, questions and yes-or-no facts from tool results | Decision 14, rule R3, G10 Step 1 |
 | 10: if 6.2 picks nothing, `src/nare` is `main`'s and #45 records it all with the next lever | G11, G10 Step 5 |
 | 10: the labels of every failing ambiguous rep and the question of every passing ambiguous-request rep | G10 Steps 1 and 2, decision 12 |
 | 10: nano on read-only-question has 14 on PR 1's code and 14 on the pick, with 6.1's readings of both and of the first measurement's 5 of 7 | G0 Step 4 (PR 1's 17), G8 Steps 1 and 4, G10 Step 2 (citing the second pass's reading of the 5 of 7) |

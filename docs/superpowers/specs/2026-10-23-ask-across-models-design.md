@@ -812,8 +812,11 @@ run was made at.
 
 **Readings use what a rep did.** From here on, every label and every reading
 of a rep cites only its tool calls and their arguments, its diff, its
-closing and its `ask` questions. Saved model reasoning in `session.json` is
-not read. The quotes in section 6.1 stay as recorded.
+closing, its `ask` questions, and yes-or-no facts read from its tool
+results, such as whether a file read returned content. A tool result is
+what a tool returned, not model reasoning. Saved model reasoning in
+`session.json`, its text and thinking blocks, is not read. The quotes in
+section 6.1 stay as recorded.
 
 #### The check on ambiguous-request
 
@@ -871,19 +874,24 @@ and re-blesses are made at that commit, so each baseline's `[meta] commit`
 names a tree whose case has the check and whose `src/nare` is `main`'s.
 PR 1's side of any new pool runs there too. The PR 1 pool above still
 serves: neither its code nor ambiguous-after-reading changed. Each
-candidate is one commit on top of the before commit.
+candidate is one commit on top of the before commit. A docs-only commit on
+top of it, such as a review fix to the plan, changes no code, case or
+baseline, so the runs may be made at the branch's tip instead.
 
 #### Step 1: where the drop came from
 
 spark on ambiguous-after-reading is pooled to at least 14 judged reps on
 section 6's text, `947cc4c`, from fresh runs made as section 6.1's pools
 were. spark is free in practice (see Cost below), so the judge is the only
-real spend. The pool's fail rate decides which candidates are built:
+real spend. The pool's fail rate decides which candidates are built. One
+fail rate, F failed of N judged, is at least 0.2 above another, F0 of N0,
+when `5*(F*N0 - F0*N) >= N*N0`, in whole numbers. The decimals in the table
+are rounded; where they and the rule disagree, the rule wins.
 
 | section 6's fail rate | Reading | Built |
 | --- | --- | --- |
-| at least 0.2 above PR 1's: 0.63 or more, 9 or more of 14 | section 6's changes carry the drop | D |
-| at least 0.2 below A's: 0.56 or less, 7 or fewer of 14 | A's changes carry it | C |
+| at least 0.2 above PR 1's 6 of 14: about 0.63 or more (rounded), 9 or more of 14 | section 6's changes carry the drop | D |
+| at least 0.2 below A's 13 of 17: about 0.56 or less (rounded), 7 or fewer of 14 | A's changes carry it | C |
 | between the two: 8 of 14 | the reps cannot place it | C and D |
 
 A's two changes count as one: the exclusions were reordered only to put
@@ -978,11 +986,18 @@ names.", and B's test of its last sentence removed. For D, the open-value
 test and the leak test; the tests that pin the text-reply sentence and the
 log-level example go, since D has neither.
 `test_the_ask_question_states_its_default` holds for both. Every string of
-both candidates passes the leak test's patterns. The test gains one
-pattern, for the second kind's question under other names: "delete" or
-"remove", then "or", within one question. It catches "Delete parse_a or
-parse_b? Unanswered, I will delete both." and passes "Do not delete or
-rename files.", which join the test's near copies and harmless wording.
+both candidates passes the leak test's patterns. The test gains a pattern
+for the second kind's question under other names: "delete", "remove" or
+"drop", then "or", within one question, where a dot inside a word, as in a
+file name, does not end the question. It catches "Delete parse_a or
+parse_b? Unanswered, I will delete both.", "Delete helpers.py or
+strings.py?" and "Drop helper_a or helper_b?", and passes "Do not delete or
+rename files.". Two more catch frames of the first kind that the old
+patterns missed: the old example's list ("Raise MAX_WORKERS to 8, 16, or
+another value?") and "to 8 or to 16" ("Set the pool size to 8 or to 16?").
+Each near copy names the pattern it must trigger, and every pattern is the
+only match of at least one near copy, so removing any one pattern fails the
+test.
 
 #### Step 2: spark first
 
@@ -1209,7 +1224,8 @@ run across models too.
       picked one, and the matrix table before and after on the one picked,
       and re-blesses all five baselines after the change
 - [ ] Every label and reading of a rep in the evidence cites only its tool
-      calls, diff, closing and `ask` questions, never saved model reasoning
+      calls, diff, closing, `ask` questions and yes-or-no facts read from
+      its tool results, never saved model reasoning
 - [ ] If section 6.2 picks nothing, `src/nare` is `main`'s, and #45 records
       each pool and table with the labels of every failing ambiguous rep
       and names the rule in the default system prompt as the next lever
