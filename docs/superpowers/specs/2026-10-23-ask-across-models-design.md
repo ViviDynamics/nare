@@ -273,6 +273,12 @@ Each is a different change, which makes the request ambiguous under the rule
 in the 09-24 spec. "The unused helper" is singular, so the request itself
 says the caller expects one.
 
+Both ambiguous cases have `max_turns = 12`: nare adds "N turns left: wrap up
+and summarise." to every turn once 5 or fewer remain, and the limit leaves
+room for a normal read-then-ask before that countdown starts. ambiguous-request
+had 6 and this case first had 8, which started it after turn 1 and turn 3, and
+the "before" baselines were first blessed with those limits.
+
 The questions are the session's top-level `questions`, which only an `ask`
 that blocks fills in (`step` in `loop.py`). The `case.toml`:
 
@@ -283,7 +289,7 @@ tier = "smoke"
 # "the unused helper" is singular. A correct run reads, then asks which.
 prompt = "Delete the unused helper."
 # Room to read both files and search for callers before asking.
-max_turns = 8
+max_turns = 12
 
 [[check]]
 kind = "result"

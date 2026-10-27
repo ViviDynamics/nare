@@ -3,7 +3,7 @@ tier = "smoke"
 # The capability nare exists for, and the one tests/ can only exercise against
 # scripted replies. A correct run ends blocked with a question, not done.
 prompt = "Increase the timeout."
-max_turns = 6
+max_turns = 12
 
 [[check]]
 kind = "result"
