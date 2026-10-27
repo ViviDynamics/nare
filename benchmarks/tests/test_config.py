@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from benchmarks.runner.config import ConfigError, resolve_config
+from benchmarks.runner.config import (
+    Config,
+    ConfigError,
+    baseline_config,
+    resolve_config,
+    route,
+)
 
 
 def test_flags_win_over_environment() -> None:
@@ -245,3 +251,106 @@ def test_a_key_is_optional_for_the_subcommands_that_never_spend_one() -> None:
         need_key=False,
     )
     assert config.api_key is None
+
+
+@pytest.mark.parametrize(
+    ("base_url", "provider", "routed"),
+    [
+        ("https://proxy.example", "openai", "https://proxy.example/v1"),
+        ("https://proxy.example/v1/", "openai", "https://proxy.example/v1"),
+        ("https://proxy.example/v1", "anthropic", "https://proxy.example"),
+        ("https://proxy.example/", "anthropic", "https://proxy.example"),
+        (None, "openai", None),
+    ],
+)
+def test_one_base_url_gives_each_provider_its_route(
+    base_url: str | None, provider: str, routed: str | None
+) -> None:
+    # The openai transport posts to <base>/chat/completions; the Anthropic
+    # SDK adds /v1/messages itself.
+    assert route(base_url, provider) == routed
+
+
+MATRIX_ENV = {
+    "ANTHROPIC_API_KEY": "k",
+    "OPENAI_API_KEY": "k",
+    # What a shell set up for a single run holds. The baseline wins.
+    "NARE_MODEL": "ada/qwen3-14b",
+    "NARE_PROVIDER": "anthropic",
+    "NARE_BENCH_JUDGE_MODEL": "ada/qwen3-14b",
+    "NARE_BENCH_MAX_TOKENS": "16000",
+}
+
+
+def test_a_matrix_model_runs_as_its_baseline_names() -> None:
+    config = baseline_config(
+        model="gpt-5-nano",
+        provider="openai",
+        judge_model="claude-sonnet-5-5",
+        max_tokens=None,
+        base_url="https://proxy.example",
+        env=MATRIX_ENV,
+    )
+    assert (config.model, config.provider, config.judge_model) == (
+        "gpt-5-nano",
+        "openai",
+        "claude-sonnet-5-5",
+    )
+    assert config.base_url == "https://proxy.example/v1"
+    assert config.api_key_var == "OPENAI_API_KEY"
+    # The baseline's cap, which is nare's default, not the shell's 16000.
+    assert config.max_tokens is None
+
+
+def test_a_matrix_model_keeps_its_baselines_cap() -> None:
+    config = baseline_config(
+        model="spark/glm-5.3-flash",
+        provider="openai",
+        judge_model="j",
+        max_tokens=32000,
+        base_url=None,
+        env=MATRIX_ENV,
+    )
+    assert config.max_tokens == 32000
+    assert config.base_url is None
+
+
+def test_a_matrix_model_needs_its_providers_key() -> None:
+    env = {k: v for k, v in MATRIX_ENV.items() if k != "OPENAI_API_KEY"}
+    with pytest.raises(ConfigError, match="OPENAI_API_KEY"):
+        baseline_config(
+            model="gpt-5-nano",
+            provider="openai",
+            judge_model="j",
+            max_tokens=None,
+            base_url=None,
+            env=env,
+        )
+
+
+def test_a_matrix_cap_above_the_unstreamed_ceiling_needs_streaming() -> None:
+    def config(env: dict[str, str]) -> Config:
+        return baseline_config(
+            model="claude-haiku-5-5",
+            provider="anthropic",
+            judge_model="j",
+            max_tokens=32000,
+            base_url=None,
+            env=env,
+        )
+
+    with pytest.raises(ConfigError, match="NARE_STREAM"):
+        config(MATRIX_ENV)
+    assert config({**MATRIX_ENV, "NARE_STREAM": "1"}).max_tokens == 32000
+
+
+def test_a_baseline_without_a_provider_is_refused() -> None:
+    with pytest.raises(ConfigError, match="provider"):
+        baseline_config(
+            model="m",
+            provider="",
+            judge_model="j",
+            max_tokens=None,
+            base_url=None,
+            env=MATRIX_ENV,
+        )
