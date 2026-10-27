@@ -613,7 +613,7 @@ future use, `git checkout -- utils.py` will restore it" (`loop-A-pool`
 The code at the tip stays B, and nothing is reverted. What comes next, a new
 wording or the system-prompt lever (spec section 9), is the user's call.
 
-## Not yet in the matrix
+## Left out of the matrix
 
 **`claude-haiku-5-5` and `claude-sonnet-5-5`.** The Anthropic account behind
 the proxy is out of quota. A `claude-haiku-5-5` run on 2026-10-27

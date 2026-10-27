@@ -837,8 +837,8 @@ a gate failure, and the nudge does not ship.
 
 | PR | Contains | Changes nare? |
 | --- | --- | --- |
-| 1 | `--matrix`, `compare --matrix`, `models` and its pointer in `benchmarks/README.md`, the preflight, both cases, seven baselines, the `ada/qwen3-14b` baseline deleted, `docs/evidence/45/` | No |
-| 2 | Section 6 as revised in 6.1: the cheap loop on each candidate, then the matrix table before and after on the one picked, and all seven baselines re-blessed after the change | The description only |
+| 1 | `--matrix`, `compare --matrix`, `models` and its pointer in `benchmarks/README.md`, the preflight, both cases, five baselines, the `ada/qwen3-14b` baseline deleted, `docs/evidence/45/` | No |
+| 2 | Section 6 as revised in 6.1: the cheap loop on each candidate, then the matrix table before and after on the one picked, and all five baselines re-blessed after the change | The description only |
 | 3 | Section 7, only if section 7's first paragraph calls for it | The loop, under `nare run` only |
 
 PR 1 is useful on its own. #43's benchmark for the compaction point needs to
@@ -890,7 +890,7 @@ run across models too.
       or copies either case's shape under other names
 - [ ] The section 6 PR shows each candidate's cheap-loop table with its
       stamp and commit, the score that picked one, and the matrix table
-      before and after on the one picked, and re-blesses all seven
+      before and after on the one picked, and re-blesses all five
       baselines after the change
 - [ ] The section 6 PR gives the labels of every failing ambiguous rep and
       the question of every passing ambiguous-request rep
