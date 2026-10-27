@@ -738,6 +738,22 @@ def load_matrix(root: Path, tier: str) -> list[tuple[Path, Baseline]]:
     return [(p, load_baseline(p)) for p in sorted(directory.glob(f"*.{tier}.toml"))]
 
 
+def misnamed(matrix: Sequence[tuple[Path, Baseline]], tier: str) -> str | None:
+    """Why a baseline file is not at its model's baseline name, or None.
+
+    bless and compare find a model's baseline by that name, and a matrix run
+    names each model's results by it, so a renamed file, or a second file for
+    one model, would be compared with nothing or run twice under one name.
+    """
+    wrong = [
+        f"{path.name} names {baseline.meta.model!r}, whose {tier} baseline is "
+        f"{expected.name}"
+        for path, baseline in matrix
+        if path != (expected := baseline_path(path.parent, baseline.meta.model, tier))
+    ]
+    return "; ".join(wrong) or None
+
+
 def mixed_judges(matrix: Sequence[tuple[Path, Baseline]]) -> str | None:
     """Why the matrix has more than one judge, or None when it has one.
 
@@ -810,10 +826,10 @@ def run_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) -> i
     """`run --matrix`: each baseline's model in turn, against its own baseline.
 
     Everything that can refuse the run does so before the image is built: an
-    empty matrix, a second judge, a missing key, a cap above the non-streaming
-    ceiling, a model or judge the endpoint does not list. Sequential, never
-    parallel:
-    every run tags its image nare-bench:local.
+    empty matrix, a baseline file not at its model's name, a second judge, a
+    missing key, a cap above the non-streaming ceiling, a model or judge the
+    endpoint does not list. Sequential, never parallel: every run tags its
+    image nare-bench:local.
     """
     matrix = load_matrix(root, args.tier)
     if not matrix:
@@ -823,7 +839,7 @@ def run_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) -> i
             file=sys.stderr,
         )
         return 2
-    why = mixed_judges(matrix)
+    why = misnamed(matrix, args.tier) or mixed_judges(matrix)
     if why is not None:
         print(f"bench: {why}", file=sys.stderr)
         return 2
@@ -875,7 +891,7 @@ def baselines_table(root: Path, tier: str, selected: set[str]) -> int:
     if not matrix:
         print(f"bench: no {tier} baselines", file=sys.stderr)
         return 2
-    why = mixed_judges(matrix)
+    why = misnamed(matrix, tier) or mixed_judges(matrix)
     if why is not None:
         print(f"bench: {why}", file=sys.stderr)
         return 2

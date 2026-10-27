@@ -1428,3 +1428,32 @@ def test_bless_may_move_a_baseline_when_it_replaces_every_case(
     write_results(tmp_path, [ran])
     assert main(["bless", "--model", "gpt-5-nano"]) == 0
     assert load_baseline(blessed).meta.provider == "anthropic"
+
+
+@pytest.mark.parametrize(
+    "command", [["run", "--matrix"], ["compare", "--matrix", "--baselines"]]
+)
+@pytest.mark.parametrize("duplicate", [True, False])
+def test_a_baseline_file_not_at_its_models_name_stops_the_matrix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: list[str],
+    duplicate: bool,
+) -> None:
+    # bless and compare find a model's baseline by that name, and a second
+    # file for one model would run it twice under one results name.
+    ran = matrix(tmp_path, monkeypatch, NANO)
+    baselines = tmp_path / "benchmarks" / "baselines"
+    if not duplicate:
+        (baselines / "gpt-5-nano.smoke.toml").unlink()
+    (baselines / "gpt-5-nano-32k.smoke.toml").write_text(
+        dumps_baseline(
+            replace(NANO, max_tokens=32000), [summary("edit-docstring", 1.0)]
+        )
+    )
+    assert main(command) == 2
+    assert ran == []
+    err = capsys.readouterr().err
+    assert "gpt-5-nano-32k.smoke.toml names 'gpt-5-nano'" in err
+    assert "gpt-5-nano.smoke.toml" in err.replace("gpt-5-nano-32k.smoke.toml", "")
