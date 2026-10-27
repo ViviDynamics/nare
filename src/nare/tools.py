@@ -509,8 +509,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "files or running commands, to ask permission, to offer follow-up "
             "work, or for details you can decide yourself such as wording, "
             "style or names. A new value the request leaves open is not such a "
-            "detail. Call ask on its own, before making any change. This ends "
-            "the session."
+            "detail. Call ask on its own, before making any change. This stops "
+            "the session until the caller answers."
         ),
         "input_schema": {
             "type": "object",

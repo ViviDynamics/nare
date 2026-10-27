@@ -650,6 +650,15 @@ def test_the_ask_description_says_an_open_value_is_no_detail() -> None:
     ) in schema_of("ask")["description"]
 
 
+def test_the_ask_description_says_the_session_waits_for_the_answer() -> None:
+    # "This ends the session." read as the price of asking: spark weighed it
+    # against asking, and once wrote its question in prose instead (#45).
+    assert schema_of("ask")["description"].endswith(
+        "Call ask on its own, before making any change. This stops the session "
+        "until the caller answers."
+    )
+
+
 def test_the_ask_example_is_the_log_level_choice() -> None:
     questions = schema_of("ask")["input_schema"]["properties"]["questions"]
     assert "Set the log level to INFO or to WARNING?" in questions["description"]
