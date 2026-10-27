@@ -148,13 +148,15 @@ already name models, because a baseline is a measurement of one model.
   configuration error.
 
 `bless` stays per model (`bless --model X`). Blessing the whole matrix in one
-command would make it too easy to bless away a regression. A results line
-carries the model and the output cap but not the provider or the judge, so
-`bless` writes the provider and judge it resolves from its own flags and
-environment. A bless after a matrix run must get the baseline's provider and
-the matrix judge, either from the person or from what the matrix run
-recorded. The plan picks which. Either way, a flag that contradicts what the
-results recorded exits 2 rather than overwrite it.
+command would make it too easy to bless away a regression. Before PR 1 a
+results line carried the model and the output cap but not the provider or the
+judge, so `bless` wrote the provider and judge it resolved from its own flags
+and environment, and a bless after a matrix run could not know the
+baseline's provider or the matrix judge. PR 1 records both in every results
+line, and `bless` writes what the results recorded, as it already did the
+cap. A `--provider` or `--judge-model` must agree with the results, or the
+bless exits 2. The flags, or else the environment, fill in only for results
+written before PR 1.
 
 ### 3.3 Checking what the proxy serves
 
@@ -352,8 +354,9 @@ Before nare changes, bless all seven baselines on the matrix PR's head,
 whose `src/nare` is unchanged from `main`, with the one judge.
 
 The matrix is empty until they exist, so each is made one model at a time.
-`bless` writes the provider and judge it is given, so both flags go on both
-commands:
+`bless` writes the provider and judge the `run` recorded, and exits 2 on a
+flag that disagrees, so the flags on `bless` are a check that the right run
+is being blessed:
 
     bin/bench run   --tier smoke --model M --provider P --judge-model claude-sonnet-5-5
     bin/bench bless --tier smoke --model M --provider P --judge-model claude-sonnet-5-5

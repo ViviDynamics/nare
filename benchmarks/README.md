@@ -35,7 +35,9 @@ three repetitions are not conclusive on their own.
 
 `bless` writes the provider, judge and output cap the results were run with,
 which each results line records, and not the ones in your shell. Results
-written before the provider and judge were recorded take them from the flags.
+written before the provider and judge were recorded take them from the flags,
+or else from the shell as `run` would: `NARE_PROVIDER`, which defaults to
+`anthropic`, and `NARE_BENCH_JUDGE_MODEL`, which defaults to the model itself.
 A `--provider` or `--judge-model` that contradicts what the results recorded
 exits 2, for `compare` too. `bless` merges into the existing baseline, so
 cases the results do not cover are kept; when that baseline was blessed on
