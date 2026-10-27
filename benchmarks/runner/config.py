@@ -145,8 +145,16 @@ def baseline_config(
     baseline names, with the endpoint, key and streaming from the run.
 
     NARE_BENCH_MAX_TOKENS is not read, since the cap is the baseline's, but
-    the cap is still held to the ceiling nare enforces without streaming.
+    the cap is still held to the ceiling nare enforces without streaming. A
+    baseline with no model or judge is refused, where resolve_config would
+    take NARE_MODEL or NARE_BENCH_JUDGE_MODEL from the shell.
     """
+    for name, value in (("model", model), ("judge_model", judge_model)):
+        if not value:
+            raise ConfigError(
+                f"the baseline names no {name}, and the matrix never takes one "
+                "from the shell"
+            )
     if provider not in KEY_VARS:
         raise ConfigError(
             f"provider {provider!r} is not one nare supports: " + ", ".join(KEY_VARS)

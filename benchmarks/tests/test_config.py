@@ -354,3 +354,23 @@ def test_a_baseline_without_a_provider_is_refused() -> None:
             base_url=None,
             env=MATRIX_ENV,
         )
+
+
+@pytest.mark.parametrize(
+    ("model", "judge_model", "missing"),
+    [("", "j", "no model"), ("m", "", "no judge_model")],
+)
+def test_a_baseline_without_a_model_or_judge_is_refused(
+    model: str, judge_model: str, missing: str
+) -> None:
+    # resolve_config would fill the gap from NARE_MODEL or
+    # NARE_BENCH_JUDGE_MODEL, and the matrix never runs what the shell names.
+    with pytest.raises(ConfigError, match=missing):
+        baseline_config(
+            model=model,
+            provider="openai",
+            judge_model=judge_model,
+            max_tokens=None,
+            base_url=None,
+            env=MATRIX_ENV,
+        )
