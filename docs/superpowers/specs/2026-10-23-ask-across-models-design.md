@@ -1,7 +1,8 @@
 # nare - Ask Reliably Across Models
 
 **Date:** 2026-10-23
-**Status:** Reviewed against code 2026-10-26
+**Status:** Reviewed against code 2026-10-26. Section 6 revised in 6.1 after
+its first measurement, 2026-10-27.
 **Issue:** #45
 **Scope:** A model matrix for the benchmark, two new cases, and a change to
 the `ask` description, measured on the matrix. A loop change (section 7) is
@@ -400,6 +401,9 @@ section 6, and a heuristic would need its own validation. The table goes in
 
 ## 6. The change: the `ask` description
 
+Measured on 2026-10-27, the wording in this section failed. Section 6.1 says
+why and replaces it. This section stays as the record of what was tried.
+
 Two edits, both in `src/nare/tools.py`.
 
 **Say where a question in prose goes.** One sentence is added after "only
@@ -455,11 +459,250 @@ any ambiguous-case rep that still fails. The same PR then re-blesses all
 five baselines, one model at a time, so the baselines on `main` measure
 the description on `main`.
 
+### 6.1 After the first measurement
+
+**What was measured.** The section 6 text (commit `54f175f`) was run as one
+matrix, stamp `2026-10-27T05-56-45Z`, against the section 5 baselines
+(`docs/evidence/45/README.md`). The ambiguous cases, and the guard case that
+moved, before then after:
+
+| model | ambiguous-request | ambiguous-after-reading | read-only-question |
+| --- | --- | --- | --- |
+| `gemini-3.1-flash-lite` | 0/3, 0/3 | 0/3, 0/3 | 3/3, 3/3 |
+| `gpt-5-nano` | 1/3, 1/3 | 1/3, 2/3 | 3/3, 5/7 |
+| `gpt-6.1-sol` | 3/3, 0/7 | 3/3, 3/3 | 3/3, 3/3 |
+| `gpt-6-luna` | 2/3, 1/7 | 1/3, 1/2 | 3/3, 3/3 |
+| `spark/glm-5.3-flash` | 0/3, 0/3 | 1/3, 1/3 | 3/3, 3/3 |
+
+luna's 1/2 lost a rep to an HTTP 403 from the proxy. With section 5's
+labels, 26 of the 28 failing ambiguous reps after guessed, one asked in
+prose and one asked blind, against 13 guessed and 5 asked in prose of 18
+before. All 19 guesses on ambiguous-request set `TIMEOUT` to 60. No rep of a
+non-ambiguous case called `ask`, before (0 of 60) or after (0 of 64).
+
+**Why it failed.** Only spark keeps its reasoning. For the other models the
+evidence is what they did.
+
+- **The old example did the recognising on ambiguous-request.** sol's three
+  passes before put the example's frame in their own question: "Raise
+  TIMEOUT in config.py from 30 to what: 60, 120, or another value?
+  Unanswered, I will use 60." (rep 2, `2026-10-27T05-46-57Z`). Without it,
+  sol set 60 in all seven reps and closed "Increased `TIMEOUT` from `30` to
+  `60` in `config.py`." On ambiguous-after-reading, which no example has
+  resembled, sol asked 3 of 3 both times. luna's two passes before both
+  offered 60 as the default, one in the example's frame ("from 30 to what
+  value"), and 6 of its 7 reps after set 60. This is the result section 6
+  said would mean the old example was doing the work.
+- **What the example did was overrule an exclusion.** The description
+  excludes "details you can decide yourself such as wording, style or
+  names". Over the two 12-turn runs, spark weighs the new value against that
+  exclusion in 5 of its 6 ambiguous-request reps and files it there in 4:
+  "Here, the value to increase to is a detail I could decide myself, like
+  wording/style/names." (before, rep 1), "That's a wording/style/detail
+  decision." (after, rep 1). The fifth used the example to overrule it: "The
+  guidance says don't use it for details you can decide yourself such as
+  wording/style. Timeout value is a functional value that could matter. The
+  tool description example even says: [the example] That's exactly this
+  scenario. So asking is appropriate." (before, rep 0). The new example, a
+  choice between two named log levels, has ambiguous-after-reading's shape
+  (which of two), not an open amount, and says nothing against the
+  exclusion.
+- **"This ends the session" reads as the price of asking.** "But asking is
+  expensive (ends session)." and "the ask tool ends the session and the user
+  may not answer" (spark, after, ambiguous-after-reading rep 0, which then
+  deleted both helpers). The sentence weighs against asking in 6 of spark's
+  27 reps of the two cases on 2026-10-27, 4 of them in the 6- and 8-turn
+  runs where the countdown also said to wrap up. Once it is why spark wrote its
+  question in prose: "But since ask ends the session, I can't proceed
+  after." (before, ambiguous-request rep 0). The sentence dates from slice 1
+  (#4), not #38. The evidence is one model's.
+- **Small, reversible changes are discounted.** "the difference is minor and
+  easily reversible; deleting all unused helpers is a superset of any
+  reading" (spark, after, ambiguous-after-reading rep 0), and "It leads to
+  different changes (60 vs 120), but it's trivially reversible." (before,
+  ambiguous-request rep 1). Neither candidate below answers this: a clause
+  such as "even small ones" fits a docstring's wording too, which is the
+  failure #38 fixed.
+- **The sentence about where a question goes did its job.** `gpt-5-nano`
+  asked in prose in 4 of its 6 ambiguous reps before and 1 after, and called
+  `ask` in 2 before and 4 after. spark's one prose question before was the
+  one the example drove, and it became a guess. With no `ask` call on a
+  non-ambiguous case either side, it cost nothing that shows. It stays.
+- **`gpt-5-nano`'s read-only-question drop does not look like the
+  description.** Neither failing rep (1 and 3) called `ask`. Each made one
+  search whose output did not show `parse_duration`'s body, then got nare's
+  "5 turns left: wrap up and summarise.", which this case's `max_turns = 6`
+  sends after turn 1 of every rep, and answered that it could not tell. Rep
+  5 did the same and passed on the docstring its search printed. Before, all
+  three reps read `duration.py` after the same message. It looks like the
+  countdown effect section 4.1 removed from the ambiguous cases, and step 1
+  below checks it.
+
+`gemini-3.1-flash-lite` keeps no reasoning and guessed in all 12 of its
+ambiguous reps, before and after, so nothing here says which words move it.
+
+**The wording.** Two candidates. Both keep section 6's `questions`
+description (the log-level example) and its sentence about where a
+question goes. Candidate A:
+
+```python
+"description": (
+    "Stop and ask the caller to resolve an ambiguous request. Use this "
+    "only when the request can reasonably be read more than one way and "
+    "the readings lead to different changes, and only after reading the "
+    "files involved. Ask only with this tool: a text reply ends the "
+    "session as finished, so a question written there may never be "
+    "answered. Do not use it for anything you can find out by reading "
+    "files or running commands, to ask permission, to offer follow-up "
+    "work, or for details you can decide yourself such as wording, "
+    "style or names. A new value the request leaves open is not such a "
+    "detail. Call ask on its own, before making any change. This ends "
+    "the session."
+),
+```
+
+Candidate B is A with its last sentence, "This ends the session.", replaced
+by "This stops the session until the caller answers."
+
+What each change does:
+
+- **"A new value the request leaves open is not such a detail."** It does
+  what the old example did, for any value rather than one case: a value the
+  request asks for but does not give is no longer a detail the model may
+  pick, which is the line spark drew itself ("a functional value that could
+  matter") when the example backed it. It names no case's file, setting,
+  value or verb. Wording, style and names stay the model's call, so
+  edit-docstring's wording stays excluded. A test of behaviour ("a value
+  that changes what the code does") was shorter and was dropped: deleting
+  unused code changes nothing the code does, so the same test would invite
+  a model to file ambiguous-after-reading's choice as a detail.
+- **The exclusion list is reordered** so that "details you can decide
+  yourself" comes last and "such a detail" follows it directly. No
+  exclusion is added or dropped, and #38's four keep their words.
+- **B only: "This stops the session until the caller answers."** It states
+  the same fact from the caller's side: the session is `blocked`, and the
+  caller answers by resuming it, as `ask`'s own result already says ("The
+  session is blocked pending answers."). It also sets the tool against the
+  text reply two sentences earlier, which "may never be answered". It is
+  aimed at spark's reading of the old sentence as a cost.
+
+**Why two.** The evidence supports A's sentence on the regression itself:
+sol and luna, through an exclusion the example had overruled. It supports
+B's sentence only from spark, and B's is the one change that could make
+asking look cheap enough to fire on a guard case, which only the full matrix
+measures. The cheap loop decides whether B earns that risk.
+
+**No example of ambiguous-request's shape.** No candidate has an example of
+an amount left open ("raise X from N to what"), under any names. The data
+show the shape, not the names, is what sol used: its three passes before
+filled the example's frame with the case's own names and values, and with
+the frame gone it asked in 0 of 7 though nothing else about the case
+changed. A frame with other names would let a model match "Increase the
+timeout" to it and fill it in from `config.py`, so a pass would again show
+template-matching, and a transcript could not tell it from recognition,
+because the question holds the case's own names either way. A's sentence
+names the category in words and gives no question to fill in, so a pass
+shows a model applying a stated rule to a request it had to read. That is
+less than finding the ambiguity unaided, and it is what nare wants the
+description to do: the 09-24 spec's rule table opens with this request.
+ambiguous-after-reading, which nothing in either candidate resembles,
+stays the measure of recognition without a hint. The log-level example is
+another shape, a choice between two named settings, and sol's 0 of 7 with
+it shows it does not carry ambiguous-request.
+
+**Tokens.** Counted as words plus punctuation marks, with a
+characters-divided-by-four count after it, the `ask` and `questions`
+descriptions together are 151 (172) on `main`, 171 (199) in section 6, 184
+(214) in A and 188 (220) in B. So A adds about 33 to 41 tokens to every
+turn over `main`, 13 to 15 over section 6, and B about 37 to 48 over
+`main`. No tokenizer was at hand, so these are estimates, made the same way
+for every text.
+
+**Tests,** in `tests/test_tools.py`. Keep the tests that pin the prose
+sentence and the log-level example. Add one that pins "A new value the
+request leaves open is not such a detail.", and, if B is picked, one that
+pins its last sentence. Widen
+`test_the_ask_example_is_no_benchmark_cases_answer` to the whole `ask`
+schema, description and `questions` together: none of
+`TIMEOUT`, `RETRIES`, `30`, `60`, `format_bytes`, `slugify`,
+`parse_csv_line`, `timeout` or `unused helper` appears. As before, no test
+judges whether the wording works.
+
+**Measuring it.** The setup is section 5's: the five `openai` rows, the
+judge `gpt-6.1-sol`, both keys, and `NARE_STREAM=1`, as the baselines were
+run. One run at a time, since every run builds the same image tag
+(section 3.2). The two Claude rows join each step once their baselines
+exist (section 3.4).
+
+1. **Is a guard drop noise?** Before step 2 for `gpt-5-nano` on
+   read-only-question, and in step 4 for any model and guard case with a
+   confirmed regression, run that case for that model on PR 1's code, in a
+   separate worktree of `45-ask-across-models` (whose `src/nare` is
+   `main`'s):
+
+       bin/bench run --case read-only-question --model gpt-5-nano \
+         --provider openai --judge-model gpt-6.1-sol --base-url <proxy>/v1
+
+   Repeat until at least 14 reps are judged. A run is 3 reps, or 7 when it
+   re-confirms a drop. Label each failing rep, first match wins: `asked`
+   (called `ask`), `stopped short` (ended `done` never having seen
+   `parse_duration`'s body, whatever its closing says), `asked in prose`
+   (had seen it, and ended on a question to the caller instead of the
+   answer) or `other`.
+2. **Cheap loop.** For A, then B, each from a commit so its stamp names one:
+
+       bin/bench run --matrix \
+         --case ambiguous-request --case ambiguous-after-reading
+
+   That is five models, two cases and 3 reps, about 30 reps per candidate,
+   plus any re-confirmations at 7, each against the section 5 baselines.
+3. **Pick.** A cell, one model on one case, is at target when its pass rate
+   over the reps the run kept is at least 2/3. A candidate scores its cells
+   at target, out of 10. The section 6 text scored 2 (nano and sol on
+   ambiguous-after-reading) and the section 5 baselines 3. A candidate with
+   a confirmed regression on ambiguous-after-reading is out. Of the rest, B
+   is picked only if it scores higher than A; otherwise A, the smaller
+   change.
+4. **Gate.** On the picked candidate, `bin/bench run --matrix`, then step 1's
+   command on this code until `gpt-5-nano` has at least 14 judged reps of
+   read-only-question, counting the gate run's.
+5. **Record and re-bless** as section 6 says, adding: each step's stamp and
+   commit, each candidate's cheap-loop table, the labels of every failing
+   ambiguous rep, and the question of every passing ambiguous-request rep,
+   so a reader can see whether a frame was filled in.
+
+**Reading a guard drop.** A drop is the description's if a failing rep on
+the candidate called `ask` or asked in prose, or if the candidate fails at
+least 3 more of 14 reps than PR 1's code does, a rate 0.2 higher. Otherwise
+it is noise in the model: #45 records it, and the gate does not count it.
+The same reading of section 6's 2 of 7 against step 1 settles the first
+measurement's drop for #45. If PR 1's code also stops short on
+read-only-question, the fix is the one section 4.1 made, a larger
+`max_turns`, in its own change with its own re-bless, not here.
+
+**When the wording fails.** It does not ship if, on the gate run:
+
+- a guard case (edit-docstring, multi-file-rename, read-only-question) has a
+  confirmed regression on some model that the reading above does not call
+  noise
+- ambiguous-after-reading has a confirmed regression on some model
+- the widened leak test fails
+
+If B was picked and fails the first condition with a rep that called `ask`,
+run step 4 on A before giving up: A leaves the cost of asking as it was.
+
+It **misses** if `gpt-6.1-sol` or `gpt-6-luna` stays below 2/3 on
+ambiguous-request. A miss that does not fail still ships if it scored at
+least the section 6 text's 2 in step 3, because the leak cannot come back
+(section 6) and nothing better was measured. #45 then records the miss with
+its labels, and the next lever is a rule in the default system prompt
+(section 9), in its own change.
+
 ## 7. If prose questions remain: a nudge in the loop
 
-Build this only if, after section 6, "asked in prose" is the most common
-label among some matrix model's failing ambiguous-case reps. If it is not,
-record in #45 that the description was enough, and stop.
+Build this only if, after section 6.1's wording, "asked in prose" is the
+most common label among some matrix model's failing ambiguous-case reps. If
+it is not, record in #45 that the description was enough, and stop.
 
 **The rule.** When a turn's reply is text with no tool calls, nare normally
 ends the session `done`. It instead appends one user message and takes
@@ -540,8 +783,8 @@ a gate failure, and the nudge does not ship.
 
 | PR | Contains | Changes nare? |
 | --- | --- | --- |
-| 1 | `--matrix`, `compare --matrix`, `models` and its pointer in `benchmarks/README.md`, the preflight, both cases, five baselines, the `ada/qwen3-14b` baseline deleted, `docs/evidence/45/` | No |
-| 2 | Section 6, with the matrix table before and after, and all five baselines re-blessed after the change | The description only |
+| 1 | `--matrix`, `compare --matrix`, `models` and its pointer in `benchmarks/README.md`, the preflight, both cases, seven baselines, the `ada/qwen3-14b` baseline deleted, `docs/evidence/45/` | No |
+| 2 | Section 6 as revised in 6.1: the cheap loop on each candidate, then the matrix table before and after on the one picked, and all seven baselines re-blessed after the change | The description only |
 | 3 | Section 7, only if section 7's first paragraph calls for it | The loop, under `nare run` only |
 
 PR 1 is useful on its own. #43's benchmark for the compaction point needs to
@@ -587,11 +830,25 @@ run across models too.
       `ada/qwen3-14b` baseline is deleted
 - [ ] `docs/evidence/45/README.md` holds the baseline matrix table and the
       failure labels
-- [ ] The `ask` and `questions` descriptions are as in section 6
-- [ ] The section 6 PR shows the matrix table before and after, and
-      re-blesses all five baselines after the change
+- [ ] The `ask` description is the section 6.1 candidate its rule picked,
+      the `questions` description is as in section 6, and a test checks
+      that neither names an ambiguous case's identifiers, values or prompt
+- [ ] The section 6 PR shows each candidate's cheap-loop table with its
+      stamp and commit, the score that picked one, and the matrix table
+      before and after on the one picked, and re-blesses all seven
+      baselines after the change
+- [ ] The section 6 PR gives the labels of every failing ambiguous rep and
+      the question of every passing ambiguous-request rep
+- [ ] `gpt-5-nano` on read-only-question has at least 14 judged reps on PR
+      1's code and 14 on the picked wording, and the section 6 PR states
+      section 6.1's reading of the picked wording's reps and of the first
+      measurement's 5 of 7
 - [ ] No matrix model has a confirmed regression on edit-docstring,
-      multi-file-rename or read-only-question
+      multi-file-rename or read-only-question, other than one section
+      6.1's reading calls noise, and no confirmed regression on
+      ambiguous-after-reading
+- [ ] `gpt-6.1-sol` and `gpt-6-luna` reach 2 of 3 on ambiguous-request, or
+      #45 records the miss with its labels and names the next lever
 - [ ] Each matrix model either reaches 2 of 3 on both ambiguous cases, or
       #45 records its failure labels
 - [ ] Section 7 is built, nudging only under `nare run`, or #45 records why
