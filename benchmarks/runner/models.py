@@ -78,8 +78,9 @@ def _get(client: httpx2.Client, root: str, path: str, api_key: str) -> Any:
         response = client.get(
             f"{root}{path}", headers={"authorization": f"Bearer {api_key}"}
         )
-    except httpx2.HTTPError as exc:
-        # The type only: an exception's text can carry the URL.
+    except (httpx2.HTTPError, httpx2.InvalidURL) as exc:
+        # The type only: an exception's text can carry the URL. InvalidURL,
+        # for a malformed base URL, is not an HTTPError.
         raise ListingError(f"{path}: {type(exc).__name__}") from exc
     if response.status_code != 200:
         raise ListingError(f"{path}: HTTP {response.status_code}")

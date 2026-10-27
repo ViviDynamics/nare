@@ -116,6 +116,26 @@ def test_a_listing_error_never_names_the_endpoint() -> None:
     assert "ConnectError" in str(caught.value)
 
 
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://[secret-proxy.example]",
+        "https://secret-proxy\xa0.example",
+        "https://secret-proxy.example:8o8o",
+    ],
+)
+def test_a_malformed_base_url_is_a_listing_error_naming_no_host(
+    base_url: str,
+) -> None:
+    # httpx2 raises InvalidURL, which is not an HTTPError, and its text can
+    # carry the host.
+    with pytest.raises(ListingError) as caught:
+        list_models(base_url, "k", client=client(by_path(v1_models=NAMES)))
+    for part in ("secret", "proxy", "example"):
+        assert part not in str(caught.value)
+    assert "InvalidURL" in str(caught.value)
+
+
 def test_render_shows_window_price_and_baselines_but_no_upstream() -> None:
     listing = list_models(
         "https://proxy.example", "k", client=client(by_path(v1_model_info=INFO))
