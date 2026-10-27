@@ -2,7 +2,8 @@
 
 **Date:** 2026-10-23
 **Status:** Reviewed against code 2026-10-26. Section 6 revised in 6.1 after
-its first measurement, 2026-10-27.
+its first measurement, 2026-10-27. 6.1's leak test and its readings of a drop
+revised after review of the plan, 2026-10-27.
 **Issue:** #45
 **Scope:** A model matrix for the benchmark, two new cases, and a change to
 the `ask` description, measured on the matrix. A loop change (section 7) is
@@ -583,7 +584,7 @@ What each change does:
   the same fact from the caller's side: the session is `blocked`, and the
   caller answers by resuming it, as `ask`'s own result already says ("The
   session is blocked pending answers."). It also sets the tool against the
-  text reply two sentences earlier, which "may never be answered". It is
+  text reply four sentences earlier, which "may never be answered". It is
   aimed at spark's reading of the old sentence as a cost.
 
 **Why two.** The evidence supports A's sentence on the regression itself:
@@ -623,10 +624,17 @@ sentence and the log-level example. Add one that pins "A new value the
 request leaves open is not such a detail.", and, if B is picked, one that
 pins its last sentence. Widen
 `test_the_ask_example_is_no_benchmark_cases_answer` to the whole `ask`
-schema, description and `questions` together: none of
-`TIMEOUT`, `RETRIES`, `30`, `60`, `format_bytes`, `slugify`,
-`parse_csv_line`, `timeout` or `unused helper` appears. As before, no test
-judges whether the wording works.
+schema, description and `questions` together, matched without regard to
+case and on word boundaries. None of the ambiguous cases' names and values
+appears (`TIMEOUT`, `RETRIES`, `config.py`, `30`, `60`, `120`, `utils.py`,
+`main.py`, `format_bytes`, `slugify`, `parse_csv_line`), and neither case's
+shape appears under any names: an amount left open ("from" a number "to",
+or "to what") and an unused helper to choose ("unused"). The prompts' verbs
+are not checked, so "Do not delete files to make room." stays possible. The
+test checks itself: it must catch near copies under other names, such as
+"Raise MAX_WORKERS from 4 to 8 or 16? Unanswered, I will use 8." and
+"Remove the unused function, format_size or make_slug?", and must pass that
+harmless sentence. As before, no test judges whether the wording works.
 
 **Measuring it.** The setup is section 5's: the five `openai` rows, the
 judge `gpt-6.1-sol`, both keys, and `NARE_STREAM=1`, as the baselines were
@@ -634,21 +642,23 @@ run. One run at a time, since every run builds the same image tag
 (section 3.2). The two Claude rows join each step once their baselines
 exist (section 3.4).
 
-1. **Is a guard drop noise?** Before step 2 for `gpt-5-nano` on
-   read-only-question, and in step 4 for any model and guard case with a
-   confirmed regression, run that case for that model on PR 1's code, in a
-   separate worktree of `45-ask-across-models` (whose `src/nare` is
-   `main`'s):
+1. **Is a drop noise?** Before step 2 for `gpt-5-nano` on
+   read-only-question, and in steps 3 and 4 for any model with a confirmed
+   regression on a guard case or on ambiguous-after-reading, run that case
+   for that model on PR 1's code, in a separate worktree of
+   `45-ask-across-models` (whose `src/nare` is `main`'s):
 
        bin/bench run --case read-only-question --model gpt-5-nano \
          --provider openai --judge-model gpt-6.1-sol --base-url <proxy>/v1
 
    Repeat until at least 14 reps are judged. A run is 3 reps, or 7 when it
-   re-confirms a drop. Label each failing rep, first match wins: `asked`
-   (called `ask`), `stopped short` (ended `done` never having seen
-   `parse_duration`'s body, whatever its closing says), `asked in prose`
-   (had seen it, and ended on a question to the caller instead of the
-   answer) or `other`.
+   re-confirms a drop. The candidate's side of the same model and case is
+   made the same way, to at least 14 (for `gpt-5-nano` on
+   read-only-question, in step 4). Label each failing rep of a guard case,
+   first match wins: `asked` (called `ask`), `stopped short` (ended `done`
+   never having seen `parse_duration`'s body, whatever its closing says),
+   `asked in prose` (had seen it, and ended on a question to the caller
+   instead of the answer) or `other`.
 2. **Cheap loop.** For A, then B, each from a commit so its stamp names one:
 
        bin/bench run --matrix \
@@ -659,33 +669,58 @@ exist (section 3.4).
 3. **Pick.** A cell, one model on one case, is at target when its pass rate
    over the reps the run kept is at least 2/3. A candidate scores its cells
    at target, out of 10. The section 6 text scored 2 (nano and sol on
-   ambiguous-after-reading) and the section 5 baselines 3. A candidate with
-   a confirmed regression on ambiguous-after-reading is out. Of the rest, B
-   is picked only if it scores higher than A; otherwise A, the smaller
-   change.
+   ambiguous-after-reading) and the section 5 baselines 3. A candidate is
+   out if a confirmed regression on ambiguous-after-reading in its cheap
+   loop holds up when pooled (below). Of the rest, B is picked only if it
+   scores higher than A; otherwise A, the smaller change.
 4. **Gate.** On the picked candidate, `bin/bench run --matrix`, then step 1's
    command on this code until `gpt-5-nano` has at least 14 judged reps of
-   read-only-question, counting the gate run's.
+   read-only-question, counting the gate run's, and step 1's pools for any
+   other confirmed regression on a guard case or on ambiguous-after-reading.
 5. **Record and re-bless** as section 6 says, adding: each step's stamp and
    commit, each candidate's cheap-loop table, the labels of every failing
    ambiguous rep, and the question of every passing ambiguous-request rep,
    so a reader can see whether a frame was filled in.
 
 **Reading a guard drop.** A drop is the description's if a failing rep on
-the candidate called `ask` or asked in prose, or if the candidate fails at
-least 3 more of 14 reps than PR 1's code does, a rate 0.2 higher. Otherwise
-it is noise in the model: #45 records it, and the gate does not count it.
-The same reading of section 6's 2 of 7 against step 1 settles the first
-measurement's drop for #45. If PR 1's code also stops short on
+the candidate called `ask` or asked in prose, or if the candidate's fail
+rate is at least 0.2 above PR 1's code's, which at 14 reps on each side is
+3 more failures. Otherwise it is noise in the model: #45 records it, and
+the gate does not count it. If PR 1's code also stops short on
 read-only-question, the fix is the one section 4.1 made, a larger
 `max_turns`, in its own change with its own re-bless, not here.
+
+**Reading an ambiguous-after-reading drop.** Three of the five baselines
+hold ambiguous-after-reading at 1/3. A first pass of 0/3 there is re-run at
+7, and 2 of 7, close to 1/3, is then a confirmed regression, so a candidate
+that changed nothing would be out with a probability of roughly a quarter
+to a half. So a confirmed regression on ambiguous-after-reading is pooled
+as a guard drop is, to at least 14 judged reps on the candidate's code and
+on PR 1's, and it holds up, counting against the candidate, only if the
+candidate's fail rate is at least 0.2 above PR 1's. Asking is the right
+answer on this case, so labels play no part in the reading.
+
+**How the pools are made.** Both sides of a reading are made the same way,
+runs of 3 reps with the runner's 7-rep confirmation, and that slants a pool
+toward passes: a first pass at the baseline's rate is kept, and one below
+it is replaced by 7 fresh reps. The slant is the same on both sides, so the
+comparison stands. A pool counts no run that was the reason it was made,
+since that run was chosen for being low: a regression that a cheap loop or
+the gate flagged is pooled from fresh runs on both sides, while
+`gpt-5-nano` on read-only-question, pooled whatever the gate shows, counts
+the gate run's reps. The first measurement's 2 of 7 is one confirmation, a
+fresh sample with no slant, so its reading compares it with the 7-rep runs
+in step 1's pool only, the same kind of sample; if that pool has none,
+every first pass on PR 1's code was kept, and PR 1's rate is 0. That
+reading settles the first measurement's drop for #45.
 
 **When the wording fails.** It does not ship if, on the gate run:
 
 - a guard case (edit-docstring, multi-file-rename, read-only-question) has a
   confirmed regression on some model that the reading above does not call
   noise
-- ambiguous-after-reading has a confirmed regression on some model
+- ambiguous-after-reading has a confirmed regression on some model that
+  holds up when pooled
 - the widened leak test fails
 
 If B was picked and fails the first condition with a rep that called `ask`,
@@ -832,7 +867,8 @@ run across models too.
       failure labels
 - [ ] The `ask` description is the section 6.1 candidate its rule picked,
       the `questions` description is as in section 6, and a test checks
-      that neither names an ambiguous case's identifiers, values or prompt
+      that neither names an ambiguous case's identifiers, values or prompt,
+      or copies either case's shape under other names
 - [ ] The section 6 PR shows each candidate's cheap-loop table with its
       stamp and commit, the score that picked one, and the matrix table
       before and after on the one picked, and re-blesses all seven
@@ -846,7 +882,7 @@ run across models too.
 - [ ] No matrix model has a confirmed regression on edit-docstring,
       multi-file-rename or read-only-question, other than one section
       6.1's reading calls noise, and no confirmed regression on
-      ambiguous-after-reading
+      ambiguous-after-reading that holds up when pooled (section 6.1)
 - [ ] `gpt-6.1-sol` and `gpt-6-luna` reach 2 of 3 on ambiguous-request, or
       #45 records the miss with its labels and names the next lever
 - [ ] Each matrix model either reaches 2 of 3 on both ambiguous cases, or
