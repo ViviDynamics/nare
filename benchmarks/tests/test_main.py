@@ -1043,3 +1043,45 @@ def test_bless_stays_per_model() -> None:
     # a regression.
     with pytest.raises(SystemExit):
         build_parser().parse_args(["bless", "--matrix"])
+
+
+def test_compare_matrix_prints_the_last_matrix_run_without_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ran = matrix(tmp_path, monkeypatch, HAIKU, NANO, failing="gpt-5-nano")
+    assert main(["run", "--matrix", "--case", "edit-docstring"]) == 1
+    printed = capsys.readouterr().out
+    # A later single run is not part of the matrix run.
+    write_results(
+        tmp_path, [record("edit-docstring", model="m")], "2026-10-27T00-00-00Z"
+    )
+    del ran[:]
+    assert main(["compare", "--matrix", "--case", "edit-docstring"]) == 1
+    out = capsys.readouterr().out
+    assert ran == []
+    assert table_row(out, "edit-docstring") == table_row(printed, "edit-docstring")
+
+
+def test_compare_matrix_without_a_matrix_run_exits_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    matrix(tmp_path, monkeypatch, HAIKU)
+    write_results(tmp_path, [record("edit-docstring", model="m")])
+    assert main(["compare", "--matrix"]) == 2
+
+
+def test_compare_matrix_baselines_prints_the_tiers_baselines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ran = matrix(tmp_path, monkeypatch, HAIKU, NANO)
+    assert main(["compare", "--matrix", "--baselines"]) == 0
+    assert ran == []
+    out = capsys.readouterr().out
+    assert table_row(out, "edit-docstring") == ["edit-docstring", "3/3", "3/3"]
+
+
+def test_baselines_goes_with_matrix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    matrix(tmp_path, monkeypatch, HAIKU)
+    assert main(["compare", "--baselines", "--model", "claude-haiku-5-5"]) == 2

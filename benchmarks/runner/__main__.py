@@ -137,6 +137,17 @@ def build_parser() -> argparse.ArgumentParser:
                 help="run every model with a baseline in this tier, each against "
                 "its own",
             )
+        if name == "compare":
+            child.add_argument(
+                "--matrix",
+                action="store_true",
+                help="print the last matrix run's case-by-model table",
+            )
+            child.add_argument(
+                "--baselines",
+                action="store_true",
+                help="with --matrix: the table of the tier's baselines, not a run",
+            )
     judges = sub.add_parser(
         "compare-judges",
         help="measure Jev and the llm judge against a reference model",
@@ -815,6 +826,96 @@ def run_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) -> i
     return max(comparison.exit_code for _, comparison in columns)
 
 
+def baselines_table(root: Path, tier: str, selected: set[str]) -> int:
+    """`compare --matrix --baselines`: the tier's baselines as the matrix
+    table, with no results needed."""
+    matrix = load_matrix(root, tier)
+    if not matrix:
+        print(f"bench: no {tier} baselines", file=sys.stderr)
+        return 2
+    why = mixed_judges(matrix)
+    if why is not None:
+        print(f"bench: {why}", file=sys.stderr)
+        return 2
+    columns = [
+        (
+            baseline.meta.model,
+            compare(
+                [s for s in baseline.cases.values() if s.case in selected],
+                baseline,
+                confirmed=True,
+            ),
+        )
+        for _, baseline in matrix
+    ]
+    print(render_matrix(columns, matrix[0][1].meta.judge_model))
+    return 0
+
+
+def compare_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) -> int:
+    """`compare --matrix`: the last matrix run's table, without running.
+
+    Each model's results are compared with its own baseline under the rules
+    `compare` uses, so the exit code is what `run --matrix` returned.
+    """
+    selected = {c.id for c in cases}
+    if args.baselines:
+        return baselines_table(root, args.tier, selected)
+    files = latest_run(root, matrix=True)
+    if not files:
+        print(
+            "bench: no matrix run yet; run `bin/bench run --matrix` first",
+            file=sys.stderr,
+        )
+        return 2
+    columns: list[tuple[str, Comparison]] = []
+    judges: set[str] = set()
+    for path in files:
+        records = read_results(path)
+        if not records:
+            continue
+        model = records[0].model
+        baseline_file = baseline_path(
+            root / "benchmarks" / "baselines", model, args.tier
+        )
+        if not baseline_file.exists():
+            print(f"bench: no baseline at {baseline_file}", file=sys.stderr)
+            return 2
+        baseline = load_baseline(baseline_file)
+        config = as_recorded(
+            resolve_config(
+                model=model,
+                provider=None,
+                base_url=None,
+                judge_model=None,
+                env={},
+                need_key=False,
+            ),
+            records,
+        )
+        if model_changed(baseline, config, args.allow_model_change):
+            return 2
+        judges.add(config.judge_model)
+        summaries = [s for s in summarize(records) if s.case in selected]
+        columns.append(
+            (
+                model,
+                compare(
+                    summaries,
+                    baseline,
+                    confirmed=True,
+                    token_band=TOKEN_BAND,
+                    strict_tokens=args.strict_tokens,
+                ),
+            )
+        )
+    if not columns:
+        print(f"bench: {stamp_of(files[0])} holds no results", file=sys.stderr)
+        return 2
+    print(render_matrix(columns, ", ".join(sorted(judges))))
+    return max(comparison.exit_code for _, comparison in columns)
+
+
 def show_models(args: argparse.Namespace, root: Path) -> int:
     """`bin/bench models`: free, it lists and calls no model."""
     env = os.environ
@@ -883,6 +984,9 @@ def main(argv: list[str] | None = None) -> int:
         print(text)
         return code
 
+    if getattr(args, "baselines", False) and not args.matrix:
+        print("bench: --baselines goes with --matrix", file=sys.stderr)
+        return 2
     if getattr(args, "matrix", False):
         if args.model or args.provider or args.judge_model:
             print(
@@ -891,7 +995,9 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        return run_matrix(args, root, cases)
+        if args.command == "run":
+            return run_matrix(args, root, cases)
+        return compare_matrix(args, root, cases)
 
     try:
         config = resolve_config(
