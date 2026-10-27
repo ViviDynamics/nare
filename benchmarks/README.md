@@ -80,8 +80,10 @@ models one at a time, each with its own `--base-url`.
 Before building anything it refuses, with exit 2, a matrix whose baselines
 name more than one judge (a table where each model judges itself measures
 the judges as much as the agents), a provider whose key is not set, and a
-model the endpoint does not list. When the listing fails, or there is no base
-URL to ask, it warns and runs anyway.
+model or judge the endpoint does not list. Each key lists once, and the judge
+is checked under every key, since it answers on each model's provider. When a
+key's listing fails, it warns and leaves that key's models unchecked, and with
+no base URL to ask, it warns and checks nothing; either way it runs.
 
 The models run one after another, never in parallel: every run tags its image
 `nare-bench:local`, so two runs at once replace each other's image. After the

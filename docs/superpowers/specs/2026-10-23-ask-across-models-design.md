@@ -174,12 +174,14 @@ a document goes stale, so the tooling reads the live one.
   with a one-line message saying so, and the matrix preflight warns and
   continues, as it does when the listing call fails.
 - **Preflight.** `run --matrix` makes the same call before building
-  anything. If the endpoint does not list a matrix model, the run exits 2
-  before any model call, naming the model and its baseline file. If the
-  listing call itself fails, the run warns and continues, because an outage
-  of the listing should not block a measurement. This is a new check that
-  shares `models`' listing code. It is not `sandbox.preflight`, which only
-  checks that docker is on PATH.
+  anything. If the endpoint does not list a matrix model, or the judge, the
+  run exits 2 before any model call, naming the model and its baseline file.
+  It lists once per key, and checks the judge under every key, since the
+  judge answers on each baseline's provider. If a key's listing call itself
+  fails, the run warns and leaves only that key's models unchecked, because
+  an outage of the listing should not block a measurement. This is a new
+  check that shares `models`' listing code. It is not `sandbox.preflight`,
+  which only checks that docker is on PATH.
 - Both call the endpoint with httpx2, as `ModelMetadata.load` in
   `src/nare/transport/__init__.py` and `benchmarks/runner/jev.py` do, and
   never with urllib: Cloudflare in front of the proxy refuses urllib's

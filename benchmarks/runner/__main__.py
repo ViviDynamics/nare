@@ -725,12 +725,14 @@ def mixed_judges(matrix: Sequence[tuple[Path, Baseline]]) -> str | None:
 
 
 def served_check(matrix: Sequence[tuple[Path, Config]], base_url: str | None) -> int:
-    """The preflight: 2 when the endpoint does not list a matrix model.
+    """The preflight: 2 when the endpoint does not list a matrix model or the
+    judge.
 
-    A listing that fails, or a run with no base URL and so no proxy to ask,
-    warns and lets the run go on: an outage of the listing should not block a
-    measurement. Each key lists once, since a proxy key can be limited to
-    some models.
+    Each key lists once, since a proxy key can be limited to some models, and
+    the judge is checked under every key, since it answers on each baseline's
+    provider. A key whose listing fails warns and leaves only its own models
+    unchecked, and a run with no base URL, so no proxy to ask, warns and
+    checks nothing: an outage of the listing should not block a measurement.
     """
     if not base_url:
         print(
@@ -739,22 +741,29 @@ def served_check(matrix: Sequence[tuple[Path, Config]], base_url: str | None) ->
             file=sys.stderr,
         )
         return 0
-    served: dict[str, set[str]] = {}
+    served: dict[str, set[str] | None] = {}
     missing: list[str] = []
     for path, config in matrix:
         key = config.api_key or ""
-        if key not in served:
+        first = key not in served
+        if first:
             try:
                 served[key] = list_models(base_url, key).names
             except ListingError as exc:
+                served[key] = None
                 print(
-                    f"bench: warning: could not list the endpoint's models ({exc}); "
-                    "running without that check",
+                    "bench: warning: could not list the endpoint's models for "
+                    f"{config.api_key_var} ({exc}); the models under that key "
+                    "were not checked",
                     file=sys.stderr,
                 )
-                return 0
-        if config.model not in served[key]:
+        names = served[key]
+        if names is None:
+            continue
+        if config.model not in names:
             missing.append(f"{config.model!r} ({path.name})")
+        if first and config.judge_model not in names:
+            missing.append(f"{config.judge_model!r} (the judge, in {path.name})")
     if missing:
         print(
             f"bench: the endpoint does not list {', '.join(missing)}; "
@@ -770,7 +779,8 @@ def run_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) -> i
 
     Everything that can refuse the run does so before the image is built: an
     empty matrix, a second judge, a missing key, a cap above the non-streaming
-    ceiling, a model the endpoint does not list. Sequential, never parallel:
+    ceiling, a model or judge the endpoint does not list. Sequential, never
+    parallel:
     every run tags its image nare-bench:local.
     """
     matrix = load_matrix(root, args.tier)

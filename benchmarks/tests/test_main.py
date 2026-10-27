@@ -891,13 +891,17 @@ def matrix(
     """A checkout whose baselines are `metas`, each passing edit-docstring.
 
     Every model passes every rep except `failing`, which fails them all. The
-    endpoint lists `served`, by default every baseline's model. Returns the
-    config of every run_case call; the image build is one too.
+    endpoint lists `served`, by default every baseline's model and judge.
+    Returns the config of every run_case call; the image build is one too.
     """
     import benchmarks.runner.__main__ as bench
     from benchmarks.runner.report import baseline_path
 
-    listed = served if served is not None else tuple(meta.model for meta in metas)
+    listed = (
+        served
+        if served is not None
+        else tuple({name for meta in metas for name in (meta.model, meta.judge_model)})
+    )
     endpoint(tmp_path, monkeypatch, *listed)
     baselines = tmp_path / "benchmarks" / "baselines"
     baselines.mkdir()
@@ -987,11 +991,62 @@ def test_a_matrix_model_without_its_key_exits_two_before_any_model_call(
 def test_a_model_the_endpoint_does_not_list_stops_the_matrix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    ran = matrix(tmp_path, monkeypatch, HAIKU, NANO, served=("claude-haiku-5-5",))
+    ran = matrix(
+        tmp_path, monkeypatch, HAIKU, NANO, served=("claude-haiku-5-5", SONNET)
+    )
     assert main(["run", "--matrix"]) == 2
     assert ran == []
     err = capsys.readouterr().err
     assert "'gpt-5-nano' (gpt-5-nano.smoke.toml)" in err
+
+
+def test_a_judge_the_endpoint_does_not_list_stops_the_matrix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The judge answers on every baseline's provider, so a judge the endpoint
+    # does not serve would fail every judged rep of every model.
+    served = ("claude-haiku-5-5", "gpt-5-nano")
+    ran = matrix(tmp_path, monkeypatch, HAIKU, NANO, served=served)
+    assert main(["run", "--matrix"]) == 2
+    assert ran == []
+    err = capsys.readouterr().err
+    assert f"'{SONNET}' (the judge" in err
+    assert err.count(SONNET) == 1  # one key, so one listing and one miss
+
+
+@pytest.mark.parametrize("failing_key", ["ka", "ko"])
+def test_a_listing_that_fails_for_one_key_still_checks_the_others(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failing_key: str,
+) -> None:
+    # A proxy key can be limited to some models, so each key lists on its own,
+    # and one key's failed listing must not discard another key's miss.
+    import benchmarks.runner.__main__ as bench
+    from benchmarks.runner.models import Listing, ListingError, ServedModel
+
+    ran = matrix(tmp_path, monkeypatch, HAIKU, NANO)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ka")
+    monkeypatch.setenv("OPENAI_API_KEY", "ko")
+
+    def listing(base_url: str, api_key: str) -> Listing:
+        if api_key == failing_key:
+            raise ListingError("/v1/models: HTTP 503")
+        return Listing((ServedModel(SONNET),), detailed=True)
+
+    monkeypatch.setattr(bench, "list_models", listing)
+    assert main(["run", "--matrix"]) == 2
+    assert ran == []
+    err = capsys.readouterr().err
+    listed, skipped = (
+        ("claude-haiku-5-5", "gpt-5-nano")
+        if failing_key == "ko"
+        else ("gpt-5-nano", "claude-haiku-5-5")
+    )
+    assert f"'{listed}' ({listed}.smoke.toml)" in err
+    assert f"'{skipped}' ({skipped}.smoke.toml)" not in err
+    assert "warning" in err
 
 
 def test_a_listing_that_fails_warns_and_the_matrix_runs(
