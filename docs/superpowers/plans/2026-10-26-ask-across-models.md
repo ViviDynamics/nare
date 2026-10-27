@@ -2661,7 +2661,7 @@ Do not run the bench on this branch. Measuring it is Part C step C3, after the "
 
 These spend money on paid models through the LiteLLM proxy. They are for the user to run or approve, one block at a time, in order. Never run two of them at once, and never while another bench runs from any checkout.
 
-**Cost.** C1 is 7 models x 6 smoke cases x 3 reps = 126 reps; C3 is 126 more plus any seven-rep confirmations. The spec estimates a few dollars per pass, most of it the Sonnet judge and the two capable models, and about an hour of wall clock per pass. Streamed turns report a cost of 0.0 through this proxy, so read the spend from the proxy, not from nare.
+**Cost.** C1 is 7 models x 6 smoke cases x 3 reps = 126 reps; C3 is 126 more plus any seven-rep confirmations. The spec estimates a few dollars per pass, most of it the judge and the two capable models, and about an hour of wall clock per pass. Streamed turns report a cost of 0.0 through this proxy, so read the spend from the proxy, not from nare.
 
 **The shell for every block** (run once per new shell, from the worktree):
 
@@ -2673,7 +2673,7 @@ set -a; . ./.env; set +a
 export OPENAI_API_KEY="$ANTHROPIC_API_KEY"   # the same key on this proxy
 export NARE_STREAM=1                         # decision 10; the same for before and after
 ROOT="${NARE_BASE_URL%/}"; ROOT="${ROOT%/v1}"
-JUDGE=claude-sonnet-5-5
+JUDGE=gpt-6.1-sol                            # spec section 3.4
 pgrep -af "[b]enchmarks.runner" || echo "no bench running"
 ```
 
@@ -2689,13 +2689,9 @@ bin/bench models                    # all seven matrix models listed
 
 Then, one model at a time. `run` makes the measurement and `bless` writes it (spec section 5). `bless` calls no model.
 
+The judge is `gpt-6.1-sol`, a capable model on the `openai` route. It was chosen on 2026-10-27, in place of `claude-sonnet-5-5`, because the Anthropic account behind the proxy was out of quota until 2026-11-01, and it also keeps the judge off the account the two Claude models depend on. So the five `openai` models are blessed first, and the two Claude models after 2026-11-01, on this branch's code and with the same judge.
+
 ```bash
-bin/bench run   --tier smoke --model claude-haiku-5-5 --provider anthropic --base-url "$ROOT" --judge-model "$JUDGE"
-bin/bench bless --tier smoke --model claude-haiku-5-5 --provider anthropic --judge-model "$JUDGE"
-
-bin/bench run   --tier smoke --model claude-sonnet-5-5 --provider anthropic --base-url "$ROOT" --judge-model "$JUDGE"
-bin/bench bless --tier smoke --model claude-sonnet-5-5 --provider anthropic --judge-model "$JUDGE"
-
 bin/bench run   --tier smoke --model gpt-5-nano --provider openai --base-url "$ROOT/v1" --judge-model "$JUDGE"
 bin/bench bless --tier smoke --model gpt-5-nano --provider openai --judge-model "$JUDGE"
 
@@ -2710,20 +2706,29 @@ bin/bench bless --tier smoke --model spark/glm-5.3-flash --provider openai --jud
 
 bin/bench run   --tier smoke --model gpt-6.1-sol --provider openai --base-url "$ROOT/v1" --judge-model "$JUDGE"
 bin/bench bless --tier smoke --model gpt-6.1-sol --provider openai --judge-model "$JUDGE"
+
+# After 2026-11-01:
+bin/bench run   --tier smoke --model claude-haiku-5-5 --provider anthropic --base-url "$ROOT" --judge-model "$JUDGE"
+bin/bench bless --tier smoke --model claude-haiku-5-5 --provider anthropic --judge-model "$JUDGE"
+
+bin/bench run   --tier smoke --model claude-sonnet-5-5 --provider anthropic --base-url "$ROOT" --judge-model "$JUDGE"
+bin/bench bless --tier smoke --model claude-sonnet-5-5 --provider anthropic --judge-model "$JUDGE"
 ```
 
-Before each `bless`, read the run's table. `bless` leaves out an inconclusive case (more than half its reps errored), so if one is inconclusive, or reps stopped at `max_tokens` (`jq -r '.stop_reason' benchmarks/results/<stamp>.jsonl | sort | uniq -c`), fix the cause and re-run that model before blessing it. For an output cap, prefix the `run` with `NARE_BENCH_MAX_TOKENS=32000`; `bless` records it and the matrix reuses it. Each `bless` prints `(provider P, judge claude-sonnet-5-5)`: check both.
+Before each `bless`, read the run's table. `bless` leaves out an inconclusive case (more than half its reps errored), so if one is inconclusive, or reps stopped at `max_tokens` (`jq -r '.stop_reason' benchmarks/results/<stamp>.jsonl | sort | uniq -c`), fix the cause and re-run that model before blessing it. For an output cap, prefix the `run` with `NARE_BENCH_MAX_TOKENS=32000`; `bless` records it and the matrix reuses it. Each `bless` prints `(provider P, judge gpt-6.1-sol)`: check both.
 
-Then check the matrix and commit:
+Then check the matrix and commit, once after the five `openai` models:
 
 ```bash
-ls benchmarks/baselines/            # seven *.smoke.toml, no ada-qwen3-14b
-grep -h '^judge_model' benchmarks/baselines/*.smoke.toml | sort -u   # one line: claude-sonnet-5-5
+ls benchmarks/baselines/            # five *.smoke.toml, no ada-qwen3-14b
+grep -h '^judge_model' benchmarks/baselines/*.smoke.toml | sort -u   # one line: gpt-6.1-sol
 bin/bench compare --matrix --baselines | tee benchmarks/results/45-before-table.md
-bin/bench models                    # each matrix model now shows "smoke"
+bin/bench models                    # each blessed model now shows "smoke"
 git add benchmarks/baselines
-git commit -m "chore(bench): bless seven smoke baselines, judged by claude-sonnet-5-5 (#45)"
+git commit -m "chore(bench): bless five smoke baselines, judged by gpt-6.1-sol (#45)"
 ```
+
+and again after the two Claude models, with seven files, the same one judge line, and the commit message `chore(bench): bless the two Claude smoke baselines, judged by gpt-6.1-sol (#45)`.
 
 Optional, and cheap next to C3: prove `--matrix` end to end on real models before C3's full pass, on the one short case. It is 21 reps and 21 judge calls. It writes a matrix run on Part A's head and changes no baseline; do not bless from it.
 

@@ -222,9 +222,13 @@ and suggests `--provider openai` (`_warn_proxy_reasoning` in
 non-Claude models besides spark, and spark is a reasoning model too. The
 Claude models' thinking is native to the Anthropic route.
 
-**Judge:** `claude-sonnet-5-5` for every baseline. It is a capable model, and
-the judge's claims are binary and checkable, so judging its own reps is a
-small bias. The matrix table notes it.
+**Judge:** `gpt-6.1-sol` for every baseline. It is a capable model on the
+`openai` route, and the judge's claims are binary and checkable, so judging
+its own reps is a small bias. The matrix table notes it. It was chosen on
+2026-10-27, in place of `claude-sonnet-5-5`, because the Anthropic account
+behind the proxy was out of quota until 2026-11-01. It also keeps the judge
+off the account the two Claude models depend on. Those two are blessed after
+2026-11-01, on the same code and with the same judge.
 
 **`ada/qwen3-14b` leaves the matrix.** Its baseline predates contract 2 and
 the system prompt, so nothing can be compared against it. The `ada/*` models
@@ -358,12 +362,14 @@ The matrix is empty until they exist, so each is made one model at a time.
 flag that disagrees, so the flags on `bless` are a check that the right run
 is being blessed:
 
-    bin/bench run   --tier smoke --model M --provider P --judge-model claude-sonnet-5-5
-    bin/bench bless --tier smoke --model M --provider P --judge-model claude-sonnet-5-5
+    bin/bench run   --tier smoke --model M --provider P --judge-model gpt-6.1-sol
+    bin/bench bless --tier smoke --model M --provider P --judge-model gpt-6.1-sol
 
-`P` is the row's provider from section 3.4. An `openai` row's `run` needs
-`OPENAI_API_KEY`, which on this proxy is the same key as
-`ANTHROPIC_API_KEY`, and a `--base-url` that ends in `/v1` (section 3.2).
+`P` is the row's provider from section 3.4. The five `openai` rows are
+blessed first, and the two Claude rows after 2026-11-01 (section 3.4). An
+`openai` row's `run` needs `OPENAI_API_KEY`, which on this proxy is the same
+key as `ANTHROPIC_API_KEY`, and a `--base-url` that ends in `/v1` (section
+3.2).
 `bless` needs neither: it calls no model. The output cap, if any, comes
 from `NARE_BENCH_MAX_TOKENS` on the `run`, and `bless` reads it from the
 results.
