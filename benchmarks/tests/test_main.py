@@ -1457,3 +1457,21 @@ def test_a_baseline_file_not_at_its_models_name_stops_the_matrix(
     err = capsys.readouterr().err
     assert "gpt-5-nano-32k.smoke.toml names 'gpt-5-nano'" in err
     assert "gpt-5-nano.smoke.toml" in err.replace("gpt-5-nano-32k.smoke.toml", "")
+
+
+@pytest.mark.parametrize(
+    ("case", "code"), [("edit-docstring", 0), ("ambiguous-request", 2)]
+)
+def test_compare_matrix_needs_a_selected_case_some_model_ran(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    case: str,
+    code: int,
+) -> None:
+    # As compare does for one model: an empty table is not a comparison.
+    matrix(tmp_path, monkeypatch, HAIKU, NANO)
+    write_matrix_run(tmp_path, HAIKU, NANO)
+    assert main(["compare", "--matrix", "--case", case]) == code
+    if code == 2:
+        assert "holds none of the selected cases" in capsys.readouterr().err

@@ -970,6 +970,13 @@ def compare_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) 
     if not columns:
         print(f"bench: {stamp_of(files[0])} holds no results", file=sys.stderr)
         return 2
+    if all(d.summary is None for _, c in columns for d in c.deltas):
+        print(
+            f"bench: the matrix run {stamp_of(files[0])} holds none of the "
+            "selected cases",
+            file=sys.stderr,
+        )
+        return 2
     print(render_matrix(columns, ", ".join(sorted(judges))))
     return max(comparison.exit_code for _, comparison in columns)
 
