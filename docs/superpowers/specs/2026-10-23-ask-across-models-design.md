@@ -624,17 +624,23 @@ sentence and the log-level example. Add one that pins "A new value the
 request leaves open is not such a detail.", and, if B is picked, one that
 pins its last sentence. Widen
 `test_the_ask_example_is_no_benchmark_cases_answer` to the whole `ask`
-schema, description and `questions` together, matched without regard to
-case and on word boundaries. None of the ambiguous cases' names and values
-appears (`TIMEOUT`, `RETRIES`, `config.py`, `30`, `60`, `120`, `utils.py`,
-`main.py`, `format_bytes`, `slugify`, `parse_csv_line`), and neither case's
-shape appears under any names: an amount left open ("from" a number "to",
-or "to what") and an unused helper to choose ("unused"). The prompts' verbs
-are not checked, so "Do not delete files to make room." stays possible. The
-test checks itself: it must catch near copies under other names, such as
-"Raise MAX_WORKERS from 4 to 8 or 16? Unanswered, I will use 8." and
-"Remove the unused function, format_size or make_slug?", and must pass that
-harmless sentence. As before, no test judges whether the wording works.
+schema: every string in it, the description and `questions` among them, is
+checked on its own, without regard to case. None of the ambiguous cases'
+names appears, even inside a longer name (`HTTP_TIMEOUT`, `MAX_RETRIES`):
+`TIMEOUT`, `RETRIES`, `config.py`, `utils.py`, `main.py`, `format_bytes`,
+`slugify`, `parse_csv_line`. None of their values appears, even with a unit
+(`60s`): `30`, `60`, `120`. And neither case's shape appears under any
+names: an amount left open ("from 30 to", "from 45 seconds to", "to 8 or
+16", or "to what" asked as a question, "to what:" or "to what value") and
+an unused helper to choose ("unused", or a dead, uncalled or unreferenced
+helper or function). The prompts' verbs are not checked, so "Do not delete
+files to make room." stays possible, and neither is "to what" in ordinary
+prose, such as "Keep the change to what the request asks for." The test
+checks itself: it must catch near copies under other names, such as "Raise
+MAX_WORKERS to 8 or 16? Unanswered, I will use 8." and "Remove the unused
+function, format_size or make_slug?", and must pass those harmless
+sentences. It does not chase every paraphrase. As before, no test judges
+whether the wording works.
 
 **Measuring it.** The setup is section 5's: the five `openai` rows, the
 judge `gpt-6.1-sol`, both keys, and `NARE_STREAM=1`, as the baselines were
@@ -690,6 +696,12 @@ the gate does not count it. If PR 1's code also stops short on
 read-only-question, the fix is the one section 4.1 made, a larger
 `max_turns`, in its own change with its own re-bless, not here.
 
+**fix-failing-test** is not one of section 2's guards, but an `ask` on it
+would be the failure #38 fixed. A confirmed regression on it is listed, and
+its failing reps on the candidate's code labelled as a guard's are. It
+fails the wording only if one of them called `ask` or asked in prose. It is
+not pooled, so this costs no runs.
+
 **Reading an ambiguous-after-reading drop.** Three of the five baselines
 hold ambiguous-after-reading at 1/3. A first pass of 0/3 there is re-run at
 7, and 2 of 7, close to 1/3, is then a confirmed regression, so a candidate
@@ -708,23 +720,30 @@ comparison stands. A pool counts no run that was the reason it was made,
 since that run was chosen for being low: a regression that a cheap loop or
 the gate flagged is pooled from fresh runs on both sides, while
 `gpt-5-nano` on read-only-question, pooled whatever the gate shows, counts
-the gate run's reps. The first measurement's 2 of 7 is one confirmation, a
+the gate run's reps. The labels are another matter: the run that flagged a
+guard case is on the candidate's code, so its failing reps are labelled
+with the pool's, and one that called `ask` or asked in prose makes the drop
+the description's. The first measurement's 2 of 7 is one confirmation, a
 fresh sample with no slant, so its reading compares it with the 7-rep runs
-in step 1's pool only, the same kind of sample; if that pool has none,
-every first pass on PR 1's code was kept, and PR 1's rate is 0. That
-reading settles the first measurement's drop for #45.
+in step 1's pool only, the same kind of sample. If that pool has none, no
+first pass on PR 1's code fell below 3/3 (one with errors, at 2 of 2 or
+inconclusive, is kept without a confirmation too), and PR 1's rate is its
+whole pool's. That reading settles the first measurement's drop for #45.
 
 **When the wording fails.** It does not ship if, on the gate run:
 
 - a guard case (edit-docstring, multi-file-rename, read-only-question) has a
   confirmed regression on some model that the reading above does not call
   noise
+- fix-failing-test has a confirmed regression on some model, and a failing
+  rep of it on the candidate's code called `ask` or asked in prose
 - ambiguous-after-reading has a confirmed regression on some model that
   holds up when pooled
 - the widened leak test fails
 
-If B was picked and fails the first condition with a rep that called `ask`,
-run step 4 on A before giving up: A leaves the cost of asking as it was.
+If B was picked and fails the first or second condition with a rep that
+called `ask`, run step 4 on A before giving up: A leaves the cost of asking
+as it was.
 
 It **misses** if `gpt-6.1-sol` or `gpt-6-luna` stays below 2/3 on
 ambiguous-request. A miss that does not fail still ships if it scored at
@@ -881,8 +900,10 @@ run across models too.
       measurement's 5 of 7
 - [ ] No matrix model has a confirmed regression on edit-docstring,
       multi-file-rename or read-only-question, other than one section
-      6.1's reading calls noise, and no confirmed regression on
-      ambiguous-after-reading that holds up when pooled (section 6.1)
+      6.1's reading calls noise, no confirmed regression on
+      fix-failing-test with a failing rep that asked, and no confirmed
+      regression on ambiguous-after-reading that holds up when pooled
+      (section 6.1)
 - [ ] `gpt-6.1-sol` and `gpt-6-luna` reach 2 of 3 on ambiguous-request, or
       #45 records the miss with its labels and names the next lever
 - [ ] Each matrix model either reaches 2 of 3 on both ambiguous cases, or

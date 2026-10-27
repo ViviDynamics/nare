@@ -16,14 +16,14 @@
 2. **Each candidate is measured from a detached side worktree at its own commit, `/home/smadinya/vividynamics/nare-45-side`.** `bin/bench` builds its image from the checkout it runs in: `repo_root()` is three levels above `benchmarks/runner/sandbox.py`, and `benchmarks/Dockerfile` copies that checkout's `src` ("Installs the WORKING TREE's nare"). So whatever a checkout has checked out is what gets measured. The side worktree is needed anyway, for E1 on PR 1's code and for E4's extra single runs, which must stay out of `nare-45` (decision 3). B's loop runs there too, at B's exact commit, because the branch tip is not B: docs commits (this plan's review fix, for one) sit on top of it. With it, `nare-45` never leaves `45-ask-description`, and nothing can be committed on a detached HEAD there. The side worktree is created detached and only ever switched between commits. It gets its own `.venv` from `uv run` on first use, and needs no `.env`: the shell file reads `nare-45/.env` by absolute path.
 3. **`nare-45` holds only the gate run.** `bless` reads the newest run in `nare-45/benchmarks/results/` (`latest_run`, the newest stamp by file name) and, after a matrix run, takes `--model`'s own `<stamp>.<model>.jsonl` from it (`results_for`). A single run started after the gate would be the newest run instead: `bless --model gpt-5-nano` would bless one case from it, and every other model's bless would exit 2. So the gate is the last run in `nare-45` before E5's bless, and every other run goes to the side worktree. The gate runs at the branch tip, whatever docs commits it holds, and E4 checks that the tip's `src` and `tests` are the pick's.
 4. **If A is picked, B is reverted as a new commit.** The branch is unpublished, so a reset is allowed too. The revert is simpler, one command whatever sits on top of B, where a reset to A would also drop the docs commits above B. And it keeps B's commit on the branch: when PR 2 is pushed, the commit that B's cheap-loop stamp names can be fetched and read, which spec 6.1 step 5 and section 10 ask for ("each candidate's cheap-loop table with its stamp and commit"). After a reset that SHA would be on no branch, and no reviewer could see it. E4 checks that the revert's tree is A's.
-5. **"A case's answer", for the leak test,** is a fixed list of case-insensitive patterns with word boundaries, traced to `benchmarks/cases` in a comment, and matched against `json.dumps` of the whole `ask` schema, so the name, both descriptions and the property names are all covered. Names and values: each ambiguous fixture's file and identifier names (`config.py`, `TIMEOUT`, `RETRIES`, `utils.py`, `main.py`, `format_bytes`, `slugify`, `parse_csv_line`) and the values ambiguous-request's judge accepts in a question (the current `30`, and the `60` and `120` the old example offered; every guess set 60). Shapes, under any names, which spec 6.1 rules out: an amount left open (`from <number> to`, `to what`) and an unused helper to choose (`unused`). The prompts' verbs are not in it: "delete" or "increase" can appear in a harmless description. `total`, the fourth helper, is left out as an everyday word that is not one of the readings. Word boundaries keep `30` from matching `300`.
-6. **The leak test checks itself.** `test_the_ask_leak_check_catches_a_near_copy` must catch the old example and three near copies under other names ("Raise MAX_WORKERS from 4 to 8 or 16? Unanswered, I will use 8.", "Lengthen the time limit from 45 to 90 or 180 seconds?", "Remove the unused function, format_size or make_slug?"), and `test_the_ask_leak_check_passes_harmless_wording` must pass "Do not delete files to make room.", so a guard that could never fail, or one that fails on ordinary words, would show. The widened test is renamed `test_the_ask_schema_names_no_benchmark_cases_answer`, because it now covers the whole schema, and the log-level assertion it held moves to `test_the_ask_example_is_the_log_level_choice`, which spec 6.1 says to keep.
+5. **"A case's answer", for the leak test,** is a fixed list of case-insensitive patterns, traced to `benchmarks/cases` in a comment, and matched against every string in the `ask` schema on its own, the name, both descriptions and the property types among them. Not `json.dumps` of the schema: there a newline becomes `\n`, and a pattern could no longer see where a line starts. Names: each ambiguous fixture's file and identifier names (`config.py`, `TIMEOUT`, `RETRIES`, `utils.py`, `main.py`, `format_bytes`, `slugify`, `parse_csv_line`), matched inside a longer name too (`HTTP_TIMEOUT`, `MAX_RETRIES`): only a letter or digit before one stops a match. Values: those ambiguous-request's judge accepts in a question (the current `30`, and the `60` and `120` the old example offered; every guess set 60), matched with a unit after them (`60s`) but not inside a longer number (`300`). Shapes, under any names, which spec 6.1 rules out: an amount left open (`from 30 to`, `from 45 seconds to`, `to 8 or 16`, and `to what` asked as a question, followed by `:`, `?` or `value`) and an unused helper to choose (`unused`, or a dead, uncalled or unreferenced helper or function). The prompts' verbs are not in it: "delete" or "increase" can appear in a harmless description. `total`, the fourth helper, is left out as an everyday word that is not one of the readings. It does not chase every paraphrase.
+6. **The leak test checks itself.** `test_the_ask_leak_check_catches_a_near_copy` must catch the old example and eight near copies under other names: the open amount with and without "from" ("Raise MAX_WORKERS to 8 or 16? Unanswered, I will use 8."), with a unit between ("from 45 seconds to 90"), the case's names inside longer ones (`HTTP_TIMEOUT`, `MAX_RETRIES`) and `60s`, and the unused helper as "unused", "dead" or "uncalled". `test_the_ask_leak_check_passes_harmless_wording` must pass "Do not delete files to make room.", "Keep the change to what the request asks for.", "Return to what you were doing." and "Wait up to 300 seconds.". So a guard that could never fail, or one that fails on ordinary words, would show. The widened test is renamed `test_the_ask_schema_names_no_benchmark_cases_answer`, because it now covers the whole schema, and the log-level assertion it held moves to `test_the_ask_example_is_the_log_level_choice`, which spec 6.1 says to keep.
 7. **Counting reps, and the slant in a pool.** The runner has no reps flag. A smoke run is 3 reps per case (`TIER_DEFAULTS` in `case.py`; no smoke case sets `reps`), and a case whose pass rate falls below its baseline is re-run at 7 (`CONFIRM_REPS`), which replace the 3 in the results file and in the evidence. `--case` is a set filter (`_select`), so naming a case twice adds nothing. 14 judged reps therefore take several runs, each its own results file. A pool is every rep of one model on one case in the files logged under the step's tags at one commit, counting `pass` and `fail` and not `error`, as `summarize` does. A confirmation's replaced first-pass reps are in no file. That slants every pool toward passes: a first pass at the baseline's rate is kept, and one below it is replaced by 7 fresh reps. Both sides of every reading are made the same way (runs with the runner's confirmation), so the slant is the same on both and the comparison stands. The one exception is E1's reading of the first measurement's 2 of 7, which is a single confirmation, a fresh sample with no slant: it is compared with PR 1's 7-rep runs only, the same kind of sample, not with PR 1's whole pool, which would make "the description's" more likely than it should be.
 8. **Reading a drop when n is not 14.** Spec 6.1's reading is: the candidate's fail rate minus PR 1's is at least 0.2. At 14 and 14 that is 3 more failures.
 9. **The nano read-only-question pool counts as confirmed.** At 14 or more judged reps it is a larger sample than the runner's confirmation (7). If its pass rate is below the baseline's 3/3 and the reading calls the drop the description's, the gate fails, even when the gate run's own 3 reps passed.
 10. **An ambiguous-after-reading drop is pooled, not taken at its flag** (spec 6.1, "Reading an ambiguous-after-reading drop"). Three baselines hold it at 1/3, where a 0/3 first pass and a 2/7 confirmation is marked `regression`, so a candidate that changed nothing would be out with a probability of roughly a quarter to a half. A `regression` cell on ambiguous-after-reading, in a cheap loop (E3) or the gate (E4), is pooled to at least 14 judged reps on the candidate's code and on PR 1's, and counts against the candidate only if its fail rate is at least 0.2 above PR 1's. If both candidates are out by that rule, nothing is picked, E4 does not run, and E5 records the failure.
 11. **An inconclusive guard cell, on a model whose baseline has that case,** is re-run once in the side worktree on the gate's code, and that run's verdict stands. If it is inconclusive again, the cell is recorded as unchecked, as spark's and sol's multi-file-rename are (`docs/evidence/45/README.md`).
-12. **A pool counts no run that was the reason it was made.** A cell that a cheap loop or the gate flagged as `regression` was chosen for being low, so counting it would count the selection. Such a pool (any guard case, or ambiguous-after-reading) is made of fresh runs on both sides, under its own tag (`loop-A-pool`, `loop-B-pool`, `gate-A-pool`, `gate-B-pool`) on the candidate's side and `pr1` on PR 1's. `gpt-5-nano` on read-only-question is pooled whatever the gate shows, so its pool counts the gate run's reps, as spec 6.1 step 4 says.
+12. **A pool counts no run that was the reason it was made.** A cell that a cheap loop or the gate flagged as `regression` was chosen for being low, so counting it would count the selection. Such a pool (any guard case, or ambiguous-after-reading) is made of fresh runs on both sides, under its own tag (`loop-A-pool`, `loop-B-pool`, `gate-A-pool`, `gate-B-pool`) on the candidate's side and `pr1` on PR 1's. `gpt-5-nano` on read-only-question is pooled whatever the gate shows, so its pool counts the gate run's reps, as spec 6.1 step 4 says. Labels are not counts: a guard reading's labels cover the run that flagged the cell (the gate run, and a re-run in E4, Step 4 that flagged it), because that run is on the candidate's code and an `ask` in it is the failure #38 fixed; only the counts leave it out. ambiguous-after-reading's reading uses no labels, so E3's pools have no such gap. fix-failing-test is listed and labelled, never pooled (spec 6.1).
 13. **Every count is pinned to a commit.** The run log records the full commit each run started at, and every helper that reads it (`files`, `judged`, `blocks`, `score`, `reps`, `guard_facts`, `amb_facts`, `questions`) takes the expected commit and reads only files logged at it. `side_at` refuses to move the side worktree while a bench runs, `bench` logs a run as `moved` (which matches no commit) if its worktree's HEAD changed during it, and `to14` stops if HEAD changes between its runs. So no rep from another commit can enter a pool or a score.
 14. **"Every failing ambiguous rep"** (6.1 step 5, section 10) is every failing rep of the two ambiguous cases in A's loop, B's loop and the gate run, and the questions are those of every passing ambiguous-request rep in the same three runs.
 15. **`NARE_STREAM=1` for every run,** as the section 5 baselines were run (previous plan, decision 10).
@@ -46,7 +46,7 @@
 
 1. **The texts are spec 6.1's, word for word.** D1 Step 4 and D2 Step 4 assert equality of the joined `ask` description with candidate A and with candidate B, and of `questions.description` with section 6's.
 2. **#38's four exclusions keep their words.** Only their order changes, so "details you can decide yourself" is last and "such a detail" follows it directly. The open-value test pins that pair.
-3. **The leak list** (decisions 5 and 6): every name and value traced to a case file, both shapes caught under other names, matched on the whole schema with word boundaries, and shown to catch the old example and near copies and to pass harmless wording.
+3. **The leak list** (decisions 5 and 6): every name and value traced to a case file, both shapes caught under other names, every string of the schema checked on its own, and shown to catch the old example and near copies and to pass harmless wording.
 4. **One commit per candidate, and `B^` is `A`.** E0 checks it before any money is spent.
 
 ## File map
@@ -54,7 +54,7 @@
 | File | Change | Task |
 | --- | --- | --- |
 | `src/nare/tools.py` | the `ask` entry's `description`: candidate A, then B | D1, D2 |
-| `tests/test_tools.py` | `import json`; the open-value pin; the log-level pin; `CASE_ANSWERS`, `case_answers_in`, the leak check's self-checks and the widened leak test; B's last-sentence pin | D1, D2 |
+| `tests/test_tools.py` | the open-value pin; the log-level pin; `CASE_ANSWERS`, `case_answers_in`, the leak check's self-checks and the widened leak test; B's last-sentence pin | D1, D2 |
 | `docs/evidence/45/README.md` | section "After the second wording" | E5 |
 | `benchmarks/baselines/*.smoke.toml` | re-blessed on the gate run, only if the wording ships | E5 |
 | `nare-45/benchmarks/results/45-2-*` (gitignored, never committed) | the shell file, the run log, transcripts, tables, scores, notes | E0 to E5 |
@@ -96,15 +96,7 @@ Expected: clean.
 
 - [ ] **Step 1: Write the tests**
 
-In `tests/test_tools.py`, add `import json` to the standard-library imports, so the top reads:
-
-```python
-import asyncio
-import json
-import logging
-```
-
-Then replace the whole of `test_the_ask_example_is_no_benchmark_cases_answer`:
+In `tests/test_tools.py`, replace the whole of `test_the_ask_example_is_no_benchmark_cases_answer`:
 
 ```python
 def test_the_ask_example_is_no_benchmark_cases_answer() -> None:
@@ -119,9 +111,9 @@ with:
 
 ```python
 def test_the_ask_description_says_an_open_value_is_no_detail() -> None:
-    # Without the old example, sol and luna filed the new timeout value under
-    # "details you can decide yourself" and set one (#45). The value sentence
-    # follows that exclusion directly, so "such a detail" means it.
+    # Without the old example, sol and luna set a new timeout value themselves
+    # instead of asking (#45). The value sentence follows the exclusion for
+    # details you can decide yourself, so "such a detail" means it.
     assert (
         "or for details you can decide yourself such as wording, style or names. "
         "A new value the request leaves open is not such a detail."
@@ -134,39 +126,54 @@ def test_the_ask_example_is_the_log_level_choice() -> None:
 
 
 # What a model could copy from the ask schema to pass an ambiguous case, from
-# benchmarks/cases, as case-insensitive patterns with word boundaries. Names
-# and values: each fixture's names, and the values ambiguous-request's judge
-# accepts in a question (the current 30, and the 60 and 120 the old example
-# offered; every guess set 60). Shapes, under any names: an amount left open,
-# as in the old example's "from 30 to what", and an unused helper to choose,
-# as in ambiguous-after-reading's prompt. The prompts' verbs are not here: a
-# description may say "delete" or "increase" in passing.
+# benchmarks/cases, as case-insensitive patterns. A name counts inside a longer
+# identifier (HTTP_TIMEOUT, MAX_RETRIES), so only a letter or digit before it
+# stops a match, and a value counts with a unit after it (60s). Shapes, under
+# any names: an amount left open, as in the old example's "from 30 to what",
+# and an unused helper to choose, as in ambiguous-after-reading's prompt. The
+# prompts' verbs are not here: a description may say "delete" or "increase".
 CASE_ANSWERS = (
     # ambiguous-request: "Increase the timeout."; config.py holds TIMEOUT = 30
-    # and RETRIES = 3.
-    r"\btimeout\b",
-    r"\bconfig\.py\b",
-    r"\bretries\b",
-    r"\b30\b",
-    r"\b60\b",
-    r"\b120\b",
+    # and RETRIES = 3. Its judge accepts a question naming the current 30; the
+    # old example offered 60 and 120, and every guess set 60.
+    r"(?<![a-z0-9])timeout",
+    r"(?<![a-z0-9])retries",
+    r"(?<![a-z0-9])config\.py",
+    r"(?<![\d.])30(?!\d)",
+    r"(?<![\d.])60(?!\d)",
+    r"(?<![\d.])120(?!\d)",
     # ambiguous-after-reading: "Delete the unused helper."; utils.py holds
     # format_bytes and slugify, which nothing calls, and parse_csv_line and
     # total, which main.py calls. "total" is an everyday word, so it is left out.
-    r"\butils\.py\b",
-    r"\bmain\.py\b",
-    r"\bformat_bytes\b",
-    r"\bslugify\b",
-    r"\bparse_csv_line\b",
-    # The shapes: an amount left open, and an unused helper to choose.
-    r"\bfrom \d[\w.]* to\b",
-    r"\bto what\b",
+    r"(?<![a-z0-9])utils\.py",
+    r"(?<![a-z0-9])main\.py",
+    r"(?<![a-z0-9])format_bytes",
+    r"(?<![a-z0-9])slugify",
+    r"(?<![a-z0-9])parse_csv_line",
+    # An amount left open: "from 30 to", "from 45 seconds to", "to 8 or 16",
+    # and "to what" asked as a question ("to what:", "to what?", "to what value").
+    r"\bfrom \d[\w.]*(?: \w+)? to\b",
+    r"\bto \d[\w.]* or \d",
+    r"\bto what(?=\s*[:?]| value)",
+    # An unused helper to choose.
     r"\bunused\b",
+    r"\b(?:dead|uncalled|unreferenced) (?:helper|function)s?\b",
 )
 
 
 def case_answers_in(text: str) -> list[str]:
     return [p for p in CASE_ANSWERS if re.search(p, text, re.IGNORECASE)]
+
+
+def strings_in(value: object) -> list[str]:
+    """Every string value in a schema, each checked on its own."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for item in value.values() for s in strings_in(item)]
+    if isinstance(value, list):
+        return [s for item in value for s in strings_in(item)]
+    return []
 
 
 @pytest.mark.parametrize(
@@ -177,32 +184,48 @@ def case_answers_in(text: str) -> list[str]:
         "Unanswered, I will use 60.",
         # ambiguous-request's shape under other names, which spec 6.1 rules out.
         "Raise MAX_WORKERS from 4 to 8 or 16? Unanswered, I will use 8.",
+        "Raise MAX_WORKERS to 8 or 16? Unanswered, I will use 8.",
         "Lengthen the time limit from 45 to 90 or 180 seconds?",
+        "Lengthen the time limit from 45 seconds to 90?",
+        # The case's names inside longer ones, and a value with its unit.
+        "Set HTTP_TIMEOUT to 60s or 120s?",
+        "Raise MAX_RETRIES?",
         # ambiguous-after-reading's shape under other names.
         "Remove the unused function, format_size or make_slug?",
+        "Delete the dead helper, or the uncalled function too?",
     ],
 )
 def test_the_ask_leak_check_catches_a_near_copy(near_copy: str) -> None:
     assert case_answers_in(near_copy)
 
 
-def test_the_ask_leak_check_passes_harmless_wording() -> None:
-    assert case_answers_in("Do not delete files to make room.") == []
+@pytest.mark.parametrize(
+    "harmless",
+    [
+        "Do not delete files to make room.",
+        "Keep the change to what the request asks for.",
+        "Return to what you were doing.",
+        "Wait up to 300 seconds.",
+    ],
+)
+def test_the_ask_leak_check_passes_harmless_wording(harmless: str) -> None:
+    assert case_answers_in(harmless) == []
 
 
 def test_the_ask_schema_names_no_benchmark_cases_answer() -> None:
     # The old example was ambiguous-request's fixture and the answer its judge
-    # looks for, so a model could pass that case by copying it (#45). The whole
-    # schema is checked, descriptions and all.
-    assert case_answers_in(json.dumps(schema_of("ask"))) == []
+    # looks for, so a model could pass that case by copying it (#45). Every
+    # string in the schema is checked on its own, descriptions and all.
+    leaks = {s: case_answers_in(s) for s in strings_in(schema_of("ask"))}
+    assert {s: found for s, found in leaks.items() if found} == {}
 ```
 
-The open-value test pins A's new sentence together with the exclusion it follows, which also pins the reorder. The leak check is tested on near copies it must catch and on harmless wording it must pass (decision 6). Whether the wording works is the matrix's job (spec 6.1).
+The open-value test pins A's new sentence together with the exclusion it follows, which also pins the reorder. The leak check reads every string in the schema on its own, and is tested on near copies it must catch and on harmless wording it must pass (decision 6). `json` is not imported: no test here needs it. Whether the wording works is the matrix's job (spec 6.1).
 
 - [ ] **Step 2: Run the tests to verify the new pin fails**
 
 Run: `uv run pytest tests/test_tools.py -q -k the_ask`
-Expected: `1 failed, 9 passed`. `test_the_ask_description_says_an_open_value_is_no_detail` fails on its assertion. The widened leak test already passes, because section 6 removed the leak, and the self-checks pass: the list catches the old example and the near copies, and passes the harmless sentence.
+Expected: `1 failed, 17 passed`. `test_the_ask_description_says_an_open_value_is_no_detail` fails on its assertion. The widened leak test already passes, because section 6 removed the leak, and the self-checks pass: the list catches the old example and the near copies, and passes the harmless sentence.
 
 - [ ] **Step 3: Replace the `ask` description's last five lines**
 
@@ -263,7 +286,7 @@ Expected: `candidate A, word for word`. `A` is spec 6.1's candidate A joined, an
 - [ ] **Step 5: Run the tests and build**
 
 ```bash
-uv run pytest tests/test_tools.py -q -k the_ask     # 10 passed
+uv run pytest tests/test_tools.py -q -k the_ask     # 18 passed
 bin/build
 git diff --stat                                      # src/nare/tools.py and tests/test_tools.py only
 ```
@@ -305,7 +328,7 @@ def test_the_ask_description_says_the_session_waits_for_the_answer() -> None:
 - [ ] **Step 2: Run the tests to verify it fails**
 
 Run: `uv run pytest tests/test_tools.py -q -k the_ask`
-Expected: `1 failed, 10 passed`; the new test fails on its assertion.
+Expected: `1 failed, 18 passed`; the new test fails on its assertion.
 
 - [ ] **Step 3: Replace the last sentence**
 
@@ -352,7 +375,7 @@ Expected: `candidate B, word for word`.
 - [ ] **Step 5: Run the tests and build**
 
 ```bash
-uv run pytest tests/test_tools.py -q -k the_ask     # 11 passed
+uv run pytest tests/test_tools.py -q -k the_ask     # 19 passed
 bin/build
 git diff --stat                                      # src/nare/tools.py and tests/test_tools.py only
 ```
@@ -375,40 +398,32 @@ E0 finds this commit by that subject. Keep it exactly.
 ```bash
 cd /home/smadinya/vividynamics/nare-45
 git status --short                                   # expect no output
-git log --oneline 45-ask-across-models..HEAD         # B, A, the plan, 73d867d, 54f175f (and any docs commit above B)
-git show --stat --format='%h %s' HEAD~1 HEAD         # each: src/nare/tools.py and tests/test_tools.py
+git log --oneline 45-ask-across-models..HEAD         # any docs commits, then B, A, the plan, 73d867d, 54f175f
+git log --stat --format='%h %s' 45-ask-across-models..HEAD -- src tests   # B, A, 54f175f: each src/nare/tools.py and tests/test_tools.py
 grep -nP '\x{2014}' src/nare/tools.py tests/test_tools.py || echo "no em dashes"
 ```
 
 - [ ] **Step 2: If review asks for a change, fold it into the candidate's own commit**
 
-The branch is unpublished, so rewriting its last two commits is allowed (conventions, ground rule 4). Interactive rebase is not available here; this is the same thing done by hand.
-
-A change to B only:
+The branch is unpublished, so rewriting A, B and the docs commits above B is allowed (conventions, ground rule 4). Interactive rebase is not available here; this is the same thing done by hand. Docs commits sit above B (the plan's review fixes), so the procedure replays them too.
 
 ```bash
+A=$(git log --format=%H -1 -F --grep='feat(tools): ask says a value the request leaves open is no detail' HEAD)
+B=$(git log --format=%H -1 -F --grep='feat(tools): ask says the session stops until the caller answers' HEAD)
+TIP=$(git rev-parse HEAD)
+git switch --detach "$A"             # for a change to B only: git switch --detach "$B"
 # edit, then:
 bin/build
 git commit -a --amend --no-edit
-```
-
-A change to A (B is replayed on top):
-
-```bash
-A=$(git rev-parse HEAD~1); B=$(git rev-parse HEAD)
-git switch --detach "$A"
-# edit, then:
-bin/build
-git commit -a --amend --no-edit
-git cherry-pick "$B"                 # resolve any conflict in favour of B's last sentence
-bin/build
+git cherry-pick "$B"                 # only after amending A; resolve in favour of B's last sentence
+[ "$B" = "$TIP" ] || git cherry-pick "$B..$TIP"    # the docs commits above B
 git branch -f 45-ask-description HEAD
 git switch 45-ask-description
 ```
 
-Then Step 1 again, and `bin/build` at the new A in a detached scratch worktree (`git worktree add --detach <scratch dir> <new A>`, build there, then `git worktree remove` it). Never push.
+Then Step 1 again, and `bin/build` at the new A and the new B, each in a detached scratch worktree (`git worktree add --detach <scratch dir> <commit>`, build there, then `git worktree remove` it), since neither is the tip. Never push.
 
-Review round 1 (2026-10-27) folded the leak check's word boundaries, shapes and self-checks into A this way. A is now `2439203` and B `266ff24`; `bin/build` passed at each, 1440 and 1441 tests. E0 finds both by subject, so a later fold needs no change here.
+Review rounds 1 and 2 (2026-10-27) folded the leak check's changes into A this way, replaying B and the docs commit above it. A is now `3d1fee5` and B `d3edf82`; `bin/build` passed at each, 1448 and 1449 tests. E0 finds both by subject, so a later fold needs no change here.
 
 ---
 
@@ -714,7 +729,7 @@ test "$(git rev-parse "$B^")" = "$A" && echo "A is B's parent"
 printf 'S6=%s\nPR1=%s\nA=%s\nB=%s\n' "$S6" "$PR1" "$A" "$B" | tee "$R/45-2-commits.env"
 ```
 
-Expected: every `echo` prints, and the two `diff --stat` lines are as commented; if not, stop and report. After review round 1, A is `2439203` and B is `266ff24`. If local `45-ask-across-models` and `origin/45-ask-across-models` differ, do not move either. If PR 1 has moved past this branch (a review fix, or the two Claude baselines after 2026-11-01), the ancestor check fails: stop and report. Rebasing this branch would change A's and B's SHAs after review, which is the user's call.
+Expected: every `echo` prints, and the two `diff --stat` lines are as commented; if not, stop and report. After review round 2, A is `3d1fee5` and B is `d3edf82`. If local `45-ask-across-models` and `origin/45-ask-across-models` differ, do not move either. If PR 1 has moved past this branch (a review fix, or the two Claude baselines after 2026-11-01), the ancestor check fails: stop and report. Rebasing this branch would change A's and B's SHAs after review, which is the user's call.
 
 - [ ] **Step 3: Log the first measurement under `s6`**
 
@@ -800,7 +815,7 @@ Label each failing rep by hand, first match wins (spec 6.1 step 1):
 
 - [ ] **Step 3: Read the first measurement's 5 of 7**
 
-The 2 of 7 is one confirmation: 7 fresh reps that replaced a failing first pass, with no slant. PR 1's pool is slanted toward passes, because its 3/3 first passes were kept and only its failing ones were replaced (decision 7). So compare like with like: PR 1's rate here is over its 7-rep runs only (the `7 reps` lines of `blocks`), summed. If it has none, every PR 1 first pass was 3/3, and its rate is 0.
+The 2 of 7 is one confirmation: 7 fresh reps that replaced a failing first pass, with no slant. PR 1's pool is slanted toward passes, because its 3/3 first passes were kept and only its failing ones were replaced (decision 7). So compare like with like: PR 1's rate here is over its 7-rep runs only (the `7 reps` lines of `blocks`), summed. If it has none, no PR 1 first pass fell below 3/3: each was 3/3, or had an error and was kept, at 2/2 or as inconclusive, without a confirmation. PR 1's rate is then its whole pool's.
 
 The drop was the description's if an `s6` failure is labelled `asked` or `asked in prose`, or if `2/7` minus PR 1's 7-rep fail rate is at least 0.2 (decision 8). Otherwise it is noise in the model, which #45 records. Record PR 1's whole pool too, labelled as slanted. If PR 1's code also stops short, note that the fix is a larger `max_turns` on read-only-question in its own change with its own re-bless (spec 6.1), not here.
 
@@ -816,7 +831,7 @@ Spec 6.1 step 2, each candidate from its own commit, against the section 5 basel
 
 ```bash
 . /home/smadinya/vividynamics/nare-45/benchmarks/results/45-2-env.sh
-side_at "$A" && (cd "$SIDE" && uv run pytest tests/test_tools.py -q -k the_ask)   # 10 passed
+side_at "$A" && (cd "$SIDE" && uv run pytest tests/test_tools.py -q -k the_ask)   # 18 passed
 ```
 
 - [ ] **Step 2: A's loop (background)**
@@ -843,7 +858,7 @@ score "$A" loop-A
 
 ```bash
 . /home/smadinya/vividynamics/nare-45/benchmarks/results/45-2-env.sh
-side_at "$B" && (cd "$SIDE" && uv run pytest tests/test_tools.py -q -k the_ask)   # 11 passed
+side_at "$B" && (cd "$SIDE" && uv run pytest tests/test_tools.py -q -k the_ask)   # 19 passed
 ```
 
 - [ ] **Step 5: B's loop (background)**
@@ -899,9 +914,15 @@ done
 
 Expected: five files per loop, `loop-A` at A's commit and `loop-B` at B's. If a file is at another commit, stop and report. A cell is at target when its pass rate over the reps the run kept is at least 2/3 (`score` also counts an inconclusive cell as below). For reference, section 6's text scored 2 and the section 5 baselines 3.
 
-- [ ] **Step 2: Pool each ambiguous-after-reading `regression` cell (background)**
+- [ ] **Step 2: Pool the ambiguous-after-reading `regression` cells that can change the pick (background)**
 
-For each candidate `C` (A or B) and each model `M` whose cell in `C`'s ambiguous-after-reading row is marked `regression`, pool both sides from fresh runs (decision 12), the candidate's then PR 1's. For A:
+A flagged cell is a model `M` whose cell in a candidate's ambiguous-after-reading row is marked `regression`. The **leader** is the candidate Step 3's rule picks when neither is out: B if its score is higher than A's, otherwise A. Pool only what can change the pick, leader first; the result is the rule's, with fewer runs:
+
+1. Pool the leader's flagged cells one at a time, in any order. Stop at the first that holds up: the leader is out, and its other cells cannot change the pick.
+2. If the leader has no flagged cell, or none holds up, it is picked. Do not pool the other candidate.
+3. If the leader is out, pool the other candidate's flagged cells the same way. It is picked unless one of them holds up; then both are out.
+
+To pool a cell, run both sides from fresh runs (decision 12), the candidate's then PR 1's. For A:
 
 ```bash
 . /home/smadinya/vividynamics/nare-45/benchmarks/results/45-2-env.sh
@@ -917,9 +938,11 @@ judged M ambiguous-after-reading "$A" loop-A-pool      # or "$B" loop-B-pool
 judged M ambiguous-after-reading "$PR1" pr1
 ```
 
-The regression **holds up** if the candidate's fail rate (failed / judged) is at least 0.2 above PR 1's. Otherwise it does not count against the candidate, and #45 records it as noise. No cell flagged: skip to Step 3.
+The regression **holds up** if the candidate's fail rate (failed / judged) is at least 0.2 above PR 1's. Otherwise it does not count against the candidate, and #45 records it as noise. Labels play no part in this reading (decision 12). A flagged cell left unpooled is recorded as not needed for the pick. No cell flagged on the leader: skip to Step 3.
 
 - [ ] **Step 3: The rule, in order**
+
+Step 2 already applied it; record which line decided.
 
 1. A candidate with an ambiguous-after-reading regression that holds up (Step 2) is out.
 2. Both out: nothing is picked (decision 10). Skip E4 and go to E5, Step 6.
@@ -991,7 +1014,7 @@ This run is now the newest run in `nare-45`, and must stay so until E5's bless (
 
 - [ ] **Step 4: Read the table**
 
-List every cell marked `regression` on ambiguous-after-reading or on a guard case (edit-docstring, multi-file-rename, read-only-question), as (model, case). These are the flagged cells.
+List every cell marked `regression` on ambiguous-after-reading, on a guard case (edit-docstring, multi-file-rename, read-only-question), or on fix-failing-test, as (model, case). These are the flagged cells. fix-failing-test is not one of section 2's guards, but an `ask` on it would be the failure #38 fixed: it is labelled in Step 7 and never pooled (spec 6.1, decision 12), so it costs no runs.
 
 An inconclusive guard cell on a model whose baseline has that case (a number, not `-`, in the README's "Baseline matrix") is re-run once on the gate's code (decision 11):
 
@@ -1014,7 +1037,7 @@ The pool starts from the gate run's own reps of that case (3, or 7 after a confi
 
 - [ ] **Step 6: Pool every other flagged cell, both sides, from fresh runs (background)**
 
-For each flagged (model `M`, case `C`) other than `gpt-5-nano` on read-only-question:
+For each flagged (model `M`, case `C`) other than `gpt-5-nano` on read-only-question, and other than fix-failing-test, which is not pooled:
 
 ```bash
 . /home/smadinya/vividynamics/nare-45/benchmarks/results/45-2-env.sh
@@ -1034,20 +1057,28 @@ blocks gpt-5-nano read-only-question "$GATE" "gate-$PICK" "gate-$PICK-extra"
 guard_facts gpt-5-nano read-only-question "$GATE" "gate-$PICK" "gate-$PICK-extra"
 ```
 
-and, for each pair from Step 6:
+and, for each pair from Step 6, the counts from the pool alone and the labels from every run on the pick's code, the run that flagged the cell included (decision 12):
 
 ```bash
 . /home/smadinya/vividynamics/nare-45/benchmarks/results/45-2-env.sh
 judged M C "$GATE" "gate-$PICK-pool"
 judged M C "$PR1" pr1
-guard_facts M C "$GATE" "gate-$PICK-pool"   # guard cases only
+guard_facts M C "$GATE" "gate-$PICK" "gate-$PICK-extra" "gate-$PICK-pool"   # guard cases only
 ```
 
-Label each failing rep of a guard case on the pick's side as in E1, Step 2. On edit-docstring and multi-file-rename the labels are `asked`, `asked in prose` and `other`: `stopped short` is read-only-question's.
+and, for each flagged fix-failing-test cell, the labels only:
+
+```bash
+. /home/smadinya/vividynamics/nare-45/benchmarks/results/45-2-env.sh
+guard_facts M fix-failing-test "$GATE" "gate-$PICK" "gate-$PICK-extra"
+```
+
+Label each failing rep listed as in E1, Step 2. On edit-docstring, multi-file-rename and fix-failing-test the labels are `asked`, `asked in prose` and `other`: `stopped short` is read-only-question's.
 
 The readings. Both sides of each were made the same way, so the slant is the same on both (decision 7).
 
 - **A guard case** (spec 6.1, decisions 8 and 9): the drop is the description's if a failing rep on the pick's side is labelled `asked` or `asked in prose`, or if (pick's failed / pick's judged) minus (PR 1's failed / PR 1's judged) is at least 0.2. Otherwise it is noise in the model: recorded, and not counted by the gate. For `gpt-5-nano` on read-only-question, a pool pass rate below 3/3 that the reading calls the description's counts as a confirmed regression, whether or not the gate's table marked it (decision 9).
+- **fix-failing-test** (spec 6.1): no pool and no rates. It counts against the wording only if a failing rep listed is labelled `asked` or `asked in prose`.
 - **ambiguous-after-reading** (decision 10): the regression holds up if the pick's fail rate is at least 0.2 above PR 1's. Labels play no part.
 
 - [ ] **Step 8: Decide**
@@ -1055,10 +1086,11 @@ The readings. Both sides of each were made the same way, so the slant is the sam
 The wording **does not ship** if any of these holds (spec 6.1, "When the wording fails"):
 
 1. A guard case has a confirmed regression on some model that Step 7's reading does not call noise.
-2. ambiguous-after-reading has a confirmed regression on some model that holds up when pooled (Step 7).
-3. `bin/build` failed at `$GATE` (the widened leak test).
+2. fix-failing-test has a confirmed regression on some model, and a failing rep of it on the pick's code is labelled `asked` or `asked in prose`.
+3. ambiguous-after-reading has a confirmed regression on some model that holds up when pooled (Step 7).
+4. `bin/build` failed at `$GATE` (the widened leak test).
 
-**If `PICK=B` and it fails condition 1 with a rep labelled `asked`,** run E4 on A before giving up (spec 6.1: "A leaves the cost of asking as it was"):
+**If `PICK=B` and it fails condition 1 or 2 with a rep labelled `asked`,** run E4 on A before giving up (spec 6.1: "A leaves the cost of asking as it was"):
 
 ```bash
 . /home/smadinya/vividynamics/nare-45/benchmarks/results/45-2-env.sh
@@ -1249,7 +1281,7 @@ The other lines of section 10 are PR 1's (the matrix, `compare --matrix`, `model
 | The section 6 PR shows each candidate's cheap-loop table with its stamp and commit, the score that picked one, and the matrix table before and after on the one picked, and re-blesses all seven baselines after the change | E2 (tables, stamps, commits through the run log), E3 (the score and any pools), E4, Step 3 (the after table), E5, Steps 1 and 4. Five baselines are re-blessed; the two Claude rows join every step once their baselines exist on PR 1 (spec section 3.4), and until then this line is open for them |
 | The section 6 PR gives the labels of every failing ambiguous rep and the question of every passing ambiguous-request rep | E5, Steps 2 to 4 (decision 14) |
 | `gpt-5-nano` on read-only-question has at least 14 judged reps on PR 1's code and 14 on the picked wording, and the PR states section 6.1's reading of the picked wording's reps and of the first measurement's 5 of 7 | E1 (PR 1's 14, and the 5 of 7 against PR 1's 7-rep runs), E4, Steps 5 and 7 (the pick's 14 and its reading), E5, Step 4 |
-| No matrix model has a confirmed regression on edit-docstring, multi-file-rename or read-only-question, other than one section 6.1's reading calls noise, and no confirmed regression on ambiguous-after-reading that holds up when pooled | E4, Steps 4 to 8 |
+| No matrix model has a confirmed regression on edit-docstring, multi-file-rename or read-only-question, other than one section 6.1's reading calls noise, no confirmed regression on fix-failing-test with a failing rep that asked, and no confirmed regression on ambiguous-after-reading that holds up when pooled | E4, Steps 4 to 8 |
 | `gpt-6.1-sol` and `gpt-6-luna` reach 2 of 3 on ambiguous-request, or #45 records the miss with its labels and names the next lever | E4, Step 8 (the miss rule), E5, Steps 2, 4 and 5 |
 | Each matrix model either reaches 2 of 3 on both ambiguous cases, or #45 records its failure labels | E4, Step 3 (`score`), E5, Steps 2, 4 and 5 |
 | Section 7 is built, nudging only under `nare run`, or #45 records why it was not | E5, Step 5 decides; building it is PR 3's own plan |
