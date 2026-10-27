@@ -816,3 +816,61 @@ def test_the_newest_matrix_run_skips_a_newer_single_run(tmp_path: Path) -> None:
         f"{MATRIX_STAMP}.a.jsonl",
         f"{MATRIX_STAMP}.b.jsonl",
     ]
+
+
+def endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *served: str
+) -> list[tuple[str, str]]:
+    """A checkout and an endpoint listing `served`; returns each listing call."""
+    import benchmarks.runner.__main__ as bench
+    from benchmarks.runner.models import Listing, ServedModel
+
+    calls: list[tuple[str, str]] = []
+
+    def listing(base_url: str, api_key: str) -> Listing:
+        calls.append((base_url, api_key))
+        return Listing(tuple(ServedModel(name) for name in served), detailed=True)
+
+    results_dir(tmp_path, monkeypatch)
+    monkeypatch.setattr(bench, "list_models", listing)
+    monkeypatch.setenv("NARE_BASE_URL", "https://proxy.example")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    return calls
+
+
+def test_models_lists_what_the_endpoint_serves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = endpoint(tmp_path, monkeypatch, "gpt-5-nano")
+    assert main(["models"]) == 0
+    assert calls == [("https://proxy.example", "k")]
+    assert "gpt-5-nano" in capsys.readouterr().out
+
+
+def test_models_without_a_base_url_exits_two_with_one_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = endpoint(tmp_path, monkeypatch, "gpt-5-nano")
+    monkeypatch.delenv("NARE_BASE_URL")
+    assert main(["models"]) == 2
+    err = capsys.readouterr().err
+    assert len(err.strip().splitlines()) == 1
+    assert "no base URL" in err
+    assert calls == []
+
+
+def test_models_reports_a_listing_that_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import benchmarks.runner.__main__ as bench
+    from benchmarks.runner.models import Listing, ListingError
+
+    endpoint(tmp_path, monkeypatch)
+
+    def refuse(base_url: str, api_key: str) -> Listing:
+        raise ListingError("/v1/models: HTTP 401")
+
+    monkeypatch.setattr(bench, "list_models", refuse)
+    assert main(["models"]) == 1
+    assert "HTTP 401" in capsys.readouterr().err

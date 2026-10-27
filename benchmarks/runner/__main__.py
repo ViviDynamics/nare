@@ -27,7 +27,7 @@ from benchmarks.runner.compare import (
     run_comparison,
     select_work,
 )
-from benchmarks.runner.config import Config, ConfigError, resolve_config
+from benchmarks.runner.config import KEY_VARS, Config, ConfigError, resolve_config
 from benchmarks.runner.grade import (
     CheckResult,
     grade_bash_check,
@@ -43,6 +43,12 @@ from benchmarks.runner.judge import (
     judge_transport,
     render_attempts,
     score,
+)
+from benchmarks.runner.models import (
+    ListingError,
+    baseline_tiers,
+    list_models,
+    render_models,
 )
 from benchmarks.runner.report import (
     Baseline,
@@ -130,6 +136,11 @@ def build_parser() -> argparse.ArgumentParser:
     judges.add_argument(
         "--reference-model", help="reference (env: NARE_BENCH_REFERENCE_MODEL)"
     )
+    models = sub.add_parser(
+        "models", help="list what the endpoint serves, with window, price, baselines"
+    )
+    models.add_argument("--provider", help="whose key to send (env: NARE_PROVIDER)")
+    models.add_argument("--base-url", help="the proxy (env: NARE_BASE_URL)")
     return parser
 
 
@@ -608,11 +619,45 @@ def as_recorded(config: Config, records: Sequence[RepRecord]) -> Config:
     )
 
 
+def show_models(args: argparse.Namespace, root: Path) -> int:
+    """`bin/bench models`: free, it lists and calls no model."""
+    env = os.environ
+    base_url = args.base_url or env.get("NARE_BASE_URL")
+    if not base_url:
+        print(
+            "bench: no base URL, so there is no proxy to ask; pass --base-url or "
+            "set NARE_BASE_URL",
+            file=sys.stderr,
+        )
+        return 2
+    provider = args.provider or env.get("NARE_PROVIDER") or "anthropic"
+    key_var = KEY_VARS.get(provider)
+    if key_var is None:
+        print(
+            f"bench: unknown provider {provider!r}; nare supports: "
+            + ", ".join(KEY_VARS),
+            file=sys.stderr,
+        )
+        return 2
+    api_key = env.get(key_var)
+    if not api_key:
+        print(f"bench: {key_var} is not set", file=sys.stderr)
+        return 2
+    try:
+        listing = list_models(base_url, api_key)
+    except ListingError as exc:
+        print(f"bench: the endpoint did not list its models: {exc}", file=sys.stderr)
+        return 1
+    print(render_models(listing, baseline_tiers(root / "benchmarks" / "baselines")))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command is None:
         print(
-            "bench needs a subcommand: run, compare, bless, verify, or compare-judges",
+            "bench needs a subcommand: run, compare, bless, verify, "
+            "compare-judges, or models",
             file=sys.stderr,
         )
         return 2
@@ -621,6 +666,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "compare-judges":
         # No tier: it compares whatever cases the results file holds.
         return compare_judges(args, root)
+    if args.command == "models":
+        return show_models(args, root)
     try:
         cases = _select(root, args.tier, args.case)
     except CaseError as exc:
