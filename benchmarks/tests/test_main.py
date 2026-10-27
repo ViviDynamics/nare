@@ -874,3 +874,172 @@ def test_models_reports_a_listing_that_failed(
     monkeypatch.setattr(bench, "list_models", refuse)
     assert main(["models"]) == 1
     assert "HTTP 401" in capsys.readouterr().err
+
+
+SONNET = "claude-sonnet-5-5"
+HAIKU = BaselineMeta("t", "abc1234", "anthropic", "claude-haiku-5-5", SONNET)
+NANO = BaselineMeta("t", "abc1234", "openai", "gpt-5-nano", SONNET)
+
+
+def matrix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *metas: BaselineMeta,
+    failing: str = "",
+    served: tuple[str, ...] | None = None,
+) -> list[Config]:
+    """A checkout whose baselines are `metas`, each passing edit-docstring.
+
+    Every model passes every rep except `failing`, which fails them all. The
+    endpoint lists `served`, by default every baseline's model. Returns the
+    config of every run_case call; the image build is one too.
+    """
+    import benchmarks.runner.__main__ as bench
+    from benchmarks.runner.report import baseline_path
+
+    listed = served if served is not None else tuple(meta.model for meta in metas)
+    endpoint(tmp_path, monkeypatch, *listed)
+    baselines = tmp_path / "benchmarks" / "baselines"
+    baselines.mkdir()
+    for meta in metas:
+        baseline_path(baselines, meta.model, "smoke").write_text(
+            dumps_baseline(meta, [summary("edit-docstring", 1.0)])
+        )
+    ran: list[Config] = []
+
+    async def reps(
+        case: Case, config: Config, transport: Transport, n: int, evidence: Path
+    ) -> list[RepRecord]:
+        ran.append(config)
+        base = replace(
+            record(case.id, model=config.model),
+            outcome="fail" if config.model == failing else "pass",
+            provider=config.provider,
+            judge_model=config.judge_model,
+        )
+        return [replace(base, rep=rep) for rep in range(n)]
+
+    monkeypatch.setattr(bench, "new_stamp", lambda: MATRIX_STAMP)
+    monkeypatch.setattr(bench, "build_image", lambda root: ran.append(CONFIG))
+    monkeypatch.setattr(bench, "judge_transport", lambda config: None)
+    monkeypatch.setattr(bench, "run_case", reps)
+    monkeypatch.setenv("NARE_MODEL", "ada/qwen3-14b")  # the matrix ignores it
+    return ran
+
+
+def table_row(out: str, case: str) -> list[str]:
+    line = next(row for row in out.splitlines() if row.startswith(f"| {case} "))
+    return [cell.strip() for cell in line.strip("|").split("|")]
+
+
+def test_the_matrix_runs_each_model_on_its_own_provider_and_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ran = matrix(tmp_path, monkeypatch, HAIKU, NANO)
+    assert main(["run", "--matrix", "--case", "edit-docstring"]) == 0
+    assert [(c.model, c.provider, c.base_url, c.judge_model) for c in ran[1:]] == [
+        ("claude-haiku-5-5", "anthropic", "https://proxy.example", SONNET),
+        ("gpt-5-nano", "openai", "https://proxy.example/v1", SONNET),
+    ]
+    results = tmp_path / "benchmarks" / "results"
+    assert sorted(p.name for p in results.glob("*.jsonl")) == [
+        f"{MATRIX_STAMP}.claude-haiku-5-5.jsonl",
+        f"{MATRIX_STAMP}.gpt-5-nano.jsonl",
+    ]
+    out = capsys.readouterr().out
+    assert table_row(out, "case") == ["case", "claude-haiku-5-5", "gpt-5-nano"]
+    assert table_row(out, "edit-docstring") == ["edit-docstring", "3/3", "3/3"]
+    assert f"Judge: {SONNET}, for every model." in out
+
+
+def test_a_matrix_regression_on_any_model_exits_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    matrix(tmp_path, monkeypatch, HAIKU, NANO, failing="gpt-5-nano")
+    assert main(["run", "--matrix", "--case", "edit-docstring"]) == 1
+    row = table_row(capsys.readouterr().out, "edit-docstring")
+    assert row == ["edit-docstring", "3/3", f"0/{CONFIRM_REPS} regression"]
+
+
+def test_a_matrix_with_two_judges_exits_two_before_any_model_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ran = matrix(tmp_path, monkeypatch, HAIKU, replace(NANO, judge_model="gpt-5-nano"))
+    assert main(["run", "--matrix"]) == 2
+    assert ran == []
+    err = capsys.readouterr().err
+    assert "claude-haiku-5-5.smoke.toml" in err
+    assert "gpt-5-nano.smoke.toml" in err
+
+
+def test_a_matrix_model_without_its_key_exits_two_before_any_model_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ran = matrix(tmp_path, monkeypatch, HAIKU, NANO)
+    monkeypatch.delenv("OPENAI_API_KEY")
+    assert main(["run", "--matrix"]) == 2
+    assert ran == []
+    err = capsys.readouterr().err
+    assert "gpt-5-nano.smoke.toml" in err
+    assert "OPENAI_API_KEY" in err
+
+
+def test_a_model_the_endpoint_does_not_list_stops_the_matrix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ran = matrix(tmp_path, monkeypatch, HAIKU, NANO, served=("claude-haiku-5-5",))
+    assert main(["run", "--matrix"]) == 2
+    assert ran == []
+    err = capsys.readouterr().err
+    assert "'gpt-5-nano' (gpt-5-nano.smoke.toml)" in err
+
+
+def test_a_listing_that_fails_warns_and_the_matrix_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import benchmarks.runner.__main__ as bench
+    from benchmarks.runner.models import Listing, ListingError
+
+    ran = matrix(tmp_path, monkeypatch, HAIKU)
+
+    def refuse(base_url: str, api_key: str) -> Listing:
+        raise ListingError("/v1/models: HTTP 503")
+
+    monkeypatch.setattr(bench, "list_models", refuse)
+    assert main(["run", "--matrix", "--case", "edit-docstring"]) == 0
+    assert [c.model for c in ran[1:]] == ["claude-haiku-5-5"]
+    assert "warning" in capsys.readouterr().err
+
+
+def test_a_matrix_without_a_base_url_warns_and_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ran = matrix(tmp_path, monkeypatch, HAIKU, NANO)
+    monkeypatch.delenv("NARE_BASE_URL")
+    assert main(["run", "--matrix", "--case", "edit-docstring"]) == 0
+    assert [c.base_url for c in ran[1:]] == [None, None]
+    assert "no base URL" in capsys.readouterr().err
+
+
+def test_the_matrix_takes_no_model_provider_or_judge_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran = matrix(tmp_path, monkeypatch, HAIKU)
+    for flag in (["--model", "m"], ["--provider", "openai"], ["--judge-model", "j"]):
+        assert main(["run", "--matrix", *flag]) == 2
+    assert ran == []
+
+
+def test_an_empty_matrix_exits_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran = matrix(tmp_path, monkeypatch)
+    assert main(["run", "--matrix"]) == 2
+    assert ran == []
+
+
+def test_bless_stays_per_model() -> None:
+    # Blessing the whole matrix at once would make it too easy to bless away
+    # a regression.
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["bless", "--matrix"])
