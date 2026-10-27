@@ -1025,6 +1025,11 @@ the wording fails" stand, with these changes:
   pick's gate is the only one.
 - **nano on read-only-question** needs at least 14 judged reps on the picked
   wording, counting the gate run's. PR 1's side is done: 15 of 17 passed.
+- **A gate cell inconclusive twice,** in the gate run and in one re-run at
+  the gate's commit, is recorded in the evidence as unmeasured, not as a
+  miss, naming the number its baseline keeps and the commit that number
+  came from, and it is not dropped from the baseline, since `bless` never
+  lets an inconclusive result displace a good number.
 - **The record** adds step 1's pool and its row, and each candidate's spark
   pool, to what section 6.1's step 5 lists, under its own heading in the
   evidence README.
@@ -1059,11 +1064,17 @@ cost about 0.2 cents a rep.
 | a flagged cell, pooled on both sides | 28 to 42 | the judge, that model | 1.10 |
 | gate | 90, or 118 with four confirmations | the judge, four paid agents | 2.30 |
 | nano on read-only-question | 7 to 18 | the judge, nano | 0.30 |
+| a guard cell the gate leaves inconclusive, re-run once for its verdict | 3, or 10 with a confirmation | the judge, that model | 0.30 |
+| sol's or luna's ambiguous-request, if the gate leaves it inconclusive, re-run once for the miss | 3, or 10 with a confirmation | the judge, that model | 0.30 |
+| a cell the gate leaves inconclusive, re-run once more to re-bless it, if the wording ships | 3, or 10 with a confirmation | the judge, that model | 0.30 |
 | the read-only re-score, and the blesses | 0 | nothing | 0 |
 
-One candidate and no flagged cell is at most about 270 reps and $5.00. A
-second candidate adds up to 80 reps and $1.40, and each flagged cell up to
-42 reps and $1.10. If step 2 keeps nothing, the pass ends under $2.
+One candidate, with no flagged cell and no cell the gate leaves
+inconclusive, is at most about 270 reps and $5.00. A second candidate adds
+up to 80 reps and $1.40, each flagged cell up to 42 reps and $1.10, and each
+cell the gate leaves inconclusive up to 20 reps and $0.60, for at most two
+re-runs: one for its verdict and one to re-bless it. If step 2 keeps
+nothing, the pass ends under $2.
 Streamed turns report a cost of 0.0 through this proxy, so the PR reads the
 spend from the proxy.
 
