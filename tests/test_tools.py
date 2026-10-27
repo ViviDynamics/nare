@@ -640,12 +640,114 @@ def test_the_ask_description_says_where_a_prose_question_goes() -> None:
     ) in schema_of("ask")["description"]
 
 
-def test_the_ask_example_is_no_benchmark_cases_answer() -> None:
-    # The old example was ambiguous-request's fixture and the answer its judge
-    # looks for, so a model could pass that case by copying it (#45).
+def test_the_ask_description_says_an_open_value_is_no_detail() -> None:
+    # Without the old example, sol and luna set a new timeout value themselves
+    # instead of asking (#45). The value sentence follows the exclusion for
+    # details you can decide yourself, so "such a detail" means it.
+    assert (
+        "or for details you can decide yourself such as wording, style or names. "
+        "A new value the request leaves open is not such a detail."
+    ) in schema_of("ask")["description"]
+
+
+def test_the_ask_example_is_the_log_level_choice() -> None:
     questions = schema_of("ask")["input_schema"]["properties"]["questions"]
-    assert "TIMEOUT" not in questions["description"]
     assert "Set the log level to INFO or to WARNING?" in questions["description"]
+
+
+# What a model could copy from the ask schema to pass an ambiguous case, from
+# benchmarks/cases, as case-insensitive patterns. A name counts inside a longer
+# identifier (HTTP_TIMEOUT, MAX_RETRIES), so only a letter or digit before it
+# stops a match, and a value counts with a unit after it (60s). Shapes, under
+# any names: an amount left open, as in the old example's "from 30 to what",
+# and an unused helper to choose, as in ambiguous-after-reading's prompt. The
+# prompts' verbs are not here: a description may say "delete" or "increase".
+CASE_ANSWERS = (
+    # ambiguous-request: "Increase the timeout."; config.py holds TIMEOUT = 30
+    # and RETRIES = 3. Its judge accepts a question naming the current 30; the
+    # old example offered 60 and 120, and every guess set 60.
+    r"(?<![a-z0-9])timeout",
+    r"(?<![a-z0-9])retries",
+    r"(?<![a-z0-9])config\.py",
+    r"(?<![\d.])30(?!\d)",
+    r"(?<![\d.])60(?!\d)",
+    r"(?<![\d.])120(?!\d)",
+    # ambiguous-after-reading: "Delete the unused helper."; utils.py holds
+    # format_bytes and slugify, which nothing calls, and parse_csv_line and
+    # total, which main.py calls. "total" is an everyday word, so it is left out.
+    r"(?<![a-z0-9])utils\.py",
+    r"(?<![a-z0-9])main\.py",
+    r"(?<![a-z0-9])format_bytes",
+    r"(?<![a-z0-9])slugify",
+    r"(?<![a-z0-9])parse_csv_line",
+    # An amount left open: "from 30 to", "from 45 seconds to", "to 8 or 16",
+    # and "to what" asked as a question ("to what:", "to what?", "to what value").
+    r"\bfrom \d[\w.]*(?: \w+)? to\b",
+    r"\bto \d[\w.]* or \d",
+    r"\bto what(?=\s*[:?]| value)",
+    # An unused helper to choose.
+    r"\bunused\b",
+    r"\b(?:dead|uncalled|unreferenced) (?:helper|function)s?\b",
+)
+
+
+def case_answers_in(text: str) -> list[str]:
+    return [p for p in CASE_ANSWERS if re.search(p, text, re.IGNORECASE)]
+
+
+def strings_in(value: object) -> list[str]:
+    """Every string value in a schema, each checked on its own."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for item in value.values() for s in strings_in(item)]
+    if isinstance(value, list):
+        return [s for item in value for s in strings_in(item)]
+    return []
+
+
+@pytest.mark.parametrize(
+    "near_copy",
+    [
+        # The old example, ambiguous-request's fixture and answer.
+        "Raise TIMEOUT from 30 to what: 60, 120, or another value? "
+        "Unanswered, I will use 60.",
+        # ambiguous-request's shape under other names, which spec 6.1 rules out.
+        "Raise MAX_WORKERS from 4 to 8 or 16? Unanswered, I will use 8.",
+        "Raise MAX_WORKERS to 8 or 16? Unanswered, I will use 8.",
+        "Lengthen the time limit from 45 to 90 or 180 seconds?",
+        "Lengthen the time limit from 45 seconds to 90?",
+        # The case's names inside longer ones, and a value with its unit.
+        "Set HTTP_TIMEOUT to 60s or 120s?",
+        "Raise MAX_RETRIES?",
+        # ambiguous-after-reading's shape under other names.
+        "Remove the unused function, format_size or make_slug?",
+        "Delete the dead helper, or the uncalled function too?",
+    ],
+)
+def test_the_ask_leak_check_catches_a_near_copy(near_copy: str) -> None:
+    assert case_answers_in(near_copy)
+
+
+@pytest.mark.parametrize(
+    "harmless",
+    [
+        "Do not delete files to make room.",
+        "Keep the change to what the request asks for.",
+        "Return to what you were doing.",
+        "Wait up to 300 seconds.",
+    ],
+)
+def test_the_ask_leak_check_passes_harmless_wording(harmless: str) -> None:
+    assert case_answers_in(harmless) == []
+
+
+def test_the_ask_schema_names_no_benchmark_cases_answer() -> None:
+    # The old example was ambiguous-request's fixture and the answer its judge
+    # looks for, so a model could pass that case by copying it (#45). Every
+    # string in the schema is checked on its own, descriptions and all.
+    leaks = {s: case_answers_in(s) for s in strings_in(schema_of("ask"))}
+    assert {s: found for s, found in leaks.items() if found} == {}
 
 
 # Darwin's pkill excludes its ancestors unless -a is supplied, so plain -f
