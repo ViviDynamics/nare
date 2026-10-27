@@ -115,7 +115,7 @@ tier's baselines as the same table.
 make it too easy to bless away a regression. After a matrix run,
 `bin/bench bless --model M` blesses M's results from that run.
 
-A smoke matrix of seven models is 126 repetitions plus any confirmations, and
+A smoke matrix of five models is 90 repetitions plus any confirmations, and
 about an hour of wall clock.
 
 ## What a run leaves behind

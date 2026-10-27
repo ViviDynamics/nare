@@ -62,7 +62,7 @@ The issue asks for three things:
 | Issue item | Where |
 | --- | --- |
 | Iterate on the prompt and handling so smaller models call `ask` reliably | Section 6 (the description), section 7 (the loop, if needed) |
-| Add more capable models to the test matrix | Sections 3 and 4: a matrix the benchmark runs, with Sonnet and two newer OpenAI models in it |
+| Add more capable models to the test matrix | Sections 3 and 4: a matrix the benchmark runs, with two newer OpenAI models in it, one of them capable tier |
 | Expose new models through LiteLLM, and make sure agents check for the latest options | Section 3.3: `bin/bench models`, a preflight, and a pointer to `models` in `benchmarks/README.md`. Adding models to the proxy is outside this repo (section 9). |
 
 **Reliably** means two things, one a target and one a gate:
@@ -206,29 +206,34 @@ The endpoint also serves eight local `ada/*` models.
 
 | Model | Provider | Why it is in | $ per M in, out |
 | --- | --- | --- | --- |
-| `claude-haiku-5-5` | `anthropic` | The model the issue is about, as the proxy serves it now | 0.10, 0.50 |
 | `gpt-5-nano` | `openai` | Called `ask` in the call's test | 0.05, 0.40 |
 | `gpt-6-luna` | `openai` | A newer OpenAI model at about nano's price, and the likely replacement if we move off nano | 0.10, 0.50 |
 | `gemini-3.1-flash-lite` | `openai` | Called `ask` in the call's test | 0.25, 1.50 |
 | `spark/glm-5.3-flash` | `openai` | The default for live runs, and a reasoning model | 0.15, 0.50 |
-| `claude-sonnet-5-5` | `anthropic` | Capable tier, named on the call | 2, 10 |
 | `gpt-6.1-sol` | `openai` | Capable tier, the newer OpenAI model | 2, 10 |
 
-**Provider:** `openai` for every model that is not Claude, `anthropic` for
-the two that are. When a proxy translates a reasoning model's thinking onto
+**Provider:** `openai` for every model in the matrix. A Claude model would
+use `anthropic`. When a proxy translates a reasoning model's thinking onto
 the Anthropic route, nare warns that words or whole answers can be dropped
 and suggests `--provider openai` (`_warn_proxy_reasoning` in
-`transport/anthropic.py`). The proxy reports reasoning support for all four
-non-Claude models besides spark, and spark is a reasoning model too. The
-Claude models' thinking is native to the Anthropic route.
+`transport/anthropic.py`). The proxy reports reasoning support for the four
+models besides spark, and spark is a reasoning model too.
 
 **Judge:** `gpt-6.1-sol` for every baseline. It is a capable model on the
 `openai` route, and the judge's claims are binary and checkable, so judging
 its own reps is a small bias. The matrix table notes it. It was chosen on
 2026-10-27, in place of `claude-sonnet-5-5`, because the Anthropic account
-behind the proxy was out of quota until 2026-11-01. It also keeps the judge
-off the account the two Claude models depend on. Those two are blessed after
-2026-11-01, on the same code and with the same judge.
+behind the proxy was out of quota until 2026-11-01. The same day, #45 went ahead
+without the two Claude models (below).
+
+**The two Claude models are left out.** The first matrix also had
+`claude-haiku-5-5`, the model the issue is about, and `claude-sonnet-5-5`
+for the capable tier. With the Anthropic account out of quota until
+2026-11-01, #45 went ahead on 2026-10-27 with the five `openai` models rather
+than wait, so `gpt-6.1-sol` is the capable tier. Either Claude model rejoins
+with one bless on the same judge, with `--provider anthropic` and a base URL
+without `/v1`. `gpt-6.1-sol` as judge on that route was probed on
+2026-10-27 and answered as it does on the `openai` route.
 
 **`ada/qwen3-14b` leaves the matrix.** Its baseline predates contract 2 and
 the system prompt, so nothing can be compared against it. The `ada/*` models
@@ -237,10 +242,10 @@ on 2026-09-30. Delete the baseline. The local models can still be run by hand
 with `--model`, and one rejoins the matrix when someone blesses a baseline
 for it that works.
 
-**Cost.** A smoke matrix run is 6 cases × 3 reps × 7 models: 126 reps, plus
+**Cost.** A smoke matrix run is 6 cases × 3 reps × 5 models: 90 reps, plus
 any seven-rep confirmations. Estimated from the smoke tier's token medians
 (about 1k to 5k per rep) and the prices above, that is a few dollars,
-most of it the judge and the two capable models. It is about an hour of
+most of it the judge and the capable model. It is about an hour of
 wall clock: the reps run one after another, and each starts a container,
 takes a few model turns, often starts a second container for its bash
 checks, and makes a judge call. The first run replaces this estimate with a
@@ -360,7 +365,7 @@ min_met = 2
 
 ## 5. Measure first
 
-Before nare changes, bless all seven baselines on the matrix PR's head,
+Before nare changes, bless all five baselines on the matrix PR's head,
 whose `src/nare` is unchanged from `main`, with the one judge.
 
 The matrix is empty until they exist, so each is made one model at a time.
@@ -371,8 +376,7 @@ is being blessed:
     bin/bench run   --tier smoke --model M --provider P --judge-model gpt-6.1-sol
     bin/bench bless --tier smoke --model M --provider P --judge-model gpt-6.1-sol
 
-`P` is the row's provider from section 3.4. The five `openai` rows are
-blessed first, and the two Claude rows after 2026-11-01 (section 3.4). An
+`P` is the row's provider from section 3.4, `openai` for all five. An
 `openai` row's `run` needs `OPENAI_API_KEY`, which on this proxy is the same
 key as `ANTHROPIC_API_KEY`, and a `--base-url` that ends in `/v1` (section
 3.2).
@@ -448,7 +452,7 @@ that is the matrix's job.
 **Measuring it:** `bin/bench run --matrix` against the section 5 baselines.
 The PR states the matrix table before and after, and the failure labels of
 any ambiguous-case rep that still fails. The same PR then re-blesses all
-seven baselines, one model at a time, so the baselines on `main` measure
+five baselines, one model at a time, so the baselines on `main` measure
 the description on `main`.
 
 ## 7. If prose questions remain: a nudge in the loop
@@ -536,8 +540,8 @@ a gate failure, and the nudge does not ship.
 
 | PR | Contains | Changes nare? |
 | --- | --- | --- |
-| 1 | `--matrix`, `compare --matrix`, `models` and its pointer in `benchmarks/README.md`, the preflight, both cases, seven baselines, the `ada/qwen3-14b` baseline deleted, `docs/evidence/45/` | No |
-| 2 | Section 6, with the matrix table before and after, and all seven baselines re-blessed after the change | The description only |
+| 1 | `--matrix`, `compare --matrix`, `models` and its pointer in `benchmarks/README.md`, the preflight, both cases, five baselines, the `ada/qwen3-14b` baseline deleted, `docs/evidence/45/` | No |
+| 2 | Section 6, with the matrix table before and after, and all five baselines re-blessed after the change | The description only |
 | 3 | Section 7, only if section 7's first paragraph calls for it | The loop, under `nare run` only |
 
 PR 1 is useful on its own. #43's benchmark for the compaction point needs to
@@ -579,13 +583,13 @@ run across models too.
       model call
 - [ ] ambiguous-after-reading and read-only-question are in the smoke tier
       and pass `bin/bench verify`
-- [ ] Seven smoke baselines are blessed with one judge, and the
+- [ ] Five smoke baselines are blessed with one judge, and the
       `ada/qwen3-14b` baseline is deleted
 - [ ] `docs/evidence/45/README.md` holds the baseline matrix table and the
       failure labels
 - [ ] The `ask` and `questions` descriptions are as in section 6
 - [ ] The section 6 PR shows the matrix table before and after, and
-      re-blesses all seven baselines after the change
+      re-blesses all five baselines after the change
 - [ ] No matrix model has a confirmed regression on edit-docstring,
       multi-file-rename or read-only-question
 - [ ] Each matrix model either reaches 2 of 3 on both ambiguous cases, or

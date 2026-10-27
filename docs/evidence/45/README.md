@@ -9,9 +9,9 @@ same at both, and unchanged from `main`.
 **Runs:** smoke tier, 3 reps per case, `NARE_STREAM=1`.
 
 These are the "before" numbers of spec section 5
-(`docs/superpowers/specs/2026-10-23-ask-across-models-design.md`). Five of
-the seven matrix models are blessed so far. The two Claude models are under
-"Not yet in the matrix". The two ambiguous cases were first blessed with
+(`docs/superpowers/specs/2026-10-23-ask-across-models-design.md`). All five
+matrix models are blessed. The two Claude models were left out, as "Left
+out of the matrix" explains. The two ambiguous cases were first blessed with
 `max_turns` 6 and 8, then re-run and re-blessed with 12 (spec section 4.1).
 The first numbers are under "With the old turn limits".
 
@@ -259,11 +259,11 @@ What the labels show:
   and rep 2 on an instruction. Section 7's rule keys on a last line that ends
   with `?`, so as written it would not have fired on either.
 
-## Not yet in the matrix
+## Left out of the matrix
 
 **`claude-haiku-5-5` and `claude-sonnet-5-5`.** The Anthropic account behind
 the proxy is out of quota. A `claude-haiku-5-5` run on 2026-10-27
 (`2026-10-27T04-01-49Z.jsonl`) errored on every rep with the upstream reply
 "You have reached your specified API usage limits. You will regain access on
-2026-11-01 at 00:00 UTC." Both models are run and blessed after then, on this
-branch's code and with the same judge.
+2026-11-01 at 00:00 UTC." #45 went ahead without them rather than wait (spec
+section 3.4). Either can rejoin with one bless on the same judge.

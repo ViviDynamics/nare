@@ -2681,6 +2681,8 @@ pgrep -af "[b]enchmarks.runner" || echo "no bench running"
 
 ### C1: Bless the seven "before" baselines on Part A's head
 
+> **2026-10-27:** #45 went ahead without the two Claude models (spec section 3.4), so C1, C3 and C4 cover the five `openai` models, and the "After 2026-11-01" lines below are not run.
+
 ```bash
 git switch 45-ask-across-models
 git status --short                  # clean
