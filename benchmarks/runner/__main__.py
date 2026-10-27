@@ -469,12 +469,16 @@ def model_changed(baseline: Baseline, config: Config, allow: bool) -> bool:
     Pinning the judge model too is the non-obvious half: if it changes under
     the suite, every score shifts at once and reads as a harness regression.
     The agent's output cap is pinned for the same reason: a reasoning model
-    cut off at nare's default fails reps it passes with room to think.
+    cut off at nare's default fails reps it passes with room to think. So is
+    the provider: the same model on the other route can lose a reasoning
+    model's thinking on the way. An empty `config.provider` is results that
+    never recorded theirs, which is unknown, not a mismatch.
     """
     if allow:
         return False
     if (
         baseline.meta.model == config.model
+        and (not config.provider or baseline.meta.provider == config.provider)
         and baseline.meta.judge_model == config.judge_model
         and baseline.meta.max_tokens == config.max_tokens
     ):
@@ -483,13 +487,14 @@ def model_changed(baseline: Baseline, config: Config, allow: bool) -> bool:
     def cap(value: int | None) -> str:
         return "nare's default" if value is None else str(value)
 
+    provider = repr(config.provider) if config.provider else "an unrecorded provider"
     print(
-        f"bench: baseline was blessed on model {baseline.meta.model!r} / "
-        f"judge {baseline.meta.judge_model!r} / output cap "
-        f"{cap(baseline.meta.max_tokens)}; this run used {config.model!r} / "
-        f"{config.judge_model!r} / {cap(config.max_tokens)}. Numbers are not "
-        "comparable across models or caps. Pass --allow-model-change to "
-        "override.",
+        f"bench: baseline was blessed on provider {baseline.meta.provider!r} / "
+        f"model {baseline.meta.model!r} / judge {baseline.meta.judge_model!r} / "
+        f"output cap {cap(baseline.meta.max_tokens)}; this run used {provider} / "
+        f"{config.model!r} / {config.judge_model!r} / {cap(config.max_tokens)}. "
+        "Numbers are not comparable across providers, models or caps. Pass "
+        "--allow-model-change to override.",
         file=sys.stderr,
     )
     return True
@@ -630,17 +635,37 @@ def compare_judges(args: argparse.Namespace, root: Path) -> int:
     return 0
 
 
-def as_recorded(config: Config, records: Sequence[RepRecord]) -> Config:
+def as_recorded(
+    config: Config,
+    records: Sequence[RepRecord],
+    *,
+    provider: str | None = None,
+    judge_model: str | None = None,
+) -> Config:
     """The cap, provider and judge the results were run with, not the ones in
-    this shell: compare and bless never run the agent. Results written before
-    the provider and judge were recorded keep the flags' values."""
+    this shell: compare and bless never run the agent.
+
+    `provider` and `judge_model` are the flags. One that contradicts what the
+    results recorded raises ConfigError naming both values, since bless would
+    write it over what was measured. Results written before the provider and
+    judge were recorded keep the flags' values, or the shell's.
+    """
+    ran_provider = next((r.provider for r in records if r.provider), "")
+    ran_judge = next((r.judge_model for r in records if r.judge_model), "")
+    for name, flag, given, ran in (
+        ("provider", "--provider", provider, ran_provider),
+        ("judge", "--judge-model", judge_model, ran_judge),
+    ):
+        if given and ran and given != ran:
+            raise ConfigError(
+                f"the results were run with {name} {ran!r}, and {flag} says "
+                f"{given!r}; drop {flag}, or pass the one they were run with"
+            )
     return replace(
         config,
         max_tokens=next((r.max_tokens for r in records), None),
-        provider=next((r.provider for r in records if r.provider), config.provider),
-        judge_model=next(
-            (r.judge_model for r in records if r.judge_model), config.judge_model
-        ),
+        provider=ran_provider or config.provider,
+        judge_model=ran_judge or config.judge_model,
     )
 
 
@@ -1063,7 +1088,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     records = read_results(results_file)
-    config = as_recorded(config, records)
+    try:
+        config = as_recorded(
+            config, records, provider=args.provider, judge_model=args.judge_model
+        )
+    except ConfigError as exc:
+        print(f"bench: {results_file.name}: {exc}", file=sys.stderr)
+        return 2
     produced = sorted({r.model for r in records} - {config.model})
     if produced:
         print(
@@ -1111,6 +1142,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"bench: no baseline at {baseline_file}", file=sys.stderr)
         return 2
     baseline = load_baseline(baseline_file)
+    if not args.provider and not any(r.provider for r in records):
+        # Results written before the provider was recorded, and no flag to
+        # say: the route they took is unknown, which is not a mismatch.
+        config = replace(config, provider="")
     if model_changed(baseline, config, args.allow_model_change):
         return 2
     comparison = compare(

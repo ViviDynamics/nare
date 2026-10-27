@@ -1140,3 +1140,113 @@ def test_baselines_goes_with_matrix(
 ) -> None:
     matrix(tmp_path, monkeypatch, HAIKU)
     assert main(["compare", "--baselines", "--model", "claude-haiku-5-5"]) == 2
+
+
+def test_run_refuses_a_baseline_blessed_on_another_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The same model on the other route can lose a reasoning model's thinking
+    # on the way, so the numbers are not comparable.
+    matrix(tmp_path, monkeypatch, NANO)
+    flags = [
+        "--model",
+        "gpt-5-nano",
+        "--provider",
+        "anthropic",
+        "--judge-model",
+        SONNET,
+    ]
+    assert main(["run", "--case", "edit-docstring", *flags]) == 2
+    err = capsys.readouterr().err
+    assert "provider 'openai'" in err
+    assert "'anthropic'" in err
+
+
+def provider_baseline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model m, blessed on openai and judged by j."""
+    from benchmarks.runner.report import baseline_path
+
+    baselines = results_dir(tmp_path, monkeypatch)
+    baselines.mkdir()
+    baseline_path(baselines, "m", "smoke").write_text(
+        dumps_baseline(
+            BaselineMeta("t", "abc1234", "openai", "m", "j"),
+            [summary("edit-docstring", 1.0)],
+        )
+    )
+
+
+def test_compare_refuses_results_run_on_another_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    provider_baseline(tmp_path, monkeypatch)
+    ran = replace(record("edit-docstring", model="m"), provider="anthropic")
+    write_results(tmp_path, [replace(ran, judge_model="j")])
+    assert main(["compare", "--model", "m"]) == 2
+    err = capsys.readouterr().err
+    assert "provider 'openai'" in err
+    assert "'anthropic'" in err
+
+
+@pytest.mark.parametrize(
+    ("flags", "code"),
+    [
+        ([], 0),
+        (["--provider", "openai"], 0),
+        (["--provider", "anthropic"], 2),
+    ],
+)
+def test_an_unrecorded_provider_is_unknown_unless_a_flag_names_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str], code: int
+) -> None:
+    # Results written before the provider was recorded say nothing about the
+    # route they took, and the shell's NARE_PROVIDER says nothing either.
+    provider_baseline(tmp_path, monkeypatch)
+    monkeypatch.setenv("NARE_PROVIDER", "anthropic")
+    write_results(tmp_path, [record("edit-docstring", model="m")])
+    assert main(["compare", "--model", "m", "--judge-model", "j", *flags]) == code
+
+
+@pytest.mark.parametrize("command", ["bless", "compare"])
+@pytest.mark.parametrize(
+    ("flag", "given", "recorded"),
+    [
+        ("--provider", "openai", "anthropic"),
+        ("--judge-model", "claude-sonnet-5-5", "gpt-5-nano"),
+    ],
+)
+def test_a_flag_that_contradicts_the_results_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+    flag: str,
+    given: str,
+    recorded: str,
+) -> None:
+    # bless would write the flag's value over what was measured.
+    from benchmarks.runner.report import baseline_path
+
+    baselines = results_dir(tmp_path, monkeypatch)
+    baselines.mkdir()
+    blessed = baseline_path(baselines, "gpt-5-nano", "smoke")
+    blessed.write_text(
+        dumps_baseline(
+            BaselineMeta("t", "abc1234", "anthropic", "gpt-5-nano", "gpt-5-nano"),
+            [summary("edit-docstring", 1.0)],
+        )
+    )
+    before = blessed.read_text()
+    ran = replace(
+        record("edit-docstring", model="gpt-5-nano"),
+        provider="anthropic",
+        judge_model="gpt-5-nano",
+    )
+    write_results(tmp_path, [ran])
+    assert main([command, "--model", "gpt-5-nano", flag, given]) == 2
+    err = capsys.readouterr().err
+    assert f"'{given}'" in err
+    assert f"'{recorded}'" in err
+    assert blessed.read_text() == before
+    # A flag that agrees with the results is fine.
+    assert main([command, "--model", "gpt-5-nano", flag, recorded]) == 0

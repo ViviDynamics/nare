@@ -34,6 +34,13 @@ three repetitions are not conclusive on their own.
 `bless` writes the provider, judge and output cap the results were run with,
 which each results line records, and not the ones in your shell. Results
 written before the provider and judge were recorded take them from the flags.
+A `--provider` or `--judge-model` that contradicts what the results recorded
+exits 2, for `compare` too.
+
+`run` and `compare` refuse, with exit 2, a baseline blessed on another
+provider, model, judge or output cap, since those numbers are not comparable;
+`--allow-model-change` overrides. Results that never recorded their provider
+are compared on the others alone, unless `--provider` names it.
 
 Tokens are `input + output + cache_read + cache_write` from nare's result
 line. A proxy serves most input from cache, so counting only `input` would

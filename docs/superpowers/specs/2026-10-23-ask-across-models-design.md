@@ -81,7 +81,9 @@ A baseline already records `provider`, `model`, `judge_model` and the output
 cap in `[meta]` (the cap only when one was set), and `run` already refuses a
 baseline blessed on a different model, judge or output cap (`model_changed`
 in `benchmarks/runner/__main__.py`). It checks after the reps have run, and
-it does not compare the provider. So the matrix needs no new configuration:
+before PR 1 it did not compare the provider. PR 1 adds the provider to that
+check, since the same model on the other route is a different measurement.
+So the matrix needs no new configuration:
 **the matrix for a tier is the set of `benchmarks/baselines/*.<tier>.toml`
 files.** Adding a model means blessing a baseline for it. Dropping one means
 deleting its baseline. Both are reviewed like any committed file, which is
@@ -150,7 +152,8 @@ carries the model and the output cap but not the provider or the judge, so
 `bless` writes the provider and judge it resolves from its own flags and
 environment. A bless after a matrix run must get the baseline's provider and
 the matrix judge, either from the person or from what the matrix run
-recorded. The plan picks which.
+recorded. The plan picks which. Either way, a flag that contradicts what the
+results recorded exits 2 rather than overwrite it.
 
 ### 3.3 Checking what the proxy serves
 
