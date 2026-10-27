@@ -49,8 +49,8 @@
 
 | File | Change | Task |
 | --- | --- | --- |
-| `benchmarks/cases/ambiguous-after-reading/` | new case: `case.toml`, `fixture/utils.py`, `fixture/main.py` | 1 |
-| `benchmarks/cases/read-only-question/` | new case: `case.toml`, `fixture/duration.py` | 1 |
+| `benchmarks/cases/ambiguous-after-reading/` | new case: `case.toml`, `fixture/utils.py`, `fixture/main.py`, `fixture/.gitignore` | 1 |
+| `benchmarks/cases/read-only-question/` | new case: `case.toml`, `fixture/duration.py`, `fixture/.gitignore` | 1 |
 | `benchmarks/tests/test_cases.py` | `SEEDS`, case tests, `run_here` test | 1 |
 | `benchmarks/baselines/ada-qwen3-14b.smoke.toml` | deleted | 2 |
 | `benchmarks/runner/report.py` | `RepRecord.provider`, `.judge_model`; `render_matrix` | 3, 7 |
@@ -91,8 +91,8 @@ Expected: clean. This creates `.venv` on first use.
 ### Task 1: Two new smoke cases
 
 **Files:**
-- Create: `benchmarks/cases/ambiguous-after-reading/case.toml`, `fixture/utils.py`, `fixture/main.py`
-- Create: `benchmarks/cases/read-only-question/case.toml`, `fixture/duration.py`
+- Create: `benchmarks/cases/ambiguous-after-reading/case.toml`, `fixture/utils.py`, `fixture/main.py`, `fixture/.gitignore`
+- Create: `benchmarks/cases/read-only-question/case.toml`, `fixture/duration.py`, `fixture/.gitignore`
 - Modify: `benchmarks/tests/test_cases.py`
 
 - [ ] **Step 1: Write the failing tests**
@@ -304,6 +304,15 @@ def parse_duration(text):
 ```
 
 Do not run the fixtures from inside their directories: a `__pycache__` left there would land in the fixture copy.
+
+Give both fixtures expense-tracker-cli's `.gitignore`, byte for byte (`cp benchmarks/cases/expense-tracker-cli/fixture/.gitignore` into each `fixture/`):
+
+```
+__pycache__/
+.pytest_cache/
+```
+
+A model that runs the code to check its answer leaves a `.pyc`. The rep's diff is `git add -A` against the fixture commit (`git_diff` in `sandbox.py`), so without this the judge reads that `.pyc` as a changed file and fails read-only-question's "No file was changed." The Task 11 spark pass failed two of three reps that way.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 

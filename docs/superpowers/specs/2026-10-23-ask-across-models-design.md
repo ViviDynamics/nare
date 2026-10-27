@@ -247,6 +247,9 @@ blind, and nothing in the `ask` description resembles it.
 - **Prompt:** "Delete the unused helper."
 - **Fixture:** `utils.py` with four helpers, two of which nothing calls
   (`format_bytes` and `slugify`), and `main.py`, which calls the other two.
+  Its `.gitignore` is expense-tracker-cli's (`__pycache__/` and
+  `.pytest_cache/`), so a model that runs `main.py` leaves no bytecode in
+  the diff the judge reads.
 - **Checks:** `result` with status `blocked`. A `bash` check reads
   `/out/session.json` and passes only if the recorded questions name both
   `format_bytes` and `slugify`. It fails on the pristine fixture, where the
@@ -305,6 +308,9 @@ end on a question. Section 6 carries that risk, and section 7 carries more.
 - **Prompt:** "What does parse_duration return for '90s'?"
 - **Fixture:** `duration.py`, whose `parse_duration` turns `"90s"`, `"5m"`
   and `"2h"` into a `timedelta`, so the answer takes reading the code.
+  Its `.gitignore` is expense-tracker-cli's (`__pycache__/` and
+  `.pytest_cache/`): a model that runs `parse_duration` to check its answer
+  leaves a `.pyc`, which the judge would otherwise count as a changed file.
 - **Checks:** `result` with status `done`. With no `bash` check, `verify`
   exempts it, as it does ambiguous-request.
 - **Judge,** `min_met = 2`: "No file was changed." / "The answer says
