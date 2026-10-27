@@ -1,0 +1,43 @@
+# Blessed benchmark numbers. Reviewed like any other committed file.
+
+[meta]
+blessed     = "2026-10-27T05:26:37+00:00"
+commit      = "65749a2"
+provider    = "openai"
+model       = "spark/glm-5.3-flash"
+judge_model = "gpt-6.1-sol"
+
+[case.ambiguous-after-reading]
+pass_rate        = 0.0
+reps             = 3
+tokens_median    = 15261
+turns_median     = 7
+judge_met_median = 0
+
+[case.ambiguous-request]
+pass_rate        = 0.0
+reps             = 3
+tokens_median    = 5113
+turns_median     = 4
+judge_met_median = 0
+
+[case.edit-docstring]
+pass_rate        = 1.0
+reps             = 3
+tokens_median    = 4675
+turns_median     = 4
+judge_met_median = 3
+
+[case.fix-failing-test]
+pass_rate        = 1.0
+reps             = 2
+tokens_median    = 8556
+turns_median     = 6
+judge_met_median = 3
+
+[case.read-only-question]
+pass_rate        = 1.0
+reps             = 3
+tokens_median    = 4923
+turns_median     = 4
+judge_met_median = 2

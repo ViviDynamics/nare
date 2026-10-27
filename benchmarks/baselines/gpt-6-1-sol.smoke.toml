@@ -1,0 +1,43 @@
+# Blessed benchmark numbers. Reviewed like any other committed file.
+
+[meta]
+blessed     = "2026-10-27T05:26:50+00:00"
+commit      = "65749a2"
+provider    = "openai"
+model       = "gpt-6.1-sol"
+judge_model = "gpt-6.1-sol"
+
+[case.ambiguous-after-reading]
+pass_rate        = 1.0
+reps             = 3
+tokens_median    = 2593
+turns_median     = 3
+judge_met_median = 1
+
+[case.ambiguous-request]
+pass_rate        = 1.0
+reps             = 3
+tokens_median    = 2503
+turns_median     = 3
+judge_met_median = 2
+
+[case.edit-docstring]
+pass_rate        = 1.0
+reps             = 3
+tokens_median    = 3421
+turns_median     = 4
+judge_met_median = 3
+
+[case.fix-failing-test]
+pass_rate        = 1.0
+reps             = 3
+tokens_median    = 4529
+turns_median     = 4
+judge_met_median = 3
+
+[case.read-only-question]
+pass_rate        = 1.0
+reps             = 3
+tokens_median    = 2427
+turns_median     = 3
+judge_met_median = 2
