@@ -346,3 +346,41 @@ def render(comparison: Comparison) -> str:
     if not bad:
         lines.append("no regressions")
     return "\n".join(lines)
+
+
+def render_matrix(columns: Sequence[tuple[str, Comparison]], judge: str) -> str:
+    """Cases down the side, models across: the table a PR pastes.
+
+    Markdown, so it pastes into a PR or docs/evidence as printed. A cell is
+    the pass rate with its n, marked when it is a confirmed regression or
+    inconclusive, and `-` when that model did not run the case.
+    """
+    cells: dict[str, dict[str, str]] = defaultdict(dict)
+    for model, comparison in columns:
+        for delta in comparison.deltas:
+            if delta.summary is None:
+                continue
+            if delta.verdict == "inconclusive":
+                cell = "inconclusive"
+            elif delta.verdict == "regression":
+                cell = f"{_rate(delta.summary)} regression"
+            else:
+                cell = _rate(delta.summary)
+            cells[delta.case][model] = cell
+    models = [model for model, _ in columns]
+    rows = [["case", *models]]
+    rows += [
+        [case, *(cells[case].get(m, "-") for m in models)] for case in sorted(cells)
+    ]
+    widths = [max(3, *(len(row[i]) for row in rows)) for i in range(len(rows[0]))]
+
+    def line(row: Sequence[str]) -> str:
+        padded = (cell.ljust(width) for cell, width in zip(row, widths, strict=True))
+        return "| " + " | ".join(padded) + " |"
+
+    lines = [line(rows[0]), line(["-" * width for width in widths])]
+    lines += [line(row) for row in rows[1:]]
+    note = f"Judge: {judge}, for every model."
+    if judge in models:
+        note += " It judged its own repetitions too."
+    return "\n".join([*lines, "", note])
