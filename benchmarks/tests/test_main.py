@@ -1373,3 +1373,58 @@ def test_a_token_rise_fails_the_matrix_only_under_strict_tokens(
     changed = {"gpt-5-nano": {"usage": heavy}}
     matrix(tmp_path, monkeypatch, HAIKU, NANO, changed=changed)
     assert main(["run", "--matrix", "--case", "edit-docstring", *flags]) == code
+
+
+KEPT = ("edit-docstring", "multi-file-rename", "read-only-question")
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"provider": "anthropic"}, {"judge_model": "gpt-5-nano"}, {"max_tokens": 32000}],
+)
+def test_bless_will_not_relabel_the_cases_it_keeps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    change: dict[str, Any],
+) -> None:
+    # The kept cases were measured under the old baseline's provider, judge
+    # and cap; the new results' labels would misdescribe them.
+    from benchmarks.runner.report import baseline_path, load_baseline
+
+    baselines = results_dir(tmp_path, monkeypatch)
+    baselines.mkdir()
+    blessed = baseline_path(baselines, "gpt-5-nano", "smoke")
+    blessed.write_text(dumps_baseline(NANO, [summary(c, 1.0) for c in KEPT]))
+    before = blessed.read_text()
+    ran = replace(
+        record("edit-docstring", model="gpt-5-nano"),
+        provider="openai",
+        judge_model=SONNET,
+    )
+    write_results(tmp_path, [replace(ran, **change)])
+    assert main(["bless", "--model", "gpt-5-nano"]) == 2
+    assert blessed.read_text() == before
+    assert "multi-file-rename, read-only-question" in capsys.readouterr().err
+    # Overridden, it keeps them under the new labels.
+    assert main(["bless", "--model", "gpt-5-nano", "--allow-model-change"]) == 0
+    assert set(load_baseline(blessed).cases) == set(KEPT)
+
+
+def test_bless_may_move_a_baseline_when_it_replaces_every_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from benchmarks.runner.report import baseline_path, load_baseline
+
+    baselines = results_dir(tmp_path, monkeypatch)
+    baselines.mkdir()
+    blessed = baseline_path(baselines, "gpt-5-nano", "smoke")
+    blessed.write_text(dumps_baseline(NANO, [summary("edit-docstring", 1.0)]))
+    ran = replace(
+        record("edit-docstring", model="gpt-5-nano"),
+        provider="anthropic",
+        judge_model=SONNET,
+    )
+    write_results(tmp_path, [ran])
+    assert main(["bless", "--model", "gpt-5-nano"]) == 0
+    assert load_baseline(blessed).meta.provider == "anthropic"

@@ -127,8 +127,8 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument(
             "--allow-model-change",
             action="store_true",
-            help="compare against a baseline blessed on a different model or "
-            "output cap",
+            help="compare against, or bless on top of, a baseline blessed on a "
+            "different provider, model, judge or output cap",
         )
         if name == "run":
             child.add_argument(
@@ -1128,8 +1128,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "bless":
         baselines.mkdir(parents=True, exist_ok=True)
-        kept = load_baseline(baseline_file).cases if baseline_file.exists() else {}
+        old = load_baseline(baseline_file) if baseline_file.exists() else None
         tier_ids = {c.id for c in _select(root, args.tier, None)}
+        merged = merge_baseline(old.cases if old else {}, summaries, tier_ids)
+        fresh = {s.case for s in summaries if s.pass_rate is not None}
+        kept = sorted({s.case for s in merged} - fresh)
+        # Kept cases were measured under the old baseline's provider, judge
+        # and cap, and would be written under these results' labels.
+        if (
+            old is not None
+            and kept
+            and model_changed(old, config, args.allow_model_change)
+        ):
+            print(
+                f"bench: blessing would keep {', '.join(kept)} from "
+                f"{baseline_file.name} under these results' labels; run those "
+                "cases too, or pass --allow-model-change",
+                file=sys.stderr,
+            )
+            return 2
         meta = BaselineMeta(
             blessed=datetime.now(UTC).isoformat(timespec="seconds"),
             commit=_commit(),
@@ -1138,10 +1155,7 @@ def main(argv: list[str] | None = None) -> int:
             judge_model=config.judge_model,
             max_tokens=config.max_tokens,
         )
-        baseline_file.write_text(
-            dumps_baseline(meta, merge_baseline(kept, summaries, tier_ids)),
-            encoding="utf-8",
-        )
+        baseline_file.write_text(dumps_baseline(meta, merged), encoding="utf-8")
         print(
             f"blessed {baseline_file} from {results_file.name} "
             f"(provider {config.provider}, judge {config.judge_model})"

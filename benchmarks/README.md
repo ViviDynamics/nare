@@ -37,7 +37,10 @@ three repetitions are not conclusive on their own.
 which each results line records, and not the ones in your shell. Results
 written before the provider and judge were recorded take them from the flags.
 A `--provider` or `--judge-model` that contradicts what the results recorded
-exits 2, for `compare` too.
+exits 2, for `compare` too. `bless` merges into the existing baseline, so
+cases the results do not cover are kept; when that baseline was blessed on
+another provider, judge or output cap, it exits 2 rather than relabel them,
+unless `--allow-model-change`.
 
 `run` and `compare` refuse, with exit 2, a baseline blessed on another
 provider, model, judge or output cap, since those numbers are not comparable;
