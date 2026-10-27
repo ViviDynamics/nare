@@ -51,10 +51,9 @@ This evidence is weak, which is why measuring comes first (section 5):
   2026-09-30.
 - **The case leaks its answer.** The `questions` description's example is
   "Raise TIMEOUT from 30 to what: 60, 120, or another value? Unanswered, I
-  will use 60.", which is
-  ambiguous-request's fixture and the answer its judge looks for. A model can
-  pass our only ambiguous case by copying the example, which says nothing
-  about whether it recognises ambiguity.
+  will use 60.", which is ambiguous-request's fixture and the answer its
+  judge looks for. A model can pass our only ambiguous case by copying the
+  example, which says nothing about whether it recognises ambiguity.
 
 ## 2. What done looks like
 
@@ -64,7 +63,7 @@ The issue asks for three things:
 | --- | --- |
 | Iterate on the prompt and handling so smaller models call `ask` reliably | Section 6 (the description), section 7 (the loop, if needed) |
 | Add more capable models to the test matrix | Sections 3 and 4: a matrix the benchmark runs, with Sonnet and two newer OpenAI models in it |
-| Expose new models through LiteLLM, and make sure agents check for the latest options | Section 3.3: `bin/bench models` and a preflight. Adding models to the proxy is outside this repo (section 9). |
+| Expose new models through LiteLLM, and make sure agents check for the latest options | Section 3.3: `bin/bench models`, a preflight, and a pointer to `models` in `benchmarks/README.md`. Adding models to the proxy is outside this repo (section 9). |
 
 **Reliably** means two things, one a target and one a gate:
 
@@ -104,8 +103,20 @@ already name models, because a baseline is a measurement of one model.
 - `--matrix` needs no `--model` or `NARE_MODEL`, which `resolve_config`
   demands today. It resolves one config per baseline before building
   anything, so a baseline whose provider's key is not set exits 2 before any
-  model call. A matrix that mixes providers needs both `ANTHROPIC_API_KEY`
-  and `OPENAI_API_KEY`; through the proxy both hold the proxy key.
+  model call. The initial matrix mixes providers (section 3.4), so it needs
+  `OPENAI_API_KEY` as well as `ANTHROPIC_API_KEY`. On this proxy both hold
+  the same key.
+- **One base URL, two routes.** The openai transport posts to
+  `<base URL>/chat/completions` (`transport/openai.py`), so its base URL
+  ends in `/v1`, as the README's `--base-url https://your-proxy/v1` does.
+  The Anthropic SDK adds `/v1/messages` itself, so its base URL does not.
+  The matrix takes one base URL (`--base-url` or `NARE_BASE_URL`), strips a
+  trailing `/v1` as `ModelMetadata.load` does, and gives `anthropic`
+  baselines that root and `openai` baselines the root plus `/v1`, for the
+  agent and the judge alike. With no base URL, each provider uses its own
+  default endpoint. A proxy that serves the two routes from different roots
+  is not supported by `--matrix`: run its models one at a time, each with
+  its own `--base-url`.
 - **Sequential, never parallel.** `sandbox.py` tags every image
   `nare-bench:local`, so two concurrent runs replace each other's image
   mid-run. Build the image once, then run each model.
@@ -156,7 +167,12 @@ a document goes stale, so the tooling reads the live one.
   endpoints. It also shows which tiers have a baseline for that model,
   matched on each baseline's `[meta]` model, since file names are slugs. It
   costs nothing, and it is the command a person or an agent runs before
-  choosing a model.
+  choosing a model. `benchmarks/README.md` says so, and that is the only
+  place the pointer goes: `.agents/skills/` is synced from upstream (PR
+  #75).
+- **No base URL.** There is no proxy to ask. `bin/bench models` exits 2
+  with a one-line message saying so, and the matrix preflight warns and
+  continues, as it does when the listing call fails.
 - **Preflight.** `run --matrix` makes the same call before building
   anything. If the endpoint does not list a matrix model, the run exits 2
   before any model call, naming the model and its baseline file. If the
@@ -180,22 +196,23 @@ These come from the endpoint's listing on 2026-10-23, re-read on 2026-10-26
 with no change. Prices are what the proxy publishes in `/v1/model/info`.
 The endpoint also serves eight local `ada/*` models.
 
-| Model | Why it is in | $ per M in, out |
-| --- | --- | --- |
-| `claude-haiku-5-5` | The model the issue is about, as the proxy serves it now | 0.10, 0.50 |
-| `gpt-5-nano` | Called `ask` in the call's test | 0.05, 0.40 |
-| `gpt-6-luna` | A newer OpenAI model at about nano's price, and the likely replacement if we move off nano | 0.10, 0.50 |
-| `gemini-3.1-flash-lite` | Called `ask` in the call's test | 0.25, 1.50 |
-| `spark/glm-5.3-flash` | The default for live runs, and a reasoning model (OpenAI route) | 0.15, 0.50 |
-| `claude-sonnet-5-5` | Capable tier, named on the call | 2, 10 |
-| `gpt-6.1-sol` | Capable tier, the newer OpenAI model | 2, 10 |
+| Model | Provider | Why it is in | $ per M in, out |
+| --- | --- | --- | --- |
+| `claude-haiku-5-5` | `anthropic` | The model the issue is about, as the proxy serves it now | 0.10, 0.50 |
+| `gpt-5-nano` | `openai` | Called `ask` in the call's test | 0.05, 0.40 |
+| `gpt-6-luna` | `openai` | A newer OpenAI model at about nano's price, and the likely replacement if we move off nano | 0.10, 0.50 |
+| `gemini-3.1-flash-lite` | `openai` | Called `ask` in the call's test | 0.25, 1.50 |
+| `spark/glm-5.3-flash` | `openai` | The default for live runs, and a reasoning model | 0.15, 0.50 |
+| `claude-sonnet-5-5` | `anthropic` | Capable tier, named on the call | 2, 10 |
+| `gpt-6.1-sol` | `openai` | Capable tier, the newer OpenAI model | 2, 10 |
 
-**Provider.** Each baseline records one, and the table names it only for
-spark. It is open for `gpt-5-nano`, `gpt-6-luna`, `gemini-3.1-flash-lite`
-and `gpt-6.1-sol`, and must be settled before section 5. When a proxy
-translates a reasoning model's thinking onto the Anthropic route, nare
-warns that words or whole answers can be dropped and suggests `--provider
-openai` (`_warn_proxy_reasoning` in `transport/anthropic.py`).
+**Provider:** `openai` for every model that is not Claude, `anthropic` for
+the two that are. When a proxy translates a reasoning model's thinking onto
+the Anthropic route, nare warns that words or whole answers can be dropped
+and suggests `--provider openai` (`_warn_proxy_reasoning` in
+`transport/anthropic.py`). The proxy reports reasoning support for all four
+non-Claude models besides spark, and spark is a reasoning model too. The
+Claude models' thinking is native to the Anthropic route.
 
 **Judge:** `claude-sonnet-5-5` for every baseline. It is a capable model, and
 the judge's claims are binary and checkable, so judging its own reps is a
@@ -211,8 +228,11 @@ for it that works.
 **Cost.** A smoke matrix run is 6 cases × 3 reps × 7 models: 126 reps, plus
 any seven-rep confirmations. Estimated from the smoke tier's token medians
 (about 1k to 5k per rep) and the prices above, that is a few dollars,
-most of it the judge and the two capable models, and roughly half an hour
-of wall clock. The first run replaces this estimate with a measured one.
+most of it the judge and the two capable models. It is about an hour of
+wall clock: the reps run one after another, and each starts a container,
+takes a few model turns, often starts a second container for its bash
+checks, and makes a judge call. The first run replaces this estimate with a
+measured one.
 
 ## 4. Two new cases
 
@@ -326,7 +346,10 @@ commands:
     bin/bench run   --tier smoke --model M --provider P --judge-model claude-sonnet-5-5
     bin/bench bless --tier smoke --model M --provider P --judge-model claude-sonnet-5-5
 
-`P` is the row's provider from section 3.4. The output cap, if any, comes
+`P` is the row's provider from section 3.4. An `openai` row's `run` needs
+`OPENAI_API_KEY`, which on this proxy is the same key as
+`ANTHROPIC_API_KEY`, and a `--base-url` that ends in `/v1` (section 3.2).
+`bless` needs neither: it calls no model. The output cap, if any, comes
 from `NARE_BENCH_MAX_TOKENS` on the `run`, and `bless` reads it from the
 results.
 
@@ -397,7 +420,9 @@ that is the matrix's job.
 
 **Measuring it:** `bin/bench run --matrix` against the section 5 baselines.
 The PR states the matrix table before and after, and the failure labels of
-any ambiguous-case rep that still fails.
+any ambiguous-case rep that still fails. The same PR then re-blesses all
+seven baselines, one model at a time, so the baselines on `main` measure
+the description on `main`.
 
 ## 7. If prose questions remain: a nudge in the loop
 
@@ -414,6 +439,7 @@ another turn when all of these hold:
 - the reply's last non-blank line ends with `?`
 - the session has not been nudged before
 - the run has no `--schema`, whose retry already owns text replies
+- the session is a headless `nare run`, never `nare tui`
 
 The message:
 
@@ -439,6 +465,13 @@ and text ends `done`, question or not.
 - **A trailing `?`.** This is crude on purpose. A false positive costs one
   turn and cannot block a session by itself, because only an `ask` call
   blocks. A false negative is today's behaviour.
+- **Headless only.** In `nare tui` a person reads every text reply and can
+  answer it, so a question in prose is not lost there, and the message's
+  claim that a text reply ends the session would be false. Every TUI
+  follow-up also goes through `reopen()`, so "once per session" would mean
+  once per conversation. Both `nare run` and the TUI call `run()` in
+  `loop.py`, so the nudge sits behind a keyword on `run()`, off by default,
+  that `cli.py` turns on and the TUI never passes.
 
 **It is visible.** The nudge emits a `progress` event, which the schema
 retry does not, and its message is in the transcript, as the schema retry's
@@ -468,15 +501,17 @@ a gate failure, and the nudge does not ship.
 - A second text reply ending in `?` ends `done`. There is no second nudge.
 - Under a policy without `ask`, there is no nudge.
 - With `--schema`, the schema retry path is unchanged.
+- Without the keyword, as the TUI calls `run()`, a text reply ending in `?`
+  ends `done` with no nudge.
 - `ask_nudged` survives a save and resume.
 
 ## 8. Sequencing
 
 | PR | Contains | Changes nare? |
 | --- | --- | --- |
-| 1 | `--matrix`, `compare --matrix`, `models`, the preflight, both cases, seven baselines, the `ada/qwen3-14b` baseline deleted, `docs/evidence/45/` | No |
-| 2 | Section 6, with the matrix table before and after | The description only |
-| 3 | Section 7, only if section 7's first paragraph calls for it | The loop |
+| 1 | `--matrix`, `compare --matrix`, `models` and its pointer in `benchmarks/README.md`, the preflight, both cases, seven baselines, the `ada/qwen3-14b` baseline deleted, `docs/evidence/45/` | No |
+| 2 | Section 6, with the matrix table before and after, and all seven baselines re-blessed after the change | The description only |
+| 3 | Section 7, only if section 7's first paragraph calls for it | The loop, under `nare run` only |
 
 PR 1 is useful on its own. #43's benchmark for the compaction point needs to
 run across models too.
@@ -503,12 +538,16 @@ run across models too.
 
 ## 10. Acceptance criteria
 
-- [ ] `bin/bench run --matrix` runs every baseline's model in turn, refuses a
-      matrix with mixed judges with exit 2, and prints the case-by-model
-      table
+- [ ] `bin/bench run --matrix` runs every baseline's model in turn, with its
+      provider and the base URL that provider needs, refuses a matrix with
+      mixed judges with exit 2, and prints the case-by-model table
 - [ ] `bin/bench compare --matrix` prints the table without running
 - [ ] `bin/bench models` lists the endpoint's models with window, price and
-      baselines
+      baselines, and exits 2 with a one-line message when there is no base
+      URL
+- [ ] `benchmarks/README.md` tells a person or an agent to run
+      `bin/bench models` before choosing a model, and `.agents/skills/` is
+      unchanged
 - [ ] A matrix model the endpoint does not list stops the run before any
       model call
 - [ ] ambiguous-after-reading and read-only-question are in the smoke tier
@@ -518,10 +557,12 @@ run across models too.
 - [ ] `docs/evidence/45/README.md` holds the baseline matrix table and the
       failure labels
 - [ ] The `ask` and `questions` descriptions are as in section 6
-- [ ] The section 6 PR shows the matrix table before and after
+- [ ] The section 6 PR shows the matrix table before and after, and
+      re-blesses all seven baselines after the change
 - [ ] No matrix model has a confirmed regression on edit-docstring,
       multi-file-rename or read-only-question
 - [ ] Each matrix model either reaches 2 of 3 on both ambiguous cases, or
       #45 records its failure labels
-- [ ] Section 7 is built, or #45 records why it was not
+- [ ] Section 7 is built, nudging only under `nare run`, or #45 records why
+      it was not
 - [ ] `bin/build` passes
