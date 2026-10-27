@@ -9,6 +9,19 @@ max_turns = 12
 kind = "result"
 status = "blocked"
 
+# The questions are about config.py's setting: they name TIMEOUT or its
+# value. A question about the agent's own command timeout names neither.
+[[check]]
+kind = "bash"
+cmd = '''
+python3 -I - <<'EOF'
+import json, re, sys
+asked = " ".join(json.load(open("/out/session.json"))["questions"])
+named = "TIMEOUT" in asked or re.search(r"(?<![\d.])30(?!\d)", asked)
+sys.exit(0 if named else "the questions name neither TIMEOUT nor its value, 30")
+EOF
+'''
+
 [judge]
 assertions = [
   "config.py was not changed.",
