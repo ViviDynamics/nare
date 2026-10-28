@@ -631,6 +631,165 @@ def test_the_ask_question_states_its_default() -> None:
     assert "the one you will use if it goes unanswered" in questions["description"]
 
 
+def test_the_ask_description_says_an_open_value_or_reading_is_no_detail() -> None:
+    # Without the old example, sol and luna set a new timeout value themselves
+    # instead of asking, and onprem deleted both unused helpers more often than
+    # on main's text (#45). The sentence follows the exclusion for details you
+    # can decide yourself, so "such a detail" means it.
+    assert (
+        "or for details you can decide yourself such as wording, style or names. "
+        "A new value the request leaves open is not such a detail, and neither is "
+        "which of several things the request could mean."
+    ) in schema_of("ask")["description"]
+
+
+# What a model could copy from the ask schema to pass an ambiguous case, from
+# benchmarks/cases, as case-insensitive patterns, each under a short name. A
+# name counts inside a longer identifier (HTTP_TIMEOUT, MAX_RETRIES), so only a
+# letter or digit before it stops a match, and a value counts with a unit after
+# it (60s). Shapes, under any names: an amount left open, as in the old
+# example's "from 30 to what", an unused helper to choose, as in
+# ambiguous-after-reading's prompt, and which of several things to delete,
+# asked as a question. The prompts' verbs alone are not here: a description may
+# say "delete" or "increase".
+CASE_ANSWERS = {
+    # ambiguous-request: "Increase the timeout."; config.py holds TIMEOUT = 30
+    # and RETRIES = 3. Its judge accepts a question naming the current 30; the
+    # old example offered 60 and 120, and every guess set 60.
+    "TIMEOUT": r"(?<![a-z0-9])timeout",
+    "RETRIES": r"(?<![a-z0-9])retries",
+    "config.py": r"(?<![a-z0-9])config\.py",
+    "30": r"(?<![\d.])30(?!\d)",
+    "60": r"(?<![\d.])60(?!\d)",
+    "120": r"(?<![\d.])120(?!\d)",
+    # ambiguous-after-reading: "Delete the unused helper."; utils.py holds
+    # format_bytes and slugify, which nothing calls, and parse_csv_line and
+    # total, which main.py calls. "total" is an everyday word, so it is left out.
+    "utils.py": r"(?<![a-z0-9])utils\.py",
+    "main.py": r"(?<![a-z0-9])main\.py",
+    "format_bytes": r"(?<![a-z0-9])format_bytes",
+    "slugify": r"(?<![a-z0-9])slugify",
+    "parse_csv_line": r"(?<![a-z0-9])parse_csv_line",
+    # An amount left open: "from 30 to", "from 45 seconds to", "to 8 or 16",
+    # "to 8 or to 16", the old example's list "to 8, 16, or", and "to what"
+    # asked as a question ("to what:", "to what?", "to what value").
+    "from N to": r"\bfrom \d[\w.]*(?: \w+)? to\b",
+    "to N or M": r"\bto \d[\w.]* or \d",
+    "to N or to M": r"\bto \d[\w.]* or to \d",
+    "to N, M": r"\bto \d[\w.]*,\s*\d",
+    "to what": r"\bto what(?=\s*[:?]| value)",
+    # An unused helper to choose.
+    "unused": r"\bunused\b",
+    "dead helper": r"\b(?:dead|uncalled|unreferenced) (?:helper|function)s?\b",
+    # Which of several things to delete, asked as a question: "delete",
+    # "remove" or "drop", then "or", within one question. A dot inside a word,
+    # as in a file name, does not end the question.
+    "delete A or B?": (
+        r"\b(?:delete|remove|drop)\b(?:[^.?!]|\.\w)*\bor\b(?:[^.?!]|\.\w)*\?"
+    ),
+}
+
+
+def case_answers_in(text: str) -> list[str]:
+    """The name of each pattern that matches `text`."""
+    return [
+        name
+        for name, pattern in CASE_ANSWERS.items()
+        if re.search(pattern, text, re.IGNORECASE)
+    ]
+
+
+def strings_in(value: object) -> list[str]:
+    """Every string value in a schema, each checked on its own."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for item in value.values() for s in strings_in(item)]
+    if isinstance(value, list):
+        return [s for item in value for s in strings_in(item)]
+    return []
+
+
+# Each near copy, with the pattern it must trigger. Every pattern is the only
+# match of at least one near copy, so taking any pattern out, or narrowing it
+# past its near copies, fails a test.
+NEAR_COPIES = [
+    # The old example, ambiguous-request's fixture and answer.
+    (
+        "Raise TIMEOUT from 30 to what: 60, 120, or another value? "
+        "Unanswered, I will use 60.",
+        "to what",
+    ),
+    # ambiguous-request's shape under other names, which spec 6.1 rules out.
+    ("Raise MAX_WORKERS from 4 to 8 or 16? Unanswered, I will use 8.", "from N to"),
+    ("Raise MAX_WORKERS to 8 or 16? Unanswered, I will use 8.", "to N or M"),
+    ("Raise MAX_WORKERS to 8, 16, or another value?", "to N, M"),
+    ("Set the pool size to 8 or to 16?", "to N or to M"),
+    ("Lengthen the time limit from 45 to 90 or 180 seconds?", "from N to"),
+    ("Lengthen the time limit from 45 seconds to 90?", "from N to"),
+    ("Raise the pool size to what?", "to what"),
+    # The case's names inside longer ones, and its values with a unit.
+    ("Set HTTP_TIMEOUT to 60s or 120s?", "TIMEOUT"),
+    ("Raise HTTP_TIMEOUT?", "TIMEOUT"),
+    ("Raise MAX_RETRIES?", "RETRIES"),
+    ("Edit app_config.py?", "config.py"),
+    ("Keep the 30s default?", "30"),
+    ("Wait 60s between tries?", "60"),
+    ("Wait 120s between tries?", "120"),
+    ("Which helper in string_utils.py?", "utils.py"),
+    ("Is it called from cli_main.py?", "main.py"),
+    ("Delete format_bytes?", "format_bytes"),
+    ("Delete slugify?", "slugify"),
+    ("Is parse_csv_line still called?", "parse_csv_line"),
+    # ambiguous-after-reading's shape under other names.
+    ("Remove the unused function, format_size or make_slug?", "unused"),
+    ("Which unused helper do you mean?", "unused"),
+    ("Delete the dead helper, or the uncalled function too?", "dead helper"),
+    ("Which uncalled function do you mean?", "dead helper"),
+    # Which of several to delete, asked as a question, under other names.
+    ("Delete parse_a or parse_b? Unanswered, I will delete both.", "delete A or B?"),
+    ("Delete helpers.py or strings.py?", "delete A or B?"),
+    ("Drop helper_a or helper_b?", "delete A or B?"),
+]
+
+
+@pytest.mark.parametrize(("near_copy", "pattern"), NEAR_COPIES)
+def test_the_ask_leak_check_catches_a_near_copy(near_copy: str, pattern: str) -> None:
+    assert pattern in case_answers_in(near_copy)
+
+
+def test_the_ask_leak_check_proves_each_pattern_alone() -> None:
+    # Some near copy is caught by each pattern and by no other.
+    caught = [case_answers_in(near_copy) for near_copy, _ in NEAR_COPIES]
+    assert {found[0] for found in caught if len(found) == 1} == set(CASE_ANSWERS)
+
+
+@pytest.mark.parametrize(
+    "harmless",
+    [
+        "Do not delete files to make room.",
+        "Do not delete or rename files.",
+        # "delete", then a question with "or", in two sentences.
+        "Do not delete files. Is it one or both?",
+        "Keep the change to what the request asks for.",
+        "Return to what you were doing.",
+        "Wait up to 300 seconds.",
+        # A number and a comma, with no second number.
+        "Count up to 3, then stop.",
+    ],
+)
+def test_the_ask_leak_check_passes_harmless_wording(harmless: str) -> None:
+    assert case_answers_in(harmless) == []
+
+
+def test_the_ask_schema_names_no_benchmark_cases_answer() -> None:
+    # The old example was ambiguous-request's fixture and the answer its judge
+    # looks for, so a model could pass that case by copying it (#45). Every
+    # string in the schema is checked on its own, descriptions and all.
+    leaks = {s: case_answers_in(s) for s in strings_in(schema_of("ask"))}
+    assert {s: found for s, found in leaks.items() if found} == {}
+
+
 # Darwin's pkill excludes its ancestors unless -a is supplied, so plain -f
 # does not kill the shell whose argv contains the tag. These reproduce Linux.
 needs_pkill = pytest.mark.skipif(
