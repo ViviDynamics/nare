@@ -1088,9 +1088,9 @@ stop. If 6.2 picks nothing, this is not decided.
 
 **Outcome, 2026-10-28:** not built in #45. 6.2 picked D, and the condition
 held: 7 of `gpt-5-nano`'s 8 failing ambiguous reps in the gate run asked in
-prose. But none of the 18 prose closings in the third pass ends its last
-non-blank line with `?`, so the rule below would not have fired on any of
-them. #117 takes up a nudge with another trigger, or the system-prompt rule
+prose. But none of the 19 prose closings in the third pass, spark's pools
+included, ends its last non-blank line with `?`, so the rule below would not
+have fired on any of them. #117 takes up a nudge with another trigger, or the system-prompt rule
 of section 9.
 
 **The rule.** When a turn's reply is text with no tool calls, nare normally

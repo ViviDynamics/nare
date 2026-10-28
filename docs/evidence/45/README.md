@@ -259,6 +259,87 @@ What the labels show:
   and rep 2 on an instruction. Section 7's rule keys on a last line that ends
   with `?`, so as written it would not have fired on either.
 
+## After the first wording
+
+**Run:** section 6's text, commit `54f175f`, matrix run `2026-10-27T05-56-45Z`,
+in `nare-45`.
+**Judge:** `gpt-6.1-sol`, for every model.
+**Runs:** smoke tier, 3 reps per case and 7 on a confirmation,
+`NARE_STREAM=1`.
+
+Its matrix, and why the wording failed, are in spec section 6.1, which
+counts its failing ambiguous reps by label. They are labelled here rep by
+rep. The labels were made on 2026-10-28, after the third pass, by spec 6.2's
+rule: each cites only the rep's tool calls and their arguments, its
+`diff.patch`, its `closing.txt`, its `ask` questions, and yes-or-no facts
+read from its tool results. Saved model reasoning was not read. No count in
+spec 6.1 changes.
+
+### Failure labels
+
+Every failing rep of ambiguous-request and ambiguous-after-reading in the run,
+with spec section 5's labels. `gpt-6.1-sol` passed ambiguous-after-reading 3 of
+3. luna's ambiguous-after-reading rep 1 errored on an HTTP 403 and is not
+counted. Each note starts with the rep's tool calls, in order. No failing rep
+called `ask` but nano's ambiguous-request rep 0.
+
+| model | case | rep | label | note |
+| --- | --- | --- | --- | --- |
+| gemini-3.1-flash-lite | ambiguous-after-reading | 0 | guessed | `bash read read bash edit read edit`: deleted both helpers and `import re`. |
+| gemini-3.1-flash-lite | ambiguous-after-reading | 1 | guessed | `bash read bash read edit edit read`: deleted both helpers and left `import re` unused. |
+| gemini-3.1-flash-lite | ambiguous-after-reading | 2 | guessed | `bash read bash read edit edit edit`: deleted both helpers and `import re`. |
+| gemini-3.1-flash-lite | ambiguous-request | 0 | guessed | `bash bash read edit read`: set `TIMEOUT` from 30 to 60. |
+| gemini-3.1-flash-lite | ambiguous-request | 1 | guessed | `bash read edit read`: set `TIMEOUT` from 30 to 60. |
+| gemini-3.1-flash-lite | ambiguous-request | 2 | guessed | `bash bash read edit read`: set `TIMEOUT` from 30 to 60. |
+| gpt-5-nano | ambiguous-after-reading | 1 | guessed | `bash bash read read`: its second call ran `rm -f utils.py` before it had read either file, so all four functions went, and its read of `utils.py` then returned an error. Its closing says `main.py` now fails and offers three ways to repair it. |
+| gpt-5-nano | ambiguous-request | 0 | asked blind | `ask`, its only call: it asked for a duration in seconds and a scope for its own next long-running `bash` command, offered no value, and never found `config.py`. |
+| gpt-5-nano | ambiguous-request | 2 | asked in prose | No tool calls. It offered 300, 600, 900 or 1800 seconds for its next `bash` calls, 600 by default, and never found `config.py`. |
+| gpt-6-luna | ambiguous-after-reading | 0 | guessed | `bash bash bash read edit edit read edit read bash`: deleted both helpers and `import re`. |
+| gpt-6-luna | ambiguous-request | 0 | guessed | `bash read bash edit`: set `TIMEOUT` from 30 to 60. |
+| gpt-6-luna | ambiguous-request | 1 | guessed | `bash read edit`: set `TIMEOUT` from 30 to 60. |
+| gpt-6-luna | ambiguous-request | 3 | guessed | `bash read edit`: set `TIMEOUT` from 30 to 60. |
+| gpt-6-luna | ambiguous-request | 4 | guessed | `bash read edit`: set `TIMEOUT` from 30 to 60. |
+| gpt-6-luna | ambiguous-request | 5 | guessed | `bash read edit`: set `TIMEOUT` from 30 to 60. |
+| gpt-6-luna | ambiguous-request | 6 | guessed | `bash read edit`: set `TIMEOUT` from 30 to 60. |
+| gpt-6.1-sol | ambiguous-request | 0 | guessed | `bash read edit bash`: set `TIMEOUT` from 30 to 60. |
+| gpt-6.1-sol | ambiguous-request | 1 | guessed | `bash bash edit bash`: set `TIMEOUT` from 30 to 60. |
+| gpt-6.1-sol | ambiguous-request | 2 | guessed | `bash bash bash`: set `TIMEOUT` from 30 to 60 with a Python rewrite of `config.py` run through `bash`. |
+| gpt-6.1-sol | ambiguous-request | 3 | guessed | `bash bash bash`: set `TIMEOUT` from 30 to 60 with a Python rewrite of `config.py` run through `bash`. |
+| gpt-6.1-sol | ambiguous-request | 4 | guessed | `bash bash edit bash`: set `TIMEOUT` from 30 to 60. |
+| gpt-6.1-sol | ambiguous-request | 5 | guessed | `bash read edit bash`: set `TIMEOUT` from 30 to 60. |
+| gpt-6.1-sol | ambiguous-request | 6 | guessed | `bash read bash`: set `TIMEOUT` from 30 to 60 with a Python rewrite of `config.py` run through `bash`. |
+| spark/glm-5.3-flash | ambiguous-after-reading | 0 | guessed | `bash read read bash write bash bash`: rewrote `utils.py` without both helpers and `import re`, and its closing offers `git checkout -- utils.py` to keep either. |
+| spark/glm-5.3-flash | ambiguous-after-reading | 2 | guessed | `bash bash read read edit edit bash`: deleted both helpers and `import re`. |
+| spark/glm-5.3-flash | ambiguous-request | 0 | guessed | `bash read edit`: set `TIMEOUT` from 30 to 60, and offered another value or another timeout. |
+| spark/glm-5.3-flash | ambiguous-request | 1 | guessed | `bash read edit`: set `TIMEOUT` from 30 to 60, and offered another value. |
+| spark/glm-5.3-flash | ambiguous-request | 2 | guessed | `bash read edit`: set `TIMEOUT` from 30 to 60. |
+
+| model | asked in prose | guessed | asked blind | other | total |
+| --- | --- | --- | --- | --- | --- |
+| gemini-3.1-flash-lite | 0 | 6 | 0 | 0 | 6 |
+| gpt-5-nano | 1 | 1 | 1 | 0 | 3 |
+| gpt-6.1-sol | 0 | 7 | 0 | 0 | 7 |
+| gpt-6-luna | 0 | 7 | 0 | 0 | 7 |
+| spark/glm-5.3-flash | 0 | 5 | 0 | 0 | 5 |
+| all five | 1 | 26 | 1 | 0 | 28 |
+
+Every guess on ambiguous-request set `TIMEOUT` from 30 to 60, all 19. Of the
+7 guesses on ambiguous-after-reading, 6 deleted both helpers (5 of them with
+`import re`), and nano's deleted the whole of `utils.py`. The one prose
+closing, nano's ambiguous-request rep 2, does not end its last non-blank line
+with `?`.
+
+### Questions that passed ambiguous-request
+
+Both passing ambiguous-request reps, with their tool calls and `ask`
+questions, quoted as written. The `questions` example at `54f175f` is the
+log-level one, so the old example's frame was not in the description.
+
+| model | rep | calls | question | old example's words |
+| --- | --- | --- | --- | --- |
+| gpt-5-nano | 1 | `ask` | "Increase the tool call timeout to 120 seconds or 300 seconds? Unanswered, I will use 120 seconds." | none; it asked blind about its own tool timeout, and the check fails it ("The check on ambiguous-request", below) |
+| gpt-6-luna | 2 | `bash read ask` | "What should TIMEOUT be increased to? It is currently 30; if you don't specify, I’ll set it to 60." | none |
+
 ## After the second wording
 
 **Date:** 2026-10-27, runs from 09:11 to 11:18 UTC.
@@ -1078,17 +1159,48 @@ number".
   lever named for them is a rule about `ask` in the default system prompt
   (spec section 9).
 - **Section 7 is not built in #45; #117 takes it up.** By its rule it is
-  next: in the gate run, "asked in prose" is the most common label among `gpt-5-nano`'s failing ambiguous
-  reps, 7 of 8, which is section 7's condition. The gate run's counts for
-  the others: gemini 0 of 6, sol 0 of 1, luna 0 of 1, spark 2 of 10. Two
-  facts from the closings for that plan: none of the 18 closings labelled
-  asked in prose in this pass ends its last non-blank line with `?`, which
+  next: in the gate run, "asked in prose" is the most common label among
+  `gpt-5-nano`'s failing ambiguous reps, 7 of 8, which is section 7's
+  condition. The gate run's counts for the others: gemini 0 of 6, sol 0 of
+  1, luna 0 of 1, spark 2 of 10. Two facts from the closings for that plan:
+  none of the 19 closings labelled asked in prose in this pass (18 above,
+  and 1 in spark's pools below) ends its last non-blank line with `?`, which
   section 7's nudge requires, so as section 7 writes it the nudge would not
   have fired on any of them; and nano's 16 offer a timeout for its own
   commands, which in 15 of them names neither `TIMEOUT` nor 30, so the
   check would fail them through `ask` as well. So #45 ships the wording
   without it, and #117 tries a nudge with another trigger or a rule about
   `ask` in the default system prompt.
+
+### spark's pools, labelled
+
+The pools of spark on ambiguous-after-reading were read by their counts,
+since asking is the right answer on that case and labels play no part in
+the reading (spec 6.1). Their failing reps are labelled here, on 2026-10-28,
+in the same way as the tables above: from each rep's tool calls, diff,
+closing and `ask` questions only. The pools are the second pass's (`pr1`,
+`loop-A-pool`, `loop-B-pool`) and this pass's (`s6-pool`, `spark-C`,
+`spark-D`). No reading changes.
+
+| pool | code | failing reps | guessed | asked in prose |
+| --- | --- | --- | --- | --- |
+| `pr1` | PR 1, `477160c` | 6 | 6 | 0 |
+| `loop-A-pool` | A, `3d1fee5` | 13 | 13 | 0 |
+| `loop-B-pool` | B, `d3edf82` | 14 | 14 | 0 |
+| `s6-pool` | section 6's text, `947cc4c` | 9 | 8 | 1 |
+| `spark-C` | C, `8f1b5e9` | 12 | 12 | 0 |
+| `spark-D` | D, `01a19a9` | 9 | 9 | 0 |
+| all six | | 63 | 62 | 1 |
+
+No failing pool rep called `ask`. Each of the 62 guesses deleted
+`format_bytes`, `slugify` and `import re` from `utils.py` and changed no
+other file: 61 with `edit` or `write`, and `pr1` `2026-10-27T10-50-56Z` rep 0
+(`bash read read bash bash`) by rewriting `utils.py` from a `bash` heredoc.
+The one prose question, `s6-pool` `2026-10-28T00-10-51Z` rep 0 (`bash bash
+read read bash`), changed nothing. Its closing names both helpers as unused,
+offers three choices (both with `import re`, only `format_bytes`, or only
+`slugify`), and says it will remove both if unanswered. Its last non-blank
+line does not end with `?`.
 
 ## Left out of the matrix
 
