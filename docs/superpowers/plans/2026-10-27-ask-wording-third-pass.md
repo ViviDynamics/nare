@@ -1572,10 +1572,12 @@ git -C "$MAIN" branch -v --list '45-ask-c' '45-ask-d'     # each at its reviewed
 
 - [ ] **Step 2: Build at each (free)**
 
+The env file exports `NARE_STREAM=1` for the bench (decision 15). `bin/build` runs without it: seven CLI tests expect an empty stderr, and with it set they get a context-window warning from their local fake server, on `main`'s code too. G7 Step 2 does the same.
+
 ```bash
 . /home/smadinya/vividynamics/nare-45/benchmarks/results/45-3-env.sh
 for x in $BUILT; do
-  side_at "${!x}" && (cd "$SIDE" && bin/build) && echo "$x builds" || { echo "$x does not build: stop"; exit 1; }
+  side_at "${!x}" && (cd "$SIDE" && env -u NARE_STREAM bin/build) && echo "$x builds" || { echo "$x does not build: stop"; exit 1; }
 done
 git -C "$SIDE" status --short                            # expect no output
 ```
@@ -1718,7 +1720,7 @@ A stop here records no `GATE`: the pick's branch must be the commit G4 recorded 
 . /home/smadinya/vividynamics/nare-45/benchmarks/results/45-3-env.sh
 cd "$MAIN" || exit 1
 [ "$(git rev-parse HEAD)" = "$GATE" ] || { echo "nare-45 is not at the gate's commit: stop"; exit 1; }
-bin/build
+env -u NARE_STREAM bin/build
 ```
 
 `bin/build` runs the leak test. If it fails, the wording fails (spec 6.1's fourth condition): go to G11.
