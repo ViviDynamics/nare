@@ -4,7 +4,8 @@
 **Status:** Reviewed against code 2026-10-26. Section 6 revised in 6.1 after
 its first measurement, 2026-10-27. 6.1's leak test and its readings of a drop
 revised after review of the plan, 2026-10-27. Section 6.2 added after the
-second measurement, 2026-10-27.
+second measurement, 2026-10-27. Section 6.2 picked D, 2026-10-28; section 7
+is not built in #45 (#117).
 **Issue:** #45
 **Scope:** A model matrix for the benchmark, two new cases, and a change to
 the `ask` description, measured on the matrix. A loop change (section 7) is
@@ -1084,6 +1085,13 @@ Build this only if, after the wording section 6.2 picks, "asked in prose"
 is the most common label among some matrix model's failing ambiguous-case
 reps. If it is not, record in #45 that the description was enough, and
 stop. If 6.2 picks nothing, this is not decided.
+
+**Outcome, 2026-10-28:** not built in #45. 6.2 picked D, and the condition
+held: 7 of `gpt-5-nano`'s 8 failing ambiguous reps in the gate run asked in
+prose. But none of the 18 prose closings in the third pass ends its last
+non-blank line with `?`, so the rule below would not have fired on any of
+them. #117 takes up a nudge with another trigger, or the system-prompt rule
+of section 9.
 
 **The rule.** When a turn's reply is text with no tool calls, nare normally
 ends the session `done`. It instead appends one user message and takes

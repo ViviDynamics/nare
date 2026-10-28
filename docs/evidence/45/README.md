@@ -1077,8 +1077,8 @@ number".
   ambiguous-request, spark on both), their labels are above, and the next
   lever named for them is a rule about `ask` in the default system prompt
   (spec section 9).
-- **Section 7 is next, in its own plan and PR 3.** In the gate run, "asked
-  in prose" is the most common label among `gpt-5-nano`'s failing ambiguous
+- **Section 7 is not built in #45; #117 takes it up.** By its rule it is
+  next: in the gate run, "asked in prose" is the most common label among `gpt-5-nano`'s failing ambiguous
   reps, 7 of 8, which is section 7's condition. The gate run's counts for
   the others: gemini 0 of 6, sol 0 of 1, luna 0 of 1, spark 2 of 10. Two
   facts from the closings for that plan: none of the 18 closings labelled
@@ -1086,7 +1086,9 @@ number".
   section 7's nudge requires, so as section 7 writes it the nudge would not
   have fired on any of them; and nano's 16 offer a timeout for its own
   commands, which in 15 of them names neither `TIMEOUT` nor 30, so the
-  check would fail them through `ask` as well.
+  check would fail them through `ask` as well. So #45 ships the wording
+  without it, and #117 tries a nudge with another trigger or a rule about
+  `ask` in the default system prompt.
 
 ## Left out of the matrix
 
