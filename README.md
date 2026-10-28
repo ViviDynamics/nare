@@ -31,8 +31,9 @@ For the terminal UI, install the extra:
 
 ## Providers
 
-Two rails. `--provider anthropic` (the default) speaks Anthropic's API and
-reads `ANTHROPIC_API_KEY`. `--provider openai` speaks Chat Completions, which
+Three rails. `--provider anthropic` (the default) speaks Anthropic's API and
+reads `ANTHROPIC_API_KEY`. `--provider bedrock` speaks the same API to Claude
+on Amazon Bedrock, signed with AWS credentials. `--provider openai` speaks Chat Completions, which
 is also what a LiteLLM proxy, vLLM, llama.cpp and Ollama speak, and reads
 `OPENAI_API_KEY`; point it anywhere with `--base-url`.
 
@@ -55,8 +56,35 @@ cache price. Thinking that arrives without a signature, which is what a proxy
 makes when it translates a reasoning model, is kept in the session but not sent
 back to the model, and neither is empty text.
 
-There is no `--api-key` flag on either: argv is world-readable through `ps`
-and `/proc`.
+There is no `--api-key` flag on any of them: argv is world-readable through
+`ps` and `/proc`.
+
+### Bedrock
+
+`--provider bedrock` calls Claude on Amazon Bedrock directly, with no API key
+and no proxy. It needs the `bedrock` extra, which brings boto3 (the container
+image already has it):
+
+    pip install 'nare[bedrock]'
+    nare run --yes --provider bedrock --region us-east-1 \
+      --model us.anthropic.claude-sonnet-4-5-20250929-v1:0 --context-window 200000 "..."
+
+- **Credentials** come from the standard AWS chain: `AWS_ACCESS_KEY_ID` and
+  `AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE`, IRSA web identity on EKS, or an
+  instance role. `AWS_BEARER_TOKEN_BEDROCK`, when set, is used instead.
+- **Region** is `--region`, else `NARE_AWS_REGION`, `AWS_REGION` or
+  `AWS_DEFAULT_REGION`. A missing region or missing credentials exits 2 before
+  anything starts, and the message names both.
+- **Model** is a Bedrock model or inference-profile ID. Per-model output caps
+  are looked up by the base model the ID names.
+- **`--base-url`** overrides the runtime endpoint, for a VPC interface
+  endpoint.
+- **Context window.** Bedrock has no model-info endpoint, so nothing is
+  discovered: pass `--context-window` (else elision assumes 32000).
+- **Cost** is not reported per turn. `--budget-usd` prices tokens from
+  `NARE_PRICE_IN` and `NARE_PRICE_OUT`, as on any rail without a cost header.
+- **IAM.** The role needs `bedrock:InvokeModel` and
+  `bedrock:InvokeModelWithResponseStream` on the model or inference profile.
 
 ## Use
 

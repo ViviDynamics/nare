@@ -163,9 +163,10 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
     """The flags nare run and nare tui share, so the two cannot drift."""
     parser.add_argument(
         "--provider",
-        choices=["anthropic", "openai"],
+        choices=["anthropic", "bedrock", "openai"],
         default=os.environ.get("NARE_PROVIDER", "anthropic"),
-        help="model provider: anthropic, or openai for anything speaking Chat "
+        help="model provider: anthropic; bedrock for Claude on Amazon Bedrock "
+        "with AWS credentials; or openai for anything speaking Chat "
         "Completions, including a proxy or a local server via --base-url "
         "(env: NARE_PROVIDER)",
     )
@@ -177,7 +178,13 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--base-url",
         default=os.environ.get("NARE_BASE_URL"),
-        help="override the vendor endpoint (env: NARE_BASE_URL)",
+        help="override the vendor endpoint, for bedrock a runtime or VPC "
+        "endpoint (env: NARE_BASE_URL)",
+    )
+    parser.add_argument(
+        "--region",
+        help="AWS region for --provider bedrock "
+        "(else NARE_AWS_REGION, AWS_REGION, AWS_DEFAULT_REGION)",
     )
     parser.add_argument(
         "--temperature",
@@ -288,6 +295,7 @@ def transport_from_args(args: argparse.Namespace) -> Transport:
         system=system_from_args(args),
         streaming=args.stream,
         image_input=args.image_input,
+        region=args.region,
     )
 
 
