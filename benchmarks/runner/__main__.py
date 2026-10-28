@@ -13,7 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
@@ -27,7 +27,13 @@ from benchmarks.runner.compare import (
     run_comparison,
     select_work,
 )
-from benchmarks.runner.config import Config, ConfigError, resolve_config
+from benchmarks.runner.config import (
+    KEY_VARS,
+    Config,
+    ConfigError,
+    baseline_config,
+    resolve_config,
+)
 from benchmarks.runner.grade import (
     CheckResult,
     grade_bash_check,
@@ -44,6 +50,12 @@ from benchmarks.runner.judge import (
     render_attempts,
     score,
 )
+from benchmarks.runner.models import (
+    ListingError,
+    baseline_tiers,
+    list_models,
+    render_models,
+)
 from benchmarks.runner.report import (
     Baseline,
     BaselineMeta,
@@ -56,6 +68,8 @@ from benchmarks.runner.report import (
     dumps_baseline,
     load_baseline,
     render,
+    render_matrix,
+    slugify,
     summarize,
 )
 from benchmarks.runner.sandbox import (
@@ -113,9 +127,27 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument(
             "--allow-model-change",
             action="store_true",
-            help="compare against a baseline blessed on a different model or "
-            "output cap",
+            help="compare against, or bless on top of, a baseline blessed on a "
+            "different provider, model, judge or output cap",
         )
+        if name == "run":
+            child.add_argument(
+                "--matrix",
+                action="store_true",
+                help="run every model with a baseline in this tier, each against "
+                "its own",
+            )
+        if name == "compare":
+            child.add_argument(
+                "--matrix",
+                action="store_true",
+                help="print the last matrix run's case-by-model table",
+            )
+            child.add_argument(
+                "--baselines",
+                action="store_true",
+                help="with --matrix: the table of the tier's baselines, not a run",
+            )
     judges = sub.add_parser(
         "compare-judges",
         help="measure Jev and the llm judge against a reference model",
@@ -129,6 +161,11 @@ def build_parser() -> argparse.ArgumentParser:
     judges.add_argument(
         "--reference-model", help="reference (env: NARE_BENCH_REFERENCE_MODEL)"
     )
+    models = sub.add_parser(
+        "models", help="list what the endpoint serves, with window, price, baselines"
+    )
+    models.add_argument("--provider", help="whose key to send (env: NARE_PROVIDER)")
+    models.add_argument("--base-url", help="the proxy (env: NARE_BASE_URL)")
     return parser
 
 
@@ -289,6 +326,8 @@ async def run_rep(
                 model=config.model,
                 artifacts=kept_ref,
                 max_tokens=config.max_tokens,
+                provider=config.provider,
+                judge_model=config.judge_model,
             )
 
         # Before the bash checks, so nothing a check writes reaches the judge.
@@ -336,6 +375,8 @@ async def run_rep(
         model=config.model,
         artifacts=kept_ref,
         max_tokens=config.max_tokens,
+        provider=config.provider,
+        judge_model=config.judge_model,
     )
 
 
@@ -371,6 +412,44 @@ def latest_results(root: Path) -> Path | None:
     return files[-1] if files else None
 
 
+def stamp_of(path: Path) -> str:
+    """The run a results file belongs to.
+
+    A run writes `<stamp>.jsonl`. A matrix run writes one file per model under
+    one stamp, `<stamp>.<model slug>.jsonl`, so the matrix stays one run.
+    """
+    return path.name.split(".", 1)[0]
+
+
+def is_matrix_file(path: Path) -> bool:
+    return path.name.count(".") == 2
+
+
+def latest_run(root: Path, *, matrix: bool = False) -> list[Path]:
+    """Every results file of the newest run, or with `matrix`, of the newest
+    matrix run."""
+    directory = root / "benchmarks" / "results"
+    if not directory.is_dir():
+        return []
+    files = sorted(directory.glob("*.jsonl"))
+    if matrix:
+        files = [p for p in files if is_matrix_file(p)]
+    if not files:
+        return []
+    newest = stamp_of(files[-1])
+    return [p for p in files if stamp_of(p) == newest]
+
+
+def results_for(files: Sequence[Path], model: str) -> Path | None:
+    """One model's results in a run: its own file from a matrix run, or the
+    run's single file, which the caller still checks was this model's."""
+    for path in files:
+        if is_matrix_file(path) and path.name.split(".")[1] == slugify(model):
+            return path
+    single = [p for p in files if not is_matrix_file(p)]
+    return single[0] if single else None
+
+
 def read_results(path: Path) -> list[RepRecord]:
     records: list[RepRecord] = []
     for raw in path.read_text(encoding="utf-8").splitlines():
@@ -390,12 +469,16 @@ def model_changed(baseline: Baseline, config: Config, allow: bool) -> bool:
     Pinning the judge model too is the non-obvious half: if it changes under
     the suite, every score shifts at once and reads as a harness regression.
     The agent's output cap is pinned for the same reason: a reasoning model
-    cut off at nare's default fails reps it passes with room to think.
+    cut off at nare's default fails reps it passes with room to think. So is
+    the provider: the same model on the other route can lose a reasoning
+    model's thinking on the way. An empty `config.provider` is results that
+    never recorded theirs, which is unknown, not a mismatch.
     """
     if allow:
         return False
     if (
         baseline.meta.model == config.model
+        and (not config.provider or baseline.meta.provider == config.provider)
         and baseline.meta.judge_model == config.judge_model
         and baseline.meta.max_tokens == config.max_tokens
     ):
@@ -404,13 +487,14 @@ def model_changed(baseline: Baseline, config: Config, allow: bool) -> bool:
     def cap(value: int | None) -> str:
         return "nare's default" if value is None else str(value)
 
+    provider = repr(config.provider) if config.provider else "an unrecorded provider"
     print(
-        f"bench: baseline was blessed on model {baseline.meta.model!r} / "
-        f"judge {baseline.meta.judge_model!r} / output cap "
-        f"{cap(baseline.meta.max_tokens)}; this run used {config.model!r} / "
-        f"{config.judge_model!r} / {cap(config.max_tokens)}. Numbers are not "
-        "comparable across models or caps. Pass --allow-model-change to "
-        "override.",
+        f"bench: baseline was blessed on provider {baseline.meta.provider!r} / "
+        f"model {baseline.meta.model!r} / judge {baseline.meta.judge_model!r} / "
+        f"output cap {cap(baseline.meta.max_tokens)}; this run used {provider} / "
+        f"{config.model!r} / {config.judge_model!r} / {cap(config.max_tokens)}. "
+        "Numbers are not comparable across providers, models or caps. Pass "
+        "--allow-model-change to override.",
         file=sys.stderr,
     )
     return True
@@ -482,6 +566,13 @@ def compare_judges(args: argparse.Namespace, root: Path) -> int:
     jev_model = args.jev_model or env.get("NARE_BENCH_JEV_MODEL") or "jev-latest"
 
     results_file = Path(args.results) if args.results else latest_results(root)
+    if not args.results and results_file is not None and is_matrix_file(results_file):
+        print(
+            f"bench: the newest run, {stamp_of(results_file)}, is a matrix run "
+            "with one results file per model; pass one with --results",
+            file=sys.stderr,
+        )
+        return 2
     records = (
         read_results(results_file)
         if results_file is not None and results_file.is_file()
@@ -551,11 +642,384 @@ def compare_judges(args: argparse.Namespace, root: Path) -> int:
     return 0
 
 
+def as_recorded(
+    config: Config,
+    records: Sequence[RepRecord],
+    *,
+    provider: str | None = None,
+    judge_model: str | None = None,
+) -> Config:
+    """The cap, provider and judge the results were run with, not the ones in
+    this shell: compare and bless never run the agent.
+
+    `provider` and `judge_model` are the flags. One that contradicts what the
+    results recorded raises ConfigError naming both values, since bless would
+    write it over what was measured. Results written before the provider and
+    judge were recorded keep the flags' values, or the shell's.
+    """
+    ran_provider = next((r.provider for r in records if r.provider), "")
+    ran_judge = next((r.judge_model for r in records if r.judge_model), "")
+    for name, flag, given, ran in (
+        ("provider", "--provider", provider, ran_provider),
+        ("judge", "--judge-model", judge_model, ran_judge),
+    ):
+        if given and ran and given != ran:
+            raise ConfigError(
+                f"the results were run with {name} {ran!r}, and {flag} says "
+                f"{given!r}; drop {flag}, or pass the one they were run with"
+            )
+    return replace(
+        config,
+        max_tokens=next((r.max_tokens for r in records), None),
+        provider=ran_provider or config.provider,
+        judge_model=ran_judge or config.judge_model,
+    )
+
+
+def run_model(
+    root: Path, cases: Sequence[Case], config: Config, name: str
+) -> tuple[Transport, list[RepRecord]]:
+    """Every case at its own reps: results/<name>.jsonl, and each rep's
+    evidence under results/<name>/."""
+    transport = judge_transport(config)
+    evidence = root / "benchmarks" / "results" / name
+    records: list[RepRecord] = []
+    for case in cases:
+        records += asyncio.run(run_case(case, config, transport, case.reps, evidence))
+    print(f"results: {write_results(root, records, name)}")
+    return transport, records
+
+
+def confirm(
+    root: Path,
+    cases: Sequence[Case],
+    config: Config,
+    transport: Transport,
+    name: str,
+    records: list[RepRecord],
+    baseline: Baseline,
+    strict_tokens: bool,
+) -> Comparison:
+    """Re-run each case whose pass rate dropped at CONFIRM_REPS, then compare.
+
+    The re-run rewrites results/<name>.jsonl and its evidence instead of
+    starting a second of each.
+    """
+    first = compare(
+        summarize(records),
+        baseline,
+        token_band=TOKEN_BAND,
+        strict_tokens=strict_tokens,
+    )
+    suspects = [d.case for d in first.deltas if d.verdict == "suspect"]
+    if suspects:
+        print(f"re-confirming {', '.join(suspects)} at {CONFIRM_REPS} reps...")
+        evidence = root / "benchmarks" / "results" / name
+        for case in [c for c in cases if c.id in suspects]:
+            extra = asyncio.run(
+                run_case(case, config, transport, CONFIRM_REPS, evidence)
+            )
+            records = [r for r in records if r.case != case.id] + extra
+        write_results(root, records, name)
+    return compare(
+        summarize(records),
+        baseline,
+        confirmed=True,
+        token_band=TOKEN_BAND,
+        strict_tokens=strict_tokens,
+    )
+
+
+def load_matrix(root: Path, tier: str) -> list[tuple[Path, Baseline]]:
+    """The matrix for a tier is its set of baselines."""
+    directory = root / "benchmarks" / "baselines"
+    if not directory.is_dir():
+        return []
+    return [(p, load_baseline(p)) for p in sorted(directory.glob(f"*.{tier}.toml"))]
+
+
+def misnamed(matrix: Sequence[tuple[Path, Baseline]], tier: str) -> str | None:
+    """Why a baseline file is not at its model's baseline name, or None.
+
+    bless and compare find a model's baseline by that name, and a matrix run
+    names each model's results by it, so a renamed file, or a second file for
+    one model, would be compared with nothing or run twice under one name.
+    """
+    wrong = [
+        f"{path.name} names {baseline.meta.model!r}, whose {tier} baseline is "
+        f"{expected.name}"
+        for path, baseline in matrix
+        if path != (expected := baseline_path(path.parent, baseline.meta.model, tier))
+    ]
+    return "; ".join(wrong) or None
+
+
+def mixed_judges(matrix: Sequence[tuple[Path, Baseline]]) -> str | None:
+    """Why the matrix has more than one judge, or None when it has one.
+
+    When each model judges itself, a cross-model table measures the judges as
+    much as the agents.
+    """
+    judges: dict[str, list[str]] = defaultdict(list)
+    for path, baseline in matrix:
+        judges[baseline.meta.judge_model].append(path.name)
+    if len(judges) < 2:
+        return None
+    named = "; ".join(
+        f"{judge or '(none)'} in {', '.join(names)}"
+        for judge, names in sorted(judges.items())
+    )
+    return f"the matrix needs one judge, and its baselines name {len(judges)}: {named}"
+
+
+def served_check(matrix: Sequence[tuple[Path, Config]], base_url: str | None) -> int:
+    """The preflight: 2 when the endpoint does not list a matrix model or the
+    judge.
+
+    Each key lists once, since a proxy key can be limited to some models, and
+    the judge is checked under every key, since it answers on each baseline's
+    provider. A key whose listing fails warns and leaves only its own models
+    unchecked, and a run with no base URL, so no proxy to ask, warns and
+    checks nothing: an outage of the listing should not block a measurement.
+    """
+    if not base_url:
+        print(
+            "bench: warning: no base URL, so the matrix's models were not checked "
+            "against the endpoint's list",
+            file=sys.stderr,
+        )
+        return 0
+    served: dict[str, set[str] | None] = {}
+    missing: list[str] = []
+    for path, config in matrix:
+        key = config.api_key or ""
+        first = key not in served
+        if first:
+            try:
+                served[key] = list_models(base_url, key).names
+            except ListingError as exc:
+                served[key] = None
+                print(
+                    "bench: warning: could not list the endpoint's models for "
+                    f"{config.api_key_var} ({exc}); the models under that key "
+                    "were not checked",
+                    file=sys.stderr,
+                )
+        names = served[key]
+        if names is None:
+            continue
+        if config.model not in names:
+            missing.append(f"{config.model!r} ({path.name})")
+        if first and config.judge_model not in names:
+            missing.append(f"{config.judge_model!r} (the judge, in {path.name})")
+    if missing:
+        print(
+            f"bench: the endpoint does not list {', '.join(missing)}; "
+            "`bin/bench models` shows what it serves",
+            file=sys.stderr,
+        )
+        return 2
+    return 0
+
+
+def run_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) -> int:
+    """`run --matrix`: each baseline's model in turn, against its own baseline.
+
+    Everything that can refuse the run does so before the image is built: an
+    empty matrix, a baseline file not at its model's name, a second judge, a
+    missing key, a cap above the non-streaming ceiling, a model or judge the
+    endpoint does not list. Sequential, never parallel: every run tags its
+    image nare-bench:local.
+    """
+    matrix = load_matrix(root, args.tier)
+    if not matrix:
+        print(
+            f"bench: no {args.tier} baselines, so the matrix is empty; bless one "
+            f"with bin/bench bless --tier {args.tier} --model M",
+            file=sys.stderr,
+        )
+        return 2
+    why = misnamed(matrix, args.tier) or mixed_judges(matrix)
+    if why is not None:
+        print(f"bench: {why}", file=sys.stderr)
+        return 2
+    base_url = args.base_url or os.environ.get("NARE_BASE_URL") or None
+    configs: list[tuple[Path, Config]] = []
+    for path, baseline in matrix:
+        try:
+            config = baseline_config(
+                model=baseline.meta.model,
+                provider=baseline.meta.provider,
+                judge_model=baseline.meta.judge_model,
+                max_tokens=baseline.meta.max_tokens,
+                base_url=base_url,
+                env=os.environ,
+            )
+        except ConfigError as exc:
+            print(f"bench: {path.name}: {exc}", file=sys.stderr)
+            return 2
+        configs.append((path, config))
+    code = served_check(configs, base_url)
+    if code:
+        return code
+    try:
+        build_image(root)
+    except SandboxError as exc:
+        print(f"bench: {exc}", file=sys.stderr)
+        return 2
+
+    stamp = new_stamp()
+    columns: list[tuple[str, Comparison]] = []
+    for (_, baseline), (_, config) in zip(matrix, configs, strict=True):
+        print(f"\n== {config.model} ({config.provider}) ==")
+        name = f"{stamp}.{slugify(config.model)}"
+        transport, records = run_model(root, cases, config, name)
+        final = confirm(
+            root, cases, config, transport, name, records, baseline, args.strict_tokens
+        )
+        print(render(final))
+        columns.append((config.model, final))
+    print()
+    print(render_matrix(columns, matrix[0][1].meta.judge_model))
+    return max(comparison.exit_code for _, comparison in columns)
+
+
+def baselines_table(root: Path, tier: str, selected: set[str]) -> int:
+    """`compare --matrix --baselines`: the tier's baselines as the matrix
+    table, with no results needed."""
+    matrix = load_matrix(root, tier)
+    if not matrix:
+        print(f"bench: no {tier} baselines", file=sys.stderr)
+        return 2
+    why = misnamed(matrix, tier) or mixed_judges(matrix)
+    if why is not None:
+        print(f"bench: {why}", file=sys.stderr)
+        return 2
+    columns = [
+        (
+            baseline.meta.model,
+            compare(
+                [s for s in baseline.cases.values() if s.case in selected],
+                baseline,
+                confirmed=True,
+            ),
+        )
+        for _, baseline in matrix
+    ]
+    print(render_matrix(columns, matrix[0][1].meta.judge_model))
+    return 0
+
+
+def compare_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) -> int:
+    """`compare --matrix`: the last matrix run's table, without running.
+
+    Each model's results are compared with its own baseline under the rules
+    `compare` uses, so the exit code is what `run --matrix` returned.
+    """
+    selected = {c.id for c in cases}
+    if args.baselines:
+        return baselines_table(root, args.tier, selected)
+    files = latest_run(root, matrix=True)
+    if not files:
+        print(
+            "bench: no matrix run yet; run `bin/bench run --matrix` first",
+            file=sys.stderr,
+        )
+        return 2
+    columns: list[tuple[str, Comparison]] = []
+    judges: set[str] = set()
+    for path in files:
+        records = read_results(path)
+        if not records:
+            continue
+        model = records[0].model
+        baseline_file = baseline_path(
+            root / "benchmarks" / "baselines", model, args.tier
+        )
+        if not baseline_file.exists():
+            print(f"bench: no baseline at {baseline_file}", file=sys.stderr)
+            return 2
+        baseline = load_baseline(baseline_file)
+        config = as_recorded(
+            resolve_config(
+                model=model,
+                provider=None,
+                base_url=None,
+                judge_model=None,
+                env={},
+                need_key=False,
+            ),
+            records,
+        )
+        if model_changed(baseline, config, args.allow_model_change):
+            return 2
+        judges.add(config.judge_model)
+        summaries = [s for s in summarize(records) if s.case in selected]
+        columns.append(
+            (
+                model,
+                compare(
+                    summaries,
+                    baseline,
+                    confirmed=True,
+                    token_band=TOKEN_BAND,
+                    strict_tokens=args.strict_tokens,
+                ),
+            )
+        )
+    if not columns:
+        print(f"bench: {stamp_of(files[0])} holds no results", file=sys.stderr)
+        return 2
+    if all(d.summary is None for _, c in columns for d in c.deltas):
+        print(
+            f"bench: the matrix run {stamp_of(files[0])} holds none of the "
+            "selected cases",
+            file=sys.stderr,
+        )
+        return 2
+    print(render_matrix(columns, ", ".join(sorted(judges))))
+    return max(comparison.exit_code for _, comparison in columns)
+
+
+def show_models(args: argparse.Namespace, root: Path) -> int:
+    """`bin/bench models`: free, it lists and calls no model."""
+    env = os.environ
+    base_url = args.base_url or env.get("NARE_BASE_URL")
+    if not base_url:
+        print(
+            "bench: no base URL, so there is no proxy to ask; pass --base-url or "
+            "set NARE_BASE_URL",
+            file=sys.stderr,
+        )
+        return 2
+    provider = args.provider or env.get("NARE_PROVIDER") or "anthropic"
+    key_var = KEY_VARS.get(provider)
+    if key_var is None:
+        print(
+            f"bench: unknown provider {provider!r}; nare supports: "
+            + ", ".join(KEY_VARS),
+            file=sys.stderr,
+        )
+        return 2
+    api_key = env.get(key_var)
+    if not api_key:
+        print(f"bench: {key_var} is not set", file=sys.stderr)
+        return 2
+    try:
+        listing = list_models(base_url, api_key)
+    except ListingError as exc:
+        print(f"bench: the endpoint did not list its models: {exc}", file=sys.stderr)
+        return 1
+    print(render_models(listing, baseline_tiers(root / "benchmarks" / "baselines")))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command is None:
         print(
-            "bench needs a subcommand: run, compare, bless, verify, or compare-judges",
+            "bench needs a subcommand: run, compare, bless, verify, "
+            "compare-judges, or models",
             file=sys.stderr,
         )
         return 2
@@ -564,6 +1028,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "compare-judges":
         # No tier: it compares whatever cases the results file holds.
         return compare_judges(args, root)
+    if args.command == "models":
+        return show_models(args, root)
     try:
         cases = _select(root, args.tier, args.case)
     except CaseError as exc:
@@ -583,6 +1049,21 @@ def main(argv: list[str] | None = None) -> int:
         print(text)
         return code
 
+    if getattr(args, "baselines", False) and not args.matrix:
+        print("bench: --baselines goes with --matrix", file=sys.stderr)
+        return 2
+    if getattr(args, "matrix", False):
+        if args.model or args.provider or args.judge_model:
+            print(
+                "bench: --matrix takes the model, provider and judge from each "
+                "baseline; drop --model, --provider and --judge-model",
+                file=sys.stderr,
+            )
+            return 2
+        if args.command == "run":
+            return run_matrix(args, root, cases)
+        return compare_matrix(args, root, cases)
+
     try:
         config = resolve_config(
             model=args.model,
@@ -598,73 +1079,55 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.command == "run":
+        baseline_file = baseline_path(
+            root / "benchmarks" / "baselines", config.model, args.tier
+        )
+        baseline = load_baseline(baseline_file) if baseline_file.exists() else None
+        # Before the image and the reps: numbers the baseline cannot be
+        # compared with would be paid for and then thrown away.
+        if baseline is not None and model_changed(
+            baseline, config, args.allow_model_change
+        ):
+            return 2
         try:
             build_image(root)
         except SandboxError as exc:
             print(f"bench: {exc}", file=sys.stderr)
             return 2
-        transport = judge_transport(config)
-        # One stamp per run: the confirmation re-run rewrites this run's
-        # results file and evidence instead of starting a second of each.
         stamp = new_stamp()
-        evidence = root / "benchmarks" / "results" / stamp
-        records: list[RepRecord] = []
-        for case in cases:
-            records += asyncio.run(
-                run_case(case, config, transport, case.reps, evidence)
-            )
-
-        path = write_results(root, records, stamp)
-        print(f"results: {path}")
-
-        baseline_file = baseline_path(
-            root / "benchmarks" / "baselines", config.model, args.tier
-        )
-        if not baseline_file.exists():
+        transport, records = run_model(root, cases, config, stamp)
+        if baseline is None:
             print(render_first_run(summarize(records)))
             print(
                 f"\nno baseline yet; bless one with: bin/bench bless --tier {args.tier}"
             )
             return 0
-
-        baseline = load_baseline(baseline_file)
-        if model_changed(baseline, config, args.allow_model_change):
-            return 2
-
-        first = compare(
-            summarize(records),
-            baseline,
-            token_band=TOKEN_BAND,
-            strict_tokens=args.strict_tokens,
-        )
-        suspects = [d.case for d in first.deltas if d.verdict == "suspect"]
-        if suspects:
-            print(f"re-confirming {', '.join(suspects)} at {CONFIRM_REPS} reps...")
-            for case in [c for c in cases if c.id in suspects]:
-                extra = asyncio.run(
-                    run_case(case, config, transport, CONFIRM_REPS, evidence)
-                )
-                records = [r for r in records if r.case != case.id] + extra
-            write_results(root, records, stamp)
-
-        final = compare(
-            summarize(records),
-            baseline,
-            confirmed=True,
-            token_band=TOKEN_BAND,
-            strict_tokens=args.strict_tokens,
+        final = confirm(
+            root, cases, config, transport, stamp, records, baseline, args.strict_tokens
         )
         print(render(final))
         return final.exit_code
 
-    results_file = latest_results(root)
-    if results_file is None:
+    run_files = latest_run(root)
+    if not run_files:
         print("bench: no results yet; run `bin/bench run` first", file=sys.stderr)
         return 2
+    results_file = results_for(run_files, config.model)
+    if results_file is None:
+        print(
+            f"bench: the newest run, {stamp_of(run_files[0])}, is a matrix run "
+            f"with no results for {config.model!r}",
+            file=sys.stderr,
+        )
+        return 2
     records = read_results(results_file)
-    # The cap the results were run at, not one in this shell: compare and
-    # bless never run the agent.
-    config = replace(config, max_tokens=next((r.max_tokens for r in records), None))
+    try:
+        config = as_recorded(
+            config, records, provider=args.provider, judge_model=args.judge_model
+        )
+    except ConfigError as exc:
+        print(f"bench: {results_file.name}: {exc}", file=sys.stderr)
+        return 2
     produced = sorted({r.model for r in records} - {config.model})
     if produced:
         print(
@@ -688,8 +1151,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "bless":
         baselines.mkdir(parents=True, exist_ok=True)
-        kept = load_baseline(baseline_file).cases if baseline_file.exists() else {}
+        old = load_baseline(baseline_file) if baseline_file.exists() else None
         tier_ids = {c.id for c in _select(root, args.tier, None)}
+        merged = merge_baseline(old.cases if old else {}, summaries, tier_ids)
+        fresh = {s.case for s in summaries if s.pass_rate is not None}
+        kept = sorted({s.case for s in merged} - fresh)
+        # Kept cases were measured under the old baseline's provider, judge
+        # and cap, and would be written under these results' labels.
+        if (
+            old is not None
+            and kept
+            and model_changed(old, config, args.allow_model_change)
+        ):
+            print(
+                f"bench: blessing would keep {', '.join(kept)} from "
+                f"{baseline_file.name} under these results' labels; run those "
+                "cases too, or pass --allow-model-change",
+                file=sys.stderr,
+            )
+            return 2
         meta = BaselineMeta(
             blessed=datetime.now(UTC).isoformat(timespec="seconds"),
             commit=_commit(),
@@ -698,17 +1178,21 @@ def main(argv: list[str] | None = None) -> int:
             judge_model=config.judge_model,
             max_tokens=config.max_tokens,
         )
-        baseline_file.write_text(
-            dumps_baseline(meta, merge_baseline(kept, summaries, tier_ids)),
-            encoding="utf-8",
+        baseline_file.write_text(dumps_baseline(meta, merged), encoding="utf-8")
+        print(
+            f"blessed {baseline_file} from {results_file.name} "
+            f"(provider {config.provider}, judge {config.judge_model})"
         )
-        print(f"blessed {baseline_file} from {results_file.name}")
         return 0
 
     if not baseline_file.exists():
         print(f"bench: no baseline at {baseline_file}", file=sys.stderr)
         return 2
     baseline = load_baseline(baseline_file)
+    if not args.provider and not any(r.provider for r in records):
+        # Results written before the provider was recorded, and no flag to
+        # say: the route they took is unknown, which is not a mismatch.
+        config = replace(config, provider="")
     if model_changed(baseline, config, args.allow_model_change):
         return 2
     comparison = compare(

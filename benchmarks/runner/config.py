@@ -8,7 +8,7 @@ endpoint can run the benchmark with no further configuration.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from nare.cli import stream_from_env
 from nare.transport.anthropic import nonstreaming_ceiling
@@ -52,16 +52,22 @@ def _max_tokens_from(
         value = 0
     if value <= 0:
         raise ConfigError(f"NARE_BENCH_MAX_TOKENS must be a positive integer: {raw!r}")
+    _check_ceiling("NARE_BENCH_MAX_TOKENS", value, provider, model, stream)
+    return value
+
+
+def _check_ceiling(
+    source: str, value: int, provider: str, model: str, stream: bool
+) -> None:
     # nare refuses this at startup, so every rep would end with no result
     # line: a paid run that measures nothing.
     if provider == "anthropic" and not stream:
         ceiling = nonstreaming_ceiling(model)
         if value > ceiling:
             raise ConfigError(
-                f"NARE_BENCH_MAX_TOKENS {value} is above {ceiling}, the most "
+                f"{source} {value} is above {ceiling}, the most "
                 f"{model!r} takes without streaming; set NARE_STREAM=1"
             )
-    return value
 
 
 def resolve_config(
@@ -112,3 +118,56 @@ def resolve_config(
         ),
         stream=stream,
     )
+
+
+def route(base_url: str | None, provider: str) -> str | None:
+    """One proxy, two routes: Chat Completions under /v1, Messages at its root.
+
+    The openai transport posts to <base>/chat/completions, so its base ends in
+    /v1. The Anthropic SDK adds /v1/messages itself, so its base does not.
+    """
+    if not base_url:
+        return None
+    root = base_url.rstrip("/").removesuffix("/v1")
+    return f"{root}/v1" if provider == "openai" else root
+
+
+def baseline_config(
+    *,
+    model: str,
+    provider: str,
+    judge_model: str,
+    max_tokens: int | None,
+    base_url: str | None,
+    env: Mapping[str, str],
+) -> Config:
+    """One matrix model's config: the model, provider, judge and cap its
+    baseline names, with the endpoint, key and streaming from the run.
+
+    NARE_BENCH_MAX_TOKENS is not read, since the cap is the baseline's, but
+    the cap is still held to the ceiling nare enforces without streaming. A
+    baseline with no model or judge is refused, where resolve_config would
+    take NARE_MODEL or NARE_BENCH_JUDGE_MODEL from the shell.
+    """
+    for name, value in (("model", model), ("judge_model", judge_model)):
+        if not value:
+            raise ConfigError(
+                f"the baseline names no {name}, and the matrix never takes one "
+                "from the shell"
+            )
+    if provider not in KEY_VARS:
+        raise ConfigError(
+            f"provider {provider!r} is not one nare supports: " + ", ".join(KEY_VARS)
+        )
+    config = resolve_config(
+        model=model,
+        provider=provider,
+        base_url=route(base_url, provider),
+        judge_model=judge_model,
+        env={k: v for k, v in env.items() if k != "NARE_BENCH_MAX_TOKENS"},
+    )
+    if max_tokens is not None:
+        _check_ceiling(
+            "the baseline's max_tokens", max_tokens, provider, model, config.stream
+        )
+    return replace(config, max_tokens=max_tokens)
