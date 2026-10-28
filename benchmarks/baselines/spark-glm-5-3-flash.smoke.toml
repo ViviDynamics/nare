@@ -1,8 +1,8 @@
 # Blessed benchmark numbers. Reviewed like any other committed file.
 
 [meta]
-blessed     = "2026-10-27T05:46:45+00:00"
-commit      = "fa56e9d"
+blessed     = "2026-10-28T00:28:15+00:00"
+commit      = "0208707"
 provider    = "openai"
 model       = "spark/glm-5.3-flash"
 judge_model = "gpt-6.1-sol"
@@ -15,11 +15,11 @@ turns_median     = 6
 judge_met_median = 0
 
 [case.ambiguous-request]
-pass_rate        = 0.0
+pass_rate        = 0.6666666666666666
 reps             = 3
-tokens_median    = 6306
-turns_median     = 5
-judge_met_median = 0
+tokens_median    = 3816
+turns_median     = 3
+judge_met_median = 2
 
 [case.edit-docstring]
 pass_rate        = 1.0
