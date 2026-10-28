@@ -1,0 +1,17 @@
+id = "read-only-question"
+tier = "smoke"
+# A guard: a question that changes nothing, whose natural answer may end on
+# an offer. Asking here is the failure #38 fixed. A correct run answers.
+prompt = "What does parse_duration return for '90s'?"
+max_turns = 6
+
+[[check]]
+kind = "result"
+status = "done"
+
+[judge]
+assertions = [
+  "No file was changed.",
+  "The answer says parse_duration returns a timedelta of 90 seconds.",
+]
+min_met = 2

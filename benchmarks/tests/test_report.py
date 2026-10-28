@@ -17,6 +17,7 @@ from benchmarks.runner.report import (
     load_baseline,
     median_int,
     render,
+    render_matrix,
     slugify,
     summarize,
 )
@@ -318,3 +319,57 @@ def test_a_baseline_from_before_caps_were_recorded_had_nares_default(
     path.write_text(dumps_baseline(META, summarize([record(case="c")])))
     assert "max_tokens" not in path.read_text()
     assert load_baseline(path).meta.max_tokens is None
+
+
+def rated(case: str, passes: int, fails: int, errors: int = 0) -> CaseSummary:
+    inconclusive = errors > (passes + fails + errors) / 2
+    return CaseSummary(
+        case=case,
+        passes=passes,
+        fails=fails,
+        errors=errors,
+        pass_rate=None if inconclusive else passes / (passes + fails),
+        inconclusive=inconclusive,
+        tokens_median=1000,
+        turns_median=4,
+        judge_met_median=None,
+    )
+
+
+def test_the_matrix_table_puts_cases_down_and_models_across() -> None:
+    haiku = compare(
+        [rated("ask", 0, 7), rated("edit", 3, 0)],
+        baseline_of(rated("ask", 2, 1), rated("edit", 3, 0)),
+        confirmed=True,
+    )
+    nano = compare(
+        [rated("ask", 3, 0), rated("edit", 0, 0, errors=3)],
+        baseline_of(rated("ask", 1, 2), rated("edit", 3, 0)),
+        confirmed=True,
+    )
+    text = render_matrix([("haiku", haiku), ("nano", nano)], "sonnet")
+    assert text.splitlines() == [
+        "| case | haiku          | nano         |",
+        "| ---- | -------------- | ------------ |",
+        "| ask  | 0/7 regression | 3/3          |",
+        "| edit | 3/3            | inconclusive |",
+        "",
+        "Judge: sonnet, for every model.",
+    ]
+
+
+def test_a_case_a_model_did_not_run_is_a_dash() -> None:
+    # --case limits the run; the baseline's other cases come back missing.
+    ran = compare([rated("ask", 1, 2)], baseline_of(rated("ask", 1, 2)))
+    skipped = compare([], baseline_of(rated("ask", 1, 2), rated("edit", 3, 0)))
+    text = render_matrix([("a", ran), ("b", skipped)], "j")
+    assert "| ask  | 1/3 | -   |" in text.splitlines()
+    assert "edit" not in text
+
+
+def test_the_matrix_table_says_when_the_judge_judged_itself() -> None:
+    comparison = compare([rated("ask", 1, 2)], baseline_of(rated("ask", 1, 2)))
+    text = render_matrix([("sonnet", comparison)], "sonnet")
+    assert text.splitlines()[-1] == (
+        "Judge: sonnet, for every model. It judged its own repetitions too."
+    )

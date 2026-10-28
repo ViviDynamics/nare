@@ -11,6 +11,7 @@ from benchmarks.runner.case import Case, load_cases
 from benchmarks.runner.sandbox import repo_root
 
 SEEDS = {
+    "ambiguous-after-reading",
     "ambiguous-request",
     "bash-timeout-recovery",
     "bootstrap-without-database",
@@ -19,6 +20,7 @@ SEEDS = {
     "fix-failing-test",
     "multi-file-rename",
     "context-overflow",
+    "read-only-question",
 }
 
 
@@ -59,6 +61,29 @@ def test_the_ask_case_judges_the_question_not_just_the_status() -> None:
     assert judge is not None
     assert judge.min_met == 2
     assert len(judge.assertions) == 2
+
+
+def test_the_new_ask_cases_are_in_the_smoke_tier() -> None:
+    smoke = load_cases(repo_root() / "benchmarks" / "cases", tier="smoke")
+    assert {"ambiguous-after-reading", "read-only-question"} <= {c.id for c in smoke}
+
+
+def test_the_after_reading_case_expects_a_blocked_run() -> None:
+    case = cases()["ambiguous-after-reading"]
+    assert [c.status for c in case.checks if c.kind == "result"] == ["blocked"]
+    assert case.judge is not None
+    assert case.judge.min_met == 1
+
+
+def test_the_read_only_case_expects_an_answer_not_a_question() -> None:
+    """The guard: asking here is the failure #38 fixed."""
+    case = cases()["read-only-question"]
+    assert [c.status for c in case.checks if c.kind == "result"] == ["done"]
+    # No bash check: one that nothing changed would pass on the pristine
+    # fixture, so the judge's first claim does that job.
+    assert case.bash_checks == ()
+    assert case.judge is not None
+    assert case.judge.min_met == 2
 
 
 def cases() -> dict[str, Case]:
@@ -115,6 +140,29 @@ def test_the_bootstrap_case_fails_a_run_that_set_up_a_database(
     # a server binary nor a data directory.
     (tmp_path / "after.json").write_text(after_with())
     assert run_here(cmd, tmp_path, tmp_path) == 0
+
+
+def session_asking(*questions: str) -> str:
+    """/out/session.json, cut down to the field the check reads."""
+    return json.dumps({"questions": list(questions)})
+
+
+@pytest.mark.parametrize(
+    ("questions", "passes"),
+    [
+        (["Delete format_bytes, slugify, or both?"], True),
+        (["Delete format_bytes?", "Or slugify?"], True),
+        (["Delete format_bytes?"], False),
+        (["Which helper do you mean?"], False),
+        ([], False),
+    ],
+)
+def test_the_after_reading_case_passes_only_questions_naming_both_helpers(
+    tmp_path: Path, questions: list[str], passes: bool
+) -> None:
+    cmd = check_with("ambiguous-after-reading", "session.json")
+    (tmp_path / "session.json").write_text(session_asking(*questions))
+    assert (run_here(cmd, tmp_path, tmp_path) == 0) is passes
 
 
 def test_the_bootstrap_case_outlasts_a_detour() -> None:

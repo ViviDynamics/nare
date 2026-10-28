@@ -10,13 +10,20 @@ contains only `src/nare` - so running it means working from a checkout.
 
 Docker is required; every repetition runs in a throwaway container.
 
+Before choosing a model, run `bin/bench models`. It lists what the endpoint
+serves today, so do not pick a model from a list in a document: proxy aliases
+change without notice. See "Which models the endpoint serves" below.
+
     export ANTHROPIC_API_KEY=...        # OPENAI_API_KEY for NARE_PROVIDER=openai
-    export NARE_MODEL=claude-haiku
+    export NARE_MODEL=...               # one that `bin/bench models` lists
+    export NARE_BENCH_JUDGE_MODEL=...   # the judge its baseline names; unset,
+                                        # the judge is NARE_MODEL itself
     export NARE_BASE_URL=https://...    # only if you use a proxy
     export NARE_STREAM=1                # stream agent and judge, for proxies
     export NARE_BENCH_MAX_TOKENS=32000  # agent output cap; default is nare's
                                         # (anthropic needs NARE_STREAM above 21333)
 
+    bin/bench models                    # free: what can I run?
     bin/bench verify                    # free: are the cases well-formed?
     bin/bench run --tier smoke          # measure
     bin/bench bless --tier smoke        # promote the numbers to a baseline
@@ -26,9 +33,90 @@ confirmed regression. A case whose pass rate drops is re-run at seven
 repetitions before it is called one, because sampling cannot be pinned and
 three repetitions are not conclusive on their own.
 
+`bless` writes the provider, judge and output cap the results were run with,
+which each results line records, and not the ones in your shell. Results
+written before the provider and judge were recorded take them from the flags,
+or else from the shell as `run` would: `NARE_PROVIDER`, which defaults to
+`anthropic`, and `NARE_BENCH_JUDGE_MODEL`, which defaults to the model itself.
+A `--provider` or `--judge-model` that contradicts what the results recorded
+exits 2, for `compare` too. `bless` merges into the existing baseline, so
+cases the results do not cover are kept; when that baseline was blessed on
+another provider, judge or output cap, it exits 2 rather than relabel them,
+unless `--allow-model-change`.
+
+`run` and `compare` refuse, with exit 2, a baseline blessed on another
+provider, model, judge or output cap, since those numbers are not comparable;
+`run` does so before it builds anything, and `--allow-model-change` overrides.
+Results that never recorded their provider are compared on the others alone,
+unless `--provider` names it.
+
 Tokens are `input + output + cache_read + cache_write` from nare's result
 line. A proxy serves most input from cache, so counting only `input` would
 hide a longer prompt.
+
+## Which models the endpoint serves
+
+    bin/bench models                    # needs NARE_BASE_URL and the key
+
+prints every model the endpoint serves, with its context window and its price
+in dollars per million tokens in and out, and the tiers that have a baseline
+for it. It reads LiteLLM's `/v1/model/info`, and falls back to names only
+from `/v1/models` when that does not answer. It sends the key for
+`--provider` or `NARE_PROVIDER`, which is `ANTHROPIC_API_KEY` by default. It
+calls no model, so it costs nothing. With no base URL there is no proxy to
+ask, and it exits 2.
+
+## The model matrix
+
+The matrix for a tier is its set of baselines: each
+`baselines/*.<tier>.toml` names a model, its provider, its judge and its
+output cap. Adding a model to the matrix means blessing a baseline for it, and
+dropping one means deleting its baseline.
+
+    bin/bench run --matrix                            # every model, in turn
+    bin/bench run --matrix --case ambiguous-request   # the cheap loop
+    bin/bench compare --matrix                        # the table again, free
+    bin/bench compare --matrix --baselines            # the baselines' table
+
+`run --matrix` runs each baseline's model with that baseline's provider, judge
+and output cap, and compares each with its own baseline under the usual
+rules, a drop re-run at seven repetitions included. `--model`, `--provider`
+and `--judge-model` are refused, and `NARE_MODEL`, `NARE_PROVIDER`,
+`NARE_BENCH_JUDGE_MODEL` and `NARE_BENCH_MAX_TOKENS` are not read. It needs
+the key of every provider in the matrix: `ANTHROPIC_API_KEY` and
+`OPENAI_API_KEY` both, for a matrix that mixes them.
+
+It takes one base URL, `--base-url` or `NARE_BASE_URL`, with or without a
+trailing `/v1`. `anthropic` models get the proxy's root and `openai` models
+the root plus `/v1`, for the agent and the judge alike. A proxy that serves
+the two routes from different roots does not work with `--matrix`: run its
+models one at a time, each with its own `--base-url`.
+
+Before building anything it refuses, with exit 2, a baseline file that is
+not at its model's name, `<model>.<tier>.toml` as `bless` writes it (so one
+model never has two), a matrix whose baselines name more than one judge (a
+table where each model judges itself measures the judges as much as the
+agents), a provider whose key is not set, and a model or judge the endpoint
+does not list. Each key lists once, and the judge is checked under every key,
+since it answers on each model's provider. When a key's listing fails, it
+warns and leaves that key's models unchecked, and with no base URL to ask, it
+warns and checks nothing; either way it runs.
+
+The models run one after another, never in parallel: every run tags its image
+`nare-bench:local`, so two runs at once replace each other's image. After the
+per-model reports it prints the table a pull request pastes: cases down the
+side, models across, each cell a pass rate with its n, marked `regression` or
+`inconclusive`. It exits 1 if any model's comparison would exit 1 on its own,
+and 2 for a configuration error. `compare --matrix` prints the last matrix
+run's table again without running anything, and `--baselines` prints the
+tier's baselines as the same table.
+
+`bless` stays per model, since blessing the whole matrix in one command would
+make it too easy to bless away a regression. After a matrix run,
+`bin/bench bless --model M` blesses M's results from that run.
+
+A smoke matrix of five models is 90 repetitions plus any confirmations, and
+about an hour of wall clock.
 
 ## What a run leaves behind
 
@@ -56,6 +144,17 @@ repetition.
 The stamp is taken when a run starts, and `compare` and `bless` read the
 newest stamp. If two runs overlap, that is the one that started last, not
 the one that finished last, so let one run finish before starting another.
+
+A matrix run is one run with one stamp, and writes each model's results the
+same way under `<stamp>.<model>`, the model's name as its baseline file
+spells it:
+
+    benchmarks/results/<stamp>.<model>.jsonl
+    benchmarks/results/<stamp>.<model>/<case>-<rep>/
+
+After a matrix run, `compare --model M` and `bless --model M` read M's file
+from it. `compare-judges` reads one model's run, so pass it that file with
+`--results`; without it, a matrix run as the newest run exits 2.
 
 ## Comparing judges
 

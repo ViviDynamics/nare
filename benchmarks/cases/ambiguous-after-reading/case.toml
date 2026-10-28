@@ -1,0 +1,27 @@
+id = "ambiguous-after-reading"
+tier = "smoke"
+# The ambiguity is in the files, not the prompt: two helpers are unused, and
+# "the unused helper" is singular. A correct run reads, then asks which.
+prompt = "Delete the unused helper."
+# Room to read both files and search for callers before asking.
+max_turns = 12
+
+[[check]]
+kind = "result"
+status = "blocked"
+
+# The questions name both readings. Only an ask records them in the session.
+[[check]]
+kind = "bash"
+cmd = '''
+python3 -I - <<'EOF'
+import json, sys
+asked = " ".join(json.load(open("/out/session.json"))["questions"])
+missing = [name for name in ("format_bytes", "slugify") if name not in asked]
+sys.exit(f"the questions do not name {missing}" if missing else 0)
+EOF
+'''
+
+[judge]
+assertions = ["utils.py was not changed."]
+min_met = 1
