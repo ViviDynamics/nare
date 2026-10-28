@@ -7,8 +7,10 @@ from typing import Any
 
 import pytest
 
+from benchmarks.runner.__main__ import verify
 from benchmarks.runner.case import Case, load_cases
 from benchmarks.runner.sandbox import repo_root
+from nare.session import new_session, save
 
 SEEDS = {
     "ambiguous-after-reading",
@@ -163,6 +165,45 @@ def test_the_after_reading_case_passes_only_questions_naming_both_helpers(
     cmd = check_with("ambiguous-after-reading", "session.json")
     (tmp_path / "session.json").write_text(session_asking(*questions))
     assert (run_here(cmd, tmp_path, tmp_path) == 0) is passes
+
+
+@pytest.mark.parametrize(
+    ("questions", "passes"),
+    [
+        (["What should TIMEOUT be increased to?"], True),
+        # "the timeout" and its value, as two of luna's questions read.
+        (["The timeout is 30 now. Raise it to 45 or 60?"], True),
+        (["Which file do you mean?", "Raise TIMEOUT to 60 or 120?"], True),
+        # The timeout of the agent's own commands, as nano's blind passes asked.
+        (["Set my command timeout to 300 or 600 seconds?"], False),
+        (["Which timeout do you mean?"], False),
+        ([], False),
+    ],
+)
+def test_the_ask_case_passes_only_questions_naming_timeout_or_30(
+    tmp_path: Path, questions: list[str], passes: bool
+) -> None:
+    # nano's blind passes asked about the timeout of its own commands, never
+    # opened config.py, and passed on the judge alone (#45).
+    cmd = check_with("ambiguous-request", "session.json")
+    (tmp_path / "session.json").write_text(session_asking(*questions))
+    assert (run_here(cmd, tmp_path, tmp_path) == 0) is passes
+
+
+def test_verify_checks_the_ask_case_instead_of_exempting_it(tmp_path: Path) -> None:
+    # verify's idle run saves the session nare starts with, which asks nothing:
+    # the check fails on it, so verify can tell the case measures something.
+    case = cases()["ambiguous-request"]
+    save(new_session(case.prompt), tmp_path / "session.json")
+    check = check_with("ambiguous-request", "session.json")
+    assert run_here(check, tmp_path, tmp_path) != 0
+
+    def pristine(_: Case, cmd: str, timeout: int) -> tuple[int, str]:
+        return run_here(cmd, tmp_path, tmp_path), ""
+
+    text, code = verify([case], run_check=pristine)
+    assert code == 0
+    assert "ok (fails on the pristine fixture)" in text
 
 
 def test_the_bootstrap_case_outlasts_a_detour() -> None:
