@@ -83,6 +83,12 @@ def describe() -> dict[str, Any]:
             "event": "progress",
             "event_detail": "structured_output",
         },
+        "proxy_num_retries": {
+            "flag": "--proxy-num-retries",
+            "providers": ["openai"],
+            "request_field": "num_retries",
+            "default": None,
+        },
         # The redaction is part of what a caller relies on: event `text` and
         # whatever a caller pipes through `nare redact` carry it, and a rule
         # change is a change to what those mean.
