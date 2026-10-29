@@ -162,6 +162,12 @@ def build_parser() -> argparse.ArgumentParser:
 def add_run_flags(parser: argparse.ArgumentParser) -> None:
     """The flags nare run and nare tui share, so the two cannot drift."""
     parser.add_argument(
+        "--proxy-num-retries",
+        type=int,
+        help="send num_retries to an OpenAI-compatible proxy (unset: omit); "
+        "0 disables LiteLLM router retries, not fallbacks",
+    )
+    parser.add_argument(
         "--provider",
         choices=["anthropic", "openai"],
         default=os.environ.get("NARE_PROVIDER", "anthropic"),
@@ -288,6 +294,7 @@ def transport_from_args(args: argparse.Namespace) -> Transport:
         system=system_from_args(args),
         streaming=args.stream,
         image_input=args.image_input,
+        proxy_num_retries=args.proxy_num_retries,
     )
 
 
@@ -334,6 +341,11 @@ def validate_run_args(args: argparse.Namespace) -> Prices | None:
     """The startup checks nare run and nare tui share. Raises ValueError or
     OSError, which each caller turns into exit 2 before anything starts.
     """
+    if args.proxy_num_retries is not None:
+        if args.proxy_num_retries < 0:
+            raise ValueError("--proxy-num-retries must be a nonnegative integer")
+        if args.provider != "openai":
+            raise ValueError("--proxy-num-retries requires the openai provider")
     # A resume with nowhere to write back silently throws the run away and
     # replays the stale prefix next time. Resuming a file means updating it.
     if args.resume and not args.session:

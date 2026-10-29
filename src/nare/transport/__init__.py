@@ -110,6 +110,7 @@ def make_transport(
     system: str | None = None,
     streaming: bool = False,
     image_input: bool = False,
+    proxy_num_retries: int | None = None,
 ) -> Transport:
     """Build a transport from configuration.
 
@@ -120,6 +121,8 @@ def make_transport(
     """
     match kind:
         case "anthropic":
+            if proxy_num_retries is not None:
+                raise ValueError("proxy_num_retries requires the openai provider")
             from nare.transport.anthropic import AnthropicTransport
 
             return AnthropicTransport(
@@ -146,6 +149,7 @@ def make_transport(
                 system=system,
                 streaming=streaming,
                 image_input=image_input,
+                proxy_num_retries=proxy_num_retries,
             )
         case _:
             raise ValueError(

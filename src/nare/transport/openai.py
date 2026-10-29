@@ -237,7 +237,12 @@ class OpenAITransport:
         http_client: httpx2.AsyncClient | None = None,
         streaming: bool = False,
         image_input: bool = False,
+        proxy_num_retries: int | None = None,
     ) -> None:
+        if proxy_num_retries is not None and (
+            type(proxy_num_retries) is not int or proxy_num_retries < 0
+        ):
+            raise ValueError("proxy_num_retries must be a nonnegative integer")
         key = api_key or os.environ.get("OPENAI_API_KEY")
         if not key:
             raise ValueError(
@@ -252,6 +257,7 @@ class OpenAITransport:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.effort = effort
+        self.proxy_num_retries = proxy_num_retries
         self._base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
         self._key = key
         self._client = http_client or httpx2.AsyncClient(timeout=DEFAULT_TIMEOUT)
@@ -300,6 +306,8 @@ class OpenAITransport:
             payload["temperature"] = self.temperature
         if self.effort is not None:
             payload["reasoning_effort"] = self.effort
+        if self.proxy_num_retries is not None:
+            payload["num_retries"] = self.proxy_num_retries
 
         return payload
 

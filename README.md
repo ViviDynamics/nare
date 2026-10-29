@@ -36,6 +36,12 @@ reads `ANTHROPIC_API_KEY`. `--provider openai` speaks Chat Completions, which
 is also what a LiteLLM proxy, vLLM, llama.cpp and Ollama speak, and reads
 `OPENAI_API_KEY`; point it anywhere with `--base-url`.
 
+For a LiteLLM proxy, `--proxy-num-retries 0` sends `num_retries: 0` on every
+OpenAI-compatible request, including streamed and schema-constrained turns.
+The option accepts a nonnegative integer and is omitted by default, preserving
+the existing request. It controls proxy retries only; verify fallbacks and the
+proxy's support separately. Other providers refuse the option.
+
     nare run --yes --provider openai \
       --base-url https://your-proxy/v1 --model some/model "..."
 
