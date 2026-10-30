@@ -4,7 +4,7 @@ description: Use when starting work in the nare repository, when unsure which wo
 license: Elastic-2.0
 compatibility: Any agent that can run bash, gh, jq and git.
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
 ---
 
 # How nare ships
@@ -27,7 +27,7 @@ script as `$S/<script>`.
 | Watch the default branch's CI and retry flakes | `watch-ci-main` |
 | Merge a PR, or decide whether it can merge | `merge-pr` |
 | Bring a branch up to date with the default branch | `rebase-main` |
-| Run a GitHub Copilot review loop on a PR | `copilot-review` |
+| Get a GitHub Copilot review, only when explicitly asked and after a local review | `copilot-review` |
 | Take an issue to a merged PR unattended | `ship-issue` |
 
 ## How nare is set up
