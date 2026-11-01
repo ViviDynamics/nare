@@ -521,3 +521,54 @@ flag every request, event and session field is unchanged, and transports are
 called with `(messages, tools)` only. `nare contract` advertises the capability
 under `structured_output`. The flag, event detail and discovery field are
 additive and keep the contract version.
+
+## Prompt-cache breakpoints
+
+    nare run --yes --jsonl --provider openai --model MODEL \
+      --base-url "$PROXY" --cache-breakpoints "..."
+
+The anthropic rail always marks two prompt-cache breakpoints: the newest
+block of the transcript and the last tool. `--cache-breakpoints`, or
+`NARE_CACHE_BREAKPOINTS` set to `1`, `true` or `yes`, marks the same two
+positions on the openai rail with `cache_control: {"type": "ephemeral"}`.
+Chat Completions has no breakpoint of its own; the marker is for a proxy that
+forwards it to a backend that caches, such as LiteLLM in front of Anthropic or
+Bedrock. Where the marker goes:
+
+- the last message's last content part. A string content becomes one text
+  part carrying the marker; a tool message's content becomes a list of one
+  text part. A tool result's image travels in a user message after its tool
+  message, so the image part is the end of that block and carries the marker.
+- the last tool call, when the last message is an assistant tool call.
+- the last tool's `function` object, when the request offers tools. A
+  schema-constrained turn offers none, so it marks none.
+
+The system prompt is not marked, matching the anthropic rail. A caching
+backend orders the prefix as tools, system prompt, messages, so the tool marker
+caches the tools alone and the newest-block marker caches all three. Thinking is never sent
+back, so a transcript that ends on thinking marks the block before it, as the
+anthropic rail does. Only the marked message changes shape. Every earlier
+message is the same bytes as an unmarked request, so last turn's prefix is
+still this turn's prefix.
+
+The option is off by default, and without it every request is byte-identical
+to a request from before the option existed. When it is on and the server
+answers with a 4xx, the error keeps the server's reason and adds that the
+request carried breakpoints and that `--cache-breakpoints`
+(`NARE_CACHE_BREAKPOINTS`) is the option to turn off. nare does not detect
+whether a proxy's backend caches. A cache hit is reported as `cache_read`
+(`prompt_tokens_details.cached_tokens`), and a backend that ignores the marker
+reports zero. The anthropic provider accepts the option and changes nothing,
+since it always marks. `nare contract` advertises it under
+`cache_breakpoints`; the flag and discovery field are additive and keep the
+contract version.
+
+Servers with automatic prefix caching (OpenAI, vLLM with prefix caching on,
+and others) need no marker, but they hit only on a stable prefix. nare keeps
+its own part stable: the system prompt is fixed for a run, and tools are
+offered in a fixed order (built-in tools first, then MCP tools in the order
+their servers list them). A caller keeps the rest stable: the same `--system`
+and `--append-system` text, the same `--tools` and the same MCP configuration
+across turns and resumes. Context elision rewrites old tool results, so the
+turn that elides reads back only the prefix in front of the first rewritten
+message, and the turns after it hit again.
