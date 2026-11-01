@@ -49,7 +49,19 @@ def describe() -> dict[str, Any]:
     the version is worth a function-level import.
     """
     from nare.session import Status
-    from nare.tools import MAX_IMAGE_BYTES, MAX_IMAGE_EDGE, MAX_IMAGE_PIXELS
+    from nare.tools import (
+        LIST_LIMIT,
+        MATCH_WIDTH,
+        MAX_IMAGE_BYTES,
+        MAX_IMAGE_EDGE,
+        MAX_IMAGE_PIXELS,
+        MAX_PAGE,
+        MAX_TOOL_OUTPUT,
+        NAVIGATION_TOOLS,
+        SEARCH_LIMIT,
+        SKIPPED_DIRS,
+        TOOLS,
+    )
 
     return {
         "contract": CONTRACT_VERSION,
@@ -58,6 +70,19 @@ def describe() -> dict[str, Any]:
         "never_started": NEVER_STARTED,
         "statuses": list(get_args(Status)),
         "event_types": list(get_args(EventType)),
+        # Additive: the names `--tools` accepts, so a caller can check that a
+        # tool it means to allow exists before it spawns a run.
+        "tools": sorted(TOOLS),
+        "navigation": {
+            "tools": sorted(NAVIGATION_TOOLS),
+            "max_output": MAX_TOOL_OUTPUT,
+            "page_limit": {"list": LIST_LIMIT, "search": SEARCH_LIMIT, "max": MAX_PAGE},
+            "cursor": "opaque",
+            "match_width": MATCH_WIDTH,
+            "line_numbers_from": 1,
+            "follows_symlinks": False,
+            "skipped_dirs": sorted(SKIPPED_DIRS),
+        },
         "image_input": {
             "flag": "--image-input",
             "tool": "read",

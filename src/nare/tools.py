@@ -1,7 +1,7 @@
-"""Five tools, five hand-written schemas beside them.
+"""Seven tools, seven hand-written schemas beside them.
 
 A schema generator that introspects type hints is worth revisiting at roughly
-fifteen tools. At five it is a dependency on cleverness for no gain.
+fifteen tools. At seven it is a dependency on cleverness for no gain.
 """
 
 from __future__ import annotations

@@ -3,7 +3,7 @@
 FROM python:3.12-slim
 
 # git for the fixture checkpoint the judge diffs against; ripgrep because the
-# tool set has no grep tool and cases are expected to reach for `rg`.
+# bash tool's description points at `rg` and cases are expected to reach for it.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ripgrep \
     && rm -rf /var/lib/apt/lists/*

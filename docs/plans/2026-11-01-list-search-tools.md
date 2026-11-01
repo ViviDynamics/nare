@@ -54,27 +54,31 @@ Out:
   `search` from their descriptions, which it is shown only when they are
   allowed. Steering a default run (which allows `bash` too) away from `rg` is
   a behaviour change that ADR 0007 says is shown with the benchmarks first.
+- "Binary files are skipped by `search`" applies to line search. A search
+  without a pattern opens no file, so it stays a cheap walk and can find a
+  PNG for `read --image-input`; `list` marks binary files.
+- An empty file is never binary, so listing one costs no open.
 - Regular expressions run in Python's `re`, which cannot be interrupted; a
   catastrophic pattern is marked as a known ceiling in the source.
 
 ## Tasks
 
-- [ ] 1. Register `list` and `search`: test that `TOOLS` and `TOOL_SCHEMAS`
+- [x] 1. Register `list` and `search`: test that `TOOLS` and `TOOL_SCHEMAS`
   hold seven tools and the new schemas name their arguments.
-- [ ] 2. `list`: tests for sorted entries with kinds, sizes and the binary
+- [x] 2. `list`: tests for sorted entries with kinds, sizes and the binary
   marker, a symlink listed and not followed, pagination with a cursor, a
   foreign or broken cursor refused, and a page bounded by the output cap.
-- [ ] 3. `search`: tests for glob only, glob plus pattern, binary and `.git/`
+- [x] 3. `search`: tests for glob only, glob plus pattern, binary and `.git/`
   skipped, symlinks (to a directory or a file, inside or outside) never
   traversed, matched lines cut to the fixed width, pagination, and identical
   results for repeated calls.
-- [ ] 4. Dispatch and policy: tests that a path outside the root is refused,
+- [x] 4. Dispatch and policy: tests that a path outside the root is refused,
   that the default path is the root, that results are relative to the root,
   and that the tools run only when the allowlist names them.
-- [ ] 5. Acceptance: a CLI run with `--tools read,list,search` finds and reads
+- [x] 5. Acceptance: a CLI run with `--tools read,list,search` finds and reads
   a file it was not told about; a tree of 100,000 files pages through with no
   result over the cap.
-- [ ] 6. TUI: `list` and `search` never prompt; the call line names what was
+- [x] 6. TUI: `list` and `search` never prompt; the call line names what was
   searched.
-- [ ] 7. Contract and docs: `nare contract` names the tools and the navigation
+- [x] 7. Contract and docs: `nare contract` names the tools and the navigation
   limits, and docs/contract.md, README and docs/architecture.md describe them.
