@@ -132,3 +132,27 @@ async def test_an_unconstrained_turn_is_exactly_the_old_request() -> None:
     assert "response_format" not in plain[0]
     assert plain[0]["tools"][0]["function"]["name"] == "read"
     assert plain == explicit
+
+
+async def test_a_generated_schema_is_forwarded_unchanged() -> None:
+    """References and bounds go to the backend as written: nare neither
+    flattens nor drops what the provider is asked to enforce, so a provider
+    limit surfaces as the provider's own refusal.
+    """
+    generated: dict[str, Any] = {
+        "$defs": {"Name": {"type": "string", "maxLength": 3}},
+        "type": "object",
+        "properties": {
+            "name": {"$ref": "#/$defs/Name"},
+            "note": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        },
+        "required": ["name", "note"],
+        "additionalProperties": False,
+    }
+    sent = json.loads(json.dumps(generated))
+    seen: list[dict[str, Any]] = []
+
+    await transport(seen, streaming=False).turn(HI, [TOOL], response_schema=sent)
+
+    assert seen[0]["response_format"]["json_schema"]["schema"] == generated
+    assert sent == generated
