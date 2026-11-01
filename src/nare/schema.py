@@ -28,6 +28,8 @@ SUPPORTED = frozenset(
         "description",
         "title",
         "$schema",
+        "default",
+        "const",
         "minLength",
         "maxLength",
         "pattern",
@@ -162,8 +164,12 @@ def _validate(value: Any, schema: dict[str, Any], path: str) -> list[str]:
     if isinstance(expected, str) and not _matches(actual, expected):
         return [_at(path, f"expected {expected}, got {actual}")]
 
-    if "enum" in schema and value not in schema["enum"]:
+    if "enum" in schema and _canonical(value) not in {
+        _canonical(option) for option in schema["enum"]
+    }:
         errors.append(_at(path, f"expected one of {schema['enum']!r}, got {value!r}"))
+    if "const" in schema and _canonical(value) != _canonical(schema["const"]):
+        errors.append(_at(path, f"expected {schema['const']!r}, got {value!r}"))
 
     if actual == "string":
         errors += _string_bounds(value, schema, path)

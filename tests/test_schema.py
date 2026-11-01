@@ -267,3 +267,35 @@ def test_a_bound_with_a_shape_nare_cannot_enforce_is_refused(
 
     with pytest.raises(UnsupportedSchema, match=f"'{keyword}' must be"):
         validate("x", schema)
+
+
+def test_const_fails_with_the_path() -> None:
+    schema = {"type": "object", "properties": {"kind": {"const": "finding"}}}
+
+    assert validate({"kind": "finding"}, schema) == []
+    assert validate({"kind": "note"}, schema) == [
+        "kind: expected 'finding', got 'note'"
+    ]
+
+
+def test_const_uses_json_equality() -> None:
+    assert validate(1.0, {"const": 1}) == []
+    assert validate(True, {"const": 1}) == ["expected 1, got True"]
+    assert validate({"a": [1, 2]}, {"const": {"a": [1, 2]}}) == []
+
+
+def test_enum_uses_json_equality() -> None:
+    assert validate(True, {"enum": [1, 2]}) == ["expected one of [1, 2], got True"]
+    assert validate(2.0, {"enum": [1, 2]}) == []
+
+
+def test_default_is_an_annotation_and_never_applied() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"line": {"type": "integer", "default": "not an integer"}},
+        "required": ["line"],
+    }
+    value: dict[str, object] = {}
+
+    assert validate(value, schema) == ["missing required property: line"]
+    assert value == {}
