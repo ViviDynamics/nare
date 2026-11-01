@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
-from nare.schema import UnsupportedSchema, extract_json, validate
+from nare.schema import SUPPORTED, UnsupportedSchema, extract_json, validate
 
 PERSON = {
     "type": "object",
@@ -506,3 +507,11 @@ def test_a_ref_cycle_that_never_reaches_a_value_is_refused(
 ) -> None:
     with pytest.raises(UnsupportedSchema, match="cycle"):
         validate(1, schema)
+
+
+def test_the_contract_lists_every_supported_keyword() -> None:
+    contract = Path(__file__).parents[1] / "docs" / "contract.md"
+    text = contract.read_text(encoding="utf-8")
+    section = text.split("## Answer schemas", 1)[1].split("\n## ", 1)[0]
+
+    assert {k for k in SUPPORTED if f"`{k}`" not in section} == set()

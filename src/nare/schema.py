@@ -4,8 +4,10 @@ outside it.
 nare carries one runtime dependency on purpose, so it is nearly impossible to
 conflict with when vendored into another project's container. A real validator
 would be the fourth and fifth transitive dependency, so this module implements
-the keywords a caller actually constrains an answer with, and REFUSES any
-schema using a keyword it does not implement. Under-validating quietly would
+the keywords a caller actually constrains an answer with, including what
+schema generators emit (local `$ref`, `anyOf`/`oneOf`/`allOf`, `const`,
+bounds), and REFUSES any schema using a keyword it does not implement.
+docs/contract.md lists them. Under-validating quietly would
 hand a caller a "validated" object that nothing checked, which is the class of
 dishonesty nare exists to remove.
 """
