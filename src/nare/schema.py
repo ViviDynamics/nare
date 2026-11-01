@@ -30,6 +30,9 @@ SUPPORTED = frozenset(
         "$schema",
         "default",
         "const",
+        "anyOf",
+        "oneOf",
+        "allOf",
         "minLength",
         "maxLength",
         "pattern",
@@ -66,6 +69,7 @@ _SHAPES: dict[str, tuple[type | tuple[type, ...], str]] = {
     "pattern": (str, "a regular expression"),
 }
 
+_COMPOSITIONS = ("anyOf", "oneOf", "allOf")
 _COUNTS = frozenset({"minLength", "maxLength", "minItems", "maxItems"})
 _NUMBER_BOUNDS = frozenset(
     {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"}
@@ -112,6 +116,15 @@ def check_supported(schema: Any, path: str = "") -> None:
                 f"schema keyword {key!r}{where} must be a number, got {value!r}; "
                 "nare refuses a schema it cannot enforce whole"
             )
+        if key in _COMPOSITIONS and not (
+            isinstance(value, list)
+            and value
+            and all(isinstance(sub, dict) for sub in value)
+        ):
+            raise UnsupportedSchema(
+                f"schema keyword {key!r}{where} must be a non-empty list of schemas, "
+                f"got {_type_of(value)}; nare refuses a schema it cannot enforce whole"
+            )
         if key == "pattern":
             try:
                 re.compile(value)
@@ -125,6 +138,10 @@ def check_supported(schema: Any, path: str = "") -> None:
         check_supported(sub, f"{path}.{name}" if path else name)
     if "items" in schema:
         check_supported(schema["items"], f"{path}[]" if path else "[]")
+    for keyword in _COMPOSITIONS:
+        for index, sub in enumerate(schema.get(keyword, [])):
+            label = f"{keyword}[{index}]"
+            check_supported(sub, f"{path}.{label}" if path else label)
 
 
 def _type_of(value: Any) -> str:
@@ -171,6 +188,8 @@ def _validate(value: Any, schema: dict[str, Any], path: str) -> list[str]:
     if "const" in schema and _canonical(value) != _canonical(schema["const"]):
         errors.append(_at(path, f"expected {schema['const']!r}, got {value!r}"))
 
+    errors += _composition(value, schema, path)
+
     if actual == "string":
         errors += _string_bounds(value, schema, path)
     if actual in {"integer", "number"}:
@@ -197,6 +216,33 @@ def _validate(value: Any, schema: dict[str, Any], path: str) -> list[str]:
         for index, item in enumerate(value):
             errors += _validate(item, schema["items"], f"{path}[{index}]")
 
+    return errors
+
+
+def _composition(value: Any, schema: dict[str, Any], path: str) -> list[str]:
+    errors: list[str] = []
+    for sub in schema.get("allOf", []):
+        errors += _validate(value, sub, path)
+    for keyword in ("anyOf", "oneOf"):
+        if keyword not in schema:
+            continue
+        outcomes = [_validate(value, sub, path) for sub in schema[keyword]]
+        matched = [index for index, found in enumerate(outcomes) if not found]
+        if not matched:
+            detail = "; ".join(
+                f"{keyword}[{index}]: {'; '.join(found)}"
+                for index, found in enumerate(outcomes)
+            )
+            errors.append(_at(path, f"matches no {keyword} alternative ({detail})"))
+        elif keyword == "oneOf" and len(matched) > 1:
+            which = ", ".join(str(index) for index in matched[:-1])
+            errors.append(
+                _at(
+                    path,
+                    f"matches oneOf alternatives {which} and {matched[-1]}, "
+                    "expected exactly one",
+                )
+            )
     return errors
 
 

@@ -95,14 +95,14 @@ def test_the_cli_refuses_an_unsupported_schema_at_startup(
     tmp_path: Path, capsys: Any
 ) -> None:
     schema = tmp_path / "s.json"
-    schema.write_text(json.dumps({"anyOf": [{"type": "string"}]}), encoding="utf-8")
+    schema.write_text(json.dumps({"not": {"type": "string"}}), encoding="utf-8")
 
     code = main(["run", "go", "--yes", "--schema", str(schema)])
 
     captured = capsys.readouterr()
     assert code == 2
     assert captured.out == ""
-    assert "anyOf" in captured.err
+    assert "'not'" in captured.err
 
 
 def test_the_result_line_carries_the_validated_output(

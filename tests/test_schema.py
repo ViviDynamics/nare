@@ -78,8 +78,8 @@ def test_additional_properties_false_refuses_extras() -> None:
 
 
 def test_an_unsupported_keyword_is_refused_rather_than_ignored() -> None:
-    with pytest.raises(UnsupportedSchema, match="anyOf"):
-        validate({}, {"anyOf": [{"type": "string"}]})
+    with pytest.raises(UnsupportedSchema, match="'not'"):
+        validate({}, {"not": {"type": "string"}})
 
 
 def test_an_unsupported_keyword_nested_in_properties_is_also_refused() -> None:
@@ -299,3 +299,69 @@ def test_default_is_an_annotation_and_never_applied() -> None:
 
     assert validate(value, schema) == ["missing required property: line"]
     assert value == {}
+
+
+OPTIONAL_LINE = {
+    "type": "object",
+    "properties": {
+        "line": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]}
+    },
+}
+
+
+def test_any_of_passes_when_one_alternative_matches() -> None:
+    assert validate({"line": 3}, OPTIONAL_LINE) == []
+    assert validate({"line": None}, OPTIONAL_LINE) == []
+
+
+def test_any_of_reports_every_alternative_under_the_path() -> None:
+    assert validate({"line": 0}, OPTIONAL_LINE) == [
+        "line: matches no anyOf alternative "
+        "(anyOf[0]: line: expected a number >= 1, got 0; "
+        "anyOf[1]: line: expected null, got integer)"
+    ]
+
+
+def test_one_of_needs_exactly_one_match() -> None:
+    schema = {"oneOf": [{"type": "integer"}, {"type": "number", "maximum": 10}]}
+
+    assert validate(11, schema) == []
+    assert validate(1.5, schema) == []
+    assert validate(3, schema) == [
+        "matches oneOf alternatives 0 and 1, expected exactly one"
+    ]
+    assert validate("x", schema) == [
+        "matches no oneOf alternative "
+        "(oneOf[0]: expected integer, got string; "
+        "oneOf[1]: expected number, got string)"
+    ]
+
+
+def test_all_of_reports_each_failing_part() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "name": {"allOf": [{"type": "string"}, {"minLength": 2, "maxLength": 3}]}
+        },
+    }
+
+    assert validate({"name": "ab"}, schema) == []
+    assert validate({"name": "abcd"}, schema) == [
+        "name: expected at most 3 characters, got 4"
+    ]
+
+
+def test_composition_is_checked_for_unsupported_keywords_too() -> None:
+    schema = {"anyOf": [{"type": "string"}, {"format": "date"}]}
+
+    with pytest.raises(UnsupportedSchema, match=r"'format' at anyOf\[1\]"):
+        validate("x", schema)
+
+
+@pytest.mark.parametrize("keyword", ["anyOf", "oneOf", "allOf"])
+@pytest.mark.parametrize("value", [[], {"type": "string"}, ["string"]])
+def test_composition_that_is_not_a_list_of_schemas_is_refused(
+    keyword: str, value: object
+) -> None:
+    with pytest.raises(UnsupportedSchema, match=f"'{keyword}' must be"):
+        validate("x", {keyword: value})
