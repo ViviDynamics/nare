@@ -50,6 +50,7 @@ def describe() -> dict[str, Any]:
     """
     from nare.session import Status
     from nare.tools import (
+        EVIDENCE_TOOLS,
         LIST_LIMIT,
         MATCH_WIDTH,
         MAX_IMAGE_BYTES,
@@ -82,6 +83,17 @@ def describe() -> dict[str, Any]:
             "line_numbers_from": 1,
             "follows_symlinks": False,
             "skipped_dirs": sorted(SKIPPED_DIRS),
+        },
+        # Additive: what each read, list and search returned, as a record
+        # with no content, on a progress event and in the session file.
+        "evidence": {
+            "tools": sorted(EVIDENCE_TOOLS),
+            "event": "progress",
+            "event_detail": "evidence",
+            "session_field": "evidence",
+            "digest": "sha256",
+            "line_numbers_from": 1,
+            "byte_end": "exclusive",
         },
         "image_input": {
             "flag": "--image-input",

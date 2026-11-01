@@ -420,6 +420,14 @@ def test_an_image_notice_gets_its_own_line_in_the_live_area(tmp_path: Path) -> N
     assert app.live.plain == "read a.png\nhello"
 
 
+def test_an_evidence_record_stays_out_of_the_live_area(tmp_path: Path) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    record = {"tool": "read", "path": "a.txt"}
+    app._event(Event("progress", "read evidence: a.txt", {"evidence": record}))
+    app._event(Event("progress", "hello"))
+    assert app.live.plain == "hello"
+
+
 async def test_the_newest_block_stays_in_view(tmp_path: Path) -> None:
     app = make(tmp_path, FakeProvider([]))
     async with app.run_test(size=(100, 40)) as pilot:

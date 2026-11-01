@@ -119,6 +119,10 @@ class Session:
     # offers to kill the live ones at turn end and on quit. A record, so
     # reopen() keeps it.
     process_groups: list[dict[str, Any]] = field(default_factory=list)
+    # What each read, list and search returned, as content-free records in
+    # call order: the session's copy of the evidence its progress events
+    # carried. A record, so reopen() keeps it.
+    evidence: list[dict[str, Any]] = field(default_factory=list)
     # Written by every save, which drops stale thinking. A file without it
     # comes from an older nare and may hold thinking that redaction or
     # compaction made stale, so loads() drops it by the markers they leave.
@@ -274,6 +278,8 @@ def loads(text: str) -> Session:
         # nothing either, so a bash call can still append to it.
         if not isinstance(raw.get("process_groups", []), list):
             raw["process_groups"] = []
+        if not isinstance(raw.get("evidence", []), list):
+            raw["evidence"] = []
         return Session(**raw)
     except (AttributeError, KeyError, TypeError) as exc:
         raise ValueError(f"malformed session file: {exc}") from exc

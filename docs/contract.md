@@ -12,8 +12,8 @@ Read the contract as data instead of parsing this page:
     nare contract
 
 It prints the version, the exit codes, the statuses, the event types, the
-built-in tool names (`tools`), the navigation limits (`navigation`) and the
-redaction rule set this build speaks.
+built-in tool names (`tools`), the navigation limits (`navigation`), the read
+evidence record (`evidence`) and the redaction rule set this build speaks.
 
 ## Refusing a contract you do not speak
 
@@ -109,7 +109,9 @@ redaction rule set.
 
 **These keep the version:** a new event type, a new field on an event or on the
 `result` object, a new session field with a default, a new flag, a new status
-value's behaviour being described more precisely without changing it.
+value's behaviour being described more precisely without changing it. The read
+evidence record (a new `progress` detail key and a new `evidence` session
+field) is one of these.
 
 A caller must therefore ignore fields and event types it does not recognise.
 That is the price of additive changes not bumping the number.
@@ -179,7 +181,8 @@ A nonterminal crossing step finishes tool dispatch before stopping. Its tool
 uses/results, progress, thinking and cost events remain in the emitted JSONL;
 the final error and result follow them. `--session` saves the transcript,
 usage, limits and output atomically. Events are not stored inside the session;
-the caller retains stdout. Context compaction replaces eligible old tool-result
+the caller retains stdout. Read evidence records are the one copy kept (see
+Read evidence). Context compaction replaces eligible old tool-result
 bodies with stubs, then, if that is not enough, long contents of old `write`
 calls and long `edit` texts, preserving pairs and assistant text. It removes
 signed and redacted thinking from the first message it changes on, and the
@@ -416,6 +419,72 @@ Pass that cursor with the same `path`, `glob` and `pattern` to get the next
 page; a cursor from a different call is an `is_error` result. A cursor marks a
 position, not an index, and order is by name, so the same tree yields the same
 pages, byte for byte, on every call.
+
+## Read evidence
+
+Every successful `read`, `list` and `search` call adds one `progress` event
+whose `detail` is `{"tool": <name>, "evidence": <record>}`, and appends the
+same record to the session file's `evidence` list, in call order. A caller can
+therefore list every file version and range the model was shown from the JSONL
+stream alone, or from the session file after the run. A call that fails
+(`is_error`) records nothing, because it returned nothing.
+
+A record holds no file content: paths, digests, sizes, ranges and names. It
+passes through the same redaction as every event detail, which leaves it
+unchanged unless a path itself looks like a credential; the session stores the
+redacted copy, so the two always agree. `tool_use_id` ties a record to its
+call in the transcript.
+
+A `read`:
+
+```json
+{"tool": "read", "tool_use_id": "c1", "path": "src/db.py",
+ "sha256": "<64 hex>", "size": 4210,
+ "lines": {"first": 11, "last": 40}, "bytes": {"start": 310, "end": 1187},
+ "truncated": false}
+```
+
+- `path` is relative to `--root` (to the working directory without one),
+  which is what `read` accepts.
+- `sha256` and `size` are of the whole file, computed from the same bytes the
+  text was decoded from, so the digest names the version the model saw. A file
+  that changes between two reads yields two records with two digests; nothing
+  reconciles them.
+- `lines` are the lines returned, counted from 1 and inclusive: line
+  `offset + 1` first. `bytes` are offsets into the file, end exclusive,
+  covering each returned line with its line ending.
+- After the 30000 character output cap, the range is what was returned, not
+  what was asked for: `truncated` is true, and `lines.last` and `bytes.end`
+  stop at the last character returned, which can be inside a line.
+- A read that returns no lines (an `offset` past the end, an empty file) has
+  `null` for `lines` and `bytes`. An image read has `null` lines and the whole
+  file as its bytes.
+
+A `list` records the directory and the entries on the page, and whether more
+pages follow. It opens no file but to sniff for binary, so it has no digest:
+
+```json
+{"tool": "list", "tool_use_id": "c2", "path": "src",
+ "entries": [{"name": "db.py", "kind": "file", "size": 4210, "binary": false},
+             {"name": "lib", "kind": "dir", "size": null, "binary": false}],
+ "more": false}
+```
+
+A `search` records what was asked, and each file on the page that contributed
+results, in page order. With a `pattern`, a file carries its whole-file
+`sha256` and `size` and the line numbers returned from it. Without one no file
+is opened, so a file carries only its `path`:
+
+```json
+{"tool": "search", "tool_use_id": "c3", "path": "src", "glob": "*.py",
+ "pattern": "PORT", "more": false,
+ "files": [{"path": "src/db.py", "sha256": "<64 hex>", "size": 4210,
+            "lines": [14, 31]}]}
+```
+
+The event detail key, the session field (which defaults to an empty list, so
+an older session loads) and the `evidence` key of `nare contract` are additive
+and keep the contract version.
 
 ## Read-only image input
 

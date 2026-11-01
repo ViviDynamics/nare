@@ -115,6 +115,12 @@ and lines by regular expression, both in pure Python, never following a
 symlink, so exploring a tree needs no `bash`. See
 [the navigation contract](docs/contract.md#read-only-navigation).
 
+Every `read`, `list` and `search` also leaves an evidence record, in a
+`progress` event and in the session file: the path, the SHA-256 and size of
+the whole file, and the lines and bytes actually returned, so a caller can
+check an answer against exactly what the model was shown. The records hold no
+file content. See [the evidence contract](docs/contract.md#read-evidence).
+
 `--image-input` declares that the selected model accepts PNG/JPEG input. It lets
 `read` return capped images under the same root and permissions; omitted, image
 reads return a named tool error. See [the image contract](docs/contract.md#read-only-image-input).

@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 from PIL import Image
 
+from fake_provider import FakeProvider, text_reply, tool_reply
+from nare.cli import main
+from nare.session import dumps, loads, new_session
 from nare.tools import MAX_TOOL_OUTPUT, Policy, dispatch
 from nare.transport import ToolCall
 
@@ -260,3 +264,119 @@ async def test_a_glob_only_search_records_paths_and_opens_no_file(
     assert record["path"] == "."
     assert record["glob"] == "*.py" and record["pattern"] is None
     assert record["files"] == [{"path": "a.py"}]
+
+
+def run_cli(root: Path, session: Path, replies: list[Any], capsys: Any) -> list[Any]:
+    code = main(
+        [
+            "run",
+            "where is the port?",
+            "--yes",
+            "--jsonl",
+            "--tools",
+            "read,list,search",
+            "--root",
+            str(root),
+            "--session",
+            str(session),
+        ],
+        transport=FakeProvider(replies),
+    )
+    assert code == 0
+    return [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+
+
+def test_the_jsonl_stream_alone_lists_every_path_digest_and_range(
+    tmp_path: Path, capsys: Any
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    data = b"[db]\nport = 6543\n"
+    (root / "settings.ini").write_bytes(data)
+    session = tmp_path / "s.json"
+
+    lines = run_cli(
+        root,
+        session,
+        [
+            tool_reply("list", {}),
+            tool_reply("search", {"pattern": "port"}),
+            tool_reply("read", {"path": "settings.ini", "offset": 1}),
+            text_reply("6543"),
+        ],
+        capsys,
+    )
+
+    records = [
+        line["detail"]["evidence"]
+        for line in lines
+        if line.get("type") == "progress" and "evidence" in line.get("detail", {})
+    ]
+    assert [r["tool"] for r in records] == ["list", "search", "read"]
+    read = records[2]
+    assert (read["path"], read["sha256"], read["lines"], read["bytes"]) == (
+        "settings.ini",
+        sha(data),
+        {"first": 2, "last": 2},
+        {"start": 5, "end": len(data)},
+    )
+    assert records[1]["files"][0]["sha256"] == sha(data)
+    saved = json.loads(session.read_text(encoding="utf-8"))
+    assert saved["evidence"] == records
+
+
+def test_a_file_changed_between_two_reads_yields_two_digests(
+    tmp_path: Path, capsys: Any
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    target = root / "a.txt"
+    target.write_bytes(b"before\n")
+    session = tmp_path / "s.json"
+
+    first = run_cli(
+        root,
+        session,
+        [tool_reply("read", {"path": "a.txt"}), text_reply("ok")],
+        capsys,
+    )
+    target.write_bytes(b"after\n")
+    code = main(
+        [
+            "run",
+            "again",
+            "--yes",
+            "--jsonl",
+            "--tools",
+            "read",
+            "--root",
+            str(root),
+            "--resume",
+            str(session),
+        ],
+        transport=FakeProvider(
+            [tool_reply("read", {"path": "a.txt"}), text_reply("ok")]
+        ),
+    )
+    assert code == 0
+    capsys.readouterr()
+
+    saved = json.loads(session.read_text(encoding="utf-8"))
+    digests = [r["sha256"] for r in saved["evidence"]]
+    assert digests == [sha(b"before\n"), sha(b"after\n")]
+    assert any("evidence" in line.get("detail", {}) for line in first)
+
+
+def test_a_session_from_before_evidence_loads_with_none() -> None:
+    s = new_session("hi")
+    raw = json.loads(dumps(s))
+    raw.pop("evidence", None)
+
+    assert loads(json.dumps(raw)).evidence == []
+
+
+def test_the_session_keeps_evidence_across_a_round_trip() -> None:
+    s = new_session("hi")
+    s.evidence.append({"tool": "read", "path": "a.txt", "sha256": "0" * 64})
+
+    assert loads(dumps(s)).evidence == s.evidence

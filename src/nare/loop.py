@@ -389,6 +389,16 @@ async def step(
     def left_running(pgid: int, command: str) -> None:
         s.process_groups.append({"pgid": pgid, "command": command})
 
+    def evidence(record: dict[str, Any]) -> None:
+        # The session keeps the event's copy, so the two never disagree.
+        event = Event(
+            "progress",
+            f"{record['tool']} evidence: {record['path']}",
+            {"tool": record["tool"], "evidence": record},
+        )
+        s.events.append(event)
+        s.evidence.append(event.detail["evidence"])
+
     results: list[dict[str, Any]] = []
     unanswered = "tool dispatch failed"
     try:
@@ -411,7 +421,7 @@ async def step(
                     results.append(tool_result(call.id, ASK_NOT_ALONE, is_error=True))
                     continue
                 result = await dispatch(
-                    call, policy, approve, left_running=left_running
+                    call, policy, approve, left_running=left_running, evidence=evidence
                 )
                 results.append(result)
                 if "image" in result:

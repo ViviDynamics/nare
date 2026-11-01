@@ -61,7 +61,7 @@ Out:
   and line numbers, glob-only paths, and `more`.
 - [x] 3. Dispatch delivers the record with its tool and call id, and never
   for an error result.
-- [ ] 4. Loop and CLI: the JSONL stream alone lists every (path, digest,
+- [x] 4. Loop and CLI: the JSONL stream alone lists every (path, digest,
   range); the session stores the same records; a file changed between two
   reads yields two digests; an older session loads with no evidence.
-- [ ] 5. Contract discovery, TUI quiet, and docs.
+- [x] 5. Contract discovery, TUI quiet, and docs.
