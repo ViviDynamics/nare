@@ -1023,7 +1023,7 @@ def approve_all(tool: str, args: dict[str, Any]) -> bool:
     return True
 
 
-PATH_TOOLS = frozenset({"read", "write", "edit"})
+PATH_TOOLS = frozenset({"read", "write", "edit", "list", "search"})
 
 
 @dataclass(frozen=True)
@@ -1146,6 +1146,12 @@ async def dispatch(
             return tool_result(call.id, _truncate(text), is_error=failed)
         assert function is not None
         args = dict(call.args)
+        if call.name in NAVIGATION_TOOLS:
+            # Paths in results are relative to the root, which `read` accepts.
+            # Set here, after the model's arguments, so it cannot be moved.
+            if args.get("path") in (None, ""):
+                args["path"] = "."
+            args["base"] = str(policy.root.resolve()) if policy.root else os.getcwd()
         if call.name in PATH_TOOLS and "path" in args:
             args["path"] = str(policy.resolve(str(args["path"])))
         if call.name == "bash" and policy.root is not None:
