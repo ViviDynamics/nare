@@ -473,7 +473,10 @@ pages follow. It opens no file but to sniff for binary, so it has no digest:
 A `search` records what was asked, and each file on the page that contributed
 results, in page order. With a `pattern`, a file carries its whole-file
 `sha256` and `size` and the line numbers returned from it. Without one no file
-is opened, so a file carries only its `path`:
+is opened, so a file carries only its `path`. Search counts lines at `\n`
+endings, as its results do; `read` also ends a line at a lone `\r` and at the
+other Unicode line boundaries, so for a file holding those the two numberings
+can differ:
 
 ```json
 {"tool": "search", "tool_use_id": "c3", "path": "src", "glob": "*.py",
