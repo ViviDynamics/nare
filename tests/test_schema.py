@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from nare.schema import UnsupportedSchema, extract_json, validate
@@ -83,9 +85,9 @@ def test_an_unsupported_keyword_is_refused_rather_than_ignored() -> None:
 
 
 def test_an_unsupported_keyword_nested_in_properties_is_also_refused() -> None:
-    schema = {"type": "object", "properties": {"a": {"$ref": "#/definitions/x"}}}
+    schema = {"type": "object", "properties": {"a": {"format": "date"}}}
 
-    with pytest.raises(UnsupportedSchema, match=r"\$ref"):
+    with pytest.raises(UnsupportedSchema, match="'format' at a"):
         validate({}, schema)
 
 
@@ -365,3 +367,142 @@ def test_composition_that_is_not_a_list_of_schemas_is_refused(
 ) -> None:
     with pytest.raises(UnsupportedSchema, match=f"'{keyword}' must be"):
         validate("x", {keyword: value})
+
+
+NAMED = {
+    "type": "object",
+    "properties": {
+        "short": {"$ref": "#/$defs/Short"},
+        "legacy": {"$ref": "#/definitions/Legacy"},
+        "slashed": {"$ref": "#/$defs/a~1b"},
+    },
+    "$defs": {"Short": {"type": "string", "maxLength": 2}, "a/b": {"const": 1}},
+    "definitions": {"Legacy": {"type": "integer"}},
+}
+
+
+def test_a_local_ref_resolves_and_reports_the_value_path() -> None:
+    assert validate({"short": "ab", "legacy": 1, "slashed": 1}, NAMED) == []
+    assert validate({"short": "abc", "legacy": "1", "slashed": 2}, NAMED) == [
+        "short: expected at most 2 characters, got 3",
+        "legacy: expected integer, got string",
+        "slashed: expected 1, got 2",
+    ]
+
+
+def test_a_ref_to_any_local_pointer_resolves() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "a": {"type": "string", "maxLength": 1},
+            "b": {"$ref": "#/properties/a"},
+            "c": {"type": "array", "items": {"anyOf": [{"$ref": "#/properties/a"}]}},
+        },
+    }
+
+    assert validate({"a": "x", "b": "y", "c": ["z"]}, schema) == []
+    assert validate({"b": "yy"}, schema) == ["b: expected at most 1 characters, got 2"]
+
+
+def test_keywords_beside_a_ref_still_apply() -> None:
+    schema = {"$defs": {"S": {"type": "string"}}, "$ref": "#/$defs/S", "maxLength": 1}
+
+    assert validate("ab", schema) == ["expected at most 1 characters, got 2"]
+    assert validate(1, schema) == ["expected string, got integer"]
+
+
+TREE = {
+    "type": "object",
+    "properties": {
+        "value": {"type": "integer"},
+        "children": {"type": "array", "items": {"$ref": "#"}},
+    },
+    "required": ["value"],
+}
+
+
+def test_a_recursive_ref_to_the_root_validates_and_terminates() -> None:
+    tree = {"value": 1, "children": [{"value": 2, "children": [{"value": "x"}]}]}
+
+    assert validate(tree, TREE) == [
+        "children[0].children[0].value: expected integer, got string"
+    ]
+
+
+def test_a_recursive_ref_through_defs_validates_and_terminates() -> None:
+    schema = {
+        "$ref": "#/$defs/Node",
+        "$defs": {
+            "Node": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "next": {"anyOf": [{"$ref": "#/$defs/Node"}, {"type": "null"}]},
+                },
+                "required": ["name", "next"],
+            }
+        },
+    }
+    chain: dict[str, object] = {"name": "c", "next": None}
+    for name in "ba":
+        chain = {"name": name, "next": chain}
+
+    assert validate(chain, schema) == []
+    assert validate({"name": "a", "next": {"name": 1, "next": None}}, schema) == [
+        "next: matches no anyOf alternative "
+        "(anyOf[0]: next.name: expected string, got integer; "
+        "anyOf[1]: next: expected null, got object)"
+    ]
+
+
+@pytest.mark.parametrize(
+    "ref",
+    ["other.json#/$defs/A", "https://example.com/s.json", "/abs/path#/x"],
+)
+def test_a_remote_ref_is_refused_as_unsupported(ref: str) -> None:
+    with pytest.raises(UnsupportedSchema, match="remote"):
+        validate({}, {"type": "object", "properties": {"a": {"$ref": ref}}})
+
+
+@pytest.mark.parametrize(
+    "ref", ["#/$defs/Missing", "#/$defs/S/enum", "#anchor", "#/$defs/S/x/0"]
+)
+def test_a_ref_that_does_not_point_at_a_schema_is_refused(ref: str) -> None:
+    schema = {"$defs": {"S": {"enum": ["a"]}}, "$ref": ref}
+
+    with pytest.raises(UnsupportedSchema, match=r"\$ref"):
+        validate("a", schema)
+
+
+def test_a_ref_that_is_not_a_string_is_refused() -> None:
+    with pytest.raises(UnsupportedSchema, match=r"'\$ref' must be"):
+        validate("a", {"$ref": {"type": "string"}})
+
+
+@pytest.mark.parametrize("keyword", ["$defs", "definitions"])
+def test_defs_must_hold_schemas_and_are_checked(keyword: str) -> None:
+    with pytest.raises(UnsupportedSchema, match=re.escape(f"'{keyword}' must be")):
+        validate("a", {keyword: ["S"]})
+    with pytest.raises(UnsupportedSchema, match="'format'"):
+        validate("a", {keyword: {"S": {"format": "date"}}})
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"$ref": "#"},
+        {"$ref": "#/$defs/A", "$defs": {"A": {"$ref": "#/$defs/A"}}},
+        {
+            "$ref": "#/$defs/A",
+            "$defs": {
+                "A": {"anyOf": [{"type": "string"}, {"$ref": "#/$defs/B"}]},
+                "B": {"allOf": [{"$ref": "#/$defs/A"}]},
+            },
+        },
+    ],
+)
+def test_a_ref_cycle_that_never_reaches_a_value_is_refused(
+    schema: dict[str, object],
+) -> None:
+    with pytest.raises(UnsupportedSchema, match="cycle"):
+        validate(1, schema)

@@ -33,6 +33,6 @@ and a list-valued `type` stay refused; neither is in the issue's scope.
 - [x] 1. Bounds: string, array and number bounds fail with the value's path; bad shapes are refused.
 - [x] 2. `const` and `default`: `const` fails with the path; `default` is never applied; JSON equality for `const`, `enum`.
 - [x] 3. Composition: `anyOf`, `oneOf`, `allOf` report every alternative's errors under the path.
-- [ ] 4. References: local `$ref` resolves, recursion validates and terminates, remote and dangling refs and same-position cycles are refused.
+- [x] 4. References: local `$ref` resolves, recursion validates and terminates, remote and dangling refs and same-position cycles are refused.
 - [ ] 5. Generated schemas: a pydantic v2 schema with nested models, optional fields, enums and bounds validates unedited; the CLI accepts it at startup; the structured-output request forwards it unchanged.
 - [ ] 6. Docs: `docs/contract.md` keyword list, `--schema` help, module docstring.

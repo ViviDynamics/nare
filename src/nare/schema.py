@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import operator
 import re
+import urllib.parse
 from typing import Any
 
 SUPPORTED = frozenset(
@@ -33,6 +34,9 @@ SUPPORTED = frozenset(
         "anyOf",
         "oneOf",
         "allOf",
+        "$ref",
+        "$defs",
+        "definitions",
         "minLength",
         "maxLength",
         "pattern",
@@ -67,9 +71,13 @@ _SHAPES: dict[str, tuple[type | tuple[type, ...], str]] = {
     "additionalProperties": (bool, "true or false"),
     "uniqueItems": (bool, "true or false"),
     "pattern": (str, "a regular expression"),
+    "$ref": (str, "a reference string"),
+    "$defs": (dict, "an object of schemas"),
+    "definitions": (dict, "an object of schemas"),
 }
 
 _COMPOSITIONS = ("anyOf", "oneOf", "allOf")
+_DEFINITIONS = ("$defs", "definitions")
 _COUNTS = frozenset({"minLength", "maxLength", "minItems", "maxItems"})
 _NUMBER_BOUNDS = frozenset(
     {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"}
@@ -84,11 +92,18 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def check_supported(schema: Any, path: str = "") -> None:
+def check_supported(schema: Any) -> None:
     """Walk the schema and refuse anything this validator cannot enforce: a
-    keyword outside SUPPORTED, or a supported keyword carrying a shape the
-    validator does not implement.
+    keyword outside SUPPORTED, a supported keyword carrying a shape the
+    validator does not implement, a reference that is remote or points at no
+    schema, or a reference cycle that would never reach a value.
     """
+    refs: dict[str, dict[str, Any]] = {}
+    _check(schema, "", schema, refs)
+    _refuse_ref_cycles(refs)
+
+
+def _check(schema: Any, path: str, root: Any, refs: dict[str, dict[str, Any]]) -> None:
     where = f" at {path}" if path else ""
     if not isinstance(schema, dict):
         raise UnsupportedSchema(
@@ -135,13 +150,87 @@ def check_supported(schema: Any, path: str = "") -> None:
                     "enforce whole"
                 ) from None
     for name, sub in schema.get("properties", {}).items():
-        check_supported(sub, f"{path}.{name}" if path else name)
+        _check(sub, f"{path}.{name}" if path else name, root, refs)
     if "items" in schema:
-        check_supported(schema["items"], f"{path}[]" if path else "[]")
+        _check(schema["items"], f"{path}[]" if path else "[]", root, refs)
     for keyword in _COMPOSITIONS:
         for index, sub in enumerate(schema.get(keyword, [])):
             label = f"{keyword}[{index}]"
-            check_supported(sub, f"{path}.{label}" if path else label)
+            _check(sub, f"{path}.{label}" if path else label, root, refs)
+    for keyword in _DEFINITIONS:
+        for name, sub in schema.get(keyword, {}).items():
+            _check(sub, f"{keyword}.{name}", root, refs)
+    ref = schema.get("$ref")
+    if ref is not None and ref not in refs:
+        # Recorded before the walk so a recursive reference checks once.
+        refs[ref] = target = _resolve(ref, root, where)
+        _check(target, ref, root, refs)
+
+
+def _resolve(ref: str, root: Any, where: str = "") -> dict[str, Any]:
+    """A local JSON pointer into the root schema. Anything else is refused:
+    fetching a remote schema would be network access nare never does, and a
+    reference to nothing could only be skipped.
+    """
+    if not ref.startswith("#"):
+        raise UnsupportedSchema(
+            f"schema keyword '$ref'{where} is {ref!r}, a remote reference; nare "
+            "resolves only local references starting with '#'"
+        )
+    target = root
+    pointer = urllib.parse.unquote(ref[1:])
+    if pointer and not pointer.startswith("/"):
+        target = None
+    else:
+        for token in pointer.split("/")[1:]:
+            key = token.replace("~1", "/").replace("~0", "~")
+            if isinstance(target, dict) and key in target:
+                target = target[key]
+            elif isinstance(target, list) and key.isdigit() and int(key) < len(target):
+                target = target[int(key)]
+            else:
+                target = None
+                break
+    if not isinstance(target, dict):
+        raise UnsupportedSchema(
+            f"schema keyword '$ref'{where} is {ref!r}, which does not point at a "
+            "schema in this document"
+        )
+    return target
+
+
+def _same_position_refs(schema: dict[str, Any]) -> list[str]:
+    """References applied to the same value as this schema, without first
+    descending into a property or an item.
+    """
+    found = [schema["$ref"]] if "$ref" in schema else []
+    for keyword in _COMPOSITIONS:
+        for sub in schema.get(keyword, []):
+            found += _same_position_refs(sub)
+    return found
+
+
+def _refuse_ref_cycles(refs: dict[str, dict[str, Any]]) -> None:
+    """A recursive reference is fine while each round trip descends into the
+    value, because the value is finite. One that returns to itself at the same
+    value would recurse forever, so it is refused before any run starts.
+    """
+    done: set[str] = set()
+
+    def visit(ref: str, chain: list[str]) -> None:
+        if ref in chain:
+            loop = " -> ".join([*chain[chain.index(ref) :], ref])
+            raise UnsupportedSchema(
+                f"schema has a '$ref' cycle that never reaches a nested value ({loop})"
+            )
+        if ref in done:
+            return
+        for nxt in _same_position_refs(refs[ref]):
+            visit(nxt, [*chain, ref])
+        done.add(ref)
+
+    for ref in refs:
+        visit(ref, [])
 
 
 def _type_of(value: Any) -> str:
@@ -174,12 +263,14 @@ def _at(path: str, message: str) -> str:
     return f"{path}: {message}" if path else message
 
 
-def _validate(value: Any, schema: dict[str, Any], path: str) -> list[str]:
+def _validate(value: Any, schema: dict[str, Any], path: str, root: Any) -> list[str]:
     errors: list[str] = []
+    if "$ref" in schema:
+        errors += _validate(value, _resolve(schema["$ref"], root), path, root)
     expected = schema.get("type")
     actual = _type_of(value)
     if isinstance(expected, str) and not _matches(actual, expected):
-        return [_at(path, f"expected {expected}, got {actual}")]
+        return [*errors, _at(path, f"expected {expected}, got {actual}")]
 
     if "enum" in schema and _canonical(value) not in {
         _canonical(option) for option in schema["enum"]
@@ -188,7 +279,7 @@ def _validate(value: Any, schema: dict[str, Any], path: str) -> list[str]:
     if "const" in schema and _canonical(value) != _canonical(schema["const"]):
         errors.append(_at(path, f"expected {schema['const']!r}, got {value!r}"))
 
-    errors += _composition(value, schema, path)
+    errors += _composition(value, schema, path, root)
 
     if actual == "string":
         errors += _string_bounds(value, schema, path)
@@ -209,24 +300,24 @@ def _validate(value: Any, schema: dict[str, Any], path: str) -> list[str]:
         for name, sub in properties.items():
             if name in value:
                 errors += _validate(
-                    value[name], sub, f"{path}.{name}" if path else name
+                    value[name], sub, f"{path}.{name}" if path else name, root
                 )
 
     if actual == "array" and isinstance(schema.get("items"), dict):
         for index, item in enumerate(value):
-            errors += _validate(item, schema["items"], f"{path}[{index}]")
+            errors += _validate(item, schema["items"], f"{path}[{index}]", root)
 
     return errors
 
 
-def _composition(value: Any, schema: dict[str, Any], path: str) -> list[str]:
+def _composition(value: Any, schema: dict[str, Any], path: str, root: Any) -> list[str]:
     errors: list[str] = []
     for sub in schema.get("allOf", []):
-        errors += _validate(value, sub, path)
+        errors += _validate(value, sub, path, root)
     for keyword in ("anyOf", "oneOf"):
         if keyword not in schema:
             continue
-        outcomes = [_validate(value, sub, path) for sub in schema[keyword]]
+        outcomes = [_validate(value, sub, path, root) for sub in schema[keyword]]
         matched = [index for index, found in enumerate(outcomes) if not found]
         if not matched:
             detail = "; ".join(
@@ -338,7 +429,7 @@ def _canonical(value: Any) -> Any:
 def validate(value: Any, schema: dict[str, Any]) -> list[str]:
     """Every error, not just the first: one reprompt carries them all back."""
     check_supported(schema)
-    return _validate(value, schema, "")
+    return _validate(value, schema, "", schema)
 
 
 def extract_json(text: str) -> Any:
