@@ -593,9 +593,7 @@ def list_dir(
     call = _call_id("list", str(directory))
     after = _position(cursor, call)
     if after is not None and not isinstance(after, str):
-        raise ValueError(
-            "invalid cursor; call again without one to start over"
-        ) from None
+        raise ValueError("invalid cursor; call again without one to start over")
     with os.scandir(directory) as scan:
         items = sorted(scan, key=lambda item: item.name)
     if not items:
@@ -788,6 +786,8 @@ def search_files(
         )
     elif top.is_dir():
         files = _walk(top, after)
+    elif top.exists():
+        raise ValueError(f"{path} is not a regular file or a directory")
     else:
         raise FileNotFoundError(f"{path} does not exist")
 

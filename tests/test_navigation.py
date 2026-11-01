@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -388,3 +389,12 @@ def test_an_invalid_pattern_is_named(tree: Path) -> None:
 )
 def test_glob_forms(tree: Path, glob: str, found: list[str]) -> None:
     assert results_in(search_files(str(tree), glob=glob, base=str(tree))) == found
+
+
+def test_search_names_a_path_that_is_neither_file_nor_directory(tmp_path: Path) -> None:
+    os.mkfifo(tmp_path / "pipe")
+
+    with pytest.raises(ValueError, match="not a regular file or a directory"):
+        search_files(str(tmp_path / "pipe"), pattern="x", base=str(tmp_path))
+    with pytest.raises(FileNotFoundError):
+        search_files(str(tmp_path / "missing"), base=str(tmp_path))
