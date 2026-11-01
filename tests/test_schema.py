@@ -143,3 +143,127 @@ def test_a_refused_schema_shape_names_where_it_is() -> None:
 
     with pytest.raises(UnsupportedSchema, match="at a"):
         validate({}, schema)
+
+
+# Bounds (#123). A generated schema carries them, and dropping them would let an
+# out-of-range answer through as validated.
+
+REPORT = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string", "minLength": 1, "maxLength": 5},
+        "code": {"type": "string", "pattern": "^[A-Z]+-[0-9]+$"},
+        "tags": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "maxItems": 2,
+            "uniqueItems": True,
+        },
+        "score": {"type": "number", "minimum": 0, "maximum": 1},
+        "count": {"type": "integer", "exclusiveMinimum": 0, "exclusiveMaximum": 10},
+    },
+}
+
+
+def test_values_inside_every_bound_pass() -> None:
+    value = {"title": "ok", "code": "AB-1", "tags": ["a"], "score": 1, "count": 9}
+
+    assert validate(value, REPORT) == []
+
+
+def test_max_length_fails_with_the_path() -> None:
+    assert validate({"title": "toolong"}, REPORT) == [
+        "title: expected at most 5 characters, got 7"
+    ]
+
+
+def test_min_length_fails_with_the_path() -> None:
+    assert validate({"title": ""}, REPORT) == [
+        "title: expected at least 1 characters, got 0"
+    ]
+
+
+def test_length_counts_characters_not_bytes() -> None:
+    assert validate({"title": "ééééé"}, REPORT) == []
+
+
+def test_pattern_is_searched_and_fails_with_the_path() -> None:
+    assert validate({"code": "ab-1"}, REPORT) == [
+        "code: expected a string matching '^[A-Z]+-[0-9]+$', got 'ab-1'"
+    ]
+
+
+def test_pattern_is_unanchored_like_json_schema() -> None:
+    assert validate("xx42yy", {"type": "string", "pattern": "[0-9]+"}) == []
+
+
+def test_max_items_fails_with_the_path() -> None:
+    assert validate({"tags": ["a", "b", "c"]}, REPORT) == [
+        "tags: expected at most 2 items, got 3"
+    ]
+
+
+def test_min_items_fails_with_the_path() -> None:
+    assert validate({"tags": []}, REPORT) == ["tags: expected at least 1 items, got 0"]
+
+
+def test_unique_items_names_the_repeat() -> None:
+    assert validate({"tags": ["a", "a"]}, REPORT) == [
+        "tags: expected unique items, [1] repeats [0]"
+    ]
+
+
+def test_unique_items_uses_json_equality() -> None:
+    schema = {"type": "array", "uniqueItems": True}
+
+    assert validate([1, True], schema) == []
+    assert validate([1, 1.0], schema) == ["expected unique items, [1] repeats [0]"]
+    assert validate([{"a": [1]}, {"a": [1]}], schema) == [
+        "expected unique items, [1] repeats [0]"
+    ]
+
+
+def test_number_bounds_fail_with_the_path() -> None:
+    assert validate({"score": 1.5, "count": 0}, REPORT) == [
+        "score: expected a number <= 1, got 1.5",
+        "count: expected a number > 0, got 0",
+    ]
+    assert validate({"score": -1, "count": 10}, REPORT) == [
+        "score: expected a number >= 0, got -1",
+        "count: expected a number < 10, got 10",
+    ]
+
+
+def test_a_bound_only_applies_to_its_own_type() -> None:
+    schema = {"maxLength": 1, "maxItems": 1, "maximum": 1}
+
+    assert validate(5, {"maxLength": 1, "maxItems": 1}) == []
+    assert validate("long", {"maxItems": 1, "maximum": 1}) == []
+    assert validate([1, 2], {"maxLength": 1, "maximum": 1}) == []
+    assert validate(True, schema) == []
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"maxLength": -1},
+        {"minLength": 1.5},
+        {"maxItems": True},
+        {"minItems": "1"},
+        {"uniqueItems": "yes"},
+        {"minimum": "0"},
+        {"maximum": False},
+        {"exclusiveMinimum": True},
+        {"exclusiveMaximum": None},
+        {"pattern": 5},
+        {"pattern": "("},
+    ],
+)
+def test_a_bound_with_a_shape_nare_cannot_enforce_is_refused(
+    schema: dict[str, object],
+) -> None:
+    keyword = next(iter(schema))
+
+    with pytest.raises(UnsupportedSchema, match=f"'{keyword}' must be"):
+        validate("x", schema)

@@ -13,6 +13,7 @@ dishonesty nare exists to remove.
 from __future__ import annotations
 
 import json
+import operator
 import re
 from typing import Any
 
@@ -27,6 +28,16 @@ SUPPORTED = frozenset(
         "description",
         "title",
         "$schema",
+        "minLength",
+        "maxLength",
+        "pattern",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
     }
 )
 
@@ -49,7 +60,22 @@ _SHAPES: dict[str, tuple[type | tuple[type, ...], str]] = {
     "items": (dict, "a schema"),
     "enum": (list, "a list of allowed values"),
     "additionalProperties": (bool, "true or false"),
+    "uniqueItems": (bool, "true or false"),
+    "pattern": (str, "a regular expression"),
 }
+
+_COUNTS = frozenset({"minLength", "maxLength", "minItems", "maxItems"})
+_NUMBER_BOUNDS = frozenset(
+    {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"}
+)
+
+
+def _is_count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def check_supported(schema: Any, path: str = "") -> None:
@@ -74,6 +100,25 @@ def check_supported(schema: Any, path: str = "") -> None:
                 f"schema keyword {key!r}{where} must be {shape[1]}, "
                 f"got {_type_of(value)}; nare refuses a schema it cannot enforce whole"
             )
+        if key in _COUNTS and not _is_count(value):
+            raise UnsupportedSchema(
+                f"schema keyword {key!r}{where} must be a non-negative integer, "
+                f"got {value!r}; nare refuses a schema it cannot enforce whole"
+            )
+        if key in _NUMBER_BOUNDS and not _is_number(value):
+            raise UnsupportedSchema(
+                f"schema keyword {key!r}{where} must be a number, got {value!r}; "
+                "nare refuses a schema it cannot enforce whole"
+            )
+        if key == "pattern":
+            try:
+                re.compile(value)
+            except re.error as exc:
+                raise UnsupportedSchema(
+                    f"schema keyword {key!r}{where} must be a regular expression "
+                    f"Python can compile ({exc}); nare refuses a schema it cannot "
+                    "enforce whole"
+                ) from None
     for name, sub in schema.get("properties", {}).items():
         check_supported(sub, f"{path}.{name}" if path else name)
     if "items" in schema:
@@ -120,6 +165,13 @@ def _validate(value: Any, schema: dict[str, Any], path: str) -> list[str]:
     if "enum" in schema and value not in schema["enum"]:
         errors.append(_at(path, f"expected one of {schema['enum']!r}, got {value!r}"))
 
+    if actual == "string":
+        errors += _string_bounds(value, schema, path)
+    if actual in {"integer", "number"}:
+        errors += _number_bounds(value, schema, path)
+    if actual == "array":
+        errors += _array_bounds(value, schema, path)
+
     if actual == "object":
         properties = schema.get("properties") or {}
         for name in schema.get("required") or []:
@@ -140,6 +192,95 @@ def _validate(value: Any, schema: dict[str, Any], path: str) -> list[str]:
             errors += _validate(item, schema["items"], f"{path}[{index}]")
 
     return errors
+
+
+def _string_bounds(value: str, schema: dict[str, Any], path: str) -> list[str]:
+    errors: list[str] = []
+    # len() counts code points, which is what JSON Schema means by length.
+    if "maxLength" in schema and len(value) > schema["maxLength"]:
+        errors.append(
+            _at(
+                path,
+                f"expected at most {schema['maxLength']} characters, got {len(value)}",
+            )
+        )
+    if "minLength" in schema and len(value) < schema["minLength"]:
+        errors.append(
+            _at(
+                path,
+                f"expected at least {schema['minLength']} characters, got {len(value)}",
+            )
+        )
+    if "pattern" in schema and re.search(schema["pattern"], value) is None:
+        errors.append(
+            _at(
+                path,
+                f"expected a string matching {schema['pattern']!r}, got {value!r}",
+            )
+        )
+    return errors
+
+
+_COMPARISONS = (
+    ("minimum", ">=", operator.ge),
+    ("maximum", "<=", operator.le),
+    ("exclusiveMinimum", ">", operator.gt),
+    ("exclusiveMaximum", "<", operator.lt),
+)
+
+
+def _number_bounds(value: float, schema: dict[str, Any], path: str) -> list[str]:
+    errors: list[str] = []
+    for keyword, symbol, holds in _COMPARISONS:
+        if keyword in schema and not holds(value, schema[keyword]):
+            errors.append(
+                _at(path, f"expected a number {symbol} {schema[keyword]}, got {value}")
+            )
+    return errors
+
+
+def _array_bounds(value: list[Any], schema: dict[str, Any], path: str) -> list[str]:
+    errors: list[str] = []
+    if "maxItems" in schema and len(value) > schema["maxItems"]:
+        errors.append(
+            _at(path, f"expected at most {schema['maxItems']} items, got {len(value)}")
+        )
+    if "minItems" in schema and len(value) < schema["minItems"]:
+        errors.append(
+            _at(path, f"expected at least {schema['minItems']} items, got {len(value)}")
+        )
+    if schema.get("uniqueItems") is True:
+        first: dict[Any, int] = {}
+        for index, item in enumerate(value):
+            key = _canonical(item)
+            if key in first:
+                errors.append(
+                    _at(
+                        path,
+                        f"expected unique items, [{index}] repeats [{first[key]}]",
+                    )
+                )
+            else:
+                first[key] = index
+    return errors
+
+
+def _canonical(value: Any) -> Any:
+    """A hashable form under which two values are equal exactly when JSON calls
+    them equal: 1 and 1.0 are the same number, and true is not 1.
+    """
+    if isinstance(value, bool):
+        return ("boolean", value)
+    if isinstance(value, (int, float)):
+        return ("number", value)
+    if isinstance(value, list):
+        return ("array", tuple(_canonical(item) for item in value))
+    if isinstance(value, dict):
+        return (
+            "object",
+            frozenset((key, _canonical(item)) for key, item in value.items()),
+        )
+    return (_type_of(value), value)
 
 
 def validate(value: Any, schema: dict[str, Any]) -> list[str]:
