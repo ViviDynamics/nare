@@ -126,6 +126,8 @@ def test_the_default_policy_allows_every_tool_and_sets_no_root() -> None:
 
     assert {schema["name"] for schema in policy.schemas()} == {
         "read",
+        "list",
+        "search",
         "write",
         "edit",
         "bash",

@@ -31,6 +31,13 @@ MAX_TOOL_OUTPUT = 30_000
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
 MAX_IMAGE_PIXELS = 20_000_000
 MAX_IMAGE_EDGE = 8000
+# list and search: entries per page by default and at most, how much of a
+# matched line a search result shows, and how much of a file decides binary.
+LIST_LIMIT = 200
+SEARCH_LIMIT = 100
+MAX_PAGE = 1000
+MATCH_WIDTH = 200
+BINARY_SNIFF = 8192
 
 
 def _truncate(text: str) -> str:
@@ -421,9 +428,33 @@ def ask(questions: list[str]) -> str:
     return "Questions recorded. The session is blocked pending answers."
 
 
+def list_dir(
+    path: str = ".",
+    cursor: str | None = None,
+    limit: int = LIST_LIMIT,
+    *,
+    base: str | None = None,
+) -> str:
+    raise NotImplementedError
+
+
+def search_files(
+    path: str = ".",
+    glob: str | None = None,
+    pattern: str | None = None,
+    cursor: str | None = None,
+    limit: int = SEARCH_LIMIT,
+    *,
+    base: str | None = None,
+) -> str:
+    raise NotImplementedError
+
+
 # bash is the async one: dispatch awaits it, and runs the rest in a thread.
 TOOLS: dict[str, Callable[..., Any]] = {
     "read": read_file,
+    "list": list_dir,
+    "search": search_files,
     "write": write_file,
     "edit": edit_file,
     "bash": run_bash,
@@ -444,6 +475,85 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "limit": {"type": "integer", "description": "How many lines."},
             },
             "required": ["path"],
+        },
+    },
+    {
+        "name": "list",
+        "description": (
+            "List one directory: each entry's name, kind (dir, file, symlink, "
+            "other), a file's size, and whether it is binary, sorted by name. "
+            "Read-only and runs nothing. Symlinks are listed, never followed. "
+            "A long listing comes in pages: pass the cursor a page ends with "
+            "to get the next one."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Directory to list. Default: the project root.",
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "The cursor the previous page ended with.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        f"Entries per page (default {LIST_LIMIT}, "
+                        f"at most {MAX_PAGE})."
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "search",
+        "description": (
+            "Find files under a directory by glob, and with a pattern, the "
+            "lines in them that match a Python regular expression. Read-only "
+            "and runs nothing. Skips .git, binary files and symlinks. Each "
+            "match is `path:line: text`; lines count from 1, so read it with "
+            "offset line-1. Results come in pages: pass the cursor a page "
+            "ends with to get the next one."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Directory (or one file) to search. Default: the project "
+                        "root."
+                    ),
+                },
+                "glob": {
+                    "type": "string",
+                    "description": (
+                        "Which files: `*.py` matches a file name anywhere; a "
+                        "glob with `/`, such as `src/**/*.py`, matches the path "
+                        "below `path`. Default: every file."
+                    ),
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": (
+                        "Regular expression to find in each line. `(?i)` makes "
+                        "it case-insensitive. Default: list the files only."
+                    ),
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "The cursor the previous page ended with.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        f"Results per page (default {SEARCH_LIMIT}, "
+                        f"at most {MAX_PAGE})."
+                    ),
+                },
+            },
         },
     },
     {
