@@ -569,7 +569,7 @@ def _entry(item: os.DirEntry[str]) -> Entry:
             return Entry(item.name, "dir")
         if item.is_file(follow_symlinks=False):
             size = item.stat(follow_symlinks=False).st_size
-            return Entry(item.name, "file", size, _is_binary(item.path))
+            return Entry(item.name, "file", size, size > 0 and _is_binary(item.path))
     except OSError:
         pass  # gone or unreadable since the scan: say what is known
     return Entry(item.name, "other")
