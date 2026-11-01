@@ -499,8 +499,9 @@ Bedrock. Where the marker goes:
 - the last tool's `function` object, when the request offers tools. A
   schema-constrained turn offers none, so it marks none.
 
-The system prompt is not marked, matching the anthropic rail: the tool marker
-covers the tools and the system prompt in front of them. Thinking is never sent
+The system prompt is not marked, matching the anthropic rail. A caching
+backend orders the prefix as tools, system prompt, messages, so the tool marker
+caches the tools alone and the newest-block marker caches all three. Thinking is never sent
 back, so a transcript that ends on thinking marks the block before it, as the
 anthropic rail does. Only the marked message changes shape. Every earlier
 message is the same bytes as an unmarked request, so last turn's prefix is
