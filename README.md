@@ -105,9 +105,15 @@ run those with `--system ''`.
 Two flags narrow a run. `--tools read,bash` allows only the tools you name,
 and `--tools none` allows no tool at all, which is what a caller wants when
 it needs one answer and no side effects. `--root DIR` confines `read`,
-`write` and `edit` to a directory, refusing any path that leaves it,
-including through a symlink. Both are recorded in the session, so a run's
-permissions can be read afterwards rather than inferred.
+`list`, `search`, `write` and `edit` to a directory, refusing any path that
+leaves it, including through a symlink. Both are recorded in the session, so a
+run's permissions can be read afterwards rather than inferred.
+
+`--tools read,list,search` is a read-only session that can still find its
+way around: `list` pages through a directory and `search` finds files by glob
+and lines by regular expression, both in pure Python, never following a
+symlink, so exploring a tree needs no `bash`. See
+[the navigation contract](docs/contract.md#read-only-navigation).
 
 `--image-input` declares that the selected model accepts PNG/JPEG input. It lets
 `read` return capped images under the same root and permissions; omitted, image
@@ -135,7 +141,7 @@ nare still validates every answer. See
 `nare tui` is the same loop for a person. Type a task, watch it stream, and
 approve each tool call: **y** allows, **n** or **Esc** denies, **a** allows
 that tool for as long as this `nare tui` runs (it is not saved to the
-session). `edit` and `write` show a diff first. `read` and `ask` never prompt.
+session). `edit` and `write` show a diff first. `read`, `list`, `search` and `ask` never prompt.
 
     nare tui "add a docstring to foo() in bar.py" --root .
 

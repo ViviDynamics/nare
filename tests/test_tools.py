@@ -34,9 +34,11 @@ from nare.tools import (
 from nare.transport import ToolCall
 
 
-def test_exactly_five_tools_with_matching_schemas() -> None:
+def test_exactly_seven_tools_with_matching_schemas() -> None:
     assert {s["name"] for s in TOOL_SCHEMAS} == {
         "read",
+        "list",
+        "search",
         "write",
         "edit",
         "bash",

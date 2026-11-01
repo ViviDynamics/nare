@@ -18,7 +18,7 @@ from typing import Any
 from nare.tools import Policy
 
 # These change nothing, so a person is never asked about them.
-EXEMPT = frozenset({"read", "ask"})
+EXEMPT = frozenset({"read", "list", "search", "ask"})
 
 # 2>&1, >&2, 2>&-: a copy of a descriptor, not a file, and its & is not
 # backgrounding. A word after >& (`>&out`) is a file, so it stays.

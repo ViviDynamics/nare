@@ -1,21 +1,25 @@
-"""Five tools, five hand-written schemas beside them.
+"""Seven tools, seven hand-written schemas beside them.
 
 A schema generator that introspects type hints is worth revisiting at roughly
-fifteen tools. At five it is a dependency on cleverness for no gain.
+fifteen tools. At seven it is a dependency on cleverness for no gain.
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import bisect
 import contextlib
+import fnmatch
+import hashlib
 import inspect
+import json
 import os
 import re
 import shutil
 import signal
 import subprocess
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -31,6 +35,13 @@ MAX_TOOL_OUTPUT = 30_000
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
 MAX_IMAGE_PIXELS = 20_000_000
 MAX_IMAGE_EDGE = 8000
+# list and search: entries per page by default and at most, how much of a
+# matched line a search result shows, and how much of a file decides binary.
+LIST_LIMIT = 200
+SEARCH_LIMIT = 100
+MAX_PAGE = 1000
+MATCH_WIDTH = 200
+BINARY_SNIFF = 8192
 
 
 def _truncate(text: str) -> str:
@@ -421,9 +432,403 @@ def ask(questions: list[str]) -> str:
     return "Questions recorded. The session is blocked pending answers."
 
 
+# Navigation: list and search. Pure Python, so a session without bash can still
+# find its way around, and confined by never following a symlink while walking:
+# Policy.resolve() vets the one path the model names, and nothing below it may
+# lead back out of the root. A result is a list of records rendered at the
+# end, so a record can carry more than its line without reshaping the page.
+NAVIGATION_TOOLS = frozenset({"list", "search"})
+
+
+def _clamp(limit: object, default: int) -> int:
+    """A page size the model asked for, held to 1..MAX_PAGE."""
+    wanted = default
+    if isinstance(limit, int | float | str):
+        with contextlib.suppress(ValueError, OverflowError):
+            wanted = int(limit)
+    return min(max(wanted, 1), MAX_PAGE)
+
+
+def _printable(text: str) -> str:
+    """One line per record: a name with a newline, a control character or an
+    undecodable byte is shown JSON-quoted rather than breaking the page.
+    """
+    return text if text.isprintable() else json.dumps(text)
+
+
+def _shown(path: Path, base: str | None) -> str:
+    """A path as results show it: relative to base (the root, which `read`
+    accepts) when under it, else absolute.
+    """
+    if base is not None and path.is_relative_to(base):
+        return _printable(path.relative_to(base).as_posix())
+    return _printable(str(path))
+
+
+def _is_binary(path: str) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            return b"\0" in handle.read(BINARY_SNIFF)
+    except OSError:
+        return False
+
+
+def _call_id(*parts: object) -> str:
+    """Which call a cursor belongs to, so one is never applied to another."""
+    return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:16]
+
+
+def _cursor(call: str, at: object) -> str:
+    raw = json.dumps({"call": call, "at": at}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(raw.encode()).decode("ascii").rstrip("=")
+
+
+def _position(cursor: str | None, call: str) -> Any:
+    """Where a cursor resumes: after a position, not at an index, so a page
+    stays consistent when the tree changes between calls.
+    """
+    if cursor is None:
+        return None
+    try:
+        padded = str(cursor) + "=" * (-len(str(cursor)) % 4)
+        raw = json.loads(base64.urlsafe_b64decode(padded))
+        owner, at = raw["call"], raw["at"]
+    except (ValueError, KeyError, TypeError):
+        raise ValueError(
+            "invalid cursor; call again without one to start over"
+        ) from None
+    if owner != call:
+        raise ValueError(
+            "the cursor belongs to a different call; pass the same path, glob "
+            "and pattern as the call that returned it"
+        )
+    return at
+
+
+def _footer(cursor: str) -> str:
+    return f'[next page: cursor "{cursor}"]'
+
+
+def _paginate[T](
+    records: Iterable[T],
+    line: Callable[[T], str],
+    at: Callable[[T], object],
+    call: str,
+    limit: int,
+    room: int,
+) -> tuple[list[tuple[T, str]], str | None]:
+    """Take records until the limit, or until the next line and its cursor
+    would pass MAX_TOOL_OUTPUT, so a page is never cut by _truncate() and
+    never loses its cursor. `room` is what the header needs.
+
+    The cursor is built only when there is a record after the page: a page
+    that ends exactly at the end of the results has none.
+    """
+    taken: list[tuple[T, str]] = []
+    size = room
+    for record in records:
+        if len(taken) == limit:
+            return taken, _cursor(call, at(taken[-1][0]))
+        text = line(record)
+        fits = size + len(text) + 1 + len(_footer(_cursor(call, at(record))))
+        if taken and fits > MAX_TOOL_OUTPUT:
+            return taken, _cursor(call, at(taken[-1][0]))
+        taken.append((record, text))
+        size += len(text) + 1
+    return taken, None
+
+
+def _render(header: str, lines: Iterable[str], cursor: str | None) -> str:
+    return "\n".join([header, *lines, *([_footer(cursor)] if cursor else [])])
+
+
+@dataclass(frozen=True)
+class Entry:
+    """One directory entry as `list` reports it."""
+
+    name: str
+    kind: str  # dir, file, symlink or other
+    size: int | None = None
+    binary: bool = False
+
+    def line(self) -> str:
+        name = _printable(self.name)
+        if self.kind == "dir":
+            return f"{name}/  (dir)"
+        if self.kind == "file":
+            binary = ", binary" if self.binary else ""
+            return f"{name}  (file, {self.size} bytes{binary})"
+        return f"{name}  ({self.kind})"
+
+
+def _entry(item: os.DirEntry[str]) -> Entry:
+    try:
+        if item.is_symlink():
+            return Entry(item.name, "symlink")
+        if item.is_dir(follow_symlinks=False):
+            return Entry(item.name, "dir")
+        if item.is_file(follow_symlinks=False):
+            size = item.stat(follow_symlinks=False).st_size
+            return Entry(item.name, "file", size, size > 0 and _is_binary(item.path))
+    except OSError:
+        pass  # gone or unreadable since the scan: say what is known
+    return Entry(item.name, "other")
+
+
+def list_dir(
+    path: str = ".",
+    cursor: str | None = None,
+    limit: int = LIST_LIMIT,
+    *,
+    base: str | None = None,
+) -> str:
+    """One directory's entries, sorted by name, a page at a time.
+
+    Every page sorts the whole directory, so a page is a function of the tree
+    and the cursor alone. A file's binary marker reads its first bytes, which
+    only the entries on the page pay for.
+    """
+    directory = Path(os.path.abspath(path))
+    shown = _shown(directory, base)
+    call = _call_id("list", str(directory))
+    after = _position(cursor, call)
+    if after is not None and not isinstance(after, str):
+        raise ValueError("invalid cursor; call again without one to start over")
+    with os.scandir(directory) as scan:
+        items = sorted(scan, key=lambda item: item.name)
+    if not items:
+        return f"{shown}: empty directory"
+    total = len(items)
+    start = 0 if after is None else bisect.bisect_right([i.name for i in items], after)
+    room = len(f"{shown}: entries {total}-{total} of {total}") + 1
+    taken, more = _paginate(
+        (_entry(item) for item in items[start:]),
+        Entry.line,
+        lambda entry: entry.name,
+        call,
+        _clamp(limit, LIST_LIMIT),
+        room,
+    )
+    if not taken:
+        return f"{shown}: no entries after the cursor ({total} in all)"
+    header = f"{shown}: entries {start + 1}-{start + len(taken)} of {total}"
+    return _render(header, (text for _, text in taken), more)
+
+
+SKIPPED_DIRS = frozenset({".git"})
+
+
+def _glob_matcher(glob: str | None) -> Callable[[str], bool]:
+    """Whether a path below the searched directory matches the glob.
+
+    Without a `/` the glob matches a file name at any depth, as `rg -g` does.
+    With one it matches the whole relative path, where `**` spans any number
+    of directories and `*` stays within one.
+    """
+    if not glob:
+        return lambda rel: True
+    glob = glob.removeprefix("./").lstrip("/")
+    if "/" not in glob:
+        return lambda rel: fnmatch.fnmatchcase(rel.rsplit("/", 1)[-1], glob)
+    out: list[str] = []
+    i = 0
+    while i < len(glob):
+        if glob.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif glob.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif glob[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif glob[i] == "?":
+            out.append("[^/]")
+            i += 1
+        elif glob[i] == "[" and (close := glob.find("]", i + 2)) != -1:
+            body = glob[i + 1 : close]
+            body = "^" + body[1:] if body.startswith("!") else body
+            out.append("[" + body.replace("\\", "\\\\") + "]")
+            i = close + 1
+        else:
+            out.append(re.escape(glob[i]))
+            i += 1
+    compiled = re.compile("".join(out))
+    return lambda rel: compiled.fullmatch(rel) is not None
+
+
+def _walk(
+    top: Path, after: tuple[str, ...] | None, prefix: tuple[str, ...] = ()
+) -> Iterator[tuple[tuple[str, ...], str]]:
+    """Regular files below `top`, as (name parts, path), in sorted order.
+
+    Sorted per directory, so the order is that of the name-part tuples, which
+    is what lets a cursor skip a whole subtree it has passed. Symlinks are
+    never followed, to a directory or a file: the walk stays on the tree
+    Policy.resolve() vetted. A directory it cannot read is passed over.
+    """
+    try:
+        with os.scandir(top) as scan:
+            items = sorted(scan, key=lambda item: item.name)
+    except OSError:
+        return
+    for item in items:
+        parts = (*prefix, item.name)
+        if after is not None and parts < after and after[: len(parts)] != parts:
+            continue  # this file, or every file below this directory, is done
+        try:
+            if item.is_symlink():
+                continue
+            if item.is_dir(follow_symlinks=False):
+                if item.name not in SKIPPED_DIRS:
+                    yield from _walk(Path(item.path), after, parts)
+            elif item.is_file(follow_symlinks=False) and (
+                after is None or parts >= after
+            ):
+                yield parts, item.path
+        except OSError:
+            continue
+
+
+def _clean(text: str) -> str:
+    """A matched line as one line of the page, cut to MATCH_WIDTH."""
+    text = "".join(c if c.isprintable() or c == "\t" else repr(c)[1:-1] for c in text)
+    return text if len(text) <= MATCH_WIDTH else text[:MATCH_WIDTH] + "..."
+
+
+@dataclass(frozen=True)
+class Hit:
+    """One search result: a file, or with a pattern, one line in it.
+
+    `number` is 0 for a file and the 1-based line number for a line.
+    """
+
+    path: str
+    parts: tuple[str, ...]
+    number: int = 0
+    text: str = ""
+
+    def line(self) -> str:
+        if self.number == 0:
+            return self.path
+        return f"{self.path}:{self.number}: {_clean(self.text)}"
+
+    def at(self) -> list[object]:
+        return [list(self.parts), self.number]
+
+
+def _lines(path: str, regex: re.Pattern[str], after: int) -> Iterator[tuple[int, str]]:
+    """The matching lines of a text file after line `after`; none for a
+    binary one or one that cannot be read.
+    """
+    try:
+        with open(path, "rb") as handle:
+            if b"\0" in handle.read(BINARY_SNIFF):
+                return
+            handle.seek(0)
+            for number, raw in enumerate(handle, 1):
+                if number <= after:
+                    continue
+                text = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                if regex.search(text):
+                    yield number, text
+    except OSError:
+        return
+
+
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}" + ("" if n == 1 else "s")
+
+
+def search_files(
+    path: str = ".",
+    glob: str | None = None,
+    pattern: str | None = None,
+    cursor: str | None = None,
+    limit: int = SEARCH_LIMIT,
+    *,
+    base: str | None = None,
+) -> str:
+    """Files under a directory by glob, and with a pattern, their matching
+    lines, a page at a time.
+
+    Without a pattern no file is opened, so a glob over a large tree costs a
+    directory walk. With one, binary files are skipped.
+    """
+    top = Path(os.path.abspath(path))
+    shown = _shown(top, base)
+    call = _call_id("search", str(top), glob or "", pattern or "")
+    position = _position(cursor, call)
+    after: tuple[str, ...] | None = None
+    after_line = 0
+    if position is not None:
+        try:
+            raw_parts, after_line = position
+            after = tuple(str(part) for part in raw_parts)
+            after_line = int(after_line)
+        except (TypeError, ValueError):
+            raise ValueError(
+                "invalid cursor; call again without one to start over"
+            ) from None
+    regex: re.Pattern[str] | None = None
+    if pattern:
+        # ponytail: Python's re cannot be interrupted, so a pattern that
+        # backtracks catastrophically holds the worker thread. The upgrade is
+        # a linear-time engine, which is a dependency.
+        try:
+            regex = re.compile(pattern)
+        except re.error as exc:
+            raise ValueError(f"invalid pattern {pattern!r}: {exc}") from None
+    matches = _glob_matcher(glob)
+    if top.is_file():
+        files: Iterable[tuple[tuple[str, ...], str]] = (
+            [((top.name,), str(top))] if after is None or (top.name,) >= after else []
+        )
+    elif top.is_dir():
+        files = _walk(top, after)
+    elif top.exists():
+        raise ValueError(f"{path} is not a regular file or a directory")
+    else:
+        raise FileNotFoundError(f"{path} does not exist")
+
+    def hits() -> Iterator[Hit]:
+        for parts, file in files:
+            if not matches("/".join(parts)):
+                continue
+            shown_file = _shown(Path(file), base)
+            if regex is None:
+                if parts != after:
+                    yield Hit(shown_file, parts)
+                continue
+            skip = after_line if parts == after else 0
+            for number, text in _lines(file, regex, skip):
+                yield Hit(shown_file, parts, number, text)
+
+    limit = _clamp(limit, SEARCH_LIMIT)
+    more = ", more on the next page"
+    widest = f"{_count(limit, 'matching line')} in {_count(limit, 'file')}{more}"
+    taken, next_cursor = _paginate(
+        hits(), Hit.line, Hit.at, call, limit, len(f"{shown}: {widest}") + 1
+    )
+    if not taken:
+        return f"{shown}: no {'matching lines' if regex else 'files'}"
+    hits_taken = [hit for hit, _ in taken]
+    if regex is None:
+        summary = _count(len(hits_taken), "file")
+    else:
+        files_hit = len({hit.parts for hit in hits_taken})
+        summary = (
+            f"{_count(len(hits_taken), 'matching line')} in {_count(files_hit, 'file')}"
+        )
+    header = f"{shown}: {summary}" + (more if next_cursor else "")
+    return _render(header, (text for _, text in taken), next_cursor)
+
+
 # bash is the async one: dispatch awaits it, and runs the rest in a thread.
 TOOLS: dict[str, Callable[..., Any]] = {
     "read": read_file,
+    "list": list_dir,
+    "search": search_files,
     "write": write_file,
     "edit": edit_file,
     "bash": run_bash,
@@ -444,6 +849,83 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "limit": {"type": "integer", "description": "How many lines."},
             },
             "required": ["path"],
+        },
+    },
+    {
+        "name": "list",
+        "description": (
+            "List one directory: each entry's name, kind (dir, file, symlink, "
+            "other), a file's size, and whether it is binary, sorted by name. "
+            "Read-only and runs nothing. Symlinks are listed, never followed. "
+            "A long listing comes in pages: pass the cursor a page ends with "
+            "to get the next one."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Directory to list. Default: the project root.",
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "The cursor the previous page ended with.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        f"Entries per page (default {LIST_LIMIT}, at most {MAX_PAGE})."
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "search",
+        "description": (
+            "Find files under a directory by glob, and with a pattern, the "
+            "lines in them that match a Python regular expression. Read-only "
+            "and runs nothing. Skips .git, binary files and symlinks. Each "
+            "match is `path:line: text`; lines count from 1, so read it with "
+            "offset line-1. Results come in pages: pass the cursor a page "
+            "ends with to get the next one."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Directory (or one file) to search. Default: the project root."
+                    ),
+                },
+                "glob": {
+                    "type": "string",
+                    "description": (
+                        "Which files: `*.py` matches a file name anywhere; a "
+                        "glob with `/`, such as `src/**/*.py`, matches the path "
+                        "below `path`. Default: every file."
+                    ),
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": (
+                        "Regular expression to find in each line. `(?i)` makes "
+                        "it case-insensitive. Default: list the files only."
+                    ),
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "The cursor the previous page ended with.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        f"Results per page (default {SEARCH_LIMIT}, "
+                        f"at most {MAX_PAGE})."
+                    ),
+                },
+            },
         },
     },
     {
@@ -541,7 +1023,7 @@ def approve_all(tool: str, args: dict[str, Any]) -> bool:
     return True
 
 
-PATH_TOOLS = frozenset({"read", "write", "edit"})
+PATH_TOOLS = frozenset({"read", "write", "edit", "list", "search"})
 
 
 @dataclass(frozen=True)
@@ -664,6 +1146,12 @@ async def dispatch(
             return tool_result(call.id, _truncate(text), is_error=failed)
         assert function is not None
         args = dict(call.args)
+        if call.name in NAVIGATION_TOOLS:
+            # Paths in results are relative to the root, which `read` accepts.
+            # Set here, after the model's arguments, so it cannot be moved.
+            if args.get("path") in (None, ""):
+                args["path"] = "."
+            args["base"] = str(policy.root.resolve()) if policy.root else os.getcwd()
         if call.name in PATH_TOOLS and "path" in args:
             args["path"] = str(policy.resolve(str(args["path"])))
         if call.name == "bash" and policy.root is not None:

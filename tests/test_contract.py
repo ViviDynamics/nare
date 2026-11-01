@@ -236,3 +236,31 @@ def test_the_advertised_modes_are_the_ones_the_loop_accepts() -> None:
     from nare.loop import STRUCTURED_OUTPUT_MODES
 
     assert describe()["structured_output"]["modes"] == list(STRUCTURED_OUTPUT_MODES)
+
+
+def test_contract_names_the_built_in_tools() -> None:
+    from nare.tools import TOOLS
+
+    assert describe()["tools"] == sorted(TOOLS)
+
+
+def test_contract_describes_read_only_navigation() -> None:
+    assert describe()["navigation"] == {
+        "tools": ["list", "search"],
+        "max_output": 30000,
+        "page_limit": {"list": 200, "search": 100, "max": 1000},
+        "cursor": "opaque",
+        "match_width": 200,
+        "line_numbers_from": 1,
+        "follows_symlinks": False,
+        "skipped_dirs": [".git"],
+    }
+
+
+def test_the_documented_contract_describes_navigation() -> None:
+    doc = Path(__file__).parent.parent / "docs" / "contract.md"
+    text = doc.read_text(encoding="utf-8")
+
+    assert "## Read-only navigation" in text
+    assert "--tools read,list,search" in text
+    assert '[next page: cursor "' in text

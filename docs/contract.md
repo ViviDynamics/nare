@@ -11,7 +11,8 @@ Read the contract as data instead of parsing this page:
 
     nare contract
 
-It prints the version, the exit codes, the statuses, the event types and the
+It prints the version, the exit codes, the statuses, the event types, the
+built-in tool names (`tools`), the navigation limits (`navigation`) and the
 redaction rule set this build speaks.
 
 ## Refusing a contract you do not speak
@@ -361,6 +362,60 @@ proxy that enforces a 0.3-second idle window: nonstreaming gets HTTP 524, while
 both streaming rails emit progress before finalization and survive a 0.75-second
 withheld completion with heartbeats. This is conditional traffic evidence, not
 an assurance about every model/proxy combination.
+
+## Read-only navigation
+
+    nare run --yes --jsonl --contract 2 --tools read,list,search --root "$PWD" \
+      --session survey.json "Where is the database port configured?"
+
+`list` and `search` let a session find its way around a tree without `bash`, so
+a caller can grant exploration and reading while granting no execution and no
+writes. Both are pure Python and start no process. Like every tool, each is
+offered to the model only when the allowlist names it (or when `--tools` is
+omitted). `nare contract` advertises them under `tools` and their limits under
+`navigation`; both keys are additive and keep the contract version.
+
+Both resolve their `path` (default: the root) exactly as `read` does, so a
+path outside `--root`, including through a symlink, is an `is_error` result.
+Neither follows a symlink while walking: `list` reports a symlink as a symlink,
+and `search` never enters or reads through one. `search` skips `.git/`
+directories. Paths in results are relative to `--root` (relative to the working
+directory without one), which is what `read` accepts.
+
+`list` returns one directory, sorted by name, under a header:
+
+    src: entries 1-4 of 4
+    app.py  (file, 812 bytes)
+    logo.png  (file, 20412 bytes, binary)
+    current  (symlink)
+    lib/  (dir)
+
+A kind is `dir`, `file`, `symlink` or `other`. A file is `binary` when its first
+8 KiB hold a NUL byte.
+
+`search` takes an optional `glob` and an optional `pattern`. A glob without `/`
+matches a file name at any depth; one with `/` matches the path below `path`,
+where `**` spans directories. Without a pattern the result is the matching file
+paths and no file is opened. With one, each matching line of each text file is
+`path:line: text`; binary files are not searched, line numbers start at 1, and
+`text` is cut to 200 characters (then `...`). The pattern is a Python regular
+expression; `(?i)` makes it case-insensitive.
+
+    src: 2 matching lines in 1 file
+    src/db.py:14: PORT = 6543
+    src/db.py:31:     connect(port=PORT)
+
+Results are paged. A page holds at most `limit` records (default 200 for `list`
+and 100 for `search`, at most 1000) and never more than the 30000 character
+tool output cap, so a page is never truncated. A page with more after it ends
+with:
+
+    [next page: cursor "<opaque>"]
+
+Pass that cursor with the same `path`, `glob` and `pattern` to get the next
+page; a cursor from a different call is an `is_error` result. A cursor marks a
+position, not an index, and order is by name, so the same tree yields the same
+pages, byte for byte, on every call.
 
 ## Read-only image input
 

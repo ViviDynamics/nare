@@ -126,6 +126,8 @@ def test_the_default_policy_allows_every_tool_and_sets_no_root() -> None:
 
     assert {schema["name"] for schema in policy.schemas()} == {
         "read",
+        "list",
+        "search",
         "write",
         "edit",
         "bash",
@@ -138,3 +140,97 @@ def test_the_policy_records_what_was_in_force() -> None:
     recorded = Policy(tools=frozenset({"read"}), root=Path("/tmp")).recorded()
 
     assert recorded == {"tools": ["read"], "root": "/tmp"}
+
+
+@pytest.mark.parametrize("tool", ["list", "search"])
+async def test_navigation_outside_the_root_is_refused(
+    tool: str, tmp_path: Path
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    (tmp_path / "secret.txt").write_text("needle", encoding="utf-8")
+
+    result = await dispatch(call(tool, path=str(tmp_path)), Policy(root=root))
+
+    assert result["is_error"] is True
+    assert "outside the root" in result["content"]
+    assert "secret" not in result["content"]
+
+
+@pytest.mark.parametrize("tool", ["list", "search"])
+async def test_navigation_through_a_symlink_out_of_the_root_is_refused(
+    tool: str, tmp_path: Path
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("needle", encoding="utf-8")
+    (root / "escape").symlink_to(outside)
+
+    result = await dispatch(call(tool, path="escape"), Policy(root=root))
+
+    assert result["is_error"] is True
+    assert "outside the root" in result["content"]
+
+
+@pytest.mark.parametrize("args", [{}, {"path": None}, {"path": ""}])
+async def test_list_defaults_to_the_root(
+    args: dict[str, object], tmp_path: Path
+) -> None:
+    (tmp_path / "a.txt").write_text("a", encoding="utf-8")
+
+    result = await dispatch(call("list", **args), Policy(root=tmp_path))
+
+    assert result["is_error"] is False
+    assert result["content"].splitlines() == [
+        ".: entries 1-1 of 1",
+        "a.txt  (file, 1 bytes)",
+    ]
+
+
+async def test_search_results_are_paths_read_accepts(tmp_path: Path) -> None:
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "a.txt").write_text("needle\n", encoding="utf-8")
+    policy = Policy(root=tmp_path)
+
+    found = await dispatch(call("search", path="sub", pattern="needle"), policy)
+    path = found["content"].splitlines()[1].split(":")[0]
+    read = await dispatch(call("read", path=path), policy)
+
+    assert path == "sub/a.txt"
+    assert read["content"] == "needle"
+
+
+async def test_a_model_cannot_move_the_base_of_navigation(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("a", encoding="utf-8")
+
+    result = await dispatch(call("list", base="/"), Policy(root=tmp_path))
+
+    assert result["content"].splitlines()[0] == ".: entries 1-1 of 1"
+
+
+async def test_without_a_root_navigation_is_relative_to_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "a.txt").write_text("needle\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    listed = await dispatch(call("list", path="sub"), Policy())
+    found = await dispatch(call("search", pattern="needle"), Policy())
+
+    assert listed["content"].splitlines()[0] == "sub: entries 1-1 of 1"
+    assert found["content"].splitlines()[1] == "sub/a.txt:1: needle"
+
+
+@pytest.mark.parametrize("tool", ["list", "search"])
+async def test_navigation_runs_only_when_the_allowlist_names_it(
+    tool: str, tmp_path: Path
+) -> None:
+    result = await dispatch(
+        call(tool, path=str(tmp_path)), Policy(tools=frozenset({"read"}))
+    )
+
+    assert result["is_error"] is True
+    assert "not allowed" in result["content"]

@@ -141,6 +141,16 @@ def _command(command: str, root: str | None) -> str:
 def _summary(name: str, args: dict[str, Any], root: str | None) -> str:
     if name == "bash":
         return _command(str(args.get("command", "")), root)
+    if name == "search":
+        where = _relative(str(args.get("path") or "."), root)
+        pattern, glob = args.get("pattern"), args.get("glob")
+        if pattern:
+            what = f"{pattern} in {where}" + (f" ({glob})" if glob else "")
+        else:
+            what = f"{glob or 'all files'} in {where}"
+        return _cut(what)
+    if name == "list":
+        return _cut(_relative(str(args.get("path") or "."), root))
     if "path" in args:
         return _cut(_relative(str(args["path"]), root))
     return _cut(json.dumps(args, ensure_ascii=False))
@@ -169,6 +179,9 @@ def _done(
         return f"read {path} ({len(content.splitlines())} lines)"
     if name == "edit":
         return f"edited {path}"
+    if name in ("list", "search"):
+        # The header counts what came back; the call line says where.
+        return content.split("\n", 1)[0]
     return _head(content)
 
 

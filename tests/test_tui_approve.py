@@ -21,10 +21,12 @@ class Keys:
         return (key, "") if isinstance(key, str) else key
 
 
-async def test_read_and_ask_never_prompt() -> None:
+async def test_read_list_search_and_ask_never_prompt() -> None:
     keys = Keys()
     approver = Approver(keys)
     assert await approver("read", {"path": "a"}) is True
+    assert await approver("list", {"path": "."}) is True
+    assert await approver("search", {"pattern": "x"}) is True
     assert await approver("ask", {"questions": ["q"]}) is True
     assert keys.asked == []
 
