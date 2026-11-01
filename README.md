@@ -61,6 +61,14 @@ cache price. Thinking that arrives without a signature, which is what a proxy
 makes when it translates a reasoning model, is kept in the session but not sent
 back to the model, and neither is empty text.
 
+The openai rail marks nothing by default, because some OpenAI-compatible
+servers reject a field they do not know. `--cache-breakpoints` (env:
+`NARE_CACHE_BREAKPOINTS=1`) marks the same two positions with
+`cache_control: {"type": "ephemeral"}`, for a proxy such as LiteLLM that
+forwards it to a backend that caches. If a server refuses the request, the
+error names the option to turn off. See
+[prompt-cache breakpoints](docs/contract.md#prompt-cache-breakpoints).
+
 There is no `--api-key` flag on either: argv is world-readable through `ps`
 and `/proc`.
 
