@@ -111,6 +111,7 @@ def make_transport(
     streaming: bool = False,
     image_input: bool = False,
     proxy_num_retries: int | None = None,
+    cache_breakpoints: bool = False,
 ) -> Transport:
     """Build a transport from configuration.
 
@@ -118,6 +119,9 @@ def make_transport(
     proxy, vLLM, llama.cpp or Ollama as much as it is OpenAI, and `--base-url`
     is how a caller says which. A registry is slice 4, with the rest of the
     extension surface.
+
+    `cache_breakpoints` reaches the openai arm only. The anthropic arm always
+    marks its breakpoints, so the option asks it for nothing it lacks.
     """
     match kind:
         case "anthropic":
@@ -150,6 +154,7 @@ def make_transport(
                 streaming=streaming,
                 image_input=image_input,
                 proxy_num_retries=proxy_num_retries,
+                cache_breakpoints=cache_breakpoints,
             )
         case _:
             raise ValueError(

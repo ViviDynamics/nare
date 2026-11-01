@@ -70,6 +70,15 @@ def stream_from_env(env: Mapping[str, str]) -> bool:
     return env.get("NARE_STREAM", "").strip().lower() in ("1", "true", "yes")
 
 
+def cache_breakpoints_from_env(env: Mapping[str, str]) -> bool:
+    """NARE_CACHE_BREAKPOINTS, as --cache-breakpoints' default reads it."""
+    return env.get("NARE_CACHE_BREAKPOINTS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="nare", description="A standalone agent harness."
@@ -166,6 +175,15 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
         type=int,
         help="send num_retries to an OpenAI-compatible proxy (unset: omit); "
         "0 disables LiteLLM router retries, not fallbacks",
+    )
+    parser.add_argument(
+        "--cache-breakpoints",
+        action="store_true",
+        default=cache_breakpoints_from_env(os.environ),
+        help="mark prompt-cache breakpoints (cache_control) on the openai "
+        "provider's requests, for a proxy that forwards them to a caching "
+        "backend; off by default because some servers reject unknown fields. "
+        "The anthropic provider always marks them (env: NARE_CACHE_BREAKPOINTS)",
     )
     parser.add_argument(
         "--provider",
@@ -295,6 +313,7 @@ def transport_from_args(args: argparse.Namespace) -> Transport:
         streaming=args.stream,
         image_input=args.image_input,
         proxy_num_retries=args.proxy_num_retries,
+        cache_breakpoints=args.cache_breakpoints,
     )
 
 

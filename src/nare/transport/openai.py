@@ -181,6 +181,45 @@ def messages_from(
     return out
 
 
+CACHE_CONTROL = {"type": "ephemeral"}
+
+CACHE_BREAKPOINTS_HINT = (
+    "; this request carried cache_control breakpoints, and a server that "
+    "rejects unknown fields refuses them: turn off --cache-breakpoints "
+    "(NARE_CACHE_BREAKPOINTS)"
+)
+
+
+def with_cache_breakpoints(
+    messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Mark the newest block and the last tool, as the anthropic rail does.
+
+    Chat Completions has no breakpoint of its own, but a proxy such as LiteLLM
+    forwards `cache_control` to a backend that honours it: on a content part,
+    on a tool call, and on a tool's `function`. The newest block is the end of
+    the last wire message, because thinking is never sent back and a tool
+    result's image travels after its tool message. Only that message changes
+    shape, a string content becoming one text part, so everything before it
+    is the same bytes as an unmarked request and stays a cacheable prefix.
+    `messages` and `tools` must be fresh copies, which this marks in place.
+    """
+    if messages:
+        newest = messages[-1]
+        content = newest.get("content")
+        if newest.get("tool_calls"):
+            newest["tool_calls"][-1]["cache_control"] = dict(CACHE_CONTROL)
+        elif isinstance(content, str):
+            newest["content"] = [
+                {"type": "text", "text": content, "cache_control": dict(CACHE_CONTROL)}
+            ]
+        elif isinstance(content, list) and content:
+            content[-1]["cache_control"] = dict(CACHE_CONTROL)
+    if tools:
+        tools[-1]["function"]["cache_control"] = dict(CACHE_CONTROL)
+    return messages, tools
+
+
 def _arguments(raw: str) -> dict[str, Any]:
     """A tool call's arguments, or an empty dict.
 
@@ -238,6 +277,7 @@ class OpenAITransport:
         streaming: bool = False,
         image_input: bool = False,
         proxy_num_retries: int | None = None,
+        cache_breakpoints: bool = False,
     ) -> None:
         if proxy_num_retries is not None and (
             type(proxy_num_retries) is not int or proxy_num_retries < 0
@@ -258,6 +298,9 @@ class OpenAITransport:
         self.max_tokens = max_tokens
         self.effort = effort
         self.proxy_num_retries = proxy_num_retries
+        # Off by default: some OpenAI-compatible servers reject a field they
+        # do not know, and an unmarked request must stay what it always was.
+        self.cache_breakpoints = cache_breakpoints
         self._base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
         self._key = key
         self._client = http_client or httpx2.AsyncClient(timeout=DEFAULT_TIMEOUT)
@@ -281,14 +324,18 @@ class OpenAITransport:
         tools: list[dict[str, Any]],
         response_schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": messages_from(
-                messages,
-                image_input=self.image_input,
-                image_model=f"OpenAITransport/model={self.model}",
-            ),
-        }
+        wire_messages = messages_from(
+            messages,
+            image_input=self.image_input,
+            image_model=f"OpenAITransport/model={self.model}",
+        )
+        # A constrained turn sends no tools, so none are marked.
+        wire_tools = tools_from(tools) if response_schema is None else []
+        if self.cache_breakpoints:
+            wire_messages, wire_tools = with_cache_breakpoints(
+                wire_messages, wire_tools
+            )
+        payload: dict[str, Any] = {"model": self.model, "messages": wire_messages}
         if self.system is not None:
             payload["messages"] = [
                 {"role": "system", "content": self.system},
@@ -296,8 +343,8 @@ class OpenAITransport:
             ]
         if response_schema is not None:
             payload["response_format"] = response_format_from(response_schema)
-        elif tools:
-            payload["tools"] = tools_from(tools)
+        elif wire_tools:
+            payload["tools"] = wire_tools
         if self.max_tokens is not None:
             payload["max_tokens"] = self.max_tokens
         # Omitted rather than defaulted: a server's own default is a better
@@ -335,10 +382,7 @@ class OpenAITransport:
         if response.status_code >= 400:
             # The body carries the reason a proxy refused, which is the part a
             # caller needs: a scoped key naming the model it may not reach.
-            raise RuntimeError(
-                f"chat completion failed with HTTP {response.status_code}: "
-                f"{response.text}"
-            )
+            raise self._failure(response.status_code, response.text)
         return self._reply(response.json(), cost=reported_cost(response.headers))
 
     async def stream_turn(
@@ -362,10 +406,7 @@ class OpenAITransport:
         ) as response:
             if response.status_code >= 400:
                 await response.aread()
-                raise RuntimeError(
-                    f"chat completion failed with HTTP {response.status_code}: "
-                    f"{response.text}"
-                )
+                raise self._failure(response.status_code, response.text)
             text: list[str] = []
             reasoning: list[str] = []
             calls: dict[int, dict[str, Any]] = {}
@@ -437,6 +478,13 @@ class OpenAITransport:
                 strict_arguments=True,
             )
         yield reply
+
+    def _failure(self, status: int, text: str) -> RuntimeError:
+        """The proxy's own reason, plus the option to turn off when the
+        request carried breakpoints and the server refused it as a request.
+        """
+        hint = CACHE_BREAKPOINTS_HINT if self.cache_breakpoints and status < 500 else ""
+        return RuntimeError(f"chat completion failed with HTTP {status}: {text}{hint}")
 
     def _reply(
         self,

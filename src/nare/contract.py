@@ -89,6 +89,15 @@ def describe() -> dict[str, Any]:
             "request_field": "num_retries",
             "default": None,
         },
+        # Additive: opt-in prompt-cache markers on the openai rail, for a
+        # proxy that forwards them. The anthropic rail always sends them.
+        "cache_breakpoints": {
+            "flag": "--cache-breakpoints",
+            "env": "NARE_CACHE_BREAKPOINTS",
+            "providers": ["openai"],
+            "default": False,
+            "marker": {"type": "ephemeral"},
+        },
         # The redaction is part of what a caller relies on: event `text` and
         # whatever a caller pipes through `nare redact` carry it, and a rule
         # change is a change to what those mean.
