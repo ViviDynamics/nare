@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import bisect
 import contextlib
+import hashlib
 import inspect
+import json
 import os
 import re
 import shutil
@@ -428,6 +431,149 @@ def ask(questions: list[str]) -> str:
     return "Questions recorded. The session is blocked pending answers."
 
 
+# Navigation: list and search. Pure Python, so a session without bash can still
+# find its way around, and confined by never following a symlink while walking:
+# Policy.resolve() vets the one path the model names, and nothing below it may
+# lead back out of the root. A result is a list of records rendered at the
+# end, so a record can carry more than its line without reshaping the page.
+NAVIGATION_TOOLS = frozenset({"list", "search"})
+
+
+def _clamp(limit: object, default: int) -> int:
+    """A page size the model asked for, held to 1..MAX_PAGE."""
+    wanted = default
+    if isinstance(limit, int | float | str):
+        with contextlib.suppress(ValueError, OverflowError):
+            wanted = int(limit)
+    return min(max(wanted, 1), MAX_PAGE)
+
+
+def _printable(text: str) -> str:
+    """One line per record: a name with a newline, a control character or an
+    undecodable byte is shown JSON-quoted rather than breaking the page.
+    """
+    return text if text.isprintable() else json.dumps(text)
+
+
+def _shown(path: Path, base: str | None) -> str:
+    """A path as results show it: relative to base (the root, which `read`
+    accepts) when under it, else absolute.
+    """
+    if base is not None and path.is_relative_to(base):
+        return _printable(path.relative_to(base).as_posix())
+    return _printable(str(path))
+
+
+def _is_binary(path: str) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            return b"\0" in handle.read(BINARY_SNIFF)
+    except OSError:
+        return False
+
+
+def _call_id(*parts: object) -> str:
+    """Which call a cursor belongs to, so one is never applied to another."""
+    return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:16]
+
+
+def _cursor(call: str, at: object) -> str:
+    raw = json.dumps({"call": call, "at": at}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(raw.encode()).decode("ascii").rstrip("=")
+
+
+def _position(cursor: str | None, call: str) -> Any:
+    """Where a cursor resumes: after a position, not at an index, so a page
+    stays consistent when the tree changes between calls.
+    """
+    if cursor is None:
+        return None
+    try:
+        padded = str(cursor) + "=" * (-len(str(cursor)) % 4)
+        raw = json.loads(base64.urlsafe_b64decode(padded))
+        owner, at = raw["call"], raw["at"]
+    except (ValueError, KeyError, TypeError):
+        raise ValueError(
+            "invalid cursor; call again without one to start over"
+        ) from None
+    if owner != call:
+        raise ValueError(
+            "the cursor belongs to a different call; pass the same path, glob "
+            "and pattern as the call that returned it"
+        )
+    return at
+
+
+def _footer(cursor: str) -> str:
+    return f'[next page: cursor "{cursor}"]'
+
+
+def _paginate[T](
+    records: Iterable[T],
+    line: Callable[[T], str],
+    at: Callable[[T], object],
+    call: str,
+    limit: int,
+    room: int,
+) -> tuple[list[tuple[T, str]], str | None]:
+    """Take records until the limit, or until the next line and its cursor
+    would pass MAX_TOOL_OUTPUT, so a page is never cut by _truncate() and
+    never loses its cursor. `room` is what the header needs.
+
+    The cursor is built only when there is a record after the page: a page
+    that ends exactly at the end of the results has none.
+    """
+    taken: list[tuple[T, str]] = []
+    size = room
+    for record in records:
+        if len(taken) == limit:
+            return taken, _cursor(call, at(taken[-1][0]))
+        text = line(record)
+        fits = size + len(text) + 1 + len(_footer(_cursor(call, at(record))))
+        if taken and fits > MAX_TOOL_OUTPUT:
+            return taken, _cursor(call, at(taken[-1][0]))
+        taken.append((record, text))
+        size += len(text) + 1
+    return taken, None
+
+
+def _render(header: str, lines: Iterable[str], cursor: str | None) -> str:
+    return "\n".join([header, *lines, *([_footer(cursor)] if cursor else [])])
+
+
+@dataclass(frozen=True)
+class Entry:
+    """One directory entry as `list` reports it."""
+
+    name: str
+    kind: str  # dir, file, symlink or other
+    size: int | None = None
+    binary: bool = False
+
+    def line(self) -> str:
+        name = _printable(self.name)
+        if self.kind == "dir":
+            return f"{name}/  (dir)"
+        if self.kind == "file":
+            binary = ", binary" if self.binary else ""
+            return f"{name}  (file, {self.size} bytes{binary})"
+        return f"{name}  ({self.kind})"
+
+
+def _entry(item: os.DirEntry[str]) -> Entry:
+    try:
+        if item.is_symlink():
+            return Entry(item.name, "symlink")
+        if item.is_dir(follow_symlinks=False):
+            return Entry(item.name, "dir")
+        if item.is_file(follow_symlinks=False):
+            size = item.stat(follow_symlinks=False).st_size
+            return Entry(item.name, "file", size, _is_binary(item.path))
+    except OSError:
+        pass  # gone or unreadable since the scan: say what is known
+    return Entry(item.name, "other")
+
+
 def list_dir(
     path: str = ".",
     cursor: str | None = None,
@@ -435,7 +581,39 @@ def list_dir(
     *,
     base: str | None = None,
 ) -> str:
-    raise NotImplementedError
+    """One directory's entries, sorted by name, a page at a time.
+
+    Every page sorts the whole directory, so a page is a function of the tree
+    and the cursor alone. A file's binary marker reads its first bytes, which
+    only the entries on the page pay for.
+    """
+    directory = Path(os.path.abspath(path))
+    shown = _shown(directory, base)
+    call = _call_id("list", str(directory))
+    after = _position(cursor, call)
+    if after is not None and not isinstance(after, str):
+        raise ValueError(
+            "invalid cursor; call again without one to start over"
+        ) from None
+    with os.scandir(directory) as scan:
+        items = sorted(scan, key=lambda item: item.name)
+    if not items:
+        return f"{shown}: empty directory"
+    total = len(items)
+    start = 0 if after is None else bisect.bisect_right([i.name for i in items], after)
+    room = len(f"{shown}: entries {total}-{total} of {total}") + 1
+    taken, more = _paginate(
+        (_entry(item) for item in items[start:]),
+        Entry.line,
+        lambda entry: entry.name,
+        call,
+        _clamp(limit, LIST_LIMIT),
+        room,
+    )
+    if not taken:
+        return f"{shown}: no entries after the cursor ({total} in all)"
+    header = f"{shown}: entries {start + 1}-{start + len(taken)} of {total}"
+    return _render(header, (text for _, text in taken), more)
 
 
 def search_files(
@@ -500,8 +678,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "limit": {
                     "type": "integer",
                     "description": (
-                        f"Entries per page (default {LIST_LIMIT}, "
-                        f"at most {MAX_PAGE})."
+                        f"Entries per page (default {LIST_LIMIT}, at most {MAX_PAGE})."
                     ),
                 },
             },
@@ -523,8 +700,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "path": {
                     "type": "string",
                     "description": (
-                        "Directory (or one file) to search. Default: the project "
-                        "root."
+                        "Directory (or one file) to search. Default: the project root."
                     ),
                 },
                 "glob": {
