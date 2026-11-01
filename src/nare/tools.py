@@ -20,7 +20,7 @@ import shutil
 import signal
 import subprocess
 from collections.abc import Awaitable, Callable, Iterable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Any, TypeGuard
@@ -53,6 +53,17 @@ def _truncate(text: str) -> str:
     return text[:MAX_TOOL_OUTPUT] + f"\n[truncated at {MAX_TOOL_OUTPUT} chars]"
 
 
+# Evidence: what one read, list or search returned, as a record that holds no
+# content, so it is safe to keep unredacted. dispatch() hands it to the caller
+# beside the result, never on it: a transport sends tool_result blocks as they
+# are.
+Evidence = dict[str, Any]
+
+
+def _digest(data: bytes) -> Evidence:
+    return {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+
+
 def _read_with_image(
     path: str,
     offset: int = 0,
@@ -60,8 +71,13 @@ def _read_with_image(
     *,
     image_input: bool = False,
     image_model: str = "unconfigured transport/model",
-) -> str | dict[str, Any]:
+    base: str | None = None,
+) -> tuple[str | dict[str, Any], Evidence]:
+    """A read, and its evidence. The file is read once, and the digest is of
+    the same bytes that are decoded, so it names the version the model saw.
+    """
     target = Path(path)
+    shown = _shown(Path(os.path.abspath(path)), base)
     with target.open("rb") as handle:
         header = handle.read(16)
         candidate = target.suffix.lower() in {
@@ -99,6 +115,8 @@ def _read_with_image(
                 raise
             except Exception as exc:
                 raise ValueError(f"invalid image: {exc}") from exc
+            whole = {"start": 0, "end": len(data)}
+            evidence = {"path": shown, **_digest(data), "lines": None, "bytes": whole}
             return {
                 "text": (
                     f"Read image {target.name}: {width}x{height} {mime}, "
@@ -114,13 +132,57 @@ def _read_with_image(
                         "data": base64.b64encode(data).decode("ascii"),
                     },
                 },
-            }
-    return read_file(path, offset, limit)
+            }, {**evidence, "truncated": False}
+        handle.seek(0)
+        data = handle.read()
+    text, ranges = _read_lines(data, offset, limit)
+    return text, {"path": shown, **_digest(data), **ranges}
+
+
+def _read_lines(data: bytes, offset: int, limit: int) -> tuple[str, Evidence]:
+    """Lines offset..offset+limit of a UTF-8 file, under the output cap, and
+    the range of the file they came from.
+
+    Lines are 1-based and inclusive; bytes are offsets into the file, end
+    exclusive, and cover each whole line returned with its line ending. A read
+    the cap cuts ends at the last character returned, mid-line or not. A read
+    that returns nothing has no range.
+    """
+    lines = data.decode("utf-8").splitlines(keepends=True)
+    # range() slices exactly as the list does, negative offsets included.
+    chosen = range(len(lines))[offset : offset + limit]
+    bodies = [(lines[i].splitlines() or [""])[0] for i in chosen]
+    joined = "\n".join(bodies)
+    text = _truncate(joined)
+    if not chosen:
+        return text, {"lines": None, "bytes": None, "truncated": False}
+    start = len("".join(lines[: chosen[0]]).encode())
+    truncated = len(joined) > MAX_TOOL_OUTPUT
+    if not truncated:
+        end = start + len("".join(lines[i] for i in chosen).encode())
+        last = chosen[-1]
+    else:
+        # Walk the returned characters back to the lines and bytes they came
+        # from: each line before the cut whole, with its ending.
+        end, last, room = start, chosen[0], MAX_TOOL_OUTPUT
+        for i, body in zip(chosen, bodies, strict=True):
+            if room <= 0:
+                break
+            last = i
+            if len(body) >= room:
+                end += len(body[:room].encode())
+                break
+            end += len(lines[i].encode())
+            room -= len(body) + 1
+    return text, {
+        "lines": {"first": chosen[0] + 1, "last": last + 1},
+        "bytes": {"start": start, "end": end},
+        "truncated": truncated,
+    }
 
 
 def read_file(path: str, offset: int = 0, limit: int = 2000) -> str:
-    lines = Path(path).read_text(encoding="utf-8").splitlines()
-    return _truncate("\n".join(lines[offset : offset + limit]))
+    return _read_lines(Path(path).read_bytes(), offset, limit)[0]
 
 
 def write_file(path: str, content: str) -> str:
@@ -588,6 +650,19 @@ def list_dir(
     and the cursor alone. A file's binary marker reads its first bytes, which
     only the entries on the page pay for.
     """
+    return _list_page(path, cursor, limit, base=base)[0]
+
+
+def _list_page(
+    path: str = ".",
+    cursor: str | None = None,
+    limit: int = LIST_LIMIT,
+    *,
+    base: str | None = None,
+) -> tuple[str, Evidence]:
+    """list_dir(), and its evidence: the directory and the entries returned.
+    It opens no file but to sniff for binary, so it records no digest.
+    """
     directory = Path(os.path.abspath(path))
     shown = _shown(directory, base)
     call = _call_id("list", str(directory))
@@ -596,8 +671,9 @@ def list_dir(
         raise ValueError("invalid cursor; call again without one to start over")
     with os.scandir(directory) as scan:
         items = sorted(scan, key=lambda item: item.name)
+    evidence: Evidence = {"path": shown, "entries": [], "more": False}
     if not items:
-        return f"{shown}: empty directory"
+        return f"{shown}: empty directory", evidence
     total = len(items)
     start = 0 if after is None else bisect.bisect_right([i.name for i in items], after)
     room = len(f"{shown}: entries {total}-{total} of {total}") + 1
@@ -610,9 +686,11 @@ def list_dir(
         room,
     )
     if not taken:
-        return f"{shown}: no entries after the cursor ({total} in all)"
+        return f"{shown}: no entries after the cursor ({total} in all)", evidence
     header = f"{shown}: entries {start + 1}-{start + len(taken)} of {total}"
-    return _render(header, (text for _, text in taken), more)
+    evidence["entries"] = [asdict(entry) for entry, _ in taken]
+    evidence["more"] = more is not None
+    return _render(header, (text for _, text in taken), more), evidence
 
 
 SKIPPED_DIRS = frozenset({".git"})
@@ -707,6 +785,9 @@ class Hit:
     parts: tuple[str, ...]
     number: int = 0
     text: str = ""
+    # The whole file's digest, for a line: the evidence of what was searched.
+    sha256: str | None = None
+    size: int | None = None
 
     def line(self) -> str:
         if self.number == 0:
@@ -717,23 +798,34 @@ class Hit:
         return [list(self.parts), self.number]
 
 
-def _lines(path: str, regex: re.Pattern[str], after: int) -> Iterator[tuple[int, str]]:
-    """The matching lines of a text file after line `after`; none for a
-    binary one or one that cannot be read.
+def _lines(
+    path: str, regex: re.Pattern[str], after: int
+) -> Iterator[tuple[int, str, Evidence]]:
+    """The matching lines of a text file after line `after`, each with the
+    whole file's digest; none for a binary one or one that cannot be read.
+
+    The file is read once, and the lines are matched in the buffer that was
+    hashed, so the digest names the version the lines came from.
     """
+    # ponytail: a text file is held in memory whole while it is searched, to
+    # hash the bytes it is matched in. The upgrade for files larger than
+    # memory is hashing while streaming, then reading the rest of a file a
+    # page stops in.
     try:
         with open(path, "rb") as handle:
-            if b"\0" in handle.read(BINARY_SNIFF):
+            head = handle.read(BINARY_SNIFF)
+            if b"\0" in head:
                 return
-            handle.seek(0)
-            for number, raw in enumerate(handle, 1):
-                if number <= after:
-                    continue
-                text = raw.decode("utf-8", errors="replace").rstrip("\r\n")
-                if regex.search(text):
-                    yield number, text
+            data = head + handle.read()
     except OSError:
         return
+    digest = _digest(data)
+    for number, raw in enumerate(BytesIO(data), 1):
+        if number <= after:
+            continue
+        text = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+        if regex.search(text):
+            yield number, text, digest
 
 
 def _count(n: int, noun: str) -> str:
@@ -754,6 +846,22 @@ def search_files(
 
     Without a pattern no file is opened, so a glob over a large tree costs a
     directory walk. With one, binary files are skipped.
+    """
+    return _search_page(path, glob, pattern, cursor, limit, base=base)[0]
+
+
+def _search_page(
+    path: str = ".",
+    glob: str | None = None,
+    pattern: str | None = None,
+    cursor: str | None = None,
+    limit: int = SEARCH_LIMIT,
+    *,
+    base: str | None = None,
+) -> tuple[str, Evidence]:
+    """search_files(), and its evidence: per file on the page, its path, and
+    with a pattern, the file's digest and the line numbers returned. A glob
+    alone opens no file, so its files carry only their path.
     """
     top = Path(os.path.abspath(path))
     shown = _shown(top, base)
@@ -801,8 +909,8 @@ def search_files(
                     yield Hit(shown_file, parts)
                 continue
             skip = after_line if parts == after else 0
-            for number, text in _lines(file, regex, skip):
-                yield Hit(shown_file, parts, number, text)
+            for number, text, digest in _lines(file, regex, skip):
+                yield Hit(shown_file, parts, number, text, **digest)
 
     limit = _clamp(limit, SEARCH_LIMIT)
     more = ", more on the next page"
@@ -810,9 +918,27 @@ def search_files(
     taken, next_cursor = _paginate(
         hits(), Hit.line, Hit.at, call, limit, len(f"{shown}: {widest}") + 1
     )
+    evidence: Evidence = {
+        "path": shown,
+        "glob": glob or None,
+        "pattern": pattern or None,
+        "files": [],
+        "more": next_cursor is not None,
+    }
     if not taken:
-        return f"{shown}: no {'matching lines' if regex else 'files'}"
+        return f"{shown}: no {'matching lines' if regex else 'files'}", evidence
     hits_taken = [hit for hit, _ in taken]
+    contributed: dict[str, Evidence] = {}
+    for hit in hits_taken:
+        if regex is None:
+            contributed[hit.path] = {"path": hit.path}
+            continue
+        record = contributed.setdefault(
+            hit.path,
+            {"path": hit.path, "sha256": hit.sha256, "size": hit.size, "lines": []},
+        )
+        record["lines"].append(hit.number)
+    evidence["files"] = list(contributed.values())
     if regex is None:
         summary = _count(len(hits_taken), "file")
     else:
@@ -821,7 +947,7 @@ def search_files(
             f"{_count(len(hits_taken), 'matching line')} in {_count(files_hit, 'file')}"
         )
     header = f"{shown}: {summary}" + (more if next_cursor else "")
-    return _render(header, (text for _, text in taken), next_cursor)
+    return _render(header, (text for _, text in taken), next_cursor), evidence
 
 
 # bash is the async one: dispatch awaits it, and runs the rest in a thread.
@@ -1024,6 +1150,8 @@ def approve_all(tool: str, args: dict[str, Any]) -> bool:
 
 
 PATH_TOOLS = frozenset({"read", "write", "edit", "list", "search"})
+# The tools that read the tree and say what they returned.
+EVIDENCE_TOOLS = frozenset({"read", *NAVIGATION_TOOLS})
 
 
 @dataclass(frozen=True)
@@ -1101,6 +1229,7 @@ async def dispatch(
     approve: Approve = approve_all,
     *,
     left_running: Callable[[int, str], None] | None = None,
+    evidence: Callable[[Evidence], None] | None = None,
 ) -> dict[str, Any]:
     """Run one tool call. Every failure comes back as an is_error result rather
     than an exception: the model adapts, which is what it is good at. A policy
@@ -1110,6 +1239,9 @@ async def dispatch(
     `left_running` hears of a process group a bash call left running, with its
     label, so the caller can record it. A callback, not a key on the result:
     a transport sends tool_result blocks as they are.
+
+    `evidence` hears of what a successful read, list or search returned, as
+    a record with no content, for the same reason.
     """
     if call.error is not None:
         return tool_result(call.id, call.error, is_error=True)
@@ -1146,10 +1278,11 @@ async def dispatch(
             return tool_result(call.id, _truncate(text), is_error=failed)
         assert function is not None
         args = dict(call.args)
-        if call.name in NAVIGATION_TOOLS:
-            # Paths in results are relative to the root, which `read` accepts.
-            # Set here, after the model's arguments, so it cannot be moved.
-            if args.get("path") in (None, ""):
+        if call.name in EVIDENCE_TOOLS:
+            # Paths in results and evidence are relative to the root, which
+            # `read` accepts. Set here, after the model's arguments, so it
+            # cannot be moved.
+            if call.name in NAVIGATION_TOOLS and args.get("path") in (None, ""):
                 args["path"] = "."
             args["base"] = str(policy.root.resolve()) if policy.root else os.getcwd()
         if call.name in PATH_TOOLS and "path" in args:
@@ -1157,10 +1290,17 @@ async def dispatch(
         if call.name == "bash" and policy.root is not None:
             args["cwd"] = str(policy.root.resolve())
         output: str | dict[str, Any]
+        record: Evidence | None = None
         if call.name == "read":
             args["image_input"] = policy.image_input
             args["image_model"] = policy.image_model
-            output = await asyncio.to_thread(_read_with_image, **args)
+            output, record = await asyncio.to_thread(_read_with_image, **args)
+        elif call.name in NAVIGATION_TOOLS:
+            page: Callable[..., tuple[str, Evidence]] = (
+                _list_page if call.name == "list" else _search_page
+            )
+            text, record = await asyncio.to_thread(page, **args)
+            output = text
         elif call.name == "bash":
             outcome = await bash_outcome(**args)
             if outcome.group is not None and left_running is not None:
@@ -1168,6 +1308,8 @@ async def dispatch(
             return tool_result(call.id, outcome.text, is_error=outcome.failed)
         else:
             output = await asyncio.to_thread(function, **args)
+        if record is not None and evidence is not None:
+            evidence({"tool": call.name, "tool_use_id": call.id, **record})
         if isinstance(output, dict):
             return {**tool_result(call.id, output["text"]), "image": output["image"]}
         return tool_result(call.id, output)
