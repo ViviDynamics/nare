@@ -10,6 +10,7 @@ import asyncio
 import base64
 import bisect
 import contextlib
+import fnmatch
 import hashlib
 import inspect
 import json
@@ -18,7 +19,7 @@ import re
 import shutil
 import signal
 import subprocess
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -616,6 +617,131 @@ def list_dir(
     return _render(header, (text for _, text in taken), more)
 
 
+SKIPPED_DIRS = frozenset({".git"})
+
+
+def _glob_matcher(glob: str | None) -> Callable[[str], bool]:
+    """Whether a path below the searched directory matches the glob.
+
+    Without a `/` the glob matches a file name at any depth, as `rg -g` does.
+    With one it matches the whole relative path, where `**` spans any number
+    of directories and `*` stays within one.
+    """
+    if not glob:
+        return lambda rel: True
+    glob = glob.removeprefix("./").lstrip("/")
+    if "/" not in glob:
+        return lambda rel: fnmatch.fnmatchcase(rel.rsplit("/", 1)[-1], glob)
+    out: list[str] = []
+    i = 0
+    while i < len(glob):
+        if glob.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif glob.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif glob[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif glob[i] == "?":
+            out.append("[^/]")
+            i += 1
+        elif glob[i] == "[" and (close := glob.find("]", i + 2)) != -1:
+            body = glob[i + 1 : close]
+            body = "^" + body[1:] if body.startswith("!") else body
+            out.append("[" + body.replace("\\", "\\\\") + "]")
+            i = close + 1
+        else:
+            out.append(re.escape(glob[i]))
+            i += 1
+    compiled = re.compile("".join(out))
+    return lambda rel: compiled.fullmatch(rel) is not None
+
+
+def _walk(
+    top: Path, after: tuple[str, ...] | None, prefix: tuple[str, ...] = ()
+) -> Iterator[tuple[tuple[str, ...], str]]:
+    """Regular files below `top`, as (name parts, path), in sorted order.
+
+    Sorted per directory, so the order is that of the name-part tuples, which
+    is what lets a cursor skip a whole subtree it has passed. Symlinks are
+    never followed, to a directory or a file: the walk stays on the tree
+    Policy.resolve() vetted. A directory it cannot read is passed over.
+    """
+    try:
+        with os.scandir(top) as scan:
+            items = sorted(scan, key=lambda item: item.name)
+    except OSError:
+        return
+    for item in items:
+        parts = (*prefix, item.name)
+        if after is not None and parts < after and after[: len(parts)] != parts:
+            continue  # this file, or every file below this directory, is done
+        try:
+            if item.is_symlink():
+                continue
+            if item.is_dir(follow_symlinks=False):
+                if item.name not in SKIPPED_DIRS:
+                    yield from _walk(Path(item.path), after, parts)
+            elif item.is_file(follow_symlinks=False) and (
+                after is None or parts >= after
+            ):
+                yield parts, item.path
+        except OSError:
+            continue
+
+
+def _clean(text: str) -> str:
+    """A matched line as one line of the page, cut to MATCH_WIDTH."""
+    text = "".join(c if c.isprintable() or c == "\t" else repr(c)[1:-1] for c in text)
+    return text if len(text) <= MATCH_WIDTH else text[:MATCH_WIDTH] + "..."
+
+
+@dataclass(frozen=True)
+class Hit:
+    """One search result: a file, or with a pattern, one line in it.
+
+    `number` is 0 for a file and the 1-based line number for a line.
+    """
+
+    path: str
+    parts: tuple[str, ...]
+    number: int = 0
+    text: str = ""
+
+    def line(self) -> str:
+        if self.number == 0:
+            return self.path
+        return f"{self.path}:{self.number}: {_clean(self.text)}"
+
+    def at(self) -> list[object]:
+        return [list(self.parts), self.number]
+
+
+def _lines(path: str, regex: re.Pattern[str], after: int) -> Iterator[tuple[int, str]]:
+    """The matching lines of a text file after line `after`; none for a
+    binary one or one that cannot be read.
+    """
+    try:
+        with open(path, "rb") as handle:
+            if b"\0" in handle.read(BINARY_SNIFF):
+                return
+            handle.seek(0)
+            for number, raw in enumerate(handle, 1):
+                if number <= after:
+                    continue
+                text = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                if regex.search(text):
+                    yield number, text
+    except OSError:
+        return
+
+
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}" + ("" if n == 1 else "s")
+
+
 def search_files(
     path: str = ".",
     glob: str | None = None,
@@ -625,7 +751,77 @@ def search_files(
     *,
     base: str | None = None,
 ) -> str:
-    raise NotImplementedError
+    """Files under a directory by glob, and with a pattern, their matching
+    lines, a page at a time.
+
+    Without a pattern no file is opened, so a glob over a large tree costs a
+    directory walk. With one, binary files are skipped.
+    """
+    top = Path(os.path.abspath(path))
+    shown = _shown(top, base)
+    call = _call_id("search", str(top), glob or "", pattern or "")
+    position = _position(cursor, call)
+    after: tuple[str, ...] | None = None
+    after_line = 0
+    if position is not None:
+        try:
+            raw_parts, after_line = position
+            after = tuple(str(part) for part in raw_parts)
+            after_line = int(after_line)
+        except (TypeError, ValueError):
+            raise ValueError(
+                "invalid cursor; call again without one to start over"
+            ) from None
+    regex: re.Pattern[str] | None = None
+    if pattern:
+        # ponytail: Python's re cannot be interrupted, so a pattern that
+        # backtracks catastrophically holds the worker thread. The upgrade is
+        # a linear-time engine, which is a dependency.
+        try:
+            regex = re.compile(pattern)
+        except re.error as exc:
+            raise ValueError(f"invalid pattern {pattern!r}: {exc}") from None
+    matches = _glob_matcher(glob)
+    if top.is_file():
+        files: Iterable[tuple[tuple[str, ...], str]] = (
+            [((top.name,), str(top))] if after is None or (top.name,) >= after else []
+        )
+    elif top.is_dir():
+        files = _walk(top, after)
+    else:
+        raise FileNotFoundError(f"{path} does not exist")
+
+    def hits() -> Iterator[Hit]:
+        for parts, file in files:
+            if not matches("/".join(parts)):
+                continue
+            shown_file = _shown(Path(file), base)
+            if regex is None:
+                if parts != after:
+                    yield Hit(shown_file, parts)
+                continue
+            skip = after_line if parts == after else 0
+            for number, text in _lines(file, regex, skip):
+                yield Hit(shown_file, parts, number, text)
+
+    limit = _clamp(limit, SEARCH_LIMIT)
+    more = ", more on the next page"
+    widest = f"{_count(limit, 'matching line')} in {_count(limit, 'file')}{more}"
+    taken, next_cursor = _paginate(
+        hits(), Hit.line, Hit.at, call, limit, len(f"{shown}: {widest}") + 1
+    )
+    if not taken:
+        return f"{shown}: no {'matching lines' if regex else 'files'}"
+    hits_taken = [hit for hit, _ in taken]
+    if regex is None:
+        summary = _count(len(hits_taken), "file")
+    else:
+        files_hit = len({hit.parts for hit in hits_taken})
+        summary = (
+            f"{_count(len(hits_taken), 'matching line')} in {_count(files_hit, 'file')}"
+        )
+    header = f"{shown}: {summary}" + (more if next_cursor else "")
+    return _render(header, (text for _, text in taken), next_cursor)
 
 
 # bash is the async one: dispatch awaits it, and runs the rest in a thread.

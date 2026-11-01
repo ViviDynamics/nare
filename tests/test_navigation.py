@@ -8,7 +8,14 @@ from typing import Any
 
 import pytest
 
-from nare.tools import MAX_PAGE, MAX_TOOL_OUTPUT, TOOL_SCHEMAS, list_dir
+from nare.tools import (
+    MATCH_WIDTH,
+    MAX_PAGE,
+    MAX_TOOL_OUTPUT,
+    TOOL_SCHEMAS,
+    list_dir,
+    search_files,
+)
 
 
 def schema_of(name: str) -> dict[str, Any]:
@@ -169,3 +176,215 @@ def test_a_page_of_long_names_stops_before_the_output_cap(tmp_path: Path) -> Non
             break
 
     assert seen == names
+
+
+def results_in(page: str) -> list[str]:
+    """The result lines of a search page: every line but the header and footer."""
+    return [line for line in page.splitlines()[1:] if not line.startswith("[")]
+
+
+def everything(path: Path, base: Path, **args: Any) -> list[str]:
+    """Every result of a search, page by page."""
+    seen: list[str] = []
+    cursor: str | None = None
+    while True:
+        page = search_files(str(path), cursor=cursor, base=str(base), **args)
+        assert len(page) <= MAX_TOOL_OUTPUT
+        seen += results_in(page)
+        cursor = cursor_of(page)
+        if cursor is None:
+            return seen
+
+
+@pytest.fixture
+def tree(tmp_path: Path) -> Path:
+    (tmp_path / "src" / "deep").mkdir(parents=True)
+    (tmp_path / "a.py").write_text("import os\n", encoding="utf-8")
+    (tmp_path / "src" / "b.py").write_text(
+        "def needle():\n    return 1\n# needle again\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "c.txt").write_text("no match here\n", encoding="utf-8")
+    (tmp_path / "src" / "deep" / "d.py").write_text("needle = 2\n", encoding="utf-8")
+    return tmp_path
+
+
+def test_search_by_a_name_glob_finds_files_anywhere_in_walk_order(tree: Path) -> None:
+    page = search_files(str(tree), glob="*.py", base=str(tree))
+
+    assert page.splitlines() == [".: 3 files", "a.py", "src/b.py", "src/deep/d.py"]
+
+
+def test_a_glob_with_a_slash_matches_the_path_below_the_directory(tree: Path) -> None:
+    page = search_files(str(tree), glob="src/**/*.py", base=str(tree))
+
+    assert results_in(page) == ["src/b.py", "src/deep/d.py"]
+
+
+def test_search_with_no_glob_and_no_pattern_finds_every_file(tree: Path) -> None:
+    page = search_files(str(tree), base=str(tree))
+
+    assert results_in(page) == ["a.py", "src/b.py", "src/c.txt", "src/deep/d.py"]
+
+
+def test_a_pattern_reports_path_line_and_text(tree: Path) -> None:
+    page = search_files(str(tree), pattern="needle", base=str(tree))
+
+    assert page.splitlines() == [
+        ".: 3 matching lines in 2 files",
+        "src/b.py:1: def needle():",
+        "src/b.py:3: # needle again",
+        "src/deep/d.py:1: needle = 2",
+    ]
+
+
+def test_a_pattern_and_a_glob_narrow_each_other(tree: Path) -> None:
+    page = search_files(str(tree), glob="d.py", pattern="needle", base=str(tree))
+
+    assert results_in(page) == ["src/deep/d.py:1: needle = 2"]
+
+
+def test_search_below_a_subdirectory_shows_paths_from_the_base(tree: Path) -> None:
+    page = search_files(str(tree / "src" / "deep"), pattern="needle", base=str(tree))
+
+    assert results_in(page) == ["src/deep/d.py:1: needle = 2"]
+
+
+def test_search_of_one_file_searches_that_file(tree: Path) -> None:
+    page = search_files(str(tree / "src" / "b.py"), pattern="again", base=str(tree))
+
+    assert results_in(page) == ["src/b.py:3: # needle again"]
+
+
+def test_no_match_says_so(tree: Path) -> None:
+    assert search_files(str(tree), pattern="absent", base=str(tree)) == (
+        ".: no matching lines"
+    )
+    assert search_files(str(tree), glob="*.rs", base=str(tree)) == ".: no files"
+
+
+def test_binary_files_are_not_searched(tmp_path: Path) -> None:
+    (tmp_path / "blob.bin").write_bytes(b"needle\x00\x01")
+    (tmp_path / "text.txt").write_text("needle\n", encoding="utf-8")
+
+    page = search_files(str(tmp_path), pattern="needle", base=str(tmp_path))
+
+    assert results_in(page) == ["text.txt:1: needle"]
+
+
+def test_dot_git_is_never_walked(tmp_path: Path) -> None:
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("needle\n", encoding="utf-8")
+    (tmp_path / "a.txt").write_text("needle\n", encoding="utf-8")
+
+    assert results_in(search_files(str(tmp_path), base=str(tmp_path))) == ["a.txt"]
+    assert results_in(
+        search_files(str(tmp_path), pattern="needle", base=str(tmp_path))
+    ) == ["a.txt:1: needle"]
+
+
+def test_symlinks_are_never_walked_or_searched(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    (root / "real").mkdir(parents=True)
+    (root / "real" / "inside.txt").write_text("needle\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("needle\n", encoding="utf-8")
+    (root / "escape").symlink_to(outside)
+    (root / "secret.txt").symlink_to(outside / "secret.txt")
+    (root / "again").symlink_to(root / "real")
+    (root / "loop").symlink_to(root)
+
+    files = results_in(search_files(str(root), base=str(root)))
+    lines = results_in(search_files(str(root), pattern="needle", base=str(root)))
+
+    assert files == ["real/inside.txt"]
+    assert lines == ["real/inside.txt:1: needle"]
+
+
+def test_a_long_matched_line_is_cut_to_a_fixed_width(tmp_path: Path) -> None:
+    (tmp_path / "min.js").write_text("needle" + "x" * 5000 + "\n", encoding="utf-8")
+
+    [result] = results_in(
+        search_files(str(tmp_path), pattern="needle", base=str(tmp_path))
+    )
+
+    text = result.split(": ", 1)[1]
+    assert text == "needle" + "x" * (MATCH_WIDTH - 6) + "..."
+
+
+def test_a_control_character_in_a_line_cannot_break_the_page(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("needle\x1b[2J\tend\n", encoding="utf-8")
+
+    [result] = results_in(
+        search_files(str(tmp_path), pattern="needle", base=str(tmp_path))
+    )
+
+    assert result == "a.txt:1: needle\\x1b[2J\tend"
+
+
+def test_search_pages_through_matches_within_and_across_files(tmp_path: Path) -> None:
+    for name in ("a.txt", "b.txt"):
+        (tmp_path / name).write_text("hit\nmiss\nhit\nhit\n", encoding="utf-8")
+
+    seen = everything(tmp_path, tmp_path, pattern="hit", limit=2)
+
+    assert seen == [
+        "a.txt:1: hit",
+        "a.txt:3: hit",
+        "a.txt:4: hit",
+        "b.txt:1: hit",
+        "b.txt:3: hit",
+        "b.txt:4: hit",
+    ]
+
+
+def test_search_pages_through_files_across_directories(tree: Path) -> None:
+    assert everything(tree, tree, limit=1) == [
+        "a.py",
+        "src/b.py",
+        "src/c.txt",
+        "src/deep/d.py",
+    ]
+
+
+def test_search_is_identical_for_the_same_tree(tree: Path) -> None:
+    first = search_files(str(tree), pattern="needle", limit=1, base=str(tree))
+    cursor = cursor_of(first)
+    assert cursor is not None
+
+    assert search_files(str(tree), pattern="needle", limit=1, base=str(tree)) == first
+    assert search_files(
+        str(tree), pattern="needle", cursor=cursor, limit=1, base=str(tree)
+    ) == search_files(
+        str(tree), pattern="needle", cursor=cursor, limit=1, base=str(tree)
+    )
+
+
+def test_a_cursor_from_another_pattern_is_refused(tree: Path) -> None:
+    cursor = cursor_of(
+        search_files(str(tree), pattern="needle", limit=1, base=str(tree))
+    )
+    assert cursor is not None
+
+    with pytest.raises(ValueError, match="different call"):
+        search_files(str(tree), pattern="import", cursor=cursor, base=str(tree))
+
+
+def test_an_invalid_pattern_is_named(tree: Path) -> None:
+    with pytest.raises(ValueError, match=r"invalid pattern '\('"):
+        search_files(str(tree), pattern="(", base=str(tree))
+
+
+@pytest.mark.parametrize(
+    ("glob", "found"),
+    [
+        ("src/*.py", ["src/b.py"]),
+        ("**/d.py", ["src/deep/d.py"]),
+        ("./a.py", ["a.py"]),
+        ("src/[bc].*", ["src/b.py", "src/c.txt"]),
+        ("src/[!b].*", ["src/c.txt"]),
+        ("*.t?t", ["src/c.txt"]),
+    ],
+)
+def test_glob_forms(tree: Path, glob: str, found: list[str]) -> None:
+    assert results_in(search_files(str(tree), glob=glob, base=str(tree))) == found
