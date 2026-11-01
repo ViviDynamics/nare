@@ -58,6 +58,19 @@ Extension points are marked in the source with `ponytail:` comments.
   upgrade once a run is measurably slow because of it.
 - `make_transport()` has one `match` arm. That arm is the extension point; a
   registry is slice 4.
+- `search` holds each text file in memory whole while it matches it, so the
+  digest in its evidence is of the bytes it matched. Hashing while streaming
+  is the upgrade for files larger than memory.
+
+## Read evidence
+
+`dispatch()` hands each successful `read`, `list` and `search` a record of
+what it returned through an `evidence` callback, as it hands a left-running
+process group to `left_running`: never on the `tool_result` block, which a
+transport sends as it is. `loop.py` turns the record into a `progress` event
+and appends the event's (redacted) copy to `Session.evidence`, so the stream
+and the file agree. A read reads its file once and hashes the buffer it
+decodes. See [the contract](contract.md#read-evidence).
 
 ## Measuring it
 

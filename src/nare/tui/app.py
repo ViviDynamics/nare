@@ -413,6 +413,8 @@ class TuiApp(App[None]):
                 self.query_one(Transcript).note(event.text)
             if "context_window" in event.detail:
                 self.window = event.text
+        elif "evidence" in event.detail:
+            pass  # for callers: the call block already names what was read
         elif event.type in ("progress", "thinking"):
             # An image or MCP notice gets its own line; its call block keeps it.
             text = f"{event.text}\n" if event.detail else event.text
