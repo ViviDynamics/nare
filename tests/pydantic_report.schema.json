@@ -1,0 +1,110 @@
+{
+ "$defs": {
+  "Finding": {
+   "properties": {
+    "kind": {
+     "const": "finding",
+     "default": "finding",
+     "title": "Kind",
+     "type": "string"
+    },
+    "severity": {
+     "$ref": "#/$defs/Severity"
+    },
+    "title": {
+     "maxLength": 80,
+     "title": "Title",
+     "type": "string"
+    },
+    "location": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Location"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "tags": {
+     "items": {
+      "type": "string"
+     },
+     "maxItems": 5,
+     "title": "Tags",
+     "type": "array"
+    }
+   },
+   "required": [
+    "severity",
+    "title"
+   ],
+   "title": "Finding",
+   "type": "object"
+  },
+  "Location": {
+   "properties": {
+    "path": {
+     "maxLength": 200,
+     "minLength": 1,
+     "title": "Path",
+     "type": "string"
+    },
+    "line": {
+     "anyOf": [
+      {
+       "minimum": 1,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Line"
+    }
+   },
+   "required": [
+    "path"
+   ],
+   "title": "Location",
+   "type": "object"
+  },
+  "Severity": {
+   "enum": [
+    "low",
+    "high"
+   ],
+   "title": "Severity",
+   "type": "string"
+  }
+ },
+ "properties": {
+  "summary": {
+   "title": "Summary",
+   "type": "string"
+  },
+  "findings": {
+   "items": {
+    "$ref": "#/$defs/Finding"
+   },
+   "maxItems": 10,
+   "title": "Findings",
+   "type": "array"
+  },
+  "confidence": {
+   "maximum": 1,
+   "minimum": 0,
+   "title": "Confidence",
+   "type": "number"
+  }
+ },
+ "required": [
+  "summary",
+  "findings",
+  "confidence"
+ ],
+ "title": "Report",
+ "type": "object"
+}

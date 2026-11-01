@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
-from nare.schema import UnsupportedSchema, extract_json, validate
+from nare.schema import SUPPORTED, UnsupportedSchema, extract_json, validate
 
 PERSON = {
     "type": "object",
@@ -78,14 +81,14 @@ def test_additional_properties_false_refuses_extras() -> None:
 
 
 def test_an_unsupported_keyword_is_refused_rather_than_ignored() -> None:
-    with pytest.raises(UnsupportedSchema, match="anyOf"):
-        validate({}, {"anyOf": [{"type": "string"}]})
+    with pytest.raises(UnsupportedSchema, match="'not'"):
+        validate({}, {"not": {"type": "string"}})
 
 
 def test_an_unsupported_keyword_nested_in_properties_is_also_refused() -> None:
-    schema = {"type": "object", "properties": {"a": {"$ref": "#/definitions/x"}}}
+    schema = {"type": "object", "properties": {"a": {"format": "date"}}}
 
-    with pytest.raises(UnsupportedSchema, match=r"\$ref"):
+    with pytest.raises(UnsupportedSchema, match="'format' at a"):
         validate({}, schema)
 
 
@@ -143,3 +146,372 @@ def test_a_refused_schema_shape_names_where_it_is() -> None:
 
     with pytest.raises(UnsupportedSchema, match="at a"):
         validate({}, schema)
+
+
+# Bounds (#123). A generated schema carries them, and dropping them would let an
+# out-of-range answer through as validated.
+
+REPORT = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string", "minLength": 1, "maxLength": 5},
+        "code": {"type": "string", "pattern": "^[A-Z]+-[0-9]+$"},
+        "tags": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "maxItems": 2,
+            "uniqueItems": True,
+        },
+        "score": {"type": "number", "minimum": 0, "maximum": 1},
+        "count": {"type": "integer", "exclusiveMinimum": 0, "exclusiveMaximum": 10},
+    },
+}
+
+
+def test_values_inside_every_bound_pass() -> None:
+    value = {"title": "ok", "code": "AB-1", "tags": ["a"], "score": 1, "count": 9}
+
+    assert validate(value, REPORT) == []
+
+
+def test_max_length_fails_with_the_path() -> None:
+    assert validate({"title": "toolong"}, REPORT) == [
+        "title: expected at most 5 characters, got 7"
+    ]
+
+
+def test_min_length_fails_with_the_path() -> None:
+    assert validate({"title": ""}, REPORT) == [
+        "title: expected at least 1 characters, got 0"
+    ]
+
+
+def test_length_counts_characters_not_bytes() -> None:
+    assert validate({"title": "ééééé"}, REPORT) == []
+
+
+def test_pattern_is_searched_and_fails_with_the_path() -> None:
+    assert validate({"code": "ab-1"}, REPORT) == [
+        "code: expected a string matching '^[A-Z]+-[0-9]+$', got 'ab-1'"
+    ]
+
+
+def test_pattern_is_unanchored_like_json_schema() -> None:
+    assert validate("xx42yy", {"type": "string", "pattern": "[0-9]+"}) == []
+
+
+def test_max_items_fails_with_the_path() -> None:
+    assert validate({"tags": ["a", "b", "c"]}, REPORT) == [
+        "tags: expected at most 2 items, got 3"
+    ]
+
+
+def test_min_items_fails_with_the_path() -> None:
+    assert validate({"tags": []}, REPORT) == ["tags: expected at least 1 items, got 0"]
+
+
+def test_unique_items_names_the_repeat() -> None:
+    assert validate({"tags": ["a", "a"]}, REPORT) == [
+        "tags: expected unique items, [1] repeats [0]"
+    ]
+
+
+def test_unique_items_uses_json_equality() -> None:
+    schema = {"type": "array", "uniqueItems": True}
+
+    assert validate([1, True], schema) == []
+    assert validate([1, 1.0], schema) == ["expected unique items, [1] repeats [0]"]
+    assert validate([{"a": [1]}, {"a": [1]}], schema) == [
+        "expected unique items, [1] repeats [0]"
+    ]
+
+
+def test_number_bounds_fail_with_the_path() -> None:
+    assert validate({"score": 1.5, "count": 0}, REPORT) == [
+        "score: expected a number <= 1, got 1.5",
+        "count: expected a number > 0, got 0",
+    ]
+    assert validate({"score": -1, "count": 10}, REPORT) == [
+        "score: expected a number >= 0, got -1",
+        "count: expected a number < 10, got 10",
+    ]
+
+
+def test_a_bound_only_applies_to_its_own_type() -> None:
+    schema = {"maxLength": 1, "maxItems": 1, "maximum": 1}
+
+    assert validate(5, {"maxLength": 1, "maxItems": 1}) == []
+    assert validate("long", {"maxItems": 1, "maximum": 1}) == []
+    assert validate([1, 2], {"maxLength": 1, "maximum": 1}) == []
+    assert validate(True, schema) == []
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"maxLength": -1},
+        {"minLength": 1.5},
+        {"maxItems": True},
+        {"minItems": "1"},
+        {"uniqueItems": "yes"},
+        {"minimum": "0"},
+        {"maximum": False},
+        {"exclusiveMinimum": True},
+        {"exclusiveMaximum": None},
+        {"pattern": 5},
+        {"pattern": "("},
+    ],
+)
+def test_a_bound_with_a_shape_nare_cannot_enforce_is_refused(
+    schema: dict[str, object],
+) -> None:
+    keyword = next(iter(schema))
+
+    with pytest.raises(UnsupportedSchema, match=f"'{keyword}' must be"):
+        validate("x", schema)
+
+
+def test_const_fails_with_the_path() -> None:
+    schema = {"type": "object", "properties": {"kind": {"const": "finding"}}}
+
+    assert validate({"kind": "finding"}, schema) == []
+    assert validate({"kind": "note"}, schema) == [
+        "kind: expected 'finding', got 'note'"
+    ]
+
+
+def test_const_uses_json_equality() -> None:
+    assert validate(1.0, {"const": 1}) == []
+    assert validate(True, {"const": 1}) == ["expected 1, got True"]
+    assert validate({"a": [1, 2]}, {"const": {"a": [1, 2]}}) == []
+
+
+def test_enum_uses_json_equality() -> None:
+    assert validate(True, {"enum": [1, 2]}) == ["expected one of [1, 2], got True"]
+    assert validate(2.0, {"enum": [1, 2]}) == []
+
+
+def test_default_is_an_annotation_and_never_applied() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"line": {"type": "integer", "default": "not an integer"}},
+        "required": ["line"],
+    }
+    value: dict[str, object] = {}
+
+    assert validate(value, schema) == ["missing required property: line"]
+    assert value == {}
+
+
+OPTIONAL_LINE = {
+    "type": "object",
+    "properties": {
+        "line": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]}
+    },
+}
+
+
+def test_any_of_passes_when_one_alternative_matches() -> None:
+    assert validate({"line": 3}, OPTIONAL_LINE) == []
+    assert validate({"line": None}, OPTIONAL_LINE) == []
+
+
+def test_any_of_reports_every_alternative_under_the_path() -> None:
+    assert validate({"line": 0}, OPTIONAL_LINE) == [
+        "line: matches no anyOf alternative "
+        "(anyOf[0]: line: expected a number >= 1, got 0; "
+        "anyOf[1]: line: expected null, got integer)"
+    ]
+
+
+def test_one_of_needs_exactly_one_match() -> None:
+    schema = {"oneOf": [{"type": "integer"}, {"type": "number", "maximum": 10}]}
+
+    assert validate(11, schema) == []
+    assert validate(1.5, schema) == []
+    assert validate(3, schema) == [
+        "matches oneOf alternatives 0 and 1, expected exactly one"
+    ]
+    assert validate("x", schema) == [
+        "matches no oneOf alternative "
+        "(oneOf[0]: expected integer, got string; "
+        "oneOf[1]: expected number, got string)"
+    ]
+
+
+def test_all_of_reports_each_failing_part() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "name": {"allOf": [{"type": "string"}, {"minLength": 2, "maxLength": 3}]}
+        },
+    }
+
+    assert validate({"name": "ab"}, schema) == []
+    assert validate({"name": "abcd"}, schema) == [
+        "name: expected at most 3 characters, got 4"
+    ]
+
+
+def test_composition_is_checked_for_unsupported_keywords_too() -> None:
+    schema = {"anyOf": [{"type": "string"}, {"format": "date"}]}
+
+    with pytest.raises(UnsupportedSchema, match=r"'format' at anyOf\[1\]"):
+        validate("x", schema)
+
+
+@pytest.mark.parametrize("keyword", ["anyOf", "oneOf", "allOf"])
+@pytest.mark.parametrize("value", [[], {"type": "string"}, ["string"]])
+def test_composition_that_is_not_a_list_of_schemas_is_refused(
+    keyword: str, value: object
+) -> None:
+    with pytest.raises(UnsupportedSchema, match=f"'{keyword}' must be"):
+        validate("x", {keyword: value})
+
+
+NAMED = {
+    "type": "object",
+    "properties": {
+        "short": {"$ref": "#/$defs/Short"},
+        "legacy": {"$ref": "#/definitions/Legacy"},
+        "slashed": {"$ref": "#/$defs/a~1b"},
+    },
+    "$defs": {"Short": {"type": "string", "maxLength": 2}, "a/b": {"const": 1}},
+    "definitions": {"Legacy": {"type": "integer"}},
+}
+
+
+def test_a_local_ref_resolves_and_reports_the_value_path() -> None:
+    assert validate({"short": "ab", "legacy": 1, "slashed": 1}, NAMED) == []
+    assert validate({"short": "abc", "legacy": "1", "slashed": 2}, NAMED) == [
+        "short: expected at most 2 characters, got 3",
+        "legacy: expected integer, got string",
+        "slashed: expected 1, got 2",
+    ]
+
+
+def test_a_ref_to_any_local_pointer_resolves() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "a": {"type": "string", "maxLength": 1},
+            "b": {"$ref": "#/properties/a"},
+            "c": {"type": "array", "items": {"anyOf": [{"$ref": "#/properties/a"}]}},
+        },
+    }
+
+    assert validate({"a": "x", "b": "y", "c": ["z"]}, schema) == []
+    assert validate({"b": "yy"}, schema) == ["b: expected at most 1 characters, got 2"]
+
+
+def test_keywords_beside_a_ref_still_apply() -> None:
+    schema = {"$defs": {"S": {"type": "string"}}, "$ref": "#/$defs/S", "maxLength": 1}
+
+    assert validate("ab", schema) == ["expected at most 1 characters, got 2"]
+    assert validate(1, schema) == ["expected string, got integer"]
+
+
+TREE = {
+    "type": "object",
+    "properties": {
+        "value": {"type": "integer"},
+        "children": {"type": "array", "items": {"$ref": "#"}},
+    },
+    "required": ["value"],
+}
+
+
+def test_a_recursive_ref_to_the_root_validates_and_terminates() -> None:
+    tree = {"value": 1, "children": [{"value": 2, "children": [{"value": "x"}]}]}
+
+    assert validate(tree, TREE) == [
+        "children[0].children[0].value: expected integer, got string"
+    ]
+
+
+def test_a_recursive_ref_through_defs_validates_and_terminates() -> None:
+    schema = {
+        "$ref": "#/$defs/Node",
+        "$defs": {
+            "Node": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "next": {"anyOf": [{"$ref": "#/$defs/Node"}, {"type": "null"}]},
+                },
+                "required": ["name", "next"],
+            }
+        },
+    }
+    chain: dict[str, object] = {"name": "c", "next": None}
+    for name in "ba":
+        chain = {"name": name, "next": chain}
+
+    assert validate(chain, schema) == []
+    assert validate({"name": "a", "next": {"name": 1, "next": None}}, schema) == [
+        "next: matches no anyOf alternative "
+        "(anyOf[0]: next.name: expected string, got integer; "
+        "anyOf[1]: next: expected null, got object)"
+    ]
+
+
+@pytest.mark.parametrize(
+    "ref",
+    ["other.json#/$defs/A", "https://example.com/s.json", "/abs/path#/x"],
+)
+def test_a_remote_ref_is_refused_as_unsupported(ref: str) -> None:
+    with pytest.raises(UnsupportedSchema, match="remote"):
+        validate({}, {"type": "object", "properties": {"a": {"$ref": ref}}})
+
+
+@pytest.mark.parametrize(
+    "ref", ["#/$defs/Missing", "#/$defs/S/enum", "#anchor", "#/$defs/S/x/0"]
+)
+def test_a_ref_that_does_not_point_at_a_schema_is_refused(ref: str) -> None:
+    schema = {"$defs": {"S": {"enum": ["a"]}}, "$ref": ref}
+
+    with pytest.raises(UnsupportedSchema, match=r"\$ref"):
+        validate("a", schema)
+
+
+def test_a_ref_that_is_not_a_string_is_refused() -> None:
+    with pytest.raises(UnsupportedSchema, match=r"'\$ref' must be"):
+        validate("a", {"$ref": {"type": "string"}})
+
+
+@pytest.mark.parametrize("keyword", ["$defs", "definitions"])
+def test_defs_must_hold_schemas_and_are_checked(keyword: str) -> None:
+    with pytest.raises(UnsupportedSchema, match=re.escape(f"'{keyword}' must be")):
+        validate("a", {keyword: ["S"]})
+    with pytest.raises(UnsupportedSchema, match="'format'"):
+        validate("a", {keyword: {"S": {"format": "date"}}})
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"$ref": "#"},
+        {"$ref": "#/$defs/A", "$defs": {"A": {"$ref": "#/$defs/A"}}},
+        {
+            "$ref": "#/$defs/A",
+            "$defs": {
+                "A": {"anyOf": [{"type": "string"}, {"$ref": "#/$defs/B"}]},
+                "B": {"allOf": [{"$ref": "#/$defs/A"}]},
+            },
+        },
+    ],
+)
+def test_a_ref_cycle_that_never_reaches_a_value_is_refused(
+    schema: dict[str, object],
+) -> None:
+    with pytest.raises(UnsupportedSchema, match="cycle"):
+        validate(1, schema)
+
+
+def test_the_contract_lists_every_supported_keyword() -> None:
+    contract = Path(__file__).parents[1] / "docs" / "contract.md"
+    text = contract.read_text(encoding="utf-8")
+    section = text.split("## Answer schemas", 1)[1].split("\n## ", 1)[0]
+
+    assert {k for k in SUPPORTED if f"`{k}`" not in section} == set()
