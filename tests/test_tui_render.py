@@ -517,3 +517,43 @@ def test_the_key_hint_names_what_a_grants(
 
     header = approval_header(tool, args, Policy(root=tmp_path))
     assert hint in header.plain.splitlines()[0]
+
+
+@pytest.mark.parametrize(
+    ("args", "line"),
+    [
+        ({"pattern": "needle", "path": "src"}, "● search needle in src"),
+        ({"pattern": "needle", "glob": "*.py"}, "● search needle in . (*.py)"),
+        ({"glob": "*.py", "path": "src"}, "● search *.py in src"),
+        ({}, "● search all files in ."),
+    ],
+)
+def test_a_search_call_names_what_it_looked_for(
+    args: dict[str, Any], line: str
+) -> None:
+    text = plain(render_messages([call("search", args)], 0, 1))
+
+    assert line in text
+
+
+def test_navigation_results_fold_to_their_header() -> None:
+    page = "src: 2 matching lines in 1 file\nsrc/a.py:1: x\nsrc/a.py:2: x"
+    listing = "src: entries 1-2 of 2\na.py  (file, 1 bytes)\nb.py  (file, 1 bytes)"
+    messages = [
+        call("search", {"pattern": "x", "path": "src"}),
+        answer(page),
+        call("list", {"path": "src"}, call_id="c2"),
+        answer(listing, call_id="c2"),
+    ]
+
+    text = plain(render_messages(messages, 0, 4))
+
+    assert "src: 2 matching lines in 1 file" in text
+    assert "src/a.py:1" not in text
+    assert "● list src" in text
+    assert "src: entries 1-2 of 2" in text
+    assert "a.py  (file" not in text
+
+
+def test_a_list_of_the_root_names_it() -> None:
+    assert "● list ." in plain(render_messages([call("list", {})], 0, 1))
