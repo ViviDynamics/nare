@@ -18,7 +18,7 @@ import json
 import logging
 import os
 from collections.abc import AsyncGenerator
-from typing import Any, Literal
+from typing import Any
 
 import httpx2
 
@@ -26,6 +26,7 @@ from nare.accounting import Prices
 from nare.session import Message, Usage
 from nare.transport import (
     Delta,
+    Effort,
     ModelMetadata,
     ProviderStatusError,
     Reply,
@@ -41,7 +42,6 @@ log = logging.getLogger(__name__)
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_TIMEOUT = 600.0
 
-Effort = Literal["low", "medium", "high"]
 
 _STOP_REASONS: dict[str, StopReason] = {
     "stop": "end_turn",

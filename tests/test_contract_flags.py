@@ -42,7 +42,7 @@ def test_contract_flags_cover_the_options_callers_ask_about() -> None:
     assert flags["--stream"] == {"takes_value": False, "choices": None}
     assert flags["--effort"] == {
         "takes_value": True,
-        "choices": ["low", "medium", "high"],
+        "choices": ["low", "medium", "high", "xhigh", "max"],
     }
     assert "--help" not in flags and "prompt" not in flags
 

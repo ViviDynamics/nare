@@ -173,10 +173,9 @@ def run_agent(
 ) -> RunArtifacts:
     """Run one repetition of the agent against a prepared sandbox.
 
-    `--effort` is deliberately never passed: it renders as
-    thinking.budget_tokens, which some models accept and others reject
-    outright, and a flag whose availability varies by model has no place in a
-    controlled measurement.
+    `--effort` is deliberately never passed: which levels a model takes, and
+    what a level means behind a proxy, vary by model, and a flag whose
+    meaning varies by model has no place in a controlled measurement.
     """
     started = time.monotonic()
     code, out, err, timed_out = _docker_run(

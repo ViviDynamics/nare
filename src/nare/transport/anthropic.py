@@ -7,7 +7,7 @@ import logging
 import os
 from collections.abc import AsyncGenerator
 from dataclasses import asdict
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import httpx2
 from anthropic import DEFAULT_TIMEOUT, APIStatusError, AsyncAnthropic, omit
@@ -16,7 +16,9 @@ from anthropic.types import MessageParam, ToolParam
 from nare.accounting import Prices
 from nare.session import Message, Usage, sent_back
 from nare.transport import (
+    EFFORTS,
     Delta,
+    Effort,
     ModelMetadata,
     Reply,
     StopReason,
@@ -63,9 +65,10 @@ def nonstreaming_ceiling(model: str) -> int:
     )
 
 
-EFFORT_BUDGETS: dict[str, int] = {"low": 1024, "medium": 4096, "high": 16384}
-
-Effort = Literal["low", "medium", "high"]
+# Adaptive thinking counts toward max_tokens, and at high effort and above
+# Anthropic advises a large cap: 64k is its suggested start for xhigh and max.
+# A cap is a ceiling, not a spend, so a lower level costs only what it uses.
+EFFORT_MAX_TOKENS = 64000
 
 _STOP_REASONS: dict[str, StopReason] = {
     "end_turn": "end_turn",
@@ -209,6 +212,7 @@ class AnthropicTransport:
         temperature: float | None = None,
         max_tokens: int | None = None,
         effort: Effort | None = None,
+        thinking_budget: int | None = None,
         system: str | None = None,
         http_client: httpx2.AsyncClient | None = None,
         streaming: bool = False,
@@ -231,28 +235,53 @@ class AnthropicTransport:
         self._warned_proxy_reasoning = False
         self.streaming = streaming
         self.image_input = image_input
+        if thinking_budget is not None and (
+            isinstance(thinking_budget, bool)
+            or not isinstance(thinking_budget, int)
+            or thinking_budget <= 0
+        ):
+            raise ValueError("thinking_budget must be a positive integer")
+        if effort is not None and effort not in EFFORTS:
+            raise ValueError(
+                f"unknown effort {effort!r}; expected one of: {', '.join(EFFORTS)}"
+            )
+        self.effort = effort
+        self.thinking_budget = thinking_budget
+        # Effort is output_config.effort with adaptive thinking: current Claude
+        # models answer a thinking budget with a 400. Adaptive is sent, not
+        # left implied, because Opus 4.7 and 4.8 do not think without it. A
+        # budget is the caller's explicit choice for the older models that
+        # still need one; with effort too both go, as Opus 4.5 takes them.
+        self.output_config: dict[str, Any] | None = (
+            {"effort": effort} if effort is not None else None
+        )
         self.thinking: dict[str, Any] | None = None
-        budget = EFFORT_BUDGETS[effort] if effort is not None else None
         ceiling = nonstreaming_ceiling(model)
 
-        if budget is None:
-            resolved = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
-        else:
+        if thinking_budget is not None:
+            self.thinking = {"type": "enabled", "budget_tokens": thinking_budget}
+            room = thinking_budget + DEFAULT_MAX_TOKENS
+            resolved = (
+                max_tokens
+                if max_tokens is not None
+                else (room if streaming else min(room, ceiling))
+            )
+            if resolved <= thinking_budget:
+                raise ValueError(
+                    f"max_tokens {resolved} must exceed the thinking budget of "
+                    f"{thinking_budget}"
+                )
+        elif effort is not None:
+            self.thinking = {"type": "adaptive"}
             resolved = (
                 max_tokens
                 if max_tokens is not None
                 else (
-                    budget + DEFAULT_MAX_TOKENS
-                    if streaming
-                    else min(budget + DEFAULT_MAX_TOKENS, ceiling)
+                    EFFORT_MAX_TOKENS if streaming else min(EFFORT_MAX_TOKENS, ceiling)
                 )
             )
-            if resolved <= budget:
-                raise ValueError(
-                    f"max_tokens {resolved} must exceed the {effort} thinking "
-                    f"budget of {budget}"
-                )
-            self.thinking = {"type": "enabled", "budget_tokens": budget}
+        else:
+            resolved = max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
 
         if not streaming and resolved > ceiling:
             limit = (
@@ -360,6 +389,9 @@ class AnthropicTransport:
             tools=wire_tools,
             system=self.system if self.system is not None else omit,
             thinking=cast(Any, self.thinking) if self.thinking else omit,
+            output_config=(
+                cast(Any, self.output_config) if self.output_config else omit
+            ),
         )
         response = await raw.parse()
         content = [block.model_dump(exclude_none=True) for block in response.content]
@@ -387,6 +419,9 @@ class AnthropicTransport:
             tools=wire_tools,
             system=self.system if self.system is not None else omit,
             thinking=cast(Any, self.thinking) if self.thinking else omit,
+            output_config=(
+                cast(Any, self.output_config) if self.output_config else omit
+            ),
         ) as stream:
             finished = False
             complete_usage = False

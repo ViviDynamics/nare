@@ -900,6 +900,10 @@ async def _run(
     # Recorded before the first turn, so a run that dies still says what it was
     # allowed to do.
     session.policy = policy.recorded()
+    # What this invocation sent, not what the session first ran with: a
+    # resume without the flags sends none.
+    session.effort = getattr(transport, "effort", None)
+    session.thinking_budget = getattr(transport, "thinking_budget", None)
     # Counted from where this invocation started, not from the session's
     # lifetime total. A caller may resume the same session once per feedback
     # round, and a cumulative budget makes every resume past the Nth die

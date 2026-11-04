@@ -130,7 +130,7 @@ def describe() -> dict[str, Any]:
         SKIPPED_DIRS,
         TOOLS,
     )
-    from nare.transport import CREDENTIAL_ENV
+    from nare.transport import CREDENTIAL_ENV, EFFORTS
 
     return {
         "contract": CONTRACT_VERSION,
@@ -254,6 +254,27 @@ def describe() -> dict[str, Any]:
             "constrained_turns": ["schema_correction", "tool_free_run"],
             "event": "progress",
             "event_detail": "structured_output",
+        },
+        # Additive: the levels --effort takes and what each rail sends.
+        "effort": {
+            "flag": "--effort",
+            "levels": list(EFFORTS),
+            "providers": {
+                "anthropic": {
+                    "request": {"output_config": {"effort": "LEVEL"}},
+                    "thinking": {"type": "adaptive"},
+                },
+                "openai": {
+                    "request": {"reasoning_effort": "LEVEL"},
+                    "meaning": "server",
+                },
+            },
+            "thinking_budget": {
+                "flag": "--thinking-budget",
+                "providers": ["anthropic"],
+                "request": {"thinking": {"type": "enabled", "budget_tokens": "N"}},
+            },
+            "session_fields": ["effort", "thinking_budget"],
         },
         # Additive: in-run resends of a transient model request failure.
         "request_retries": {
