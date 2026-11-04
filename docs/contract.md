@@ -74,6 +74,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--append-system` | yes | | Add text after the system prompt |
 | `--tools` | yes | | Comma-separated tools the run may call, or `none` |
 | `--root` | yes | | Confine file tools to a directory and run `bash` in it |
+| `--bash-credentials` | no | | Let `bash` see the provider credentials nare reads ([The bash environment](#the-bash-environment)) |
 | `--resume` | yes | | Continue the session at a path |
 | `--mcp-config` | yes | | JSON file of MCP servers ([MCP tool sources](#mcp-tool-sources)) |
 | `--image-input` | no | | Declare that the model accepts image input ([Read-only image input](#read-only-image-input)) |
