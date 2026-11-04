@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import cast
 
@@ -16,13 +17,14 @@ from benchmarks.runner.__main__ import (
     read_results,
     run_case,
     run_rep,
+    split_run_args,
     stopped_log,
     write_results,
 )
 from benchmarks.runner.case import Case
 from benchmarks.runner.config import Config
 from benchmarks.runner.nare_args import RunArgs
-from benchmarks.runner.report import BaselineMeta, dumps_baseline
+from benchmarks.runner.report import BaselineMeta, RepRecord, dumps_baseline
 from benchmarks.runner.sandbox import RunArtifacts
 from benchmarks.tests.test_grade import COMPACTED, WINDOW
 from benchmarks.tests.test_judge import FakeJudge
@@ -331,3 +333,230 @@ def test_a_never_started_rep_stops_the_matrix(
     moved = results / f"{MATRIX_STAMP}.claude-haiku-5-5" / "results.partial.jsonl"
     assert [r.model for r in read_results(moved)] == [HAIKU.model] * 3
     assert str(moved) in err
+
+
+ARGUED = """\
+id = "argued"
+tier = "smoke"
+prompt = "Say what bar.py holds."
+{args}
+
+[[check]]
+kind = "result"
+status = "done"
+"""
+RUN = ["run", "--model", "m"]
+
+
+@dataclass
+class Ran:
+    builds: int = 0
+    reps: list[tuple[Case, Config]] = field(default_factory=list)
+
+
+def argued(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: str = "") -> Ran:
+    """A checkout whose one case, `argued`, has `args` (TOML), over a fake
+    container in which every rep is done. No judge, no bash check."""
+    import benchmarks.runner.__main__ as bench
+
+    case = tmp_path / "benchmarks" / "cases" / "argued"
+    (case / "fixture").mkdir(parents=True)
+    (case / "fixture" / "bar.py").write_text("x = 1\n")
+    (case / "case.toml").write_text(
+        ARGUED.format(args=f"args = {args}" if args else "")
+    )
+    ran = Ran()
+
+    def agent(
+        case: Case, workdir: Path, artifacts: Path, config: Config
+    ) -> RunArtifacts:
+        ran.reps.append((case, config))
+        return RunArtifacts(DONE_LINE, "", 0, False, 1.0)
+
+    def build(root: Path) -> None:
+        ran.builds += 1
+
+    monkeypatch.setattr(bench, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(bench, "run_agent", agent)
+    monkeypatch.setattr(bench, "git_diff", lambda w: "")
+    monkeypatch.setattr(bench, "build_image", build)
+    monkeypatch.setattr(bench, "judge_transport", lambda config: None)
+    monkeypatch.setattr(bench, "new_stamp", lambda: STAMP)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    for var in (
+        "NARE_PROVIDER",
+        "NARE_BASE_URL",
+        "NARE_BENCH_JUDGE_MODEL",
+        "NARE_BENCH_MAX_TOKENS",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    return ran
+
+
+def results_of(tmp_path: Path) -> list[RepRecord]:
+    return read_results(tmp_path / "benchmarks" / "results" / f"{STAMP}.jsonl")
+
+
+def test_everything_after_the_first_double_dash_is_for_nare() -> None:
+    assert split_run_args(["run", "--tier", "full", "--", "--effort", "low"]) == (
+        ["run", "--tier", "full"],
+        ["--effort", "low"],
+    )
+    assert split_run_args(["run", "--", "--", "x"]) == (["run"], ["--", "x"])
+    assert split_run_args(["run"]) == (["run"], None)
+
+
+def test_run_passes_its_arguments_then_the_cases_and_records_both(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran = argued(tmp_path, monkeypatch, '["--tools", "read,list,search"]')
+    assert main([*RUN, "--", "--effort", "low"]) == 0
+    assert ran.builds == 1
+    assert {(c.args, cfg.run_args.passed) for c, cfg in ran.reps} == {
+        (("--tools", "read,list,search"), ("--effort", "low"))
+    }
+    lines = results_of(tmp_path)
+    assert len(lines) == len(ran.reps) == 3
+    assert {(tuple(r.case_args), tuple(r.nare_args)) for r in lines} == {
+        (("--tools", "read,list,search"), ("--effort", "low"))
+    }
+
+
+def test_run_reads_a_system_file_once_and_every_line_records_its_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran = argued(tmp_path, monkeypatch)
+    prompts = tmp_path / "benchmarks" / "prompts"
+    prompts.mkdir()
+    (prompts / "terse.md").write_text("Be terse.\n")
+    # Read from where bench runs, the checkout's root, and recorded from it.
+    monkeypatch.chdir(tmp_path)
+    recorded = "benchmarks/prompts/terse.md"
+    assert main([*RUN, "--", "--system-file", recorded]) == 0
+    inputs = tmp_path / "benchmarks" / "results" / STAMP / "inputs"
+    assert {cfg.run_args.passed for _, cfg in ran.reps} == {
+        ("--system-file", "/in/0-terse.md")
+    }
+    staged = {cfg.run_args.inputs for _, cfg in ran.reps}
+    assert staged == {inputs}
+    # docker -v reads a relative path as a named volume, not a directory.
+    assert all(path is not None and path.is_absolute() for path in staged)
+    assert (inputs / "0-terse.md").read_text() == "Be terse.\n"
+    digest = "sha256:" + hashlib.sha256(b"Be terse.\n").hexdigest()
+    assert {
+        (tuple(r.nare_args), tuple(r.nare_files.items())) for r in results_of(tmp_path)
+    } == {(("--system-file", recorded), ((recorded, digest),))}
+
+
+def test_a_double_dash_with_nothing_after_it_is_the_default_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran = argued(tmp_path, monkeypatch)
+    assert main([*RUN, "--"]) == 0
+    assert ran.reps
+    assert all(cfg.run_args == RunArgs() for _, cfg in ran.reps)
+
+
+@pytest.mark.parametrize(
+    ("case_args", "run_args", "named"),
+    [
+        ('["--tools", "read,teleport"]', [], "case argued: --tools names 'teleport'"),
+        ('["--model", "x"]', [], "case argued: --model is reserved for"),
+        ('["--system", "Be terse."]', [], "case argued: --system is a run argument"),
+        (
+            "",
+            ["--schema", "a.json"],
+            "run arguments: --schema names a path in the work tree",
+        ),
+        ("", ["--max-tok", "5"], "run arguments: unknown flag '--max-tok'"),
+        (
+            '["--context-window", "8000"]',
+            ["--context-window", "16000"],
+            "--context-window is in the run arguments and in case argued's args",
+        ),
+        ("", ["--system-file", "absent.md"], "--system-file absent.md: cannot read it"),
+    ],
+)  # fmt: skip
+def test_run_refuses_arguments_before_building_anything(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    case_args: str,
+    run_args: list[str],
+    named: str,
+) -> None:
+    ran = argued(tmp_path, monkeypatch, case_args)
+    monkeypatch.chdir(tmp_path)
+    assert main([*RUN, "--", *run_args]) == 2
+    assert (ran.builds, ran.reps) == (0, [])
+    assert named in capsys.readouterr().err
+
+
+def test_a_typo_is_reported_before_the_key_is_asked_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argued(tmp_path, monkeypatch)
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    assert main([*RUN, "--", "--max-tok", "5"]) == 2
+    err = capsys.readouterr().err
+    assert "run arguments: unknown flag '--max-tok'" in err
+    assert "ANTHROPIC_API_KEY" not in err
+
+
+def test_run_refuses_a_prompt_copy_it_cannot_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ran = argued(tmp_path, monkeypatch)
+    (tmp_path / "terse.md").write_text("Be terse.\n")
+    # A file where the run's evidence directory goes: the copy cannot land.
+    results = tmp_path / "benchmarks" / "results"
+    results.mkdir()
+    (results / STAMP).write_text("")
+    monkeypatch.chdir(tmp_path)
+    assert main([*RUN, "--", "--system-file", "terse.md"]) == 2
+    assert (ran.builds, ran.reps) == (0, [])
+    err = capsys.readouterr().err
+    assert (
+        "bench: run arguments: cannot copy the prompt files into "
+        f"{results / STAMP / 'inputs'}"
+    ) in err
+
+
+def test_verify_refuses_a_case_whose_args_nare_would_refuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ran = argued(tmp_path, monkeypatch, '["--no-such-flag"]')
+    assert main(["verify"]) == 2
+    assert ran.builds == 0
+    assert "case argued: unknown flag '--no-such-flag'" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["compare", "--model", "m", "--"],
+        ["bless", "--model", "m", "--", "--effort", "low"],
+        ["verify", "--", "--effort", "low"],
+        ["models", "--"],
+        ["compare-judges", "--"],
+    ],
+)
+def test_only_run_takes_arguments_for_nare(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+) -> None:
+    ran = argued(tmp_path, monkeypatch)
+    assert main(argv) == 2
+    assert ran.builds == 0
+    assert f"bench: {argv[0]} takes no arguments for nare" in capsys.readouterr().err
+
+
+def test_the_matrix_takes_no_run_arguments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ran = argued(tmp_path, monkeypatch)
+    assert main(["run", "--matrix", "--", "--effort", "low"]) == 2
+    assert ran.builds == 0
+    assert "--matrix runs each baseline's own run arguments" in capsys.readouterr().err

@@ -58,6 +58,13 @@ from benchmarks.runner.models import (
     list_models,
     render_models,
 )
+from benchmarks.runner.nare_args import (
+    ArgsError,
+    RunArgs,
+    check_invocation,
+    nare_contract,
+    stage_inputs,
+)
 from benchmarks.runner.report import (
     Baseline,
     BaselineMeta,
@@ -97,6 +104,19 @@ CONFIRM_REPS = 7
 # nothing about the fixture and must not read as a failing check.
 DID_NOT_RUN = range(124, 128)
 TOKEN_BAND = 0.10
+
+
+def split_run_args(argv: Sequence[str]) -> tuple[list[str], list[str] | None]:
+    """Bench's own arguments, and what follows the first `--` for nare.
+
+    Split before argparse, which would otherwise take nare's flags as bench's.
+    The second part is None when there is no `--`, and empty after a bare one.
+    """
+    tokens = list(argv)
+    if "--" not in tokens:
+        return tokens, None
+    at = tokens.index("--")
+    return tokens[:at], tokens[at + 1 :]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -810,6 +830,33 @@ def run_model(
     return transport, records
 
 
+def check_and_stage(
+    tokens: Sequence[str],
+    cases: Sequence[Case],
+    *,
+    base: Path,
+    root: Path,
+    dest: Path,
+) -> RunArgs:
+    """A run's arguments checked against nare's contract and the selected
+    cases, then each prompt file copied to `dest`: what one model is run under.
+
+    `base` is where a relative path is read from, `root` the checkout that
+    recorded paths are relative to. `dest` must be absolute, since docker reads
+    a relative `-v` source as a named volume. Every failure is an `ArgsError`,
+    a copy that cannot be written included, so the caller refuses the run with
+    exit 2 before the image is built.
+    """
+    check_invocation(tokens, {c.id: c.args for c in cases}, *nare_contract())
+    try:
+        return stage_inputs(tokens, base=base, root=root, dest=dest)
+    except OSError as exc:
+        raise ArgsError(
+            f"run arguments: cannot copy the prompt files into {dest} "
+            f"({exc.strerror or type(exc).__name__})"
+        ) from exc
+
+
 def confirm(
     root: Path,
     cases: Sequence[Case],
@@ -1145,11 +1192,27 @@ def show_models(args: argparse.Namespace, root: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    argv = sys.argv[1:] if argv is None else argv
+    own, nare = split_run_args(argv)
+    args = build_parser().parse_args(own)
     if args.command is None:
         print(
             "bench needs a subcommand: run, compare, bless, verify, "
             "compare-judges, or models",
+            file=sys.stderr,
+        )
+        return 2
+    if nare is not None and args.command != "run":
+        print(
+            f"bench: {args.command} takes no arguments for nare; only run passes "
+            "them, after --, and compare and bless read them from the results",
+            file=sys.stderr,
+        )
+        return 2
+    if nare is not None and args.matrix:
+        print(
+            "bench: --matrix runs each baseline's own run arguments; drop the -- "
+            "and what follows",
             file=sys.stderr,
         )
         return 2
@@ -1170,6 +1233,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.command == "verify":
+        try:
+            check_invocation((), {c.id: c.args for c in cases}, *nare_contract())
+        except ArgsError as exc:
+            print(f"bench: {exc}", file=sys.stderr)
+            return 2
         try:
             build_image(root)
         except SandboxError as exc:
@@ -1194,6 +1262,22 @@ def main(argv: list[str] | None = None) -> int:
             return run_matrix(args, root, cases)
         return compare_matrix(args, root, cases)
 
+    if args.command == "run":
+        # Before the key, the image and any rep, so a typo costs nothing. The
+        # stamp is taken here because the prompt copies live under its name.
+        stamp = new_stamp()
+        try:
+            run_args = check_and_stage(
+                nare or (),
+                cases,
+                base=Path.cwd(),
+                root=root,
+                dest=root / "benchmarks" / "results" / stamp / "inputs",
+            )
+        except ArgsError as exc:
+            print(f"bench: {exc}", file=sys.stderr)
+            return 2
+
     try:
         config = resolve_config(
             model=args.model,
@@ -1209,6 +1293,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.command == "run":
+        config = replace(config, run_args=run_args)
         baseline_file = baseline_path(
             root / "benchmarks" / "baselines", config.model, args.tier
         )
@@ -1224,7 +1309,6 @@ def main(argv: list[str] | None = None) -> int:
         except SandboxError as exc:
             print(f"bench: {exc}", file=sys.stderr)
             return 2
-        stamp = new_stamp()
         try:
             transport, records = run_model(root, cases, config, stamp)
             if baseline is None:
