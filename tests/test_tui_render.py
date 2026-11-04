@@ -14,6 +14,9 @@ from nare.tui.render import (
     Block,
     approval_text,
     attach_status,
+    clock,
+    live_for,
+    placeholder,
     render_messages,
     render_outcome,
     render_user,
@@ -277,13 +280,87 @@ def test_status_line() -> None:
     usage = Usage(input=40_000, output=1_200, cost=0.31)
     line = status_line("claude-sonnet-5", 7, 50, usage, 2.0, "working")
     assert line.plain == (
-        "claude-sonnet-5 · turn 7/50 · 41.2k tok · $0.31 / $2.00 · working"
+        "claude-sonnet-5 · turn 7/50 · 41.2k tok total · $0.31 / $2.00 · working"
     )
     unpriced = Usage(input=10, output=5, cost=None)
     line = status_line("m", 1, 50, unpriced, None, "done", note="could not write s")
     assert line.plain == (
-        "m · turn 1/50 · 15 tok · cost unknown · done · could not write s"
+        "m · turn 1/50 · 15 tok total · cost unknown · done · could not write s"
     )
+
+
+def test_each_state_has_its_plain_word() -> None:
+    usage = Usage()
+    words = {
+        "idle": "ready",
+        "awaiting approval": "approve?",
+        "blocked": "waiting for your answer",
+        "working": "working",
+        "interrupted": "interrupted",
+        "done": "done",
+    }
+    for state, word in words.items():
+        assert status_line("m", 0, 50, usage, None, state).plain.endswith(
+            f" · {word}"
+        ), state
+    failed = status_line("m", 0, 50, usage, None, "error", reason="stopped at 50")
+    assert failed.plain.endswith(" · error: stopped at 50")
+
+
+def test_the_turn_segment_turns_yellow_at_80_percent_and_red_at_90() -> None:
+    usage = Usage()
+
+    def turn_style(turns: int) -> str:
+        """The style over the turn segment, or "" for none."""
+        line = status_line("m", turns, 50, usage, None, "working")
+        start = line.plain.index("turn ")
+        end = line.plain.index(" · ", start)
+        styles = [
+            str(span.style)
+            for span in line.spans
+            if span.start <= start and span.end >= end
+        ]
+        return styles[0] if styles else ""
+
+    assert turn_style(39) == ""
+    assert turn_style(40) == "yellow"
+    assert turn_style(44) == "yellow"
+    assert turn_style(45) == "red"
+
+
+def test_an_estimate_is_marked_with_a_tilde() -> None:
+    usage = Usage(input=1000, output=0, cost=0.3, estimated=True)
+    assert "~$0.30" in status_line("m", 1, 50, usage, None, "done").plain
+
+
+def test_idle_ends_with_the_key_hints() -> None:
+    line = status_line("m", 0, 50, Usage(), None, "idle", hints=True)
+    assert line.plain.endswith(
+        " · ready · enter send · esc interrupt · pgup scroll · ctrl+q quit"
+    )
+
+
+def test_a_live_segment_replaces_the_working_word() -> None:
+    usage = Usage()
+    live = live_for("working", 12.0, ("running bash", "python3 -m unittest", 0.0), 12.0)
+    line = status_line("m", 1, 50, usage, None, "working", live=live)
+    assert "running bash 0:12 · python3 -m unittest" in line.plain
+    assert "· working" not in line.plain
+
+
+def test_the_clock_reads_minutes_and_hours() -> None:
+    assert clock(0) == "0:00"
+    assert clock(12.9) == "0:12"
+    assert clock(65) == "1:05"
+    assert clock(3725) == "1:02:05"
+
+
+def test_the_placeholder_follows_the_state() -> None:
+    assert placeholder("working") == "working · esc to interrupt"
+    assert placeholder("awaiting approval") == "answer the prompt above"
+    assert placeholder("blocked") == "answer the questions above"
+    assert placeholder("interrupted") == "interrupted · type to continue"
+    assert placeholder("idle") == "what should nare do?"
 
 
 def test_outcome_shows_questions_or_the_error() -> None:
@@ -301,7 +378,7 @@ def test_outcome_shows_questions_or_the_error() -> None:
 def test_attach_status_carries_the_file_age() -> None:
     s = new_session("go")
     assert attach_status(s, None, 185).plain == (
-        "turn 0 · 0 tok · $0.00 · working · last write 3m ago"
+        "0 turns · 0 tok total · $0.00 · working · last write 3m ago"
     )
     waiting = attach_status(None, "waiting for s.json", None)
     assert waiting.plain == "waiting for s.json"
@@ -311,7 +388,7 @@ def test_attach_status_shows_an_interrupted_file_as_interrupted() -> None:
     s = new_session("go")
     s.interrupted_at = (datetime.now(UTC) - timedelta(seconds=125)).isoformat()
     assert attach_status(s, None, 5).plain == (
-        "turn 0 · 0 tok · $0.00 · interrupted 2m ago · last write 5s ago"
+        "0 turns · 0 tok total · $0.00 · interrupted 2m ago · last write 5s ago"
     )
     # Hand-edited or foreign: still not `working`, and no crash.
     s.interrupted_at = "yesterday"
