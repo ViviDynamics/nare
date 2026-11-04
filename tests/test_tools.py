@@ -63,7 +63,9 @@ def test_read_returns_file_contents(tmp_path: Path) -> None:
 def test_read_honours_offset_and_limit(tmp_path: Path) -> None:
     target = tmp_path / "a.py"
     target.write_text("one\ntwo\nthree\n")
-    assert read_file(str(target), offset=1, limit=1) == "two"
+    assert read_file(str(target), offset=1, limit=1) == (
+        "two\n[lines 2 to 2 of 3; continue with offset=2]"
+    )
 
 
 def test_read_raises_on_a_missing_file(tmp_path: Path) -> None:
@@ -491,7 +493,10 @@ def test_read_is_capped_by_bytes_not_only_by_lines(tmp_path: Path) -> None:
     target.write_text("x" * (MAX_TOOL_OUTPUT * 2))
     out = read_file(str(target))
     assert len(out) < MAX_TOOL_OUTPUT * 2
-    assert out.endswith(f"[truncated at {MAX_TOOL_OUTPUT} chars]")
+    assert out.endswith(
+        f"[truncated at {MAX_TOOL_OUTPUT} chars, partway through line 1: "
+        "lines 1 to 1 of 1]"
+    )
 
 
 def test_a_missing_edit_target_names_the_parameter_the_model_sees(

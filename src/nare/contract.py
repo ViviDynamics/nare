@@ -150,6 +150,13 @@ def describe() -> dict[str, Any]:
             "max_pixels": MAX_IMAGE_PIXELS,
             "max_edge": MAX_IMAGE_EDGE,
         },
+        # Additive: how each tool's result is held to the output cap.
+        "tool_output": {
+            "max_chars": MAX_TOOL_OUTPUT,
+            "bash": "head_and_tail_per_stream",
+            "mcp": "head_and_tail",
+            "read": "head_then_continue_notice",
+        },
         # Additive: the provider credentials bash runs without, and how a
         # caller lets a task that needs one have it.
         "bash_env": {

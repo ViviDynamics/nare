@@ -461,7 +461,7 @@ model can adapt. `tool_use` events identify calls and redacted arguments;
 `progress` events carry redacted `detail.tool` and `detail.tool_result`, including
 content, error status and size (see [Tool results](#tool-results)). Text and structured MCP results are retained; other
 content blocks are represented as JSON, rather than interpreted as model images.
-The standard tool output cap applies. Session transcripts preserve results in
+The standard [tool output cap](#the-tool-output-cap) applies, keeping the head and the tail. Session transcripts preserve results in
 the same way as built-ins; raw transcripts can contain secrets and should be
 handled as private artifacts.
 
@@ -497,6 +497,41 @@ event, and this removes the keys at the source instead of relying on it.
 
 Withholding is not a sandbox. A command can still read files, the network and
 anything else the environment gives it; confining those stays the caller's job.
+
+## The tool output cap
+
+Every tool result's text is held to 30000 characters (`nare contract` prints
+it as `tool_output.max_chars`, and as `navigation.max_output`). How a long
+result is cut depends on the tool, so the model keeps the part it needs:
+
+- `bash` caps stdout and stderr apart, within that total together. A stream
+  that fits in half of it is kept whole, and the other gets the rest, so a
+  flood of stdout cannot push stderr out. A stream over its share keeps its
+  head and its tail, because test runners and compilers print their verdict
+  last. A marker in the middle says how much was cut and how to see the rest:
+
+      [... 12,345 characters of stdout cut here; to see all of it, redirect the output to a file and read that with offset and limit ...]
+
+  The status line (`exit N`) and any `[still running: ...]` line sit outside
+  the cap.
+- An MCP result keeps its head and its tail in the same way, with a marker
+  naming `the result`.
+- `read` keeps its head-first cut, since paging covers the rest. A read that
+  stops before the end of the file, at `limit` lines or at the cap, ends with
+  a notice after the returned text:
+
+      [lines 1 to 2000 of 3000; continue with offset=2000]
+      [truncated at 30000 chars, partway through line 7: lines 1 to 7 of 90; continue with offset=7]
+
+  A read that reaches the end of the file has no notice. The notice is not
+  file content: [read evidence](#read-evidence) still describes exactly the
+  lines and bytes returned before it.
+- `list` and `search` pages never reach the cap; a page ends early instead,
+  with a cursor.
+
+`nare contract` names each rule under `tool_output`: `bash` is
+`head_and_tail_per_stream`, `mcp` is `head_and_tail` and `read` is
+`head_then_continue_notice`.
 
 ## Streaming model turns
 
