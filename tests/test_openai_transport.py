@@ -381,3 +381,39 @@ def test_the_factory_builds_it() -> None:
     built = make_transport("openai", model="m", api_key="k")
 
     assert isinstance(built, OpenAITransport)
+
+
+@pytest.mark.parametrize("arguments", ["{oops", "[1, 2]", '"read"'])
+async def test_an_unstreamed_reply_reports_malformed_arguments(arguments: str) -> None:
+    reply, _ = await turn_with(
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "c1",
+                                "type": "function",
+                                "function": {"name": "bash", "arguments": arguments},
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+    )
+
+    [call] = reply.tool_calls
+    assert call.error is not None
+    assert "not a complete JSON object" in call.error
+
+    from nare.tools import Policy, dispatch
+
+    result = await dispatch(call, Policy())
+    assert result["is_error"] is True
+    assert result["content"] == call.error

@@ -29,6 +29,7 @@ from PIL import Image
 
 from nare.events import redact
 from nare.mcp import ExternalTool
+from nare.schema import validate
 from nare.transport import CREDENTIAL_ENV, ToolCall
 
 MAX_TOOL_OUTPUT = 30_000
@@ -1312,6 +1313,39 @@ class Policy:
         return resolved
 
 
+_INPUT_SCHEMAS = {schema["name"]: schema["input_schema"] for schema in TOOL_SCHEMAS}
+# ask reads a bare string as one question, and a turn of only asks ends
+# blocked on that; its own checks stand in for the schema's types, so a schema
+# check cannot change when blocked is reported.
+_OWN_TYPE_CHECKS = frozenset({"ask"})
+
+
+def _arguments(name: str, args: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """A built-in call's arguments checked against the tool's input schema:
+    the arguments to run with, and every problem, in the tool's terms.
+
+    A null optional parameter is read as absent: some models send every
+    parameter, null when unused. Unknown parameters are refused, which also
+    keeps the model away from the keywords nare sets itself (`base`, `cwd`,
+    `credentials`).
+    """
+    schema = _INPUT_SCHEMAS[name]
+    properties: dict[str, Any] = schema.get("properties", {})
+    required: list[str] = schema.get("required", [])
+    args = {k: v for k, v in args.items() if v is not None or k in required}
+    errors = [f"missing required parameter {p}" for p in required if p not in args]
+    takes = ", ".join(properties) or "no parameters"
+    errors += [
+        f"unknown parameter {p}; {name} takes {takes}"
+        for p in args
+        if p not in properties
+    ]
+    if name not in _OWN_TYPE_CHECKS:
+        known = {p: v for p, v in args.items() if p in properties}
+        errors += validate(known, {"type": "object", "properties": properties})
+    return args, errors
+
+
 def tool_result(call_id: str, text: str, *, is_error: bool = False) -> dict[str, Any]:
     return {
         "type": "tool_result",
@@ -1357,6 +1391,15 @@ async def dispatch(
             f"allowed: {', '.join(sorted(policy.tools)) or 'none'}",
             is_error=True,
         )
+    checked = dict(call.args)
+    if function is not None:
+        # Before approval: nobody is asked to approve a call that cannot run,
+        # and nothing starts with arguments Python would only reject later.
+        checked, problems = _arguments(call.name, checked)
+        if problems:
+            return tool_result(
+                call.id, f"{call.name}: {'; '.join(problems)}", is_error=True
+            )
     try:
         # approve() is inside the try on purpose: a real approval seam prompts
         # a human or calls a service, so it can raise. Escaping here would
@@ -1379,7 +1422,7 @@ async def dispatch(
                 is_error=failed,
             )
         assert function is not None
-        args = dict(call.args)
+        args = checked
         if call.name in EVIDENCE_TOOLS:
             # Paths in results and evidence are relative to the root, which
             # `read` accepts. Set here, after the model's arguments, so it

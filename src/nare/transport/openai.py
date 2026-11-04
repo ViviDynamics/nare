@@ -224,16 +224,14 @@ def with_cache_breakpoints(
 
 
 def _arguments(raw: str) -> dict[str, Any]:
-    """A tool call's arguments, or an empty dict.
-
-    A model that emits malformed JSON gets an is_error tool_result it can
-    correct; raising here would end the run over a mistake the model is able
-    to fix on the next turn.
+    """A tool call's arguments, or an empty dict when they are not a JSON
+    object. _argument_error() then says so on the call, streamed or not, so
+    the model gets an is_error result it can correct; raising here would end
+    the run over a mistake the model is able to fix on the next turn.
     """
     try:
         parsed = json.loads(raw or "{}")
     except ValueError:
-        log.warning("tool call arguments were not JSON; passing an empty object")
         return {}
     return parsed if isinstance(parsed, dict) else {}
 
@@ -487,7 +485,6 @@ class OpenAITransport:
                     "usage": usage,
                 },
                 cost=reported_cost(response.headers, streamed=True),
-                strict_arguments=True,
             )
         yield reply
 
@@ -509,7 +506,6 @@ class OpenAITransport:
         payload: dict[str, Any],
         *,
         cost: float | None = None,
-        strict_arguments: bool = False,
     ) -> Reply:
         choice = (payload.get("choices") or [{}])[0]
         message = choice.get("message") or {}
@@ -531,9 +527,7 @@ class OpenAITransport:
                     id=raw.get("id", ""),
                     name=function.get("name", ""),
                     args=args,
-                    error=_argument_error(function.get("arguments", ""))
-                    if strict_arguments
-                    else None,
+                    error=_argument_error(function.get("arguments", "")),
                 )
             )
             content.append(
