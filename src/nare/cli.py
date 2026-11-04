@@ -17,7 +17,6 @@ import os
 import signal
 import sys
 from collections.abc import AsyncIterator, Mapping
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +40,7 @@ from nare.loop import (
     check_budget,
     check_structured_output,
     configure_budgets,
+    final_text,
     run,
 )
 from nare.mcp import parse_servers
@@ -555,7 +555,7 @@ def _emit_result(session: Session, jsonl: bool) -> None:
                     "session_id": session.id,
                     "status": session.status,
                     "questions": session.questions,
-                    "usage": asdict(session.usage),
+                    "usage": session.usage.wire(),
                     "budget": budget_record(session),
                     "stop_reason": session.stop_reason,
                     "turns": session.turns,
@@ -563,6 +563,7 @@ def _emit_result(session: Session, jsonl: bool) -> None:
                     "contract": CONTRACT_VERSION,
                     "nare": __version__,
                     "output": session.output,
+                    "text": final_text(session),
                     "error": session.error,
                 }
             ),

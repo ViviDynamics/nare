@@ -80,6 +80,13 @@ class Usage:
         """Disjoint provider-normalized categories, counted once."""
         return self.input + self.output + self.cache_read + self.cache_write
 
+    def wire(self) -> dict[str, Any]:
+        """The usage object of a result line or an event: the counters plus
+        `total`, the number --budget-tokens counts. The session file keeps the
+        counters alone, so its shape is unchanged.
+        """
+        return {**asdict(self), "total": self.total_tokens}
+
     def __add__(self, other: Usage) -> Usage:
         return Usage(
             input=self.input + other.input,

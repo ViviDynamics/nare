@@ -267,6 +267,7 @@ def test_golden_jsonl(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Non
         "cache_write": 0,
         "cost": None,
         "estimated": False,
+        "total": 15,
     }
     assert emitted[0]["detail"] == {
         "context_window": {
@@ -324,7 +325,9 @@ def test_golden_jsonl(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Non
         "cache_write": 0,
         "cost": None,
         "estimated": False,
+        "total": 30,
     }
+    assert result["text"] == "finished"
     assert len(emitted) == 8
 
 
