@@ -165,6 +165,16 @@ def describe() -> dict[str, Any]:
             "max_pixels": MAX_IMAGE_PIXELS,
             "max_edge": MAX_IMAGE_EDGE,
         },
+        # Additive: built-in calls are checked against the tool's schema
+        # before approval, and a bad call is an is_error result.
+        "tool_arguments": {
+            "checked": "built_in",
+            "against": "input_schema",
+            "before": "approval",
+            "unknown_parameters": "refused",
+            "null_optional": "absent",
+            "malformed_json": "is_error",
+        },
         # Additive: how each tool's result is held to the output cap.
         "tool_output": {
             "max_chars": MAX_TOOL_OUTPUT,

@@ -207,7 +207,9 @@ async def test_a_model_cannot_move_the_base_of_navigation(tmp_path: Path) -> Non
 
     result = await dispatch(call("list", base="/"), Policy(root=tmp_path))
 
-    assert result["content"].splitlines()[0] == ".: entries 1-1 of 1"
+    # Refused as a parameter list does not take, before anything is listed.
+    assert result["is_error"] is True
+    assert result["content"].startswith("list: unknown parameter base;")
 
 
 async def test_without_a_root_navigation_is_relative_to_the_working_directory(

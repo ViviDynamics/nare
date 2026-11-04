@@ -563,6 +563,36 @@ event, and this removes the keys at the source instead of relying on it.
 Withholding is not a sandbox. A command can still read files, the network and
 anything else the environment gives it; confining those stays the caller's job.
 
+## Tool arguments
+
+Before a built-in tool runs, and before the approval callback is asked about
+it, nare checks the call's arguments against that tool's own input schema,
+the one the model was shown. A call that fails gets an `is_error` tool result
+naming the tool, the parameter and the problem, every problem at once, and
+nothing runs:
+
+    bash: timeout: expected integer, got string
+    edit: missing required parameter new
+    read: unknown parameter lines; read takes path, offset, limit
+
+- An unknown parameter is refused. That includes the keywords nare sets on a
+  call itself (the working directory, the evidence base, the bash
+  environment), which a model cannot reach.
+- An optional parameter sent as `null` is read as absent, since some models
+  send every parameter. A required one sent as `null` is a type error.
+- `ask` keeps its own reading of `questions` (a bare string is one question),
+  so the check never changes when `blocked` is reported; missing and unknown
+  parameters are still refused.
+- MCP tools are left to their servers, which validate their own input.
+
+Tool arguments that are not a complete JSON object are an `is_error` result
+too, on every path that receives them as text: a streamed turn on either
+provider, and an unstreamed openai turn, which used to pass `{}` and run the
+tool with no arguments. The tool is not run. (An unstreamed anthropic reply
+arrives with its arguments already parsed.)
+
+`nare contract` describes the check under `tool_arguments`.
+
 ## The tool output cap
 
 Every tool result's text is held to 30000 characters (`nare contract` prints
