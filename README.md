@@ -278,6 +278,12 @@ requests a summary. The run still exits with `error` and `stop_reason=max_turns`
 and explains that `continue` starts another run with the same turn allowance.
 Token and USD ceilings still apply before a summary request.
 
+`--timeout SECONDS` bounds one `nare run` by wall clock. At the deadline, or on
+SIGTERM or SIGINT, nare stops the call in flight, kills the bash commands the
+run started, saves the session and writes the result line with
+`stop_reason=timeout` or `stop_reason=interrupted`, then exits 1. The session
+resumes from its last completed turn.
+
 Before each model call, old tool output is elided if estimated context reaches
 80% of the window, stopping at 60% where possible. If that is not enough, long
 contents of old `write` calls and long `edit` texts are elided next. The task,

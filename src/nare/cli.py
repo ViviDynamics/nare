@@ -14,6 +14,7 @@ import json
 import logging
 import math
 import os
+import signal
 import sys
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import asdict
@@ -22,7 +23,13 @@ from typing import Any
 
 from nare import __version__
 from nare.accounting import Prices, finite_number, prices_from_env
-from nare.contract import CONTRACT_VERSION, EXIT_CODES, NEVER_STARTED, describe
+from nare.contract import (
+    CONTRACT_VERSION,
+    EXIT_CODES,
+    NEVER_STARTED,
+    STOP_SIGNALS,
+    describe,
+)
 from nare.events import Event, redact
 from nare.loop import (
     MAX_TURNS_DEFAULT,
@@ -39,7 +46,7 @@ from nare.loop import (
 from nare.mcp import parse_servers
 from nare.schema import UnsupportedSchema, check_supported
 from nare.session import Session, loads, new_session, reopen, save, unanswered
-from nare.tools import TOOLS, Policy, approve_all
+from nare.tools import TOOLS, Policy, approve_all, stop_group
 from nare.transport import Transport, make_transport
 
 log = logging.getLogger(__name__)
@@ -153,6 +160,17 @@ def build_parser() -> argparse.ArgumentParser:
             "(openai provider only). A constrained turn offers no tools, so only "
             "the schema correction turn, or every turn of a run with no tools, "
             "is constrained. nare still validates every answer"
+        ),
+    )
+    run_parser.add_argument(
+        "--timeout",
+        type=float,
+        metavar="SECONDS",
+        help=(
+            "wall clock for this invocation. At the deadline nare stops the "
+            "model or tool call in flight, kills the bash commands this run "
+            "started, saves the session and writes a result with stop_reason "
+            "timeout. SIGTERM and SIGINT do the same with stop_reason interrupted"
         ),
     )
     add_run_flags(run_parser)
@@ -564,6 +582,84 @@ async def _pending_events(session: Session) -> AsyncIterator[Event]:
         yield session.events.pop(0)
 
 
+class _Stop:
+    """Turns --timeout, SIGTERM and SIGINT into a cancel of the run, and
+    remembers which one it was.
+
+    A cancel, because the loop already answers every tool call a cancel
+    interrupts and bash already kills the command it is running when
+    cancelled, so what is saved afterwards is a transcript a resume accepts.
+    SIGTERM's default handler exits without unwinding, which is why a killed
+    run used to write no result line.
+
+    The first stop removes the handlers, so a second signal acts as it would
+    without nare's: a stop that hangs can still be forced.
+    """
+
+    def __init__(self, timeout: float | None) -> None:
+        self.timeout = timeout
+        self.reason: str | None = None
+        self.signal: str | None = None
+        self._loop = asyncio.get_running_loop()
+        self._task = asyncio.current_task()
+        self._signals: list[signal.Signals] = []
+        self._timer: asyncio.TimerHandle | None = None
+
+    def install(self) -> None:
+        for signum in (signal.Signals[name] for name in STOP_SIGNALS):
+            try:
+                self._loop.add_signal_handler(signum, self._stop, "interrupted", signum)
+            except (NotImplementedError, RuntimeError, ValueError):
+                # Not the main thread, or no signal support: the deadline
+                # still works, and the signal keeps its default.
+                continue
+            self._signals.append(signum)
+        if self.timeout is not None:
+            self._timer = self._loop.call_later(
+                self.timeout, self._stop, "timeout", None
+            )
+
+    def release(self) -> None:
+        for signum in self._signals:
+            self._loop.remove_signal_handler(signum)
+        self._signals = []
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+
+    def _stop(self, reason: str, signum: signal.Signals | None) -> None:
+        if self.reason is not None:
+            return
+        self.reason = reason
+        self.signal = signum.name if signum is not None else None
+        self.release()
+        if self._task is not None:
+            self._task.cancel()
+
+
+def _stopped(session: Session, stop: _Stop, groups_from: int, jsonl: bool) -> None:
+    """Record a run that a deadline or a signal ended."""
+    # A command that left something running is this run's to stop. The one
+    # running when the stop landed was killed by its own cancel.
+    killed = [
+        group["pgid"]
+        for group in session.process_groups[groups_from:]
+        if stop_group(group.get("pgid"))
+    ]
+    session.status = "error"
+    if stop.reason == "timeout":
+        assert stop.timeout is not None
+        session.stop_reason = "timeout"
+        session.error = f"run stopped: --timeout {stop.timeout:g} s reached"
+        detail: dict[str, Any] = {"reason": "timeout", "timeout": stop.timeout}
+    else:
+        session.stop_reason = "interrupted"
+        session.error = f"run stopped by {stop.signal}"
+        detail = {"reason": "interrupted", "signal": stop.signal}
+    detail["process_groups"] = killed
+    _emit(Event("error", session.error, {"stop": detail}), jsonl)
+
+
 async def _execute(
     session: Session,
     transport: Transport | None,
@@ -573,6 +669,9 @@ async def _execute(
     prices: Prices | None,
 ) -> int:
     saved_turns = -1
+    groups_from = len(session.process_groups)
+    stop = _Stop(getattr(args, "timeout", None))
+    stop.install()
     try:
         stream = (
             run(
@@ -596,10 +695,9 @@ async def _execute(
         )
         async for event in stream:
             _emit(event, args.jsonl)
-            # Saved per turn, not once at the end. SIGTERM's default handler
-            # exits without unwinding, so `finally` never runs and a run
-            # persisted only at the end is not resumable after a kill --
-            # which is how conductor ends a slow run. A streamed turn yields
+            # Saved per turn, not once at the end. SIGTERM and SIGINT save on
+            # the way out, but SIGKILL cannot be caught, and a run persisted
+            # only at the end is not resumable after one. A streamed turn yields
             # events after step() commits its calls and before they have
             # results; a file saved then is one vendors reject on resume, so
             # the save waits for the results.
@@ -617,7 +715,15 @@ async def _execute(
                 except OSError as exc:
                     # Transient here: only the final write decides the run.
                     log.warning("could not write --session %s: %s", args.session, exc)
+    except asyncio.CancelledError:
+        if stop.reason is None:
+            raise
+        task = asyncio.current_task()
+        assert task is not None
+        task.uncancel()
+        _stopped(session, stop, groups_from, args.jsonl)
     finally:
+        stop.release()
         if args.session:
             try:
                 save(session, args.session)
@@ -699,6 +805,8 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         return NEVER_STARTED
 
     try:
+        if args.timeout is not None:
+            finite_number(args.timeout, "--timeout")
         prices = validate_run_args(args)
         if args.prompt_file is not None:
             try:
