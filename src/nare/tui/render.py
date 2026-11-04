@@ -484,7 +484,7 @@ def live_for(
 def placeholder(state: str) -> str:
     """The prompt box's hint, by what the run is doing."""
     if state == "working":
-        return "working · esc to interrupt"
+        return "working · enter queues a message · esc to interrupt"
     if state == "awaiting approval":
         return "answer the prompt above"
     if state == "blocked":
