@@ -31,8 +31,8 @@ scope). The prompt-cache breakpoint placement is unchanged.
   unchanged (docs/contract.md, "What changes the version").
 
 ## Tasks
-- [ ] 1. Flags: `--system-file` and `--append-system-file` read UTF-8 bytes verbatim; with their argv forms they exit 2 naming both; an unreadable file or invalid UTF-8 exits 2 naming the flag.
-- [ ] 2. Session field: `system` defaults to null, round-trips, is redacted on save, refuses a non-string, and a pre-change file loads with null.
-- [ ] 3. Resume: a session started with `--system-file` and resumed with no system option sends the same system bytes; a changed `--system` sends the new one and emits one progress event; an unchanged one emits none; a null record keeps today's default.
-- [ ] 4. TUI: the flags and the record apply to `nare tui` too.
-- [ ] 5. Discovery and docs: `nare contract` `system_input`; `docs/contract.md` and README.
+- [x] 1. Flags: `--system-file` and `--append-system-file` read UTF-8 bytes verbatim; with their argv forms they exit 2 naming both; an unreadable file or invalid UTF-8 exits 2 naming the flag.
+- [x] 2. Session field: `system` defaults to null, round-trips, is redacted on save, refuses a non-string, and a pre-change file loads with null.
+- [x] 3. Resume: a session started with `--system-file` and resumed with no system option sends the same system bytes; a changed `--system` sends the new one and emits one progress event; an unchanged one emits none; a null record keeps today's default.
+- [x] 4. TUI: the flags and the record apply to `nare tui` too.
+- [x] 5. Discovery and docs: `nare contract` `system_input`; `docs/contract.md` and README.

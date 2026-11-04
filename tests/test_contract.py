@@ -200,6 +200,19 @@ def test_contract_describes_prompt_input_routes() -> None:
     }
 
 
+def test_contract_describes_system_prompt_routes() -> None:
+    assert describe()["system_input"] == {
+        "file_flags": {
+            "--system": "--system-file",
+            "--append-system": "--append-system-file",
+        },
+        "encoding": "utf-8",
+        "exclusive": True,
+        "session_field": "system",
+        "resume": "recorded",
+    }
+
+
 def test_contract_describes_read_image_input() -> None:
     assert describe()["image_input"] == {
         "flag": "--image-input",

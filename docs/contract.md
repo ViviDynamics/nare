@@ -14,8 +14,9 @@ Read the contract as data instead of parsing this page:
 It prints the version, the exit codes, the statuses, the stop reasons
 (`stop_reasons`), the event types, the
 built-in tool names (`tools`), the navigation limits (`navigation`), the read
-evidence record (`evidence`), the tool result record (`tool_results`) and the
-redaction rule set this build speaks.
+evidence record (`evidence`), the tool result record (`tool_results`), the
+system prompt routes (`system_input`) and the redaction rule set this build
+speaks.
 
 ## Refusing a contract you do not speak
 
@@ -106,6 +107,42 @@ handle, and nare's own tests run each of them through a real subprocess:
 The script format is part of this contract under the same rules as the rest:
 a new optional key keeps the version, and removing or renaming a key, or
 changing what one means, bumps it.
+
+## System prompt input
+
+`--system TEXT` replaces nare's default system prompt (`--system ''` sends none)
+and `--append-system TEXT` adds to whichever prompt is in effect. Each has a file
+route that keeps a long prompt out of argv:
+
+    nare run --yes --jsonl --system-file persona.md --prompt-file task.txt \
+      --session review.json
+
+`--system-file PATH` and `--append-system-file PATH` are read like
+`--prompt-file`: UTF-8, every byte kept, nothing trimmed. Each is exclusive with
+its argv form; giving both exits 2, naming both on stderr. An unreadable file or
+invalid UTF-8 exits 2 naming the flag and path. None of these errors writes to
+stdout, calls a model or writes a session file.
+
+The session file records the system prompt the run sent, after redaction, in
+its `system` field: the text, `""` when no system prompt was sent, or `null` in a
+file saved before nare recorded it. On `--resume`:
+
+- with no system option (none of the four flags above), the recorded prompt is
+  sent again, byte for byte, so the model keeps its instructions and a caching
+  backend keeps its prefix. A secret in it reads `[redacted]` in the file and so
+  on the resumed turn too, exactly as in the transcript;
+- with a system option, the prompt is built from the flags exactly as for a new
+  run. When it differs from the record, one `progress` event says so before the
+  first turn, with `detail` `{"system_prompt": {"changed": true}}`, and the new
+  prompt is recorded;
+- with a `null` record, the flags decide as they always did (the default when
+  none is given), and that prompt is recorded from then on.
+
+A `system` field that is neither a string nor `null` makes the session file
+malformed (exit 2). `nare tui` takes the same flags and honours the record. The
+`nare contract` object advertises the routes under `system_input`. The flags,
+the session field and the event detail are additive and keep the contract
+version.
 
 ## The redaction rule set
 
@@ -852,8 +889,10 @@ Servers with automatic prefix caching (OpenAI, vLLM with prefix caching on,
 and others) need no marker, but they hit only on a stable prefix. nare keeps
 its own part stable: the system prompt is fixed for a run, and tools are
 offered in a fixed order (built-in tools first, then MCP tools in the order
-their servers list them). A caller keeps the rest stable: the same `--system`
-and `--append-system` text, the same `--tools` and the same MCP configuration
-across turns and resumes. Context elision rewrites old tool results, so the
+their servers list them). A caller keeps the rest stable: the same `--tools` and
+the same MCP configuration across turns and resumes. A resume with no system
+option sends the system prompt the session recorded (see
+[System prompt input](#system-prompt-input)), so the system prompt stays stable
+without being resent. Context elision rewrites old tool results, so the
 turn that elides reads back only the prefix in front of the first rewritten
 message, and the turns after it hit again.
