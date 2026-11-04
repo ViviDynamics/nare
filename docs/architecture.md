@@ -52,8 +52,9 @@ change that teaches nare any of those words is crossing the boundary.
 
 Nor does nare know its callers. It names no other product in its code, flags,
 tools or documentation, and defines its contracts on its own terms; a caller's
-adapter maps them onto that caller's types. See ADR 0008. A test fails when a
-caller's name appears.
+adapter maps them onto that caller's types. See
+[ADR 0008](adr/0008-caller-agnostic.md). A test fails when a caller's name
+appears.
 
 ## Determinism
 
