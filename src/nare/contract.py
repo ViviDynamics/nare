@@ -68,6 +68,7 @@ STOP_REASONS: tuple[tuple[str | None, StopReasonKind, tuple[Status, ...]], ...] 
     ("context", "limit", ("error",)),
     ("budget", "limit", ("error",)),
     ("timeout", "limit", ("error",)),
+    ("tool_calls", "limit", ("error",)),
     ("refusal", "answer", ("error",)),
     ("schema_violation", "answer", ("error",)),
     ("no_answer", "answer", ("error",)),
@@ -180,6 +181,13 @@ def describe() -> dict[str, Any]:
         },
         # Additive: a run bounded by wall clock, or stopped by a signal, still
         # saves its session and writes a result line.
+        # Additive: a cap on the tool calls one invocation runs.
+        "tool_call_limit": {
+            "flag": "--max-tool-calls",
+            "per": "invocation",
+            "stop_reason": "tool_calls",
+            "budget_keys": ["tool_calls", "used_tool_calls"],
+        },
         "deadline": {
             "flag": "--timeout",
             "signals": list(STOP_SIGNALS),

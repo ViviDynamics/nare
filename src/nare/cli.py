@@ -163,6 +163,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_parser.add_argument(
+        "--max-tool-calls",
+        type=int,
+        metavar="N",
+        help=(
+            "run at most N tool calls in this invocation, built-in and MCP. "
+            "Past the cap a call is refused and the model told to answer; one "
+            "that calls again ends the run with stop_reason tool_calls"
+        ),
+    )
+    run_parser.add_argument(
         "--timeout",
         type=float,
         metavar="SECONDS",
@@ -546,7 +556,13 @@ def _emit(event: Event, jsonl: bool) -> None:
         print(f"[{event.type}] {event.text}", flush=True)
 
 
-def _emit_result(session: Session, jsonl: bool) -> None:
+def _emit_result(
+    session: Session,
+    jsonl: bool,
+    *,
+    max_tool_calls: int | None = None,
+    tool_calls_from: int | None = None,
+) -> None:
     if jsonl:
         print(
             json.dumps(
@@ -556,7 +572,11 @@ def _emit_result(session: Session, jsonl: bool) -> None:
                     "status": session.status,
                     "questions": session.questions,
                     "usage": session.usage.wire(),
-                    "budget": budget_record(session),
+                    "budget": budget_record(
+                        session,
+                        max_tool_calls=max_tool_calls,
+                        tool_calls_from=tool_calls_from,
+                    ),
                     "stop_reason": session.stop_reason,
                     "turns": session.turns,
                     "retries": session.retries,
@@ -671,6 +691,7 @@ async def _execute(
 ) -> int:
     saved_turns = -1
     groups_from = len(session.process_groups)
+    tool_calls_from = session.tool_calls
     stop = _Stop(getattr(args, "timeout", None))
     stop.install()
     try:
@@ -690,6 +711,7 @@ async def _execute(
                 mcp_allow_all=args.tools is None,
                 structured_output=args.structured_output,
                 retry=args.retry,
+                max_tool_calls=args.max_tool_calls,
             )
             if transport is not None
             else _pending_events(session)
@@ -737,7 +759,12 @@ async def _execute(
                 session.stop_reason = "session_write"
                 session.error = f"could not write --session {args.session}: {exc}"
                 _emit(Event("error", session.error), args.jsonl)
-    _emit_result(session, args.jsonl)
+    _emit_result(
+        session,
+        args.jsonl,
+        max_tool_calls=args.max_tool_calls,
+        tool_calls_from=tool_calls_from,
+    )
     return EXIT_CODES.get(session.status, EXIT_CODES["error"])
 
 
@@ -808,6 +835,8 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     try:
         if args.timeout is not None:
             finite_number(args.timeout, "--timeout")
+        if args.max_tool_calls is not None and args.max_tool_calls <= 0:
+            raise ValueError("--max-tool-calls must be a positive integer")
         prices = validate_run_args(args)
         if args.prompt_file is not None:
             try:
