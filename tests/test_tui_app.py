@@ -605,6 +605,24 @@ async def test_a_busy_bash_call_shows_what_runs_and_a_ticking_time(
         assert app.activity is None
 
 
+async def test_the_clock_for_a_call_starts_after_its_approval(tmp_path: Path) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._set_state("working")
+
+        async def answered_after_a_wait(tool: str, args: dict[str, Any]) -> bool:
+            # A person takes time to answer; that is not the call's run time.
+            await asyncio.sleep(0.3)
+            return True
+
+        cast(Any, app).approver = answered_after_a_wait
+        started = time.monotonic()
+        assert await app._approve("bash", {"command": "sleep 30"}) is True
+        assert app.activity is not None
+        assert app.activity[2] - started >= 0.3
+
+
 async def test_the_status_bar_hints_the_keys_when_idle(tmp_path: Path) -> None:
     app = make(tmp_path, FakeProvider([]))
     async with app.run_test() as pilot:

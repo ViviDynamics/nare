@@ -646,11 +646,15 @@ class TuiApp(App[None]):
 
     async def _approve(self, tool: str, args: dict[str, Any]) -> bool | str:
         # Before every call the approver sees, exempt or not: a call that runs
-        # without a prompt still shows what it is doing.
+        # without a prompt still shows what it is doing. Restamped after the
+        # answer, so the time spent waiting for a person is not the call's.
         label, detail = activity_of(tool, args)
         self.activity = (label, detail, time.monotonic())
         self._status()
-        return await self.approver(tool, args)
+        answer = await self.approver(tool, args)
+        self.activity = (label, detail, time.monotonic())
+        self._status()
+        return answer
 
     def _save(self) -> None:
         if self.session is None or not self.args.session:
