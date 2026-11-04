@@ -60,7 +60,8 @@ keeps the contract version; removing or renaming one bumps it.
 | `--structured-output` | yes | `json_schema` | Constrain answers at decode time ([Schema-constrained answers](#schema-constrained-answers)) |
 | `--proxy-num-retries` | yes | | Send `num_retries` to an OpenAI-compatible proxy |
 | `--cache-breakpoints` | no | | Mark prompt-cache breakpoints on the openai rail ([Prompt-cache breakpoints](#prompt-cache-breakpoints)) |
-| `--provider` | yes | `anthropic`, `openai` | Model provider |
+| `--provider` | yes | `anthropic`, `openai`, `fake` | Model provider |
+| `--replay` | yes | | JSON script of replies `--provider fake` replays ([Scripted runs](#scripted-runs)) |
 | `--model` | yes | | Model name |
 | `--base-url` | yes | | Override the provider endpoint |
 | `--temperature` | yes | | Sampling temperature; not accepted by the anthropic provider |
