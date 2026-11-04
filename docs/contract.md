@@ -326,7 +326,8 @@ the contract version.
     nare run --yes --jsonl --timeout 600 --session review.json "review the patch"
 
 `--timeout SECONDS` bounds one invocation by wall clock, counted from when the
-run starts, as `--max-turns` counts turns per invocation. It is a positive
+run starts, as `--max-turns` counts turns per invocation. It bounds the whole
+run, retries included; `--request-timeout` bounds each model request. It is a positive
 finite number; anything else never starts (exit 2). SIGTERM and SIGINT stop
 `nare run` the same way. Either one:
 
