@@ -113,6 +113,9 @@ class Session:
     # Model requests resent after a transient failure, over the session's
     # life, like turns. A failed attempt is not a turn and adds no usage.
     retries: int = 0
+    # Tool calls the session has run over its life, as `turns` counts turns.
+    # --max-tool-calls counts from where an invocation started.
+    tool_calls: int = 0
     last_input_tokens: int = 0
     last_input_messages: int = 0
     last_input_chars: int = 0

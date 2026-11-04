@@ -101,8 +101,46 @@ class RetryPolicy:
 NO_RETRIES = RetryPolicy(retries=0, seconds=0)
 
 
-def budget_record(s: Session) -> dict[str, Any]:
-    return {**s.budget, "used_tokens": s.usage.total_tokens, "used_usd": s.usage.cost}
+def budget_record(
+    s: Session,
+    *,
+    max_tool_calls: int | None = None,
+    tool_calls_from: int | None = None,
+) -> dict[str, Any]:
+    """The limits a run had and what it used. The tool call cap and its count
+    are per invocation, so only a caller that knows where the invocation
+    started (`tool_calls_from`) reports them.
+    """
+    record = {**s.budget, "used_tokens": s.usage.total_tokens, "used_usd": s.usage.cost}
+    if max_tool_calls is not None:
+        record["tool_calls"] = max_tool_calls
+    if tool_calls_from is not None:
+        record["used_tool_calls"] = s.tool_calls - tool_calls_from
+    return record
+
+
+@dataclass
+class ToolCallLimit:
+    """--max-tool-calls for one invocation: the cap, the calls run against it,
+    and how many turns had a call refused at it."""
+
+    limit: int
+    used: int = 0
+    refused_turns: int = 0
+
+    def message(self) -> str:
+        return (
+            f"not run: the tool call limit for this run ({self.limit}) is reached. "
+            "Tools are disabled: answer now with what you have, and say what "
+            "remains undone."
+        )
+
+
+def check_max_tool_calls(value: int | None) -> None:
+    if value is not None and (
+        isinstance(value, bool) or not isinstance(value, int) or value <= 0
+    ):
+        raise ValueError("max_tool_calls must be a positive integer")
 
 
 def configure_budgets(
@@ -408,6 +446,7 @@ async def step(
     structured_output: str | None = None,
     retry: RetryPolicy = NO_RETRIES,
     on_event: Callable[[Event], None] | None = None,
+    tool_calls: ToolCallLimit | None = None,
 ) -> Session:
     report = compact(s, context_window, image_input=policy.image_input)
     if report is not None:
@@ -614,10 +653,22 @@ async def step(
             # ponytail: tool calls dispatch sequentially. Models do emit
             # parallel tool calls; asyncio.gather is the upgrade once a run is
             # measurably slow because of it, and not before.
+            refused = False
             for call in reply.tool_calls:
                 if call.name == "ask" and not only_asks and "ask" in policy.tools:
                     results.append(tool_result(call.id, ASK_NOT_ALONE, is_error=True))
                     continue
+                if tool_calls is not None and tool_calls.used >= tool_calls.limit:
+                    results.append(
+                        tool_result(call.id, tool_calls.message(), is_error=True)
+                    )
+                    refused = True
+                    continue
+                # Counted as it starts: a call that is cancelled or raises was
+                # still run.
+                s.tool_calls += 1
+                if tool_calls is not None:
+                    tool_calls.used += 1
                 result = await dispatch(
                     call, policy, approve, left_running=left_running, evidence=evidence
                 )
@@ -639,6 +690,8 @@ async def step(
                             tool_use_id=call.id,
                         )
                     )
+            if refused and tool_calls is not None:
+                tool_calls.refused_turns += 1
     except asyncio.CancelledError:
         unanswered = INTERRUPTED
         raise
@@ -690,6 +743,7 @@ async def _live_step(
     prices: Prices | None,
     structured_output: str | None = None,
     retry: RetryPolicy = NO_RETRIES,
+    tool_calls: ToolCallLimit | None = None,
 ) -> AsyncGenerator[Event, None]:
     queue: asyncio.Queue[Event] = asyncio.Queue()
     buffers: dict[Literal["progress", "thinking"], LiveText] = {
@@ -727,6 +781,7 @@ async def _live_step(
             structured_output,
             retry,
             retried,
+            tool_calls,
         )
     )
     waiter: asyncio.Task[Event] | None = None
@@ -775,6 +830,7 @@ async def _run(
     prices: Prices | None = None,
     structured_output: str | None = None,
     retry: RetryPolicy | None = None,
+    max_tool_calls: int | None = None,
 ) -> AsyncGenerator[Event, None]:
     """Advance the session to a terminal status, yielding events as they occur.
 
@@ -849,6 +905,8 @@ async def _run(
     # round, and a cumulative budget makes every resume past the Nth die
     # instantly with a message that reads like a runaway loop.
     budget_from = session.turns
+    # Per invocation too, for the same reason.
+    tool_calls = ToolCallLimit(max_tool_calls) if max_tool_calls is not None else None
     while session.status == "working":
         if check_budget(session):
             pass
@@ -888,6 +946,7 @@ async def _run(
                             prices,
                             structured_output,
                             retry or RetryPolicy(),
+                            tool_calls,
                         )
                     ) as stream:
                         async for event in stream:
@@ -903,9 +962,25 @@ async def _run(
                         prices,
                         structured_output=structured_output,
                         retry=retry or RetryPolicy(),
+                        tool_calls=tool_calls,
                     )
                 if session.status not in ("done", "blocked"):
                     check_budget(session)
+                if (
+                    session.status == "working"
+                    and tool_calls is not None
+                    and tool_calls.refused_turns > 1
+                ):
+                    # Told once to answer, and it called again. Another turn
+                    # would be the same refusal, so the run ends here.
+                    session.status = "error"
+                    session.stop_reason = "tool_calls"
+                    session.error = (
+                        f"Tool call limit reached ({tool_calls.limit} per run), "
+                        "and the model kept calling tools. Resume for up to "
+                        f"{tool_calls.limit} more."
+                    )
+                    session.events.append(Event("error", session.error))
             except Exception as exc:
                 session.status = "error"
                 # The last completed turn's reason describes that turn, not
@@ -942,8 +1017,10 @@ async def run(
     mcp_allow_all: bool = False,
     structured_output: StructuredOutput | None = None,
     retry: RetryPolicy | None = None,
+    max_tool_calls: int | None = None,
 ) -> AsyncGenerator[Event, None]:
     check_structured_output(transport, schema, structured_output)
+    check_max_tool_calls(max_tool_calls)
     configure_budgets(session, budget_tokens, budget_usd)
     if context_window is not None and (
         isinstance(context_window, bool)
@@ -980,6 +1057,7 @@ async def run(
                     prices=prices,
                     structured_output=structured_output,
                     retry=retry,
+                    max_tool_calls=max_tool_calls,
                 )
             ) as stream:
                 async for event in stream:

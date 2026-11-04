@@ -58,6 +58,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--contract` | yes | | The contract version the caller speaks ([Refusing a contract](#refusing-a-contract-you-do-not-speak)) |
 | `--schema` | yes | | JSON Schema file the final answer must satisfy ([Answer schemas](#answer-schemas)) |
 | `--structured-output` | yes | `json_schema` | Constrain answers at decode time ([Schema-constrained answers](#schema-constrained-answers)) |
+| `--max-tool-calls` | yes | | Run at most this many tool calls in this invocation ([Budgets and partial results](#budgets-and-partial-results)) |
 | `--timeout` | yes | | Wall clock for this invocation ([Run deadline and stop signals](#run-deadline-and-stop-signals)) |
 | `--request-timeout` | yes | | HTTP timeout for each model request ([Provider retries and the request timeout](#provider-retries-and-the-request-timeout)) |
 | `--request-retries` | yes | | Resend a model request after a transient failure, up to this many times |
@@ -386,6 +387,7 @@ has a kind, which says what a caller can do about it:
 | `context` | `limit` | `error` | Estimated context still exceeds the window after eligible elision |
 | `budget` | `limit` | `error` | Session token/USD ceiling reached, or USD accounting is unknown |
 | `timeout` | `limit` | `error` | Invocation's wall clock limit reached (`--timeout`; see Run deadline and stop signals) |
+| `tool_calls` | `limit` | `error` | Invocation's tool call cap reached (`--max-tool-calls`), and the model called a tool again after being told to answer |
 | `refusal` | `answer` | `error` | Provider refused to continue |
 | `schema_violation` | `answer` | `error` | Second invalid structured answer |
 | `no_answer` | `answer` | `error` | The model sent reasoning and no answer, which is what a proxy that drops one of them produces |
@@ -469,7 +471,9 @@ provider counters normalize to zero; this is reported accounting, not proof of
 a strict cap when a provider omits usage.
 
 Every result carries `budget`: configured `tokens` and/or `usd` limits (keys
-absent when unset), plus `used_tokens` and `used_usd` (null when cost is unknown).
+absent when unset), plus `used_tokens` and `used_usd` (null when cost is unknown),
+and `used_tool_calls`, the tool calls this invocation ran, with `tool_calls`, the
+`--max-tool-calls` cap, when one is set.
 A budget `error` event has `detail.budget` with the same fields and `detail.usage`
 with actual cumulative counters. The result is authoritative for terminal
 status. In particular, done/blocked crossing a ceiling still exit 0 and retain
@@ -514,6 +518,23 @@ The outcome stays `error`/`max_turns` and includes a `continue` hint. The summar
 counts in `turns` and usage; it does not grant another tool turn.
 A completed/blocked crossing result is successful; reopening it with resume
 still applies the cumulative pre-call guard.
+
+`--max-tool-calls N` (`max_tool_calls` in the library) caps the tool calls one
+invocation runs, as `--max-turns` caps its turns: one turn can hold many calls,
+so a turn limit bounds exploration only loosely. A call counts when nare runs
+it, built-in or MCP, whatever its result; a call nare never runs (one refused
+at the cap, an `ask` beside other calls, one from a truncated turn) does not.
+Past the cap a call gets an `is_error` result telling the model the limit is
+reached and to answer now, and does not run; the calls before it in the same
+turn ran. The model keeps its tools for one more turn. If it answers, the run
+ends as that answer does. If it calls a tool again, those calls are refused the
+same way and the run ends `error` with `stop_reason` `tool_calls`. A token or
+USD ceiling crossed in the same turn wins, and the stop reason is `budget`. The
+cap is not saved: a resume gets the full allowance again. The session's
+`tool_calls` field counts the calls it has run over its life, as `turns` counts
+turns; a file without it loads with 0. `nare contract` advertises the cap under
+`tool_call_limit`. The flag, the stop reason, the budget keys and the session
+field are additive and keep the contract version.
 
 When a schema was supplied, nare retains the latest complete JSON document that
 passes that schema in `result.output` and session `output`, including a document

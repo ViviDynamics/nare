@@ -282,6 +282,11 @@ requests a summary. The run still exits with `error` and `stop_reason=max_turns`
 and explains that `continue` starts another run with the same turn allowance.
 Token and USD ceilings still apply before a summary request.
 
+`--max-tool-calls N` caps the tool calls one `nare run` runs, built-in and MCP.
+Past the cap a call is refused with an error telling the model to answer; a
+model that calls again ends the run with `stop_reason=tool_calls`.
+`result.budget.used_tool_calls` reports the calls the invocation ran.
+
 `--timeout SECONDS` bounds one `nare run` by wall clock. At the deadline, or on
 SIGTERM or SIGINT, nare stops the call in flight, kills the bash commands the
 run started, saves the session and writes the result line with
