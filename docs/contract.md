@@ -646,6 +646,17 @@ nothing runs:
   parameters are still refused.
 - MCP tools are left to their servers, which validate their own input.
 
+A call to a tool nare does not have is an `is_error` result listing only the
+tools this session allows (`none` when it allows none), never every tool nare
+has, so the model is not offered one it would then be refused.
+
+A failed `edit` says why `old` did not match, and changes nothing. When `old`
+matches with all whitespace ignored, the error says so and shows those lines
+of the file, numbered. Otherwise it shows the lines closest to `old`'s first
+line, or says no line resembles it. When `old` appears more than once, it
+lists the line each occurrence starts on. Excerpts are bounded (10 lines, 200
+characters a line, 20 line numbers), and an inexact match is never applied.
+
 Tool arguments that are not a complete JSON object are an `is_error` result
 too, on every path that receives them as text: a streamed turn on either
 provider, and an unstreamed openai turn, which used to pass `{}` and run the

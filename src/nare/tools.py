@@ -10,6 +10,7 @@ import asyncio
 import base64
 import bisect
 import contextlib
+import difflib
 import fnmatch
 import hashlib
 import inspect
@@ -260,18 +261,150 @@ def write_file(path: str, content: str) -> str:
 
 
 def edit_file(path: str, old: str, new: str) -> str:
+    """Replace the one exact occurrence of `old`, or fail saying why not.
+
+    Exact text that fails cleanly is the design: a fuzzy or line-numbered
+    edit corrupts files silently. So the help goes in the error, which says
+    whether `old` matches with whitespace ignored, where it nearly matches,
+    or on which lines it appears more than once. The edit still fails.
+    """
     target = Path(path)
     text = target.read_text(encoding="utf-8")
+    if not old:
+        raise ValueError("old is empty; to replace a whole file, use write")
     count = text.count(old)
     if count == 0:
-        raise ValueError(f"old not found in {path}")
+        raise ValueError(_not_found(path, text, old))
     if count > 1:
         raise ValueError(
-            f"old appears {count} times in {path}; include enough "
+            f"old appears {count} times in {path}, at lines "
+            f"{_listed(_occurrences(text, old))}; include enough "
             "surrounding context to make it unique"
         )
     target.write_text(text.replace(old, new), encoding="utf-8")
     return f"edited {path}"
+
+
+# How much of the file an edit error shows: lines, line numbers listed, and
+# characters of a line. Enough to correct the call, never the whole file.
+EDIT_CONTEXT_LINES = 10
+EDIT_LISTED_LINES = 20
+# How alike a line must be to old's first line to be offered as the closest.
+_CLOSE_ENOUGH = 0.6
+
+
+def _occurrences(text: str, old: str) -> list[int]:
+    """The line each non-overlapping occurrence starts on, as count() counts."""
+    lines, at = [], text.find(old)
+    while at != -1:
+        lines.append(text.count("\n", 0, at) + 1)
+        at = text.find(old, at + len(old))
+    return lines
+
+
+def _listed(numbers: list[int]) -> str:
+    """1 and 7; 1, 4 and 9; the first EDIT_LISTED_LINES, then how many more."""
+    shown = [str(n) for n in numbers[:EDIT_LISTED_LINES]]
+    if len(numbers) > EDIT_LISTED_LINES:
+        return f"{', '.join(shown)}, and {len(numbers) - len(shown)} more"
+    return shown[0] if len(shown) == 1 else f"{', '.join(shown[:-1])} and {shown[-1]}"
+
+
+def _squeezed(line: str) -> str:
+    return "".join(line.split())
+
+
+def _excerpt(lines: list[str], first: int, last: int) -> str:
+    """Lines first..last (1-based, inclusive), numbered, bounded."""
+    shown = []
+    for number in range(first, min(last, first + EDIT_CONTEXT_LINES - 1) + 1):
+        line = lines[number - 1]
+        if len(line) > MATCH_WIDTH:
+            line = line[:MATCH_WIDTH] + "..."
+        shown.append(f"{number:>5}: {line}")
+    more = last - first + 1 - len(shown)
+    if more > 0:
+        shown.append(f"  ... {more} more lines")
+    return "\n".join(shown)
+
+
+def _whitespace_match(lines: list[str], old: str) -> tuple[int, int] | None:
+    """The first lines `old` matches with all whitespace ignored, 1-based.
+
+    `old` may start and end partway through a line, so its first line need
+    only end its line, its last only start one, and a single line need only
+    appear in one.
+    """
+    wanted = [_squeezed(line) for line in old.splitlines()]
+    while wanted and not wanted[0]:
+        wanted.pop(0)
+    while wanted and not wanted[-1]:
+        wanted.pop()
+    if not wanted:
+        return None
+    squeezed = [_squeezed(line) for line in lines]
+    span = len(wanted)
+    for start in range(len(lines) - span + 1):
+        window = squeezed[start : start + span]
+        if span == 1:
+            found = wanted[0] in window[0]
+        else:
+            found = (
+                window[0].endswith(wanted[0])
+                and window[-1].startswith(wanted[-1])
+                and window[1:-1] == wanted[1:-1]
+            )
+        if found:
+            return start + 1, start + span
+    return None
+
+
+def _closest(lines: list[str], old: str) -> tuple[int, int] | None:
+    """The lines most like `old`, anchored on its first non-blank line."""
+    anchor = next((line.strip() for line in old.splitlines() if line.strip()), "")
+    if not anchor:
+        return None
+    anchor = anchor[: MATCH_WIDTH * 2]
+    matcher = difflib.SequenceMatcher(autojunk=False)
+    matcher.set_seq2(anchor)
+    best, best_ratio = None, _CLOSE_ENOUGH
+    for number, line in enumerate(lines, 1):
+        matcher.set_seq1(line.strip()[: MATCH_WIDTH * 2])
+        if matcher.real_quick_ratio() < best_ratio:
+            continue
+        if matcher.quick_ratio() < best_ratio:
+            continue
+        ratio = matcher.ratio()
+        if ratio > best_ratio or (best is None and ratio >= best_ratio):
+            best, best_ratio = number, ratio
+    if best is None:
+        return None
+    span = len(old.strip("\n").splitlines()) or 1
+    return best, min(best + span - 1, len(lines))
+
+
+def _not_found(path: str, text: str, old: str) -> str:
+    lines = text.splitlines()
+    near = _whitespace_match(lines, old)
+    if near is not None:
+        first, last = near
+        return (
+            f"old not found in {path}, but it matches lines {first} to {last} "
+            "when whitespace is ignored: the indentation or spacing differs. "
+            f"The file has:\n{_excerpt(lines, first, last)}"
+        )
+    near = _closest(lines, old)
+    if near is not None:
+        first, last = near
+        return (
+            f"old not found in {path}. The closest lines are {first} to {last}; "
+            "the file may have changed since you read it:\n"
+            f"{_excerpt(lines, first, last)}"
+        )
+    return (
+        f"old not found in {path}, and no line resembles its first line; "
+        "read the file again to find the text"
+    )
 
 
 def _shell(command: str) -> list[str]:
@@ -1381,7 +1514,10 @@ async def dispatch(
     if function is None and call.name not in policy.external:
         return tool_result(
             call.id,
-            f"unknown tool {call.name!r}; available: {', '.join(sorted(TOOLS))}",
+            # The session's tools, not every tool nare has: offered one it
+            # may not call, the model switches to it and is refused.
+            f"unknown tool {call.name!r}; this session allows: "
+            f"{', '.join(sorted(policy.tools)) or 'none'}",
             is_error=True,
         )
     if call.name not in policy.tools:
