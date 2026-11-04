@@ -21,16 +21,22 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
+from rich.segment import Segment
+from rich.style import Style
 from rich.syntax import Syntax
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.await_remove import AwaitRemove
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import ModalScreen
+from textual.selection import Selection
+from textual.strip import Strip
 from textual.timer import Timer
+from textual.visual import Visual
 from textual.widgets import Collapsible, Input, Static
 from textual.worker import Worker, WorkerCancelled
 
@@ -85,13 +91,59 @@ GroupsScreen > VerticalScroll {
 BUSY = ("working", "awaiting approval")
 
 
+class SelectableStatic(Static):
+    """A transcript line that copies as the text you see. Textual takes the
+    text of a selection only from a plain Text, so a Rich group (a prompt, an
+    answer rendered as Markdown) would copy as nothing. Here the text comes
+    from the lines the widget draws, so the selection offsets match them.
+    """
+
+    def render_line(self, y: int) -> Strip:
+        # The compositor finds where a mouse press lands from each segment's
+        # "offset" meta, which Textual writes only for Text. Writing it here
+        # lets a drag start and end inside the block, not select all of it.
+        strip = super().render_line(y)
+        segments: list[Segment] = []
+        column = 0
+        for segment in strip:
+            style = (segment.style or Style()) + Style(meta={"offset": (column, y)})
+            segments.append(Segment(segment.text, style, segment.control))
+            column += segment.cell_length
+        return Strip(segments, strip.cell_length)
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        visual = self._render()
+        if isinstance(visual, (Text, Content)):
+            return super().get_selection(selection)
+        width, height = self.size
+        strips = Visual.to_strips(
+            self, visual, width, height, self.visual_style, apply_selection=False
+        )
+        text = "\n".join(strip.text.rstrip() for strip in strips)
+        return selection.extract(text), "\n"
+
+
+class PromptInput(Input):
+    """The prompt box. Its Ctrl+V pastes what nare itself copied, never the
+    system clipboard, so a stale copy would go in unnoticed. The terminal's
+    paste key sends the system clipboard as a paste, which Input inserts.
+    """
+
+    def action_paste(self) -> None:
+        self.app.notify(
+            "ctrl+v does not read the system clipboard. Paste with your "
+            "terminal's paste key (ctrl+shift+v, cmd+v or right-click).",
+            title="Paste",
+        )
+
+
 class Transcript(VerticalScroll):
     """Anchored by its app: it follows new blocks until you scroll up."""
 
     def add(self, blocks: list[Block]) -> None:
         for block in blocks:
             if block.title is None:
-                self.mount(Static(block.content))
+                self.mount(SelectableStatic(block.content))
             else:
                 self.mount(Collapsible(Static(block.content), title=block.title))
 
@@ -200,8 +252,9 @@ class GroupsScreen(ModalScreen[str]):
 class TuiApp(App[None]):
     CSS = CSS
     BINDINGS: ClassVar[list[BindingType]] = [
-        # Priority, so Ctrl-C interrupts even with the approval modal open.
-        Binding("ctrl+c", "interrupt", "interrupt", priority=True),
+        # Priority, so Ctrl-C works even with the approval modal open. It copies
+        # a selection in the transcript, and otherwise interrupts a running turn.
+        Binding("ctrl+c", "copy_or_interrupt", "copy or interrupt", priority=True),
         Binding("escape", "interrupt", "interrupt"),
         Binding("ctrl+q", "quit", "quit", priority=True),
         # The input box has focus and no use for them: the transcript does.
@@ -257,7 +310,7 @@ class TuiApp(App[None]):
         with VerticalScroll(id="live"):
             yield Static(id="live-text")
         yield Static(id="outcome")
-        yield Input(id="input")
+        yield PromptInput(id="input")
         yield Static(id="status")
 
     def on_mount(self) -> None:
@@ -284,12 +337,34 @@ class TuiApp(App[None]):
         # A cancelled worker still unwinds (MCP, stream cleanup): a second
         # cancel would cut that short.
         if action == "interrupt":
-            return (
-                self.worker is not None
-                and self.worker.is_running
-                and not self.worker.is_cancelled
-            )
+            return self._turn_is_running()
+        if action == "copy_or_interrupt":
+            # Off when nothing is selected or running, so Ctrl-C falls through
+            # to the focused widget (the prompt box copies its own selection).
+            return self._copyable_selection() is not None or self._turn_is_running()
         return True
+
+    def _turn_is_running(self) -> bool:
+        return (
+            self.worker is not None
+            and self.worker.is_running
+            and not self.worker.is_cancelled
+        )
+
+    def _copyable_selection(self) -> str | None:
+        # The top screen only: an open approval modal must not copy the
+        # transcript behind it, and Ctrl-C should still interrupt the turn.
+        return self.screen.get_selected_text() or None
+
+    def action_copy_or_interrupt(self) -> None:
+        selected = self._copyable_selection()
+        if selected is not None:
+            self.copy_to_clipboard(selected)
+            # The terminal may drop OSC 52 without saying so. The notice says
+            # what nare sent, not that the clipboard received it.
+            self.notify(f"Copied {len(selected)} characters", title="Copy")
+            return
+        self.action_interrupt()
 
     def action_page(self, direction: int) -> None:
         # A scroll that does not move still releases the anchor, and Textual
