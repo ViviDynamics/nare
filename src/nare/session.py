@@ -159,6 +159,12 @@ class Session:
     # can see what the model was told: "" when none was sent, None in a file
     # saved before nare recorded it. Redacted on save, like the transcript.
     system: str | None = None
+    # Where the run started, as absolute paths: the working directory, and the
+    # resolved --root when one was given. The TUI's resume picker lists the
+    # saved sessions whose cwd is the current directory. None in a file saved
+    # before nare recorded them.
+    cwd: str | None = None
+    root: str | None = None
     # Written by every save, which drops stale thinking. A file without it
     # comes from an older nare and may hold thinking that redaction or
     # compaction made stale, so loads() drops it by the markers they leave.
@@ -167,6 +173,70 @@ class Session:
     nare: str = NARE_VERSION
     events: list[Event] = field(default_factory=list, compare=False)
     version: int = SESSION_VERSION
+
+
+def sessions_dir() -> Path | None:
+    """$XDG_STATE_HOME/nare/sessions. A relative XDG_STATE_HOME is ignored,
+    as the XDG spec says; None when there is no home directory either.
+    """
+    state = os.environ.get("XDG_STATE_HOME", "")
+    if not os.path.isabs(state):
+        try:
+            state = str(Path.home() / ".local" / "state")
+        except RuntimeError:  # no HOME and no passwd entry
+            return None
+    return Path(state) / "nare" / "sessions"
+
+
+@dataclass(frozen=True)
+class SavedSession:
+    """One saved session, as the resume picker lists it."""
+
+    path: Path
+    prompt: str
+    changed: float  # the file's modification time, seconds since the epoch
+    status: str
+    turns: int
+
+
+def saved_in(folder: Path | None, cwd: str) -> list[SavedSession]:
+    """The sessions in `folder` that started in `cwd`, newest first. A file
+    that does not load, and a session that predates the recorded directory,
+    are left out. Compared by real path, so a symlinked directory matches.
+    """
+    if folder is None or not folder.is_dir():
+        return []
+    here = os.path.realpath(cwd)
+    rows: list[SavedSession] = []
+    for path in folder.glob("*.json"):
+        try:
+            session = loads(path.read_text(encoding="utf-8"))
+            changed = path.stat().st_mtime
+        except (OSError, ValueError):
+            continue
+        if session.cwd is None or os.path.realpath(session.cwd) != here:
+            continue
+        rows.append(
+            SavedSession(
+                path=path,
+                prompt=_first_prompt(session),
+                changed=changed,
+                # A file left `working` is a run that died, as the TUI shows it.
+                status="interrupted" if session.status == "working" else session.status,
+                turns=session.turns,
+            )
+        )
+    return sorted(rows, key=lambda row: row.changed, reverse=True)
+
+
+def _first_prompt(session: Session) -> str:
+    for message in session.messages:
+        if message.role != "user":
+            continue
+        for block in message.content:
+            if block.get("type") == "text":
+                return " ".join(str(block.get("text", "")).split())
+    return ""
 
 
 def new_session(prompt: str, session_id: str | None = None) -> Session:

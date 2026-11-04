@@ -216,6 +216,12 @@ thinking box does not take a selection.
 right-click). Ctrl-V inside nare does not read the system clipboard, and it
 says so.
 
+`nare tui --resume` with no path lists the saved sessions that started in the
+current directory, newest first, with the first prompt, when each last changed,
+its status and its turns. Enter resumes one and saves back to its file; Esc
+starts nothing. `nare run --resume` needs the path and lists the candidates
+when it is missing.
+
 Every run is saved. Without `--session`, the file goes to
 `$XDG_STATE_HOME/nare/sessions/<id>.json` (`~/.local/state/...` when
 `XDG_STATE_HOME` is unset), outside the project. A `--session` path inside

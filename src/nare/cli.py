@@ -50,7 +50,16 @@ from nare.mcp import parse_servers
 from nare.reads import build as build_reads
 from nare.reads import read_record
 from nare.schema import UnsupportedSchema, check_supported
-from nare.session import Session, loads, new_session, reopen, save, unanswered
+from nare.session import (
+    Session,
+    loads,
+    new_session,
+    reopen,
+    save,
+    saved_in,
+    sessions_dir,
+    unanswered,
+)
 from nare.tools import TOOLS, Policy, approve_all, stop_group
 from nare.transport import EFFORTS, Transport, make_transport
 
@@ -409,8 +418,11 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--resume",
+        nargs="?",
+        const="",
         help="continue the session at this path, writing it back unless "
-        "--session says otherwise",
+        "--session says otherwise. nare tui with no path picks one of this "
+        "directory's saved sessions",
     )
     parser.add_argument(
         "--mcp-config", help="JSON file of named MCP stdio or Streamable HTTP servers"
@@ -567,6 +579,15 @@ def validate_run_args(args: argparse.Namespace) -> Prices | None:
     """The startup checks nare run and nare tui share. Raises ValueError or
     OSError, which each caller turns into exit 2 before anything starts.
     """
+    if args.resume == "":
+        # nare tui picks a session before it gets here. nare run is headless,
+        # so it names the candidates and stops.
+        listed = saved_in(sessions_dir(), os.getcwd())
+        names = ", ".join(str(row.path) for row in listed[:10]) or "none"
+        raise ValueError(
+            "--resume needs a path with nare run. Sessions started in "
+            f"{os.getcwd()}: {names}"
+        )
     if args.thinking_budget is not None:
         if args.thinking_budget <= 0:
             raise ValueError("--thinking-budget must be a positive integer")
@@ -948,7 +969,7 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         source = "stdin (-)" if args.prompt == "-" else "positional prompt"
         print(f"nare: {source} conflicts with --prompt-file", file=sys.stderr)
         return NEVER_STARTED
-    if args.prompt is None and args.prompt_file is None and not args.resume:
+    if args.prompt is None and args.prompt_file is None and args.resume is None:
         print("nare run needs a prompt, or --resume PATH", file=sys.stderr)
         return NEVER_STARTED
 
