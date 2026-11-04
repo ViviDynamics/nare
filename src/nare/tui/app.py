@@ -504,6 +504,15 @@ class TuiApp(App[None]):
         )
         queue.display = bool(self.queued)
 
+    def _send_follow_up(self, text: str) -> None:
+        # Later than the run's end: a person may have sent a message in between,
+        # and starting a second run would cancel that one. Queue behind it.
+        if self._turn_is_running():
+            self.queued.insert(0, text)
+            self._show_queue()
+            return
+        self._submit(text)
+
     def _take_queued(self) -> list[str]:
         """The loop's inbox: what was typed since its last step, once."""
         taken, self.queued = self.queued, []
@@ -574,7 +583,7 @@ class TuiApp(App[None]):
                 follow_up = "\n".join(self.queued)
                 self.queued = []
                 self._show_queue()
-                self.call_later(self._submit, follow_up)
+                self.call_later(self._send_follow_up, follow_up)
         except asyncio.CancelledError:
             self._set_state("interrupted")
             # An interrupt does not send what was queued. It goes back into the

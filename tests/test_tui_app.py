@@ -668,6 +668,27 @@ async def test_a_message_typed_during_a_turn_runs_as_the_follow_up(
         assert "second" in shown(app)
 
 
+async def test_a_follow_up_waits_behind_a_turn_already_started(tmp_path: Path) -> None:
+    transport = Gated()
+    app = make(tmp_path, transport, prompt="go")
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: transport.calls == 1)
+        await pilot.press(*"more", "enter")
+        transport.release.set()
+        await until(pilot, lambda: transport.calls == 2)
+        # A send that starts a run first is not cancelled by the follow-up.
+        app._send_follow_up("late")
+        await until(pilot, lambda: app.run_state == "done" and transport.calls == 3)
+        assert app.queued == []
+        texts = [
+            block.get("text")
+            for message in app.session.messages
+            if message.role == "user"
+            for block in message.content
+        ]
+        assert "late" in texts
+
+
 async def test_esc_puts_a_queued_message_back_in_the_prompt(tmp_path: Path) -> None:
     app = make(tmp_path, Stalled(), prompt="go")
     async with app.run_test() as pilot:
