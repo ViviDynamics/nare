@@ -125,3 +125,70 @@ def test_the_installed_pydantic_schema_validates_without_edits() -> None:
     assert validate({**good, "confidence": 2}, schema) == [
         "confidence: expected a number <= 1, got 2"
     ]
+
+
+class Service(BaseModel):
+    image: str
+
+
+class Manifest(BaseModel):
+    """Map fields (#131): every generator emits a schema-valued
+    additionalProperties for these.
+    """
+
+    env: dict[str, str]
+    depends_on: dict[str, list[str]]
+    services: dict[str, Service]
+
+
+def manifest() -> dict[str, Any]:
+    return {
+        "env": {"HOME": "/home/app"},
+        "depends_on": {"web": ["db"]},
+        "services": {"db": {"image": "postgres"}},
+    }
+
+
+def test_a_generated_schema_with_map_fields_validates_without_edits() -> None:
+    schema = Manifest.model_json_schema()
+
+    assert validate(manifest(), schema) == []
+    assert validate(Manifest(**manifest()).model_dump(mode="json"), schema) == []
+
+
+def test_a_generated_map_value_of_the_wrong_type_names_its_path() -> None:
+    answer = manifest()
+    answer["env"]["HOME"] = 1
+    answer["depends_on"]["web"] = ["db", 2]
+    answer["services"]["db"] = {}
+
+    assert validate(answer, Manifest.model_json_schema()) == [
+        "env.HOME: expected string, got integer",
+        "depends_on.web[1]: expected string, got integer",
+        "services.db: missing required property: image",
+    ]
+
+
+def test_a_map_value_error_goes_back_in_the_one_correction_turn(
+    tmp_path: Path, capsys: Any
+) -> None:
+    schema_file = tmp_path / "manifest.schema.json"
+    schema_file.write_text(json.dumps(Manifest.model_json_schema()), encoding="utf-8")
+    wrong = manifest()
+    wrong["env"]["HOME"] = 1
+    provider = FakeProvider(
+        [text_reply(json.dumps(wrong)), text_reply(json.dumps(manifest()))]
+    )
+
+    code = main(
+        ["run", "go", "--yes", "--jsonl", "--schema", str(schema_file)],
+        transport=provider,
+    )
+
+    assert code == 0
+    last = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert last["output"] == manifest()
+    correction = json.dumps(
+        [block for message in provider.calls[1][0] for block in message.content]
+    )
+    assert "env.HOME: expected string, got integer" in correction

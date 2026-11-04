@@ -136,8 +136,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--schema",
         help=(
             "a JSON Schema file the final answer must satisfy. nare validates a "
-            "documented subset (types, properties, enum and const, string, array "
-            "and number bounds, anyOf/oneOf/allOf, local $ref) and refuses a "
+            "documented subset (types, properties and maps, enum and const, string, "
+            "array and number bounds, anyOf/oneOf/allOf, local $ref) and refuses a "
             "schema using anything else rather than validating it only in part"
         ),
     )
