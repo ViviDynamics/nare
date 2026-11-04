@@ -615,6 +615,6 @@ def test_effort_resolves_under_the_models_cap_rather_than_the_global_one() -> No
 
 
 def test_a_thinking_budget_the_model_cannot_afford_fails_loudly() -> None:
-    # 16384 of thinking cannot fit under this model's 8192.
+    # 16384 of thinking leaves no room under this model's 8192 cap.
     with pytest.raises(ValueError, match="must exceed"):
         build(model=OPUS, thinking_budget=16384)
