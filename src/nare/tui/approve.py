@@ -91,8 +91,48 @@ _KEYWORDS = frozenset(
     | {"for", "select", "while", "until", "do", "done", "function", "coproc"}
 )
 
+# The tools that write a file, which a path argument names.
+FILE_WRITES = frozenset({"write", "edit"})
+
 # The key a person pressed, and the reason they typed with an n.
 Ask = Callable[[str, dict[str, Any]], Awaitable[tuple[str, str]]]
+
+
+def _git_dir(policy: Policy) -> Path:
+    """The .git directory protected: the root's, or with no root the nearest
+    one above the cwd, as git finds its repository.
+    """
+    if policy.root is not None:
+        return policy.root.resolve() / ".git"
+    here = Path.cwd().resolve()
+    for above in (here, *here.parents):
+        if (above / ".git").exists():
+            return above / ".git"
+    return here / ".git"
+
+
+def _folded(path: Path) -> tuple[str, ...]:
+    """The parts of a resolved path, case folded: macOS and Windows volumes
+    fold case, so `.GIT/hooks` is the directory `.git/hooks`.
+    """
+    return tuple(part.casefold() for part in path.parts)
+
+
+def in_git_dir(path: str, policy: Policy) -> bool:
+    """Whether a write to `path` lands in the protected .git directory, or is
+    .git itself, through any `..`, symlink or letter case. git runs what that
+    directory's config and hooks name, so such a write always asks, even
+    after `a`. A path that cannot be resolved counts as inside.
+    """
+    # A relative path is relative to the root, or with none to the cwd, as
+    # Policy.resolve and bash read it.
+    try:
+        anchor = policy.root.resolve() if policy.root is not None else Path.cwd()
+        git = _folded(_git_dir(policy).resolve())
+        target = _folded((anchor / path).resolve())
+    except (OSError, RuntimeError, ValueError):
+        return True
+    return target[: len(git)] == git
 
 
 def _tokens(command: str) -> list[str]:
@@ -589,7 +629,16 @@ class Approver:
 
     async def __call__(self, tool: str, args: dict[str, Any]) -> bool | str:
         """True to run the call; a denial is False, or the reason given."""
-        if tool in EXEMPT or tool in self.always:
+        if tool in EXEMPT:
+            return True
+        if tool in FILE_WRITES and in_git_dir(str(args.get("path", "")), self.policy):
+            # Asked about every time: `a` approves only this call, since a
+            # later write to .git must not ride on a grant for other paths.
+            key, reason = await self.ask(tool, args)
+            if key in ("y", "a"):
+                return True
+            return reason.strip() or False
+        if tool in self.always:
             return True
         command = str(args.get("command", ""))
         if tool == "bash" and self._unasked(command):
