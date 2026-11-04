@@ -18,6 +18,7 @@ from benchmarks.runner.report import (
     median_int,
     render,
     render_matrix,
+    render_variant,
     slugify,
     summarize,
 )
@@ -372,4 +373,64 @@ def test_the_matrix_table_says_when_the_judge_judged_itself() -> None:
     text = render_matrix([("sonnet", comparison)], "sonnet")
     assert text.splitlines()[-1] == (
         "Judge: sonnet, for every model. It judged its own repetitions too."
+    )
+
+
+TERSE = "benchmarks/prompts/terse.md"
+VARIANT = replace(
+    META,
+    nare_args=("--effort", "low", "--system-file", TERSE),
+    nare_files={TERSE: "sha256:" + "ab" * 32},
+)
+
+
+def test_a_baseline_with_run_arguments_round_trips(tmp_path: Path) -> None:
+    path = tmp_path / "b.toml"
+    path.write_text(dumps_baseline(VARIANT, summarize([record(case="c")])))
+    assert load_baseline(path).meta == VARIANT
+
+
+def test_run_arguments_are_written_as_the_spec_shows_them() -> None:
+    text = dumps_baseline(VARIANT, [])
+    assert f'nare_args   = ["--effort", "low", "--system-file", "{TERSE}"]\n' in text
+    assert f'\n[meta.nare_files]\n"{TERSE}" = "sha256:{"ab" * 32}"\n' in text
+
+
+def test_a_baseline_without_run_arguments_writes_nothing_for_them() -> None:
+    text = dumps_baseline(META, [])
+    assert "nare_args" not in text
+    assert "nare_files" not in text
+
+
+def test_every_committed_baseline_renders_byte_for_byte_as_it_is() -> None:
+    from benchmarks.runner.sandbox import repo_root
+
+    paths = sorted((repo_root() / "benchmarks" / "baselines").glob("*.toml"))
+    assert paths
+    for path in paths:
+        baseline = load_baseline(path)
+        rendered = dumps_baseline(baseline.meta, list(baseline.cases.values()))
+        assert rendered == path.read_text(encoding="utf-8"), path.name
+
+
+def test_a_variant_reads_as_its_command_line_with_each_files_digest() -> None:
+    assert render_variant([], {}) == "none"
+    assert render_variant(["--effort", "low"], {}) == "--effort low"
+    assert render_variant(["--system", "be terse"], {}) == "--system 'be terse'"
+    digest = "sha256:0123456789ab" + "f" * 52
+    assert render_variant(["--system-file", "p.md"], {"p.md": digest}) == (
+        "--system-file p.md (p.md sha256:0123456789ab)"
+    )
+
+
+def test_the_matrix_note_names_each_models_variant_when_any_has_one() -> None:
+    columns = [
+        (model, compare([rated("ask", 1, 2)], baseline_of(rated("ask", 1, 2))))
+        for model in ("a", "b")
+    ]
+    plain = render_matrix(columns, "j")
+    assert render_matrix(columns, "j", {"a": "none", "b": "none"}) == plain
+    note = render_matrix(columns, "j", {"a": "none", "b": "--effort low"})
+    assert note.splitlines()[-1] == (
+        "Judge: j, for every model. Run arguments: a: none; b: --effort low."
     )

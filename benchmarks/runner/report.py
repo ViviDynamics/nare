@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import statistics
 import tomllib
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -125,6 +126,11 @@ class BaselineMeta:
     # The agent's output cap, None for nare's default. It changes what a run
     # measures, so numbers from another cap are not comparable.
     max_tokens: int | None = None
+    # The run arguments the numbers were measured under, and each run file's
+    # digest. Empty is the default variant, which every baseline blessed before
+    # #156 is.
+    nare_args: tuple[str, ...] = ()
+    nare_files: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -167,6 +173,16 @@ def dumps_baseline(meta: BaselineMeta, summaries: Sequence[CaseSummary]) -> str:
     ]
     if meta.max_tokens is not None:
         lines.append(f"max_tokens  = {meta.max_tokens}")
+    if meta.nare_args:
+        lines.append(
+            "nare_args   = [" + ", ".join(_toml_str(a) for a in meta.nare_args) + "]"
+        )
+    if meta.nare_files:
+        lines += ["", "[meta.nare_files]"]
+        lines += [
+            f"{_toml_str(path)} = {_toml_str(digest)}"
+            for path, digest in meta.nare_files.items()
+        ]
     for summary in summaries:
         if summary.inconclusive or summary.pass_rate is None:
             continue
@@ -196,6 +212,8 @@ def load_baseline(path: Path) -> Baseline:
         model=str(meta_raw.get("model", "")),
         judge_model=str(meta_raw.get("judge_model", "")),
         max_tokens=meta_raw.get("max_tokens"),
+        nare_args=tuple(str(a) for a in meta_raw.get("nare_args", ())),
+        nare_files={str(k): str(v) for k, v in meta_raw.get("nare_files", {}).items()},
     )
     cases: dict[str, CaseSummary] = {}
     for name, body in raw.get("case", {}).items():
@@ -356,12 +374,34 @@ def render(comparison: Comparison) -> str:
     return "\n".join(lines)
 
 
-def render_matrix(columns: Sequence[tuple[str, Comparison]], judge: str) -> str:
+def render_variant(args: Sequence[str], files: Mapping[str, str]) -> str:
+    """A run's variant as one line: `none`, or its command line.
+
+    Each run file follows with the first 12 hex digits of its digest, so an
+    edited prompt at one path reads as different from the one blessed.
+    """
+    if not args:
+        return "none"
+    text = shlex.join(args)
+    if files:
+        # "sha256:" is 7 characters, and 12 hex digits follow it.
+        digests = ", ".join(f"{path} {digest[:19]}" for path, digest in files.items())
+        text += f" ({digests})"
+    return text
+
+
+def render_matrix(
+    columns: Sequence[tuple[str, Comparison]],
+    judge: str,
+    variants: Mapping[str, str] | None = None,
+) -> str:
     """Cases down the side, models across: the table a PR pastes.
 
     Markdown, so it pastes into a PR or docs/evidence as printed. A cell is
     the pass rate with its n, marked when it is a confirmed regression or
-    inconclusive, and `-` when that model did not run the case.
+    inconclusive, and `-` when that model did not run the case. `variants`
+    maps a model to its `render_variant` text, and the note names each one
+    when any is not the default.
     """
     cells: dict[str, dict[str, str]] = defaultdict(dict)
     for model, comparison in columns:
@@ -391,4 +431,7 @@ def render_matrix(columns: Sequence[tuple[str, Comparison]], judge: str) -> str:
     note = f"Judge: {judge}, for every model."
     if judge in models:
         note += " It judged its own repetitions too."
+    if variants and any(text != "none" for text in variants.values()):
+        named = "; ".join(f"{m}: {variants.get(m, 'none')}" for m in models)
+        note += f" Run arguments: {named}."
     return "\n".join([*lines, "", note])
