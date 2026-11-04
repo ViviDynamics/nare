@@ -107,7 +107,10 @@ adds to whichever prompt is in effect, which is how a caller adds a persona
 and keeps the rules. A run with `--tools none` gets no default, because every
 rule in it is about tools. Some OpenAI-compatible servers refuse a system
 message, such as o1-mini or a model whose chat template has no system role;
-run those with `--system ''`.
+run those with `--system ''`. `--system-file PATH` and
+`--append-system-file PATH` read the same text from a UTF-8 file, which keeps a
+long prompt out of argv. The session records the system prompt it sent, and a
+`--resume` without a system option sends that one again.
 
 Two flags narrow a run. `--tools read,bash` allows only the tools you name,
 and `--tools none` allows no tool at all, which is what a caller wants when

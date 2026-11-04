@@ -35,7 +35,12 @@ from textual.widgets import Collapsible, Input, Static
 from textual.worker import Worker, WorkerCancelled
 
 from nare.accounting import Prices
-from nare.cli import policy_from_args, transport_from_args, validate_run_args
+from nare.cli import (
+    adopt_system,
+    policy_from_args,
+    transport_from_args,
+    validate_run_args,
+)
 from nare.contract import NARE_VERSION, NEVER_STARTED
 from nare.events import Event, redact
 from nare.loop import configure_budgets, run
@@ -342,6 +347,7 @@ class TuiApp(App[None]):
     def _submit(self, text: str) -> None:
         if self.session is None:
             self.session = new_session(text, self.session_id)
+            adopt_system(self.args, self.session)
         else:
             reopen(self.session, text)
         messages = self.session.messages
@@ -696,6 +702,8 @@ def prepare(args: argparse.Namespace, transport: Transport | None = None) -> Tui
     session = None
     if args.resume:
         session = loads(Path(args.resume).read_text(encoding="utf-8"))
+        # As in nare run: the recorded system prompt, unless a flag replaces it.
+        adopt_system(args, session)
         # As in nare run: a bad saved budget exits 2, not in the worker.
         configure_budgets(session, args.budget_tokens, args.budget_usd)
     if transport is None:

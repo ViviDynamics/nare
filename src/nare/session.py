@@ -123,6 +123,10 @@ class Session:
     # call order: the session's copy of the evidence its progress events
     # carried. A record, so reopen() keeps it.
     evidence: list[dict[str, Any]] = field(default_factory=list)
+    # The system prompt the run sent, so a resume sends it again and a reader
+    # can see what the model was told: "" when none was sent, None in a file
+    # saved before nare recorded it. Redacted on save, like the transcript.
+    system: str | None = None
     # Written by every save, which drops stale thinking. A file without it
     # comes from an older nare and may hold thinking that redaction or
     # compaction made stale, so loads() drops it by the markers they leave.
@@ -216,6 +220,7 @@ def dumps(s: Session) -> str:
     for message in redacted[first:]:
         message["content"] = without_sent_thinking(message["content"])
     raw["messages"] = redacted
+    raw["system"] = redact_value(raw["system"])
     return json.dumps(raw)
 
 
@@ -280,6 +285,10 @@ def loads(text: str) -> Session:
             raw["process_groups"] = []
         if not isinstance(raw.get("evidence", []), list):
             raw["evidence"] = []
+        # Refused, not reset: a resume that quietly fell back to the default
+        # prompt is what the record exists to prevent.
+        if not isinstance(raw.get("system"), (str, type(None))):
+            raise TypeError("system must be a string or null")
         return Session(**raw)
     except (AttributeError, KeyError, TypeError) as exc:
         raise ValueError(f"malformed session file: {exc}") from exc

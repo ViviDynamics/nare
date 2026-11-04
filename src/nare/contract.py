@@ -162,6 +162,18 @@ def describe() -> dict[str, Any]:
             "encoding": "utf-8",
             "exclusive": True,
         },
+        # Additive: each argv system option's file route, and that a resume
+        # with no system option sends the prompt the session field recorded.
+        "system_input": {
+            "file_flags": {
+                "--system": "--system-file",
+                "--append-system": "--append-system-file",
+            },
+            "encoding": "utf-8",
+            "exclusive": True,
+            "session_field": "system",
+            "resume": "recorded",
+        },
         # Additive: a caller checks for it before asking for constrained
         # answers, and refuses to run unconstrained rather than guess.
         "structured_output": {
