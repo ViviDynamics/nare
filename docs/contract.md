@@ -60,6 +60,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--schema` | yes | | JSON Schema file the final answer must satisfy ([Answer schemas](#answer-schemas)) |
 | `--structured-output` | yes | `json_schema` | Constrain answers at decode time, on both rails ([Schema-constrained answers](#schema-constrained-answers)) |
 | `--max-tool-calls` | yes | | Run at most this many tool calls in this invocation ([Budgets and partial results](#budgets-and-partial-results)) |
+| `--max-corrections` | yes | | Let a failing `--schema` answer be corrected up to this many times in the run, default 1 ([Schema corrections](#schema-corrections)) |
 | `--timeout` | yes | | Wall clock for this invocation ([Run deadline and stop signals](#run-deadline-and-stop-signals)) |
 | `--request-timeout` | yes | | HTTP timeout for each model request ([Provider retries and the request timeout](#provider-retries-and-the-request-timeout)) |
 | `--request-retries` | yes | | Resend a model request after a transient failure, up to this many times |
@@ -391,7 +392,7 @@ has a kind, which says what a caller can do about it:
 | `timeout` | `limit` | `error` | Invocation's wall clock limit reached (`--timeout`; see Run deadline and stop signals) |
 | `tool_calls` | `limit` | `error` | Invocation's tool call cap reached (`--max-tool-calls`), and the model called a tool again after being told to answer |
 | `refusal` | `answer` | `error` | Provider refused to continue |
-| `schema_violation` | `answer` | `error` | Second invalid structured answer |
+| `schema_violation` | `answer` | `error` | A structured answer that fails once the run's correction budget is spent (`--max-corrections`, default one correction) |
 | `no_answer` | `answer` | `error` | The model sent reasoning and no answer, which is what a proxy that drops one of them produces |
 | `interrupted` | `stopped` | `error` | SIGTERM or SIGINT stopped the run (see Run deadline and stop signals) |
 | null | `failure` | `error` | No completed response: the provider call raised (a transport failure, after any retries), or nare did |
@@ -1131,6 +1132,23 @@ Every validation error names the JSON path of the failing value, for example
 `env.HOME: expected string, got integer`, and all errors go
 back in the one correction turn. A failed `anyOf` or `oneOf` lists each
 alternative's errors.
+
+### Schema corrections
+
+`--max-corrections N` sets how many times a failing answer may be corrected in
+one run. The default, 1, is one correction and then `schema_violation`. A
+correction is free, and does not count against N, when the answer has fewer
+distinct errors than every earlier failing answer in the run. Free corrections
+need N above 1, and `--max-corrections` requires `--schema`.
+
+Each correction names the errors an earlier answer made that this one no longer
+makes, and asks the model to keep those fixes. The result's `budget` gains
+`schema_corrections` (the limit) and `used_schema_corrections` (the charged
+corrections), and a `corrections` list gives each correction's `charged` flag
+and `codes`, the distinct errors it answered. The list is present only when a
+correction happened. Each correction is also a `progress` event whose
+`schema_correction` detail carries the same fields. The budget is per run: a
+resume starts it again, as the correction round is per run.
 
 ### Finding the document in an answer
 

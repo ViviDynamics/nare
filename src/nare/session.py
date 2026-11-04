@@ -129,6 +129,14 @@ class Session:
     output: Any = None
     schema_retried: bool = False
     schema_stated: bool = False
+    # The schema correction budget of this run (corrections.py). Charged
+    # corrections spent; every correction made, free or charged, with its
+    # codes; the distinct errors earlier answers made; and the fewest errors a
+    # failing answer has made. Cleared by reopen(), as schema_retried is.
+    schema_corrections: int = 0
+    schema_correction_log: list[dict[str, Any]] = field(default_factory=list)
+    schema_errors_seen: list[str] = field(default_factory=list)
+    schema_fewest_errors: int | None = None
     # The SHA-256 of the schema last stated to the model, over its canonical
     # JSON, so a resume with a different --schema can say so: None when no
     # schema was stated, or in a file saved before nare recorded it.
@@ -312,6 +320,10 @@ def loads(text: str) -> Session:
             raise TypeError("system must be a string or null")
         if not isinstance(raw.get("schema_sha256"), (str, type(None))):
             raise TypeError("schema_sha256 must be a string or null")
+        # A file saved before the budget was counted spent its one correction
+        # when schema_retried was set, and counts it as one charged correction.
+        if "schema_corrections" not in raw and raw.get("schema_retried") is True:
+            raw["schema_corrections"] = 1
         return Session(**raw)
     except (AttributeError, KeyError, TypeError) as exc:
         raise ValueError(f"malformed session file: {exc}") from exc
@@ -349,6 +361,10 @@ def reopen(s: Session, text: str | None = None) -> None:
     # Per-run state, like the budget in run(): a resume that inherited the
     # spent correction round would end on its first imperfect answer.
     s.schema_retried = False
+    s.schema_corrections = 0
+    s.schema_correction_log = []
+    s.schema_errors_seen = []
+    s.schema_fewest_errors = None
     s.error = None
     s.stop_reason = None
     s.interrupted_at = None
