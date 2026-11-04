@@ -69,9 +69,12 @@ from nare.tui.approve import Approver
 from nare.tui.attach import Watcher
 from nare.tui.render import (
     Block,
+    activity_of,
     approval_header,
     approval_text,
     attach_status,
+    live_for,
+    placeholder,
     render_messages,
     render_outcome,
     render_user,
@@ -340,6 +343,10 @@ class TuiApp(App[None]):
         self.root = str(Path(args.root or ".").resolve())
         self.approver = Approver(self._ask, self.policy)
         self.run_state = "idle"
+        # When the current busy stretch began, and the tool call now running
+        # (label, detail, when it started). Both drive the status line's clock.
+        self.busy_since: float | None = None
+        self.activity: tuple[str, str, float] | None = None
         if session is not None:
             # A file left `working` is a run that died: treat it as stopped.
             self.run_state = (
@@ -372,6 +379,8 @@ class TuiApp(App[None]):
         # Not scroll_end on every block: that pulled you down mid-read, and
         # the anchor also holds the last line when #live grows or on resize.
         self.query_one(Transcript).anchor()
+        # The clock on the status line: redrawn once a second while busy.
+        self.set_interval(1.0, self._tick)
         start = (
             f"nare {NARE_VERSION} · {self.args.model} · root {self.root} · "
             f"session {Path(self.args.session).resolve()}"
@@ -513,7 +522,7 @@ class TuiApp(App[None]):
             async for event in run(
                 session,
                 transport=self.transport,
-                approve=self.approver,
+                approve=self._approve,
                 policy=self.policy,
                 max_turns=self.args.max_turns,
                 budget_tokens=self.args.budget_tokens,
@@ -541,6 +550,7 @@ class TuiApp(App[None]):
             session.interrupted_at = datetime.now(UTC).isoformat(timespec="seconds")
             raise
         finally:
+            self.activity = None
             self.live = Text()
             self._draw()
             if self.run_state == "interrupted":
@@ -548,6 +558,9 @@ class TuiApp(App[None]):
             self._save()
 
     def _event(self, event: Event) -> None:
+        if "tool_result" in event.detail:
+            # The call has finished: nothing is running now.
+            self.activity = None
         notice = event.type == "progress" and (
             "compaction" in event.detail or "context_window" in event.detail
         )
@@ -591,21 +604,33 @@ class TuiApp(App[None]):
 
     def _set_state(self, state: str) -> None:
         self.run_state = state
+        if state in BUSY:
+            self.busy_since = self.busy_since or time.monotonic()
+        else:
+            self.busy_since = None
+            self.activity = None
         box = self.query_one(Input)
         box.disabled = state in BUSY
-        box.placeholder = (
-            "answer the questions above"
-            if state == "blocked"
-            else "what should nare do?"
-        )
+        box.placeholder = placeholder(state)
         if not box.disabled:
             box.focus()
         self._status()
+
+    def _tick(self) -> None:
+        if self.run_state == "working" or self.activity is not None:
+            self._status()
 
     def _status(self) -> None:
         self.query_one("#status", Static).update(self.status_text())
 
     def status_text(self) -> Text:
+        now = time.monotonic()
+        live = live_for(
+            self.run_state,
+            None if self.busy_since is None else now - self.busy_since,
+            self.activity,
+            None if self.activity is None else now - self.activity[2],
+        )
         return status_line(
             self.args.model,
             0 if self.session is None else self.session.turns - self.turns_from,
@@ -614,7 +639,22 @@ class TuiApp(App[None]):
             None if self.session is None else self.session.budget.get("usd"),
             self.run_state,
             self.note,
+            reason=None if self.session is None else self.session.error,
+            live=live,
+            hints=self.run_state == "idle",
         )
+
+    async def _approve(self, tool: str, args: dict[str, Any]) -> bool | str:
+        # Before every call the approver sees, exempt or not: a call that runs
+        # without a prompt still shows what it is doing. Restamped after the
+        # answer, so the time spent waiting for a person is not the call's.
+        label, detail = activity_of(tool, args)
+        self.activity = (label, detail, time.monotonic())
+        self._status()
+        answer = await self.approver(tool, args)
+        self.activity = (label, detail, time.monotonic())
+        self._status()
+        return answer
 
     def _save(self) -> None:
         if self.session is None or not self.args.session:

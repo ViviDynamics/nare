@@ -125,7 +125,7 @@ async def test_prompt_to_done(tmp_path: Path) -> None:
         assert "> say hi" in shown(app)
         assert "all done" in shown(app)
         status = text_of(app, "#status")
-        assert "fake · turn 1/50 · 15 tok" in status
+        assert "fake · turn 1/50 · 15 tok total" in status
         assert status.endswith("done")
         assert app.query_one(Input).disabled is False
     saved = json.loads((tmp_path / "s.json").read_text())
@@ -141,7 +141,7 @@ async def test_y_runs_the_write(tmp_path: Path) -> None:
     async with app.run_test() as pilot:
         await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
         assert cast(ApprovalScreen, app.screen).text.startswith("new file ")
-        assert "awaiting approval" in text_of(app, "#status")
+        assert "approve?" in text_of(app, "#status")
         await pilot.press("y")
         await until(pilot, lambda: app.run_state == "done")
     assert (tmp_path / "a.txt").read_text() == "hi\n"
@@ -583,6 +583,54 @@ async def test_a_drag_after_a_wide_character_starts_on_the_right_one(
         selected = app_selection(app)
         assert selected.startswith("本")
         assert "日" not in selected
+
+
+async def test_a_busy_bash_call_shows_what_runs_and_a_ticking_time(
+    tmp_path: Path,
+) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # What the approver sets when a bash call starts, 12 seconds ago.
+        app._set_state("working")
+        app.busy_since = time.monotonic() - 12
+        app.activity = ("running bash", "sleep 30", time.monotonic() - 12)
+        app._status()
+        assert "running bash 0:12 · sleep 30" in text_of(app, "#status")
+        assert app.query_one(Input).placeholder == "working · esc to interrupt"
+        # The tool's result clears it.
+        app._event(
+            Event("progress", "bash result: ok", {"tool": "bash", "tool_result": {}})
+        )
+        assert app.activity is None
+
+
+async def test_the_clock_for_a_call_starts_after_its_approval(tmp_path: Path) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._set_state("working")
+
+        async def answered_after_a_wait(tool: str, args: dict[str, Any]) -> bool:
+            # A person takes time to answer; that is not the call's run time.
+            await asyncio.sleep(0.3)
+            return True
+
+        cast(Any, app).approver = answered_after_a_wait
+        started = time.monotonic()
+        assert await app._approve("bash", {"command": "sleep 30"}) is True
+        assert app.activity is not None
+        assert app.activity[2] - started >= 0.3
+
+
+async def test_the_status_bar_hints_the_keys_when_idle(tmp_path: Path) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.run_state == "idle"
+        assert text_of(app, "#status").endswith(
+            "enter send · esc interrupt · pgup scroll · ctrl+q quit"
+        )
 
 
 async def test_ctrl_v_does_not_paste_a_stale_clipboard(tmp_path: Path) -> None:

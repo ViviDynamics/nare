@@ -182,7 +182,7 @@ async def test_streamed_cost_uses_metadata_or_stays_unknown(
         assert session.usage.cost == pytest.approx(0.0000185)
         assert session.usage.estimated is True
         assert "estimate" in next(e.text for e in events if e.type == "cost")
-        assert "estimate" in status_line("m", 1, 50, session.usage, None, "done").plain
+        assert "~$" in status_line("m", 1, 50, session.usage, None, "done").plain
     else:
         assert session.usage.cost is None
         assert (

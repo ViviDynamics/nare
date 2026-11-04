@@ -414,15 +414,93 @@ def _rewrite(before: str, after: str, path: str) -> tuple[str, str]:
     return diff or f"{path}: line endings or trailing newline change", "diff"
 
 
+SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+HINTS = "enter send · esc interrupt · pgup scroll · ctrl+q quit"
+# Internal state names, as the plain words a person reads them.
+_PLAIN_STATE = {
+    "idle": "ready",
+    "awaiting approval": "approve?",
+    "blocked": "waiting for your answer",
+}
+
+
 def _tokens(n: int) -> str:
     return f"{n} tok" if n < 1000 else f"{n / 1000:.1f}k tok"
+
+
+def _total(usage: Usage) -> str:
+    return f"{_tokens(usage.total_tokens)} total"
 
 
 def _cost(usage: Usage, limit: float | None) -> str:
     if usage.cost is None:
         return "cost unknown"
-    spent = f"${usage.cost:.2f}" + (" (estimate)" if usage.estimated else "")
+    spent = ("~" if usage.estimated else "") + f"${usage.cost:.2f}"
     return spent if limit is None else f"{spent} / ${limit:.2f}"
+
+
+def _state_word(state: str, reason: str | None = None) -> str:
+    if state == "error":
+        return f"error: {_cut(reason)}" if reason else "error"
+    return _PLAIN_STATE.get(state, state)
+
+
+def clock(seconds: float) -> str:
+    """0:12, 1:05, or 1:02:05 past the hour."""
+    total = int(seconds)
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def activity_of(tool: str, args: dict[str, Any]) -> tuple[str, str]:
+    """What a tool call is doing, as the status line says it: the label and the
+    command or path it works on.
+    """
+    return f"running {tool}", _cut(str(args.get("command") or args.get("path") or ""))
+
+
+def live_for(
+    state: str,
+    busy_for: float | None,
+    activity: tuple[str, str, float] | None,
+    activity_for: float | None,
+) -> str | None:
+    """The working segment: a spinner and the turn's elapsed time, or what the
+    current call runs and for how long. None outside `working`.
+    """
+    if state != "working" or busy_for is None:
+        return None
+    frame = SPINNER[int(busy_for) % len(SPINNER)]
+    if activity is None or activity_for is None:
+        return f"working {frame} {clock(busy_for)}"
+    label, detail, _since = activity
+    text = f"{frame} {label} {clock(activity_for)}"
+    return f"{text} · {detail}" if detail else text
+
+
+def placeholder(state: str) -> str:
+    """The prompt box's hint, by what the run is doing."""
+    if state == "working":
+        return "working · esc to interrupt"
+    if state == "awaiting approval":
+        return "answer the prompt above"
+    if state == "blocked":
+        return "answer the questions above"
+    if state == "interrupted":
+        return "interrupted · type to continue"
+    return "what should nare do?"
+
+
+def _turn_style(turns: int, max_turns: int) -> str | None:
+    # Integer comparisons, so 40 of 50 is exactly 80% and 45 is exactly 90%.
+    if turns * 10 >= max_turns * 9:
+        return "red"
+    if turns * 10 >= max_turns * 8:
+        return "yellow"
+    return None
 
 
 def status_line(
@@ -433,15 +511,31 @@ def status_line(
     limit: float | None,
     state: str,
     note: str | None = None,
+    *,
+    reason: str | None = None,
+    live: str | None = None,
+    hints: bool = False,
 ) -> Text:
-    parts = [
-        model,
-        f"turn {turns}/{max_turns}",
-        _tokens(usage.total_tokens),
-        _cost(usage, limit),
-        state,
+    """`live` replaces the state word while a turn runs. `hints` appends the
+    keys, for an idle prompt.
+    """
+    parts: list[tuple[str, str | None]] = [
+        (model, None),
+        (f"turn {turns}/{max_turns}", _turn_style(turns, max_turns)),
+        (_total(usage), None),
+        (_cost(usage, limit), None),
+        (live or _state_word(state, reason), None),
     ]
-    return Text(" · ".join(parts + ([note] if note else [])))
+    if note:
+        parts.append((note, None))
+    if hints:
+        parts.append((HINTS, "dim"))
+    text = Text()
+    for index, (part, style) in enumerate(parts):
+        if index:
+            text.append(" · ")
+        text.append(part, style=style)
+    return text
 
 
 def render_outcome(session: Session | None) -> Text:
@@ -476,14 +570,17 @@ def _interrupted(stamp: str | None) -> str | None:
 def attach_status(
     session: Session | None, problem: str | None, age: float | None
 ) -> Text:
-    """`working` in a file can mean the process died, so the age is shown."""
+    """`working` in a file can mean the process died, so the age is shown. The
+    labels are the status line's: the same words for the same numbers.
+    """
     parts: list[str] = []
     if session is not None:
         parts += [
-            f"turn {session.turns}",
-            _tokens(session.usage.total_tokens),
+            f"{session.turns} turns",
+            _total(session.usage),
             _cost(session.usage, None),
-            _interrupted(session.interrupted_at) or session.status,
+            _interrupted(session.interrupted_at)
+            or _state_word(session.status, session.error),
         ]
     if age is not None:
         parts.append(f"last write {_ago(age)}")
