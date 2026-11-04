@@ -48,7 +48,7 @@ async def test_tool_turns_stay_free_and_the_correction_is_constrained(
     provider = StructuredProvider(
         [
             tool_reply("read", {"path": "NOTES.txt"}),
-            text_reply('{"name": "ada"} trailing words'),
+            text_reply('{"name": "ada"} {"name": "bob"}'),
             text_reply('{"name": "ada"}'),
         ]
     )

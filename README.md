@@ -129,7 +129,9 @@ reads return a named tool error. See [the image contract](docs/contract.md#read-
 can still walk upward, so real confinement stays the sandbox's job.
 
 `--schema FILE` makes the answer data rather than prose. The final answer must
-satisfy the JSON Schema in that file; a violation is reported back to the model
+satisfy the JSON Schema in that file. One JSON document is taken from the
+answer (the whole reply, a fenced block, or one document with prose around it;
+never a repaired or merged one); a violation is reported back to the model
 once, and a second violation ends the run with `stop_reason=schema_violation`
 without promoting the invalid object. Any earlier schema-valid output remains
 available. A validating answer is parsed onto the session, carried

@@ -111,6 +111,68 @@ def test_text_carrying_no_json_raises() -> None:
         extract_json("I could not do it, sorry.")
 
 
+def test_a_document_followed_by_prose_is_extracted() -> None:
+    assert extract_json('{"a": 1}\n\nNote: fixed the env.') == {"a": 1}
+
+
+def test_a_document_after_prose_is_extracted() -> None:
+    assert extract_json('Here it is: {"a": 1}') == {"a": 1}
+
+
+def test_an_array_document_inside_prose_is_extracted() -> None:
+    assert extract_json("The list: [1, 2]. Done.") == [1, 2]
+
+
+def test_prose_with_braces_that_are_not_json_is_tolerated() -> None:
+    text = '{"a": 1}\nNote: values in {braces} were left as they were.'
+
+    assert extract_json(text) == {"a": 1}
+
+
+def test_nested_documents_are_one_document() -> None:
+    assert extract_json('Result: {"a": {"b": [1]}} ok') == {"a": {"b": [1]}}
+
+
+def test_two_documents_are_refused_naming_both_positions() -> None:
+    with pytest.raises(ValueError, match="two JSON documents") as caught:
+        extract_json('{"a": 1} {"a": 2}')
+
+    assert "characters 0 and 9" in str(caught.value)
+
+
+def test_a_document_after_prose_brackets_that_decode_is_two_documents() -> None:
+    with pytest.raises(ValueError, match="two JSON documents"):
+        extract_json('As in [1]: {"a": 1}')
+
+
+def test_a_truncated_document_is_refused_as_incomplete() -> None:
+    with pytest.raises(ValueError, match="incomplete"):
+        extract_json('{"a": ')
+
+
+def test_a_truncated_string_is_refused_as_incomplete() -> None:
+    with pytest.raises(ValueError, match="incomplete"):
+        extract_json('Here: {"a": "unterminated')
+
+
+def test_a_second_incomplete_document_after_one_is_refused() -> None:
+    with pytest.raises(ValueError, match="text after the JSON document"):
+        extract_json('{"a": 1}\n{"a": 2, "b"')
+
+
+def test_malformed_json_is_never_repaired() -> None:
+    with pytest.raises(ValueError, match="not valid JSON") as caught:
+        extract_json('Here: {"a": 1,} done')
+
+    assert "character 6" in str(caught.value)
+
+
+def test_a_fenced_block_still_wins_over_prose_around_it() -> None:
+    text = 'Pick [1]:\n```json\n{"a": 1}\n```\nThat is all.'
+
+    assert extract_json(text) == {"a": 1}
+
+
 def test_a_type_that_is_not_a_string_is_refused() -> None:
     with pytest.raises(UnsupportedSchema, match="type"):
         validate(True, {"type": ["string", "number"]})
