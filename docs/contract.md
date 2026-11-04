@@ -257,6 +257,33 @@ nare speaks one contract version at a time. There is no negotiation and no
 compatibility mode: a caller pins a version, and a nare that speaks another one
 refuses to run.
 
+## Releases
+
+The contract number says what a stream means. The release version says which
+code produced it, and a caller records it (`nare --version`, the `result`
+line's `nare`, the session file's `nare`) so a result can be reproduced. That
+only works if a version keeps naming the same code, so:
+
+- **A published release and its tag are never deleted or moved.** A version
+  that installed once installs again, from the same commit.
+- **A release's assets never change.** The wheel and the sdist are attached in
+  the call that publishes the release, and the repository's releases are
+  immutable, so GitHub refuses any later change to them. Each release's notes
+  carry the SHA-256 of both files, so a caller can pin a hash as well as a
+  version.
+- **A version's container image is pushed once.** A rerun of the release
+  workflow that finds `ghcr.io/vividynamics/nare:<version>` already published
+  leaves it, and `latest`, alone.
+- **Versions only move forward.** CalVer `YYYY.M.N` is minted from the
+  existing tags, which are never deleted, so a later release always compares
+  greater than an earlier one.
+
+GitHub still lets a maintainer delete a release, which is why this is written
+down rather than left to a setting. If a history rewrite ever leaves no other
+way, the withdrawn versions are listed in [docs/releases.md](releases.md) with
+when they went, the commit that ships the same code, and the release that
+replaces each one. A version not listed there is published or was never minted.
+
 ## Changes in version 2
 
 A turn that called `ask` alongside other tools ended `blocked` under version 1.
