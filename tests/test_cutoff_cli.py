@@ -13,19 +13,19 @@ from nare.cli import main
 from nare.contract import describe
 from nare.loop import CUTOFFS_DEFAULT
 from nare.session import Usage
-from nare.transport import Reply
+from nare.transport import Reply, StopReason
 
 
 def lines(out: str) -> list[dict[str, Any]]:
     return [json.loads(line) for line in out.splitlines() if line.strip()]
 
 
-def repeating(stop_reason: str = "repetition") -> Reply:
+def repeating(stop_reason: StopReason = "repetition") -> Reply:
     return Reply(
         content=[{"type": "text", "text": '{"a":[' + " | 1" * 800}],
         tool_calls=[],
         usage=Usage(input=10, output=4000),
-        stop_reason=stop_reason,  # type: ignore[arg-type]
+        stop_reason=stop_reason,
     )
 
 
