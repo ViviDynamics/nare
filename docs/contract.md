@@ -152,7 +152,7 @@ every other event leaves the key out.
 
 The last line is not an event. It is the `result` object, carrying
 `session_id`, `status`, `questions`, `usage`, `stop_reason`, `turns`,
-`contract`, `nare`, `output`, `budget` and `error`. A caller that reads only one line should read
+`retries`, `contract`, `nare`, `output`, `budget` and `error`. A caller that reads only one line should read
 that one.
 
 Secrets are redacted when an event is constructed, not when it is written, so
@@ -256,7 +256,7 @@ has a kind, which says what a caller can do about it:
 | `refusal` | `answer` | `error` | Provider refused to continue |
 | `schema_violation` | `answer` | `error` | Second invalid structured answer |
 | `no_answer` | `answer` | `error` | The model sent reasoning and no answer, which is what a proxy that drops one of them produces |
-| null | `failure` | `error` | No completed response: the provider call raised (a transport failure), or nare did |
+| null | `failure` | `error` | No completed response: the provider call raised (a transport failure, after any retries), or nare did |
 | `mcp` | `failure` | `error` | An MCP server failed to start, list its tools, or close (see MCP tool sources) |
 | `session_write` | `failure` | `error` | The run ended but `--session` could not be written, so it cannot be resumed |
 
@@ -475,10 +475,14 @@ turn can overshoot, and done/blocked wins exactly as in nonstreaming. Actual
 usage remains visible on completion. After a budget stop there is no subsequent
 model call.
 
-A dropped stream is not retried or resumed mid-turn. Already emitted progress
-and completed transcript turns remain available; incomplete tool arguments
-are never dispatched, and an incomplete assistant turn is not saved as a
-completed turn. Usage that the provider did not report cannot be recovered or
+A dropped stream is never resumed mid-turn. Within the retry budget the whole
+request is resent (see
+[provider retries](#provider-retries-and-the-request-timeout)); the abandoned
+attempt's text has already gone out as `progress`, and the `retry` event marks
+where the next attempt's text starts. When the budget is spent, already
+emitted progress and completed transcript turns remain available; incomplete
+tool arguments are never dispatched, and an incomplete assistant turn is not
+saved as a completed turn. Usage that the provider did not report cannot be recovered or
 invented; the saved accounting includes completed replies only. Callers capture
 JSONL to retain live progress and can resume the completed transcript explicitly.
 Schema-valid output from previous completed replies remains available.
@@ -490,6 +494,78 @@ proxy that enforces a 0.3-second idle window: nonstreaming gets HTTP 524, while
 both streaming rails emit progress before finalization and survive a 0.75-second
 withheld completion with heartbeats. This is conditional traffic evidence, not
 an assurance about every model/proxy combination.
+
+## Provider retries and the request timeout
+
+```sh
+nare run --yes --jsonl --request-timeout 900 --request-retries 5 \
+  --request-retry-seconds 120 "..."
+```
+
+A model request that fails transiently is resent inside the run, on both
+rails, streamed or not, and on schema-constrained turns (the correction turn
+and every turn of a tool-free `--structured-output` run), which are resent
+constrained. Transient means:
+
+| Failure | `reason` |
+| --- | --- |
+| Read, write, connect or pool timeout | `timeout` |
+| Connect error, connection reset or closed mid-response | `connection` |
+| A stream that ended before its completion marker | `stream` |
+| HTTP 429, 502, 503, 504, 529 | `status` |
+| anthropic rail: HTTP 500, which is Anthropic's `api_error` | `status` |
+| anthropic rail: an `overloaded_error` sent mid-stream | `overloaded` |
+
+Everything else is permanent and ends the run on the first attempt: a 400,
+401, 403, 404 or 422, any other status, a stream that finished but lacks its
+usage or stop reason, and an error frame inside an openai-rail stream, whose
+meaning nare cannot tell. On the openai rail a 500 is permanent, because
+behind a proxy it is as often a translation failure that resending repeats.
+
+The budget is per model request, not per run, so a long run that meets a
+failure every few turns does not run out early.
+
+| Flag | Environment | Default | Meaning |
+| --- | --- | --- | --- |
+| `--request-retries N` | `NARE_REQUEST_RETRIES` | 3 | Most resends of one request; 0 never resends |
+| `--request-retry-seconds S` | `NARE_REQUEST_RETRY_SECONDS` | 60 | Most seconds one request waits between its attempts |
+| `--request-timeout S` | `NARE_REQUEST_TIMEOUT` | 600 | HTTP timeout: the longest wait to connect or for the next bytes |
+
+Waits are 2, 4, 8 and 16 seconds, then 30 each, with no jitter. A
+`Retry-After` given in seconds lengthens a wait to it. A retry whose wait would
+take the request past its seconds budget is not made. The seconds bound the
+waiting, not the attempts: one attempt that times out takes up to the request
+timeout by itself. The request timeout bounds each wait for bytes, not a whole
+response, so a streamed turn that keeps sending is never cut off by it. An
+invalid value (a negative count, a timeout that is not a positive finite
+number) exits 2 before starting. Without the flag, the anthropic rail keeps its
+SDK's 600 seconds with 5 to connect. The SDK's own retries are off: the budget
+here is the only one.
+
+A failed attempt adds no turn and no usage, and the resent request carries the
+same messages, so the request bytes are the same and a caching backend's
+prefix still hits. Each retry emits a `progress` event:
+
+```json
+{"type": "progress", "text": "model request failed (timeout); retry 1 of 3 in 2s: ReadTimeout: ...",
+ "detail": {"retry": {"attempt": 1, "retries": 3, "reason": "timeout",
+                      "status": null, "wait": 2.0, "error": "ReadTimeout: ..."}}}
+```
+
+On a streamed turn it arrives live, after the abandoned attempt's text. On an
+unstreamed turn it arrives with the turn's other events, when the request ends;
+its `timestamp` says when it happened. The `result` line and the session file
+carry `retries`, the count over the session's life, as `turns` is. A session
+file without it loads as 0.
+
+A request that fails permanently, or still fails when its budget is spent,
+ends the run as before: `status=error`, `stop_reason` null, and `error` is the
+last failure. `--proxy-num-retries` is separate: it asks a proxy to retry
+upstream, inside one of nare's attempts.
+
+`nare contract` advertises this under `request_retries` and `request_timeout`.
+The flags, event detail, result field and session field are additive and keep
+the contract version.
 
 ## Read-only navigation
 

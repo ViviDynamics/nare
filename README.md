@@ -45,6 +45,15 @@ proxy's support separately. Other providers refuse the option.
     nare run --yes --provider openai \
       --base-url https://your-proxy/v1 --model some/model "..."
 
+nare resends a model request that fails transiently, on both rails: a
+timeout, a dropped connection, a stream that ends early, or HTTP 429, 502,
+503, 504 or 529. `--request-retries N` (default 3, 0 turns it off) and
+`--request-retry-seconds S` (default 60) bound it per request, and
+`--request-timeout S` (default 600) sets the HTTP timeout. Each has a
+`NARE_REQUEST_*` environment variable. A 401 or 404 is never resent. Each
+retry is a `progress` event, and the `result` line counts them in `retries`.
+See [provider retries](docs/contract.md#provider-retries-and-the-request-timeout).
+
 Which rail matters for reasoning models. A model whose reasoning and answer
 arrive together can lose words or whole answers when a proxy translates to
 Anthropic's shape. LiteLLM can drop the start of an answer where reasoning

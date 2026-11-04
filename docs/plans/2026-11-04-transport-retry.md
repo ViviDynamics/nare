@@ -72,20 +72,20 @@ Out:
 - [x] 1. Classification: `transient()` in `nare.transport` names timeouts,
   connection failures, dropped streams and retryable statuses, and nothing
   else (401, 404, 400, unrelated errors): unit tests over each exception.
-- [ ] 2. Transports raise classifiable errors: the openai rail's HTTP failure
+- [x] 2. Transports raise classifiable errors: the openai rail's HTTP failure
   carries its status and `Retry-After`, a stream without its completion
   marker raises `StreamDropped`, the anthropic rail adds 500 and a mid-stream
   `overloaded_error`, and its SDK retries are off: tests per rail.
-- [ ] 3. Loop retries: a fake that times out twice and then answers completes
+- [x] 3. Loop retries: a fake that times out twice and then answers completes
   with two retry events, the answer's usage only and one turn; 401/404 not
   retried; budget exhaustion ends as today; zero retries; seconds budget;
   `Retry-After`; streamed, unstreamed and constrained turns.
-- [ ] 4. Session and result: `retries` saved and loaded, older files load as
+- [x] 4. Session and result: `retries` saved and loaded, older files load as
   0, the result line carries it.
-- [ ] 5. Request timeout: `request_timeout` reaches both rails' HTTP calls; a
+- [x] 5. Request timeout: `request_timeout` reaches both rails' HTTP calls; a
   loopback server slower than the timeout is retried and then answers, on
   both rails, through the real CLI.
-- [ ] 6. CLI flags and env: valid values reach the run and the transport,
+- [x] 6. CLI flags and env: valid values reach the run and the transport,
   invalid values exit 2.
-- [ ] 7. Contract discovery and docs: `nare contract` keys, docs/contract.md,
+- [x] 7. Contract discovery and docs: `nare contract` keys, docs/contract.md,
   docs/architecture.md, README.

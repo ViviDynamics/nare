@@ -10,7 +10,7 @@ from dataclasses import asdict
 from typing import Any, Literal, cast
 
 import httpx2
-from anthropic import AsyncAnthropic, omit
+from anthropic import DEFAULT_TIMEOUT, APIStatusError, AsyncAnthropic, omit
 from anthropic.types import MessageParam, ToolParam
 
 from nare.accounting import Prices
@@ -20,8 +20,13 @@ from nare.transport import (
     ModelMetadata,
     Reply,
     StopReason,
+    StreamDropped,
     ToolCall,
+    Transient,
+    checked_timeout,
     reported_cost,
+    retry_after_seconds,
+    transient,
 )
 
 log = logging.getLogger(__name__)
@@ -208,7 +213,9 @@ class AnthropicTransport:
         http_client: httpx2.AsyncClient | None = None,
         streaming: bool = False,
         image_input: bool = False,
+        request_timeout: float | None = None,
     ) -> None:
+        timeout = checked_timeout(request_timeout)
         if api_key is None and not os.environ.get("ANTHROPIC_API_KEY"):
             raise ValueError(
                 "no Anthropic API key: set ANTHROPIC_API_KEY in the environment "
@@ -262,8 +269,16 @@ class AnthropicTransport:
         self._discovery_base = base_url
         self.model = model
         self.system = system
+        # max_retries=0: the SDK's own retries were silent and uncounted, and
+        # stacked under nare's they made a caller's zero mean two.
+        # Unset keeps the SDK's own 600 seconds (5 to connect), and with it
+        # the SDK's nonstreaming checks, which nare repeats above anyway.
         self._client = AsyncAnthropic(
-            api_key=api_key, base_url=base_url, http_client=http_client
+            api_key=api_key,
+            base_url=base_url,
+            http_client=http_client,
+            max_retries=0,
+            timeout=timeout if timeout is not None else DEFAULT_TIMEOUT,
         )
 
         self._metadata = ModelMetadata(
@@ -291,6 +306,29 @@ class AnthropicTransport:
 
     async def prices(self) -> Prices | None:
         return await self._metadata.prices()
+
+    def transient(self, exc: BaseException) -> Transient | None:
+        """The shared rule, plus two failures Anthropic documents as passing.
+
+        A 500 here is Anthropic's api_error, which its SDK retried, rather
+        than a proxy's translation failure. An overloaded_error can arrive
+        mid-stream inside a 200, so only its body says what it is.
+        """
+        if isinstance(exc, APIStatusError):
+            body = exc.body if isinstance(exc.body, dict) else {}
+            error = body.get("error")
+            if isinstance(error, dict) and error.get("type") == "overloaded_error":
+                if exc.status_code < 400:
+                    return Transient("overloaded")
+            if exc.status_code == 500:
+                return Transient(
+                    "status",
+                    status=500,
+                    retry_after=retry_after_seconds(
+                        exc.response.headers.get("retry-after")
+                    ),
+                )
+        return transient(exc)
 
     def _wire(
         self, messages: list[Message], tools: list[dict[str, Any]]
@@ -381,7 +419,7 @@ class AnthropicTransport:
                 elif event.type == "message_stop":
                     finished = True
             if not finished:
-                raise RuntimeError("incomplete model stream: message_stop missing")
+                raise StreamDropped("incomplete model stream: message_stop missing")
             if not complete_usage:
                 raise RuntimeError("incomplete model stream: final usage missing")
             response = await stream.get_final_message()

@@ -27,9 +27,12 @@ from nare.session import Message, Usage
 from nare.transport import (
     Delta,
     ModelMetadata,
+    ProviderStatusError,
     Reply,
     StopReason,
+    StreamDropped,
     ToolCall,
+    checked_timeout,
     reported_cost,
 )
 
@@ -278,7 +281,9 @@ class OpenAITransport:
         image_input: bool = False,
         proxy_num_retries: int | None = None,
         cache_breakpoints: bool = False,
+        request_timeout: float | None = None,
     ) -> None:
+        timeout = checked_timeout(request_timeout)
         if proxy_num_retries is not None and (
             type(proxy_num_retries) is not int or proxy_num_retries < 0
         ):
@@ -303,7 +308,10 @@ class OpenAITransport:
         self.cache_breakpoints = cache_breakpoints
         self._base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
         self._key = key
-        self._client = http_client or httpx2.AsyncClient(timeout=DEFAULT_TIMEOUT)
+        # Each wait for bytes, not a whole response: a streamed turn that
+        # keeps sending is never cut off by it.
+        self.timeout = timeout if timeout is not None else DEFAULT_TIMEOUT
+        self._client = http_client or httpx2.AsyncClient(timeout=self.timeout)
 
         self._metadata = ModelMetadata(
             self._client,
@@ -377,12 +385,12 @@ class OpenAITransport:
             f"{self._base_url}/chat/completions",
             headers={"authorization": f"Bearer {self._key}"},
             json=payload,
-            timeout=DEFAULT_TIMEOUT,
+            timeout=self.timeout,
         )
         if response.status_code >= 400:
             # The body carries the reason a proxy refused, which is the part a
             # caller needs: a scoped key naming the model it may not reach.
-            raise self._failure(response.status_code, response.text)
+            raise self._failure(response)
         return self._reply(response.json(), cost=reported_cost(response.headers))
 
     async def stream_turn(
@@ -402,11 +410,11 @@ class OpenAITransport:
             f"{self._base_url}/chat/completions",
             headers={"authorization": f"Bearer {self._key}"},
             json=payload,
-            timeout=DEFAULT_TIMEOUT,
+            timeout=self.timeout,
         ) as response:
             if response.status_code >= 400:
                 await response.aread()
-                raise self._failure(response.status_code, response.text)
+                raise self._failure(response)
             text: list[str] = []
             reasoning: list[str] = []
             calls: dict[int, dict[str, Any]] = {}
@@ -453,7 +461,11 @@ class OpenAITransport:
                         for key in ("name", "arguments"):
                             call["function"][key] += function.get(key) or ""
             if not done or finish is None or usage is None:
-                raise RuntimeError(
+                # No final marker is a connection that ended mid-response,
+                # which resending can cure; a finished stream that lacks the
+                # rest is the server's shape, which it cannot.
+                failure = StreamDropped if not done else RuntimeError
+                raise failure(
                     "incomplete model stream: "
                     "final marker, stop reason or usage missing"
                 )
@@ -479,12 +491,18 @@ class OpenAITransport:
             )
         yield reply
 
-    def _failure(self, status: int, text: str) -> RuntimeError:
+    def _failure(self, response: httpx2.Response) -> ProviderStatusError:
         """The proxy's own reason, plus the option to turn off when the
         request carried breakpoints and the server refused it as a request.
+        The status and Retry-After travel with it, for the retry decision.
         """
+        status = response.status_code
         hint = CACHE_BREAKPOINTS_HINT if self.cache_breakpoints and status < 500 else ""
-        return RuntimeError(f"chat completion failed with HTTP {status}: {text}{hint}")
+        return ProviderStatusError(
+            f"chat completion failed with HTTP {status}: {response.text}{hint}",
+            status_code=status,
+            retry_after=response.headers.get("retry-after"),
+        )
 
     def _reply(
         self,

@@ -379,6 +379,7 @@ class TuiApp(App[None]):
                 prices=self.prices,
                 mcp_servers=self.args.mcp_servers,
                 mcp_allow_all=self.args.tools is None,
+                retry=getattr(self.args, "retry", None),
             ):
                 self._event(event)
                 # As in nare run: not while a streamed turn's calls wait.

@@ -80,6 +80,20 @@ class StreamDropped(RuntimeError):
     """A streamed response ended before its completion marker arrived."""
 
 
+def checked_timeout(value: float | None) -> float | None:
+    """A request timeout in seconds: positive and finite, or None."""
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise ValueError("request_timeout must be a positive finite number of seconds")
+    return float(value)
+
+
 def retry_after_seconds(value: str | None) -> float | None:
     """A Retry-After given in seconds. The HTTP-date form is ignored."""
     if value is None:
@@ -191,6 +205,7 @@ def make_transport(
     proxy_num_retries: int | None = None,
     cache_breakpoints: bool = False,
     replay: str | os.PathLike[str] | None = None,
+    request_timeout: float | None = None,
 ) -> Transport:
     """Build a transport from configuration.
 
@@ -201,6 +216,7 @@ def make_transport(
 
     `cache_breakpoints` reaches the openai arm only. The anthropic arm always
     marks its breakpoints, so the option asks it for nothing it lacks.
+    `request_timeout` reaches both; None keeps each rail's 600 seconds.
 
     `fake` replays the JSON script at `replay` and talks to nothing, which is
     how a caller tests its integration with no key and no network. The
@@ -224,6 +240,7 @@ def make_transport(
                 system=system,
                 streaming=streaming,
                 image_input=image_input,
+                request_timeout=request_timeout,
             )
         case "openai":
             from nare.transport.openai import OpenAITransport
@@ -240,6 +257,7 @@ def make_transport(
                 image_input=image_input,
                 proxy_num_retries=proxy_num_retries,
                 cache_breakpoints=cache_breakpoints,
+                request_timeout=request_timeout,
             )
         case "fake":
             if replay is None:
