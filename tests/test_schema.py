@@ -722,3 +722,124 @@ def test_loads_unique_refuses_a_repeat_and_keeps_json_errors_as_value_errors() -
         loads_unique('{"a": 1, "a": 2}')
     with pytest.raises(ValueError):
         loads_unique("{oops")
+
+
+@pytest.mark.parametrize(
+    ("value", "schema", "code", "location"),
+    [
+        ({"age": 36}, PERSON, "missing", ()),
+        ({"name": 7}, PERSON, "type", ("name",)),
+        ("maybe", {"type": "string", "enum": ["pass", "fail"]}, "enum", ()),
+        ("x", {"const": "y"}, "const", ()),
+        ("abcd", {"type": "string", "maxLength": 3}, "max_length", ()),
+        ("a", {"type": "string", "minLength": 3}, "min_length", ()),
+        ("abc", {"type": "string", "pattern": "^z"}, "pattern", ()),
+        ([1, 2, 3], {"type": "array", "maxItems": 2}, "max_items", ()),
+        ([1], {"type": "array", "minItems": 2}, "min_items", ()),
+        ([1, 1], {"type": "array", "uniqueItems": True}, "unique_items", ()),
+        (1, {"type": "integer", "minimum": 2}, "minimum", ()),
+        (9, {"type": "integer", "maximum": 2}, "maximum", ()),
+        (1, {"type": "integer", "exclusiveMinimum": 1}, "exclusive_minimum", ()),
+        (1, {"type": "integer", "exclusiveMaximum": 1}, "exclusive_maximum", ()),
+        (1, {"anyOf": [{"type": "string"}, {"type": "boolean"}]}, "any_of", ()),
+        (1, {"oneOf": [{"type": "integer"}, {"type": "number"}]}, "one_of", ()),
+    ],
+)
+def test_each_error_carries_the_code_of_the_rule_it_broke(
+    value: object, schema: dict[str, object], code: str, location: tuple[object, ...]
+) -> None:
+    errors = validate(value, schema)
+
+    assert errors
+    assert any(e.code == code and tuple(e.location) == location for e in errors)
+
+
+def test_an_error_is_still_its_string_message() -> None:
+    (error,) = validate({"age": 36}, PERSON)
+
+    assert isinstance(error, str)
+    assert error == "missing required property: name"
+
+
+def test_a_nested_error_locates_itself_by_keys_and_indexes() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "findings": {
+                "type": "array",
+                "items": {"type": "object", "properties": {"id": {"type": "string"}}},
+            }
+        },
+    }
+
+    (error,) = validate({"findings": [{"id": "a"}, {"id": 3}]}, schema)
+
+    assert error.code == "type"
+    assert error.location == ("findings", 1, "id")
+    assert error == "findings[1].id: expected string, got integer"
+
+
+STRICT: dict[str, object] = {
+    "type": "object",
+    "properties": {"id": {"type": "string"}, "scope": {"type": "string"}},
+    "additionalProperties": False,
+}
+
+
+def test_an_unexpected_property_names_the_key_and_says_to_remove_it() -> None:
+    (error,) = validate({"id": "x", "note": "kept beside the decision"}, STRICT)
+
+    assert error.code == "unexpected_property"
+    assert error == "unexpected property: note"
+    assert error.guidance is not None
+    assert '"note"' in error.guidance
+    assert "remove" in error.guidance
+    assert "rather than renaming it" in error.guidance
+
+
+def test_the_removal_guidance_lists_the_keys_the_schema_names() -> None:
+    (error,) = validate({"id": "x", "note": "n"}, STRICT)
+
+    assert error.guidance is not None
+    assert "id, scope" in error.guidance
+
+
+def test_errors_without_guidance_say_so() -> None:
+    (error,) = validate({"age": 36}, PERSON)
+
+    assert error.guidance is None
+
+
+def test_an_error_serializes_as_the_event_shape() -> None:
+    (error,) = validate({"id": "x", "note": "n"}, STRICT)
+
+    assert error.to_dict() == {
+        "code": "unexpected_property",
+        "location": [],
+        "message": "unexpected property: note",
+        "guidance": error.guidance,
+    }
+
+
+def test_a_check_error_has_the_same_shape_as_a_validator_error() -> None:
+    from nare.schema import SchemaError
+
+    error = SchemaError(
+        "scope_citations_invalid", ("findings", 0), "cites an unknown scope"
+    )
+
+    assert error == "findings[0]: cites an unknown scope"
+    assert error.to_dict()["location"] == ["findings", 0]
+
+
+def test_an_error_survives_a_deep_copy_with_its_code_and_guidance() -> None:
+    import copy
+
+    (error,) = validate({"id": "x", "note": "n"}, STRICT)
+
+    copied = copy.deepcopy(error)
+
+    assert copied == error
+    assert copied.code == "unexpected_property"
+    assert copied.location == ()
+    assert copied.guidance == error.guidance

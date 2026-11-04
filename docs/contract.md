@@ -1221,6 +1221,35 @@ with its `path`, `sha256` and `size` (the latest read's digest), so a caller can
 check what its answer cites against what was read. A correction entry carries
 `kind`, `reads` for a read correction and `schema` for a schema one. Without a
 requirement the result has no `reads` key.
+### Structured errors and checks
+
+Every complaint about an answer is a structured error, in the schema correction
+and in the event stream. Each has the same four keys:
+
+| Key | Meaning |
+| --- | --- |
+| `code` | The rule broken: `missing`, `unexpected_property`, `type`, `enum`, `const`, `min_length`, `max_length`, `pattern`, `min_items`, `max_items`, `unique_items`, `minimum`, `maximum`, `exclusive_minimum`, `exclusive_maximum`, `any_of`, `one_of`; from the answer's text, `invalid_json` or `duplicate_key`; from a check, whatever the check gives |
+| `location` | The keys and indexes from the answer's root, as a list (`["findings", 0, "title"]`); `[]` for the root |
+| `message` | The message as it has always been stated, `findings[0].title: expected string, got integer` |
+| `guidance` | What the model should do about it, or `null` |
+
+An `unexpected_property` error carries removal guidance: it names the key, says
+to remove it rather than rename it, and lists the keys the schema does name. The
+correction states that guidance; every other correction states the message only,
+as before. The `errors` list is on each `error` event for a schema violation and
+on each `progress` event for a schema correction.
+
+A caller can add checks the schema cannot express, such as ids that exist or
+cross-field rules, with the Python entry point `nare.run(..., check=fn)`. `fn`
+receives the parsed answer and returns its errors: `SchemaError` values from
+`nare.schema`, mappings with `code`, `location`, `message` and `guidance`, or
+plain strings. An empty result passes. A check runs only on an answer that
+passes the schema, and its errors go into the same correction as schema
+errors, under the same budget. A check that raises ends the run with
+`status` `error`, `stop_reason` null, and an error event reading
+`check raised <Type>: <message>`; nare does not hand the exception to the
+caller. `check` requires `schema`. The command line takes no check: it needs
+code, which `nare run` does not load.
 
 ### Finding the document in an answer
 

@@ -8,7 +8,14 @@ import asyncio
 import hashlib
 import json
 import math
-from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from collections.abc import (
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Iterable,
+    Mapping,
+    Sequence,
+)
 from contextlib import aclosing
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
@@ -27,7 +34,7 @@ from nare.events import Event, LiveText, redact
 from nare.mcp import Server, connect
 from nare.reads import NO_READS, ReadRequirement, unmet
 from nare.reads import build as build_reads
-from nare.schema import extract_json, validate
+from nare.schema import DuplicateKeyError, SchemaError, extract_json, validate
 from nare.session import Message, Session, append_user_text
 from nare.tools import (
     Approve,
@@ -358,14 +365,81 @@ def _parses(text: str) -> bool:
     return True
 
 
-def _answer_errors(text: str, schema: dict[str, Any]) -> list[str]:
-    """The validator's complaints about this answer, or none."""
+def _answer_errors(text: str, schema: dict[str, Any]) -> list[SchemaError]:
+    """The validator's complaints about this answer, or none. A reply that is
+    not one JSON document, or repeats a key, is a complaint too, coded so a
+    caller can tell it from a schema violation."""
     try:
         parsed = extract_json(text)
+    except DuplicateKeyError as exc:
+        return [
+            SchemaError("duplicate_key", location, f"duplicate key: {key}")
+            for location, key in exc.found
+        ]
     except ValueError as exc:
-        return [str(exc)]
-    errors = validate(parsed, schema)
-    return errors
+        return [SchemaError("invalid_json", (), str(exc))]
+    return validate(parsed, schema)
+
+
+# A check takes the parsed answer and returns its errors: SchemaError values, or
+# a mapping of code, location, message and guidance, or plain strings. An empty
+# result (or None) passes. It runs only on an answer that passes the schema.
+Check = Callable[[Any], Iterable[Any] | None]
+
+
+class CheckRaised(Exception):
+    """The caller's check raised. nare did not make that failure; the run ends
+    with an error rather than the exception reaching the caller."""
+
+
+def check_check(check: Check | None, schema: dict[str, Any] | None) -> None:
+    """Refuse a check that cannot run, before any turn."""
+    if check is None:
+        return
+    if schema is None:
+        raise ValueError("check requires a schema: it checks the parsed answer")
+    if not callable(check):
+        raise ValueError("check must be a callable")
+
+
+def _as_error(item: Any) -> SchemaError:
+    if isinstance(item, SchemaError):
+        return item
+    if isinstance(item, str):
+        return SchemaError("check", (), item)
+    if isinstance(item, Mapping):
+        return SchemaError(
+            str(item["code"]),
+            tuple(item.get("location", ())),
+            str(item["message"]),
+            item.get("guidance"),
+        )
+    raise TypeError(
+        f"a check returns SchemaError, str or a mapping, not {type(item).__name__}"
+    )
+
+
+def _check_errors(parsed: Any, check: Check) -> list[SchemaError]:
+    """The check's errors for a parsed answer. A check that raises, or returns
+    something other than a list of errors, raises CheckRaised."""
+    try:
+        found = check(parsed)
+        if isinstance(found, (str, Mapping)):
+            raise TypeError("a check returns a list of errors, not one value")
+        return [_as_error(item) for item in (found or ())]
+    except Exception as exc:
+        raise CheckRaised(f"check raised {type(exc).__name__}: {exc}") from exc
+
+
+def _check_passes(text: str, check: Check | None) -> bool:
+    """Whether a tool-turn candidate may be kept as the output. Silent: a check
+    that fails here is simply not kept, and the final answer reports it."""
+    if check is None:
+        return True
+    try:
+        return not _check_errors(extract_json(text), check)
+    except CheckRaised:
+        return False
 
 
 def check_structured_output(
@@ -562,6 +636,7 @@ async def step(
     max_corrections: int = SCHEMA_CORRECTIONS_DEFAULT,
     cutoffs: CutoffLimit | None = None,
     reads: ReadRequirement = NO_READS,
+    check: Check | None = None,
 ) -> Session:
     report = compact(s, context_window, image_input=policy.image_input)
     if report is not None:
@@ -703,7 +778,10 @@ async def step(
     # the latest schema-valid document without claiming the task completed.
     if schema is not None:
         candidate = _final_text(reply.content)
-        if not _answer_errors(candidate, schema):
+        # On a turn with tool calls only: a plain answer is checked once, by the
+        # final-answer branch below, which decides whether it is the output.
+        kept = _check_passes(candidate, check) if reply.tool_calls else check is None
+        if not _answer_errors(candidate, schema) and kept:
             s.output = extract_json(candidate)
 
     unfinished = _UNFINISHED.get(reply.stop_reason)
@@ -741,6 +819,15 @@ async def step(
             s.events.append(Event("output", text))
             return s
         errors = _answer_errors(text, schema)
+        if not errors and check is not None:
+            try:
+                errors = _check_errors(extract_json(text), check)
+            except CheckRaised as exc:
+                s.status = "error"
+                s.stop_reason = None
+                s.error = str(exc)
+                s.events.append(Event("error", s.error))
+                return s
         if not errors:
             if _hold_for_reads(s, reads, max_corrections):
                 return s
@@ -759,7 +846,9 @@ async def step(
             s.status = "error"
             s.stop_reason = "schema_violation"
             s.error = f"answer does not satisfy the schema: {complaint}"
-            s.events.append(Event("error", s.error))
+            s.events.append(
+                Event("error", s.error, {"errors": [e.to_dict() for e in errors]})
+            )
             return s
         append_user_text(s, correction_text(granted, errors, restated))
         s.events.append(
@@ -767,7 +856,10 @@ async def step(
                 "progress",
                 f"schema correction {granted.number} "
                 f"({'charged' if granted.charged else 'free'}): {complaint}",
-                {"schema_correction": record(granted)},
+                {
+                    "schema_correction": record(granted),
+                    "errors": [e.to_dict() for e in errors],
+                },
             )
         )
         return s
@@ -907,6 +999,7 @@ async def _live_step(
     max_corrections: int = SCHEMA_CORRECTIONS_DEFAULT,
     cutoffs: CutoffLimit | None = None,
     reads: ReadRequirement = NO_READS,
+    check: Check | None = None,
 ) -> AsyncGenerator[Event, None]:
     queue: asyncio.Queue[Event] = asyncio.Queue()
     buffers: dict[Literal["progress", "thinking"], LiveText] = {
@@ -948,6 +1041,7 @@ async def _live_step(
             max_corrections=max_corrections,
             cutoffs=cutoffs,
             reads=reads,
+            check=check,
         )
     )
     waiter: asyncio.Task[Event] | None = None
@@ -1000,6 +1094,7 @@ async def _run(
     max_corrections: int = SCHEMA_CORRECTIONS_DEFAULT,
     max_cutoffs: int | None = None,
     reads: ReadRequirement = NO_READS,
+    check: Check | None = None,
 ) -> AsyncGenerator[Event, None]:
     """Advance the session to a terminal status, yielding events as they occur.
 
@@ -1124,6 +1219,7 @@ async def _run(
                             max_corrections,
                             cutoffs,
                             reads,
+                            check=check,
                         )
                     ) as stream:
                         async for event in stream:
@@ -1143,6 +1239,7 @@ async def _run(
                         max_corrections=max_corrections,
                         cutoffs=cutoffs,
                         reads=reads,
+                        check=check,
                     )
                 if session.status not in ("done", "blocked"):
                     check_budget(session)
@@ -1202,6 +1299,7 @@ async def run(
     max_cutoffs: int | None = None,
     require_reads: int = 0,
     require_read: Sequence[str] = (),
+    check: Check | None = None,
 ) -> AsyncGenerator[Event, None]:
     check_structured_output(transport, schema, structured_output)
     check_max_tool_calls(max_tool_calls)
@@ -1214,6 +1312,7 @@ async def run(
     )
     if reads.active and "read" not in (policy or Policy()).tools:
         raise ValueError("a read requirement needs the read tool")
+    check_check(check, schema)
     configure_budgets(session, budget_tokens, budget_usd)
     if context_window is not None and (
         isinstance(context_window, bool)
@@ -1254,6 +1353,7 @@ async def run(
                     max_corrections=max_corrections,
                     max_cutoffs=max_cutoffs,
                     reads=reads,
+                    check=check,
                 )
             ) as stream:
                 async for event in stream:

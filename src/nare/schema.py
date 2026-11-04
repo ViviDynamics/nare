@@ -273,81 +273,181 @@ def _at(path: str, message: str) -> str:
     return f"{path}: {message}" if path else message
 
 
-def _validate(value: Any, schema: dict[str, Any], path: str, root: Any) -> list[str]:
-    errors: list[str] = []
+Location = tuple[str | int, ...]
+
+
+class SchemaError(str):
+    """One complaint about an answer.
+
+    The value is the message the validator has always produced, "path: message",
+    so a caller that compares or prints an error sees no change. The fields are
+    what a caller and the event stream read:
+
+    - `code`: the rule broken, such as `missing`, `unexpected_property`, `type`
+      or `enum`. A check supplies its own.
+    - `location`: the keys and indexes from the answer's root, as a tuple.
+    - `guidance`: what the model should do about it, or None.
+    """
+
+    code: str
+    location: Location
+    guidance: str | None
+
+    def __new__(
+        cls,
+        code: str,
+        location: Location,
+        message: str,
+        guidance: str | None = None,
+    ) -> SchemaError:
+        self = super().__new__(cls, _at(_render(tuple(location)), message))
+        self.code = code
+        self.location = tuple(location)
+        self.guidance = guidance
+        return self
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        # A session is deep-copied before it is saved, and str's default reduce
+        # would rebuild an error from its text alone and lose its code.
+        return (
+            _schema_error_from_state,
+            (self.code, self.location, str(self), self.guidance),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """The error as an event detail: a JSON object with the same four keys
+        for every error, whichever code it has."""
+        return {
+            "code": self.code,
+            "location": list(self.location),
+            "message": str(self),
+            "guidance": self.guidance,
+        }
+
+
+def _schema_error_from_state(
+    code: str, location: Location, text: str, guidance: str | None
+) -> SchemaError:
+    error = str.__new__(SchemaError, text)
+    error.code = code
+    error.location = tuple(location)
+    error.guidance = guidance
+    return error
+
+
+def _unexpected_guidance(name: str, properties: dict[str, Any]) -> str:
+    allowed = ", ".join(sorted(properties)) or "none"
+    return (
+        f'remove the key "{name}" rather than renaming it: the schema does not '
+        f"name it. Send only the keys the schema names: {allowed}."
+    )
+
+
+def _validate(
+    value: Any, schema: dict[str, Any], location: Location, root: Any
+) -> list[SchemaError]:
+    errors: list[SchemaError] = []
     if "$ref" in schema:
-        errors += _validate(value, _resolve(schema["$ref"], root), path, root)
+        errors += _validate(value, _resolve(schema["$ref"], root), location, root)
     expected = schema.get("type")
     actual = _type_of(value)
     if isinstance(expected, str) and not _matches(actual, expected):
-        return [*errors, _at(path, f"expected {expected}, got {actual}")]
+        return [
+            *errors,
+            SchemaError("type", location, f"expected {expected}, got {actual}"),
+        ]
 
     if "enum" in schema and _canonical(value) not in {
         _canonical(option) for option in schema["enum"]
     }:
-        errors.append(_at(path, f"expected one of {schema['enum']!r}, got {value!r}"))
+        errors.append(
+            SchemaError(
+                "enum",
+                location,
+                f"expected one of {schema['enum']!r}, got {value!r}",
+            )
+        )
     if "const" in schema and _canonical(value) != _canonical(schema["const"]):
-        errors.append(_at(path, f"expected {schema['const']!r}, got {value!r}"))
+        errors.append(
+            SchemaError(
+                "const", location, f"expected {schema['const']!r}, got {value!r}"
+            )
+        )
 
-    errors += _composition(value, schema, path, root)
+    errors += _composition(value, schema, location, root)
 
     if actual == "string":
-        errors += _string_bounds(value, schema, path)
+        errors += _string_bounds(value, schema, location)
     if actual in {"integer", "number"}:
-        errors += _number_bounds(value, schema, path)
+        errors += _number_bounds(value, schema, location)
     if actual == "array":
-        errors += _array_bounds(value, schema, path)
+        errors += _array_bounds(value, schema, location)
 
     if actual == "object":
         properties = schema.get("properties") or {}
         for name in schema.get("required") or []:
             if name not in value:
-                errors.append(_at(path, f"missing required property: {name}"))
+                errors.append(
+                    SchemaError(
+                        "missing", location, f"missing required property: {name}"
+                    )
+                )
         additional = schema.get("additionalProperties")
         for name in value:
             if name in properties:
                 continue
             if additional is False:
-                errors.append(_at(path, f"unexpected property: {name}"))
+                errors.append(
+                    SchemaError(
+                        "unexpected_property",
+                        location,
+                        f"unexpected property: {name}",
+                        _unexpected_guidance(name, properties),
+                    )
+                )
             elif isinstance(additional, dict):
                 # A map: every property the schema does not name is a value
                 # of the map, checked against the one value schema.
-                errors += _validate(
-                    value[name], additional, f"{path}.{name}" if path else name, root
-                )
+                errors += _validate(value[name], additional, (*location, name), root)
         for name, sub in properties.items():
             if name in value:
-                errors += _validate(
-                    value[name], sub, f"{path}.{name}" if path else name, root
-                )
+                errors += _validate(value[name], sub, (*location, name), root)
 
     if actual == "array" and isinstance(schema.get("items"), dict):
         for index, item in enumerate(value):
-            errors += _validate(item, schema["items"], f"{path}[{index}]", root)
+            errors += _validate(item, schema["items"], (*location, index), root)
 
     return errors
 
 
-def _composition(value: Any, schema: dict[str, Any], path: str, root: Any) -> list[str]:
-    errors: list[str] = []
+def _composition(
+    value: Any, schema: dict[str, Any], location: Location, root: Any
+) -> list[SchemaError]:
+    errors: list[SchemaError] = []
     for sub in schema.get("allOf", []):
-        errors += _validate(value, sub, path, root)
+        errors += _validate(value, sub, location, root)
     for keyword in ("anyOf", "oneOf"):
         if keyword not in schema:
             continue
-        outcomes = [_validate(value, sub, path, root) for sub in schema[keyword]]
+        outcomes = [_validate(value, sub, location, root) for sub in schema[keyword]]
         matched = [index for index, found in enumerate(outcomes) if not found]
+        code = "any_of" if keyword == "anyOf" else "one_of"
         if not matched:
             detail = "; ".join(
                 f"{keyword}[{index}]: {'; '.join(found)}"
                 for index, found in enumerate(outcomes)
             )
-            errors.append(_at(path, f"matches no {keyword} alternative ({detail})"))
+            errors.append(
+                SchemaError(
+                    code, location, f"matches no {keyword} alternative ({detail})"
+                )
+            )
         elif keyword == "oneOf" and len(matched) > 1:
             which = ", ".join(str(index) for index in matched[:-1])
             errors.append(
-                _at(
-                    path,
+                SchemaError(
+                    "one_of",
+                    location,
                     f"matches oneOf alternatives {which} and {matched[-1]}, "
                     "expected exactly one",
                 )
@@ -355,27 +455,32 @@ def _composition(value: Any, schema: dict[str, Any], path: str, root: Any) -> li
     return errors
 
 
-def _string_bounds(value: str, schema: dict[str, Any], path: str) -> list[str]:
-    errors: list[str] = []
+def _string_bounds(
+    value: str, schema: dict[str, Any], location: Location
+) -> list[SchemaError]:
+    errors: list[SchemaError] = []
     # len() counts code points, which is what JSON Schema means by length.
     if "maxLength" in schema and len(value) > schema["maxLength"]:
         errors.append(
-            _at(
-                path,
+            SchemaError(
+                "max_length",
+                location,
                 f"expected at most {schema['maxLength']} characters, got {len(value)}",
             )
         )
     if "minLength" in schema and len(value) < schema["minLength"]:
         errors.append(
-            _at(
-                path,
+            SchemaError(
+                "min_length",
+                location,
                 f"expected at least {schema['minLength']} characters, got {len(value)}",
             )
         )
     if "pattern" in schema and re.search(schema["pattern"], value) is None:
         errors.append(
-            _at(
-                path,
+            SchemaError(
+                "pattern",
+                location,
                 f"expected a string matching {schema['pattern']!r}, got {value!r}",
             )
         )
@@ -383,32 +488,48 @@ def _string_bounds(value: str, schema: dict[str, Any], path: str) -> list[str]:
 
 
 _COMPARISONS = (
-    ("minimum", ">=", operator.ge),
-    ("maximum", "<=", operator.le),
-    ("exclusiveMinimum", ">", operator.gt),
-    ("exclusiveMaximum", "<", operator.lt),
+    ("minimum", ">=", operator.ge, "minimum"),
+    ("maximum", "<=", operator.le, "maximum"),
+    ("exclusiveMinimum", ">", operator.gt, "exclusive_minimum"),
+    ("exclusiveMaximum", "<", operator.lt, "exclusive_maximum"),
 )
 
 
-def _number_bounds(value: float, schema: dict[str, Any], path: str) -> list[str]:
-    errors: list[str] = []
-    for keyword, symbol, holds in _COMPARISONS:
+def _number_bounds(
+    value: float, schema: dict[str, Any], location: Location
+) -> list[SchemaError]:
+    errors: list[SchemaError] = []
+    for keyword, symbol, holds, code in _COMPARISONS:
         if keyword in schema and not holds(value, schema[keyword]):
             errors.append(
-                _at(path, f"expected a number {symbol} {schema[keyword]}, got {value}")
+                SchemaError(
+                    code,
+                    location,
+                    f"expected a number {symbol} {schema[keyword]}, got {value}",
+                )
             )
     return errors
 
 
-def _array_bounds(value: list[Any], schema: dict[str, Any], path: str) -> list[str]:
-    errors: list[str] = []
+def _array_bounds(
+    value: list[Any], schema: dict[str, Any], location: Location
+) -> list[SchemaError]:
+    errors: list[SchemaError] = []
     if "maxItems" in schema and len(value) > schema["maxItems"]:
         errors.append(
-            _at(path, f"expected at most {schema['maxItems']} items, got {len(value)}")
+            SchemaError(
+                "max_items",
+                location,
+                f"expected at most {schema['maxItems']} items, got {len(value)}",
+            )
         )
     if "minItems" in schema and len(value) < schema["minItems"]:
         errors.append(
-            _at(path, f"expected at least {schema['minItems']} items, got {len(value)}")
+            SchemaError(
+                "min_items",
+                location,
+                f"expected at least {schema['minItems']} items, got {len(value)}",
+            )
         )
     if schema.get("uniqueItems") is True:
         first: dict[Any, int] = {}
@@ -416,8 +537,9 @@ def _array_bounds(value: list[Any], schema: dict[str, Any], path: str) -> list[s
             key = _canonical(item)
             if key in first:
                 errors.append(
-                    _at(
-                        path,
+                    SchemaError(
+                        "unique_items",
+                        location,
                         f"expected unique items, [{index}] repeats [{first[key]}]",
                     )
                 )
@@ -444,10 +566,11 @@ def _canonical(value: Any) -> Any:
     return (_type_of(value), value)
 
 
-def validate(value: Any, schema: dict[str, Any]) -> list[str]:
-    """Every error, not just the first: one reprompt carries them all back."""
+def validate(value: Any, schema: dict[str, Any]) -> list[SchemaError]:
+    """Every error, not just the first: one reprompt carries them all back. Each
+    is a SchemaError, which is still the string it always was."""
     check_supported(schema)
-    return _validate(value, schema, "", schema)
+    return _validate(value, schema, (), schema)
 
 
 class DuplicateKeyError(ValueError):

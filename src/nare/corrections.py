@@ -21,8 +21,11 @@ passes them to `charge()` in the same list the validator's messages use.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+from nare.schema import SchemaError
 
 if TYPE_CHECKING:
     from nare.session import Session
@@ -70,7 +73,7 @@ def code_of(error: str) -> str:
 
 def charge(
     s: Session,
-    errors: list[str],
+    errors: Sequence[str],
     limit: int,
     *,
     comparable: bool = True,
@@ -122,11 +125,22 @@ def charge(
     )
 
 
-def correction_text(correction: Correction, errors: list[str], restated: str) -> str:
+def _complaint(error: str) -> str:
+    """One error as the model reads it: its message, then its guidance when it
+    has any. Only an error with guidance (an unexpected key, say) says more than
+    its message; every other complaint is stated exactly as it always was."""
+    guidance = error.guidance if isinstance(error, SchemaError) else None
+    return f"{error} ({guidance})" if guidance else str(error)
+
+
+def correction_text(
+    correction: Correction, errors: Sequence[str], restated: str
+) -> str:
     """The message the model reads for a correction. The complaint is the
-    validator's own list, duplicates and all, as it has always been stated."""
+    validator's own list, duplicates and all, with the guidance an error carries."""
     text = (
-        f"Your answer did not satisfy the required JSON Schema: {'; '.join(errors)}.\n"
+        "Your answer did not satisfy the required JSON Schema: "
+        f"{'; '.join(_complaint(error) for error in errors)}.\n"
     )
     if correction.earlier:
         text += (
