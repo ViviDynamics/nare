@@ -102,13 +102,15 @@ class SelectableStatic(Static):
         # The compositor finds where a mouse press lands from each segment's
         # "offset" meta, which Textual writes only for Text. Writing it here
         # lets a drag start and end inside the block, not select all of it.
+        # The meta counts characters, not cells: the compositor adds it to a
+        # character count within the segment.
         strip = super().render_line(y)
         segments: list[Segment] = []
-        column = 0
+        character = 0
         for segment in strip:
-            style = (segment.style or Style()) + Style(meta={"offset": (column, y)})
+            style = (segment.style or Style()) + Style(meta={"offset": (character, y)})
             segments.append(Segment(segment.text, style, segment.control))
-            column += segment.cell_length
+            character += len(segment.text)
         return Strip(segments, strip.cell_length)
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
@@ -360,6 +362,9 @@ class TuiApp(App[None]):
         selected = self._copyable_selection()
         if selected is not None:
             self.copy_to_clipboard(selected)
+            # Cleared, so the next Ctrl-C interrupts: a selection left on
+            # screen would keep copying instead.
+            self.screen.clear_selection()
             # The terminal may drop OSC 52 without saying so. The notice says
             # what nare sent, not that the clipboard received it.
             self.notify(f"Copied {len(selected)} characters", title="Copy")

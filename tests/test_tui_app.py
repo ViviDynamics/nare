@@ -517,8 +517,8 @@ async def test_ctrl_c_copies_a_selection_during_a_turn(tmp_path: Path) -> None:
         assert not app.worker.is_cancelled
         assert app.run_state == "working"
         assert any("copied" in n.message.lower() for n in app._notifications)
-        # Nothing selected: Ctrl+C interrupts again.
-        app.screen.clear_selection()
+        # The copy cleared the selection, so the next Ctrl+C interrupts.
+        assert app_selection(app) == ""
         await pilot.press("ctrl+c")
         await until(pilot, lambda: app.run_state == "interrupted")
 
@@ -551,6 +551,38 @@ async def test_ctrl_c_copies_a_selection_when_idle(tmp_path: Path) -> None:
         for _ in range(3):
             await pilot.pause()
         assert app_selection(app) == "alpha"
+
+
+async def test_a_drag_after_a_wide_character_starts_on_the_right_one(
+    tmp_path: Path,
+) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        transcript = app.query_one(Transcript)
+        # The bold span splits the line into segments. Each segment's offset
+        # counts characters, and "日" takes two cells but one character.
+        transcript.add([Block(Group(Text(), Markdown("**日** 本語x")))])
+        await pilot.pause()
+        answer = cast(Static, transcript.children[-1])
+        strip = answer.render_line(1)
+        offsets = []
+        for segment in strip:
+            meta = segment.style.meta if segment.style is not None else {}
+            if segment.text and "offset" in meta:
+                offsets.append(meta["offset"][0])
+        assert offsets[:2] == [0, 1]
+        # Cells 3 and 4 hold "本" (cell 2 is the space before it).
+        await pilot.mouse_down(answer, offset=(3, 1))
+        await pilot.hover(answer, offset=(4, 1))
+        await pilot.mouse_up(answer, offset=(4, 1))
+        for _ in range(3):
+            await pilot.pause()
+        # Starts on 本, not on the character before it (a cell-based offset
+        # would start one character late, at 語).
+        selected = app_selection(app)
+        assert selected.startswith("本")
+        assert "日" not in selected
 
 
 async def test_ctrl_v_does_not_paste_a_stale_clipboard(tmp_path: Path) -> None:

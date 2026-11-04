@@ -205,8 +205,8 @@ into a session of its own, as `pg_ctl` does, is not caught. **PageUp** and
 output until you scroll back to the bottom or send a prompt.
 
 **Copy**: drag over text in the transcript with the mouse, then press Ctrl-C.
-The selection copies during a turn too, and Ctrl-C interrupts only when
-nothing is selected. nare copies with the terminal's OSC 52 clipboard escape,
+The selection copies during a turn too. A copy clears the selection, so the
+next Ctrl-C interrupts. nare copies with the terminal's OSC 52 clipboard escape,
 so the copy reaches your clipboard only if the terminal accepts that escape
 (tmux may need `set-clipboard on`). The notice counts the characters nare
 sent. It cannot tell whether the terminal kept them. To select with the
