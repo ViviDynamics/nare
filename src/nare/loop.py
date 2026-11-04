@@ -1106,6 +1106,7 @@ async def _run(
     max_cutoffs: int | None = None,
     reads: ReadRequirement = NO_READS,
     check: Check | None = None,
+    inbox: Callable[[], list[str]] | None = None,
 ) -> AsyncGenerator[Event, None]:
     """Advance the session to a terminal status, yielding events as they occur.
 
@@ -1188,6 +1189,14 @@ async def _run(
     tool_calls = ToolCallLimit(max_tool_calls) if max_tool_calls is not None else None
     cutoffs = CutoffLimit(max_cutoffs) if max_cutoffs is not None else None
     while session.status == "working":
+        if inbox is not None:
+            # What a person typed while the last step ran. It follows that
+            # step's tool results, so the model reads it on this turn.
+            for text in inbox():
+                append_user_text(session, text)
+                session.events.append(Event("progress", text, {"queued": True}))
+            while session.events:
+                yield session.events.pop(0)
         if check_budget(session):
             pass
         else:
@@ -1311,6 +1320,7 @@ async def run(
     require_reads: int = 0,
     require_read: Sequence[str] = (),
     check: Check | None = None,
+    inbox: Callable[[], list[str]] | None = None,
     tools: Sequence[Tool] = (),
 ) -> AsyncGenerator[Event, None]:
     check_structured_output(transport, schema, structured_output)
@@ -1370,6 +1380,7 @@ async def run(
                     max_cutoffs=max_cutoffs,
                     reads=reads,
                     check=check,
+                    inbox=inbox,
                 )
             ) as stream:
                 async for event in stream:

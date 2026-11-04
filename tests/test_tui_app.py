@@ -597,7 +597,10 @@ async def test_a_busy_bash_call_shows_what_runs_and_a_ticking_time(
         app.activity = ("running bash", "sleep 30", time.monotonic() - 12)
         app._status()
         assert "running bash 0:12 · sleep 30" in text_of(app, "#status")
-        assert app.query_one(Input).placeholder == "working · esc to interrupt"
+        assert (
+            app.query_one(Input).placeholder
+            == "working · enter queues a message · esc to interrupt"
+        )
         # The tool's result clears it.
         app._event(
             Event("progress", "bash result: ok", {"tool": "bash", "tool_result": {}})
@@ -621,6 +624,62 @@ async def test_the_clock_for_a_call_starts_after_its_approval(tmp_path: Path) ->
         assert await app._approve("bash", {"command": "sleep 30"}) is True
         assert app.activity is not None
         assert app.activity[2] - started >= 0.3
+
+
+class Gated:
+    """The first answer waits for `release`; the next answers at once."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.release = asyncio.Event()
+        self.seen: list[list[Message]] = []
+
+    async def context_window(self) -> int | None:
+        return None
+
+    async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
+        self.calls += 1
+        self.seen.append([Message(m.role, list(m.content)) for m in messages])
+        if self.calls == 1:
+            await self.release.wait()
+            return text_reply("first")
+        return text_reply("second")
+
+
+async def test_a_message_typed_during_a_turn_runs_as_the_follow_up(
+    tmp_path: Path,
+) -> None:
+    transport = Gated()
+    app = make(tmp_path, transport, prompt="go")
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: transport.calls == 1)
+        await pilot.press(*"more", "enter")
+        await pilot.pause()
+        assert app.queued == ["more"]
+        assert app.run_state == "working"
+        assert "queued: more" in text_of(app, "#queued")
+        transport.release.set()
+        await until(pilot, lambda: app.run_state == "done" and transport.calls == 2)
+        # The follow-up's request ends with the queued text, after the answer.
+        last = transport.seen[1][-1]
+        assert last.role == "user"
+        assert last.content[-1]["text"] == "more"
+        assert app.queued == []
+        assert "second" in shown(app)
+
+
+async def test_esc_puts_a_queued_message_back_in_the_prompt(tmp_path: Path) -> None:
+    app = make(tmp_path, Stalled(), prompt="go")
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: app.worker is not None and app.worker.is_running)
+        await pilot.press(*"more", "enter")
+        await pilot.pause()
+        assert app.queued == ["more"]
+        await pilot.press("escape")
+        await until(pilot, lambda: app.run_state == "interrupted")
+        # Not sent: it waits in the prompt, where it can be edited.
+        assert app.queued == []
+        assert app.query_one(Input).value == "more"
 
 
 async def test_the_status_bar_hints_the_keys_when_idle(tmp_path: Path) -> None:

@@ -356,7 +356,9 @@ def test_the_clock_reads_minutes_and_hours() -> None:
 
 
 def test_the_placeholder_follows_the_state() -> None:
-    assert placeholder("working") == "working · esc to interrupt"
+    assert (
+        placeholder("working") == "working · enter queues a message · esc to interrupt"
+    )
     assert placeholder("awaiting approval") == "answer the prompt above"
     assert placeholder("blocked") == "answer the questions above"
     assert placeholder("interrupted") == "interrupted · type to continue"

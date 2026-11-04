@@ -87,6 +87,7 @@ CSS = """
 #live { height: auto; max-height: 12; color: $text-muted; }
 #outcome { height: auto; }
 #status { height: 1; background: $boost; }
+#queued { height: auto; color: $text-muted; }
 ApprovalScreen { align: center middle; }
 #approval-box {
     width: 90%; height: auto; max-height: 80%;
@@ -353,6 +354,9 @@ class TuiApp(App[None]):
                 "interrupted" if session.status == "working" else session.status
             )
         self.note: str | None = None
+        # What was typed while a turn ran: read by the model at its next step,
+        # or sent as a follow-up when the run ends on its own.
+        self.queued: list[str] = []
         self.drawn = 0
         self.turns_from = 0 if session is None else session.turns
         self.live = Text()
@@ -371,6 +375,7 @@ class TuiApp(App[None]):
         with VerticalScroll(id="live"):
             yield Static(id="live-text")
         yield Static(id="outcome")
+        yield Static(id="queued")
         yield PromptInput(id="input")
         yield Static(id="status")
 
@@ -482,8 +487,28 @@ class TuiApp(App[None]):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
-        if text and self.run_state not in BUSY:
-            self._submit(text)
+        if not text:
+            return
+        if self.run_state in BUSY:
+            # A message during a turn: the model reads it at its next step.
+            self.queued.append(text)
+            self.query_one(Input).value = ""
+            self._show_queue()
+            return
+        self._submit(text)
+
+    def _show_queue(self) -> None:
+        queue = self.query_one("#queued", Static)
+        queue.update(
+            Text("\n".join(f"queued: {text}" for text in self.queued), style="dim")
+        )
+        queue.display = bool(self.queued)
+
+    def _take_queued(self) -> list[str]:
+        """The loop's inbox: what was typed since its last step, once."""
+        taken, self.queued = self.queued, []
+        self._show_queue()
+        return taken
 
     def _submit(self, text: str) -> None:
         if self.session is None:
@@ -533,6 +558,7 @@ class TuiApp(App[None]):
                 tools=self.args.command_tools,
                 mcp_allow_all=self.args.tools is None,
                 retry=getattr(self.args, "retry", None),
+                inbox=self._take_queued,
             ):
                 self._event(event)
                 # As in nare run: not while a streamed turn's calls wait.
@@ -543,8 +569,20 @@ class TuiApp(App[None]):
             # A run that settled on its own, not an interrupt: the quit
             # prompt, or the next turn end, catches what an interrupt leaves.
             self._offer_groups()
+            if self.queued:
+                # Typed too late for the loop to read: sent as the next turn.
+                follow_up = "\n".join(self.queued)
+                self.queued = []
+                self._show_queue()
+                self.call_later(self._submit, follow_up)
         except asyncio.CancelledError:
             self._set_state("interrupted")
+            # An interrupt does not send what was queued. It goes back into the
+            # prompt, where it can be edited or sent.
+            box = self.query_one(Input)
+            box.value = "; ".join(filter(None, [*self.queued, box.value]))
+            self.queued = []
+            self._show_queue()
             # Saved by the finally below: a file left `working` reads as a
             # live run in --attach.
             session.interrupted_at = datetime.now(UTC).isoformat(timespec="seconds")
@@ -610,9 +648,9 @@ class TuiApp(App[None]):
             self.busy_since = None
             self.activity = None
         box = self.query_one(Input)
-        box.disabled = state in BUSY
+        # Never disabled: typing during a turn queues a message (see submit).
         box.placeholder = placeholder(state)
-        if not box.disabled:
+        if state not in BUSY:
             box.focus()
         self._status()
 
