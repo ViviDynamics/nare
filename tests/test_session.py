@@ -200,10 +200,10 @@ def test_redacting_thinking_that_is_never_sent_keeps_the_rest() -> None:
     ("block", "key", "value"),
     [
         (0, "thinking", "Keep sk-ant-" + "Z" * 30 + " out of the reply."),
-        # Base64 ending in a segment that holds `auth` or `token` matches the
-        # credential rule at its `=` padding, so a signature can change too.
-        (0, "signature", "EqQBCkgIARABAuthQ=="),
-        (1, "data", "opaqueTokenAbc=="),
+        # An assignment inside an opaque value is a credential, so redaction
+        # changes the block and the block must not be sent back on resume.
+        (0, "signature", "EqQBCkgIARAB password=hunter2hunter2"),
+        (1, "data", "opaque token=abc123defghi"),
     ],
 )
 def test_thinking_that_redaction_changes_is_never_saved(

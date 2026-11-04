@@ -306,10 +306,10 @@ async def test_mcp_results_are_redacted_events(tmp_path: Path) -> None:
                             "type": "tool_use",
                             "id": "c",
                             "name": self.name,
-                            "input": {"text": "password=private"},
+                            "input": {"text": "password=private1value"},
                         }
                     ],
-                    [ToolCall("c", self.name, {"text": "password=private"})],
+                    [ToolCall("c", self.name, {"text": "password=private1value"})],
                     Usage(),
                     "tool_use",
                 )

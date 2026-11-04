@@ -177,7 +177,7 @@ def test_saved_image_base64_is_opaque_but_text_is_redacted() -> None:
                     "type": "tool_result",
                     "tool_use_id": "c1",
                     "is_error": False,
-                    "content": "password: privatevalue",
+                    "content": "password: privatevalue1",
                     "image": {
                         "type": "image",
                         "width": 16,
@@ -196,7 +196,7 @@ def test_saved_image_base64_is_opaque_but_text_is_redacted() -> None:
     result = saved.messages[-1].content[0]
     assert result["content"] == "[redacted]"
     assert result["image"]["source"]["data"] == "AAsecretAA=="
-    assert session.messages[-1].content[0]["content"] == "password: privatevalue"
+    assert session.messages[-1].content[0]["content"] == "password: privatevalue1"
 
 
 def test_context_uses_image_pixels_and_compacts_old_images() -> None:
