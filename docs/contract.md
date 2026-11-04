@@ -38,7 +38,8 @@ comparing release numbers:
 
 ```json
 "flags": {"--stream": {"takes_value": false, "choices": null},
-          "--effort": {"takes_value": true, "choices": ["low", "medium", "high"]}}
+          "--effort": {"takes_value": true,
+                       "choices": ["low", "medium", "high", "xhigh", "max"]}}
 ```
 
 `takes_value` is false for a switch and true for an option that takes an
@@ -73,7 +74,8 @@ keeps the contract version; removing or renaming one bumps it.
 | `--context-window` | yes | | Context window used for elision |
 | `--budget-tokens` | yes | | Cumulative session token budget ([Budgets and partial results](#budgets-and-partial-results)) |
 | `--budget-usd` | yes | | Cumulative session dollar budget |
-| `--effort` | yes | `low`, `medium`, `high` | Reasoning effort |
+| `--effort` | yes | `low`, `medium`, `high`, `xhigh`, `max` | Reasoning effort ([Reasoning effort](#reasoning-effort)) |
+| `--thinking-budget` | yes | | A fixed thinking budget, anthropic only, for older models |
 | `--system` | yes | | Replace the default system prompt ([System prompt input](#system-prompt-input)) |
 | `--system-file` | yes | | `--system`, read from a UTF-8 file |
 | `--append-system` | yes | | Add text after the system prompt |
