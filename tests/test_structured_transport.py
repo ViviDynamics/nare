@@ -79,9 +79,10 @@ EXPECTED_FORMAT = {
 }
 
 
-def test_the_openai_rail_declares_structured_output_and_anthropic_does_not() -> None:
+def test_both_rails_declare_structured_output() -> None:
     assert OpenAITransport.supports_structured_output is True
-    assert getattr(AnthropicTransport, "supports_structured_output", False) is False
+    # The anthropic rail's wire shape is in test_structured_anthropic.py.
+    assert AnthropicTransport.supports_structured_output is True
 
 
 async def test_a_constrained_turn_sends_the_schema_and_no_tools() -> None:

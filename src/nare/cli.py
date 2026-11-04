@@ -157,7 +157,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=STRUCTURED_OUTPUT_MODES,
         help=(
             "ask the backend to constrain answers to the --schema at decode time "
-            "(openai provider only). A constrained turn offers no tools, so only "
+            "(both providers). A constrained turn offers no tools, so only "
             "the schema correction turn, or every turn of a run with no tools, "
             "is constrained. nare still validates every answer"
         ),

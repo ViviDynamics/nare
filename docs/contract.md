@@ -58,7 +58,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--yes` | no | | Approve every tool call; required for unattended runs |
 | `--contract` | yes | | The contract version the caller speaks ([Refusing a contract](#refusing-a-contract-you-do-not-speak)) |
 | `--schema` | yes | | JSON Schema file the final answer must satisfy ([Answer schemas](#answer-schemas)) |
-| `--structured-output` | yes | `json_schema` | Constrain answers at decode time ([Schema-constrained answers](#schema-constrained-answers)) |
+| `--structured-output` | yes | `json_schema` | Constrain answers at decode time, on both rails ([Schema-constrained answers](#schema-constrained-answers)) |
 | `--max-tool-calls` | yes | | Run at most this many tool calls in this invocation ([Budgets and partial results](#budgets-and-partial-results)) |
 | `--timeout` | yes | | Wall clock for this invocation ([Run deadline and stop signals](#run-deadline-and-stop-signals)) |
 | `--request-timeout` | yes | | HTTP timeout for each model request ([Provider retries and the request timeout](#provider-retries-and-the-request-timeout)) |
@@ -1167,11 +1167,17 @@ does decode, such as a citation `[1]`, counts as a second document.
       --schema answer.schema.json --structured-output json_schema "..."
 
 `--structured-output json_schema` asks the backend to enforce the `--schema` at
-decode time on the turns where that is possible. A constrained turn sends the
-OpenAI-compatible response format and **no tools**:
+decode time on the turns where that is possible, on both rails. A constrained
+turn sends **no tools** and the rail's own format. On the openai rail, the
+OpenAI-compatible response format:
 
     "response_format": {"type": "json_schema",
                         "json_schema": {"name": "answer", "schema": {...}, "strict": true}}
+
+On the anthropic rail, Anthropic's structured outputs, beside any
+`output_config.effort`:
+
+    "output_config": {"format": {"type": "json_schema", "schema": {...}}}
 
 Two kinds of turn are constrained:
 
@@ -1199,22 +1205,61 @@ per-run state. A backend that returned tool calls on the tool-free correction
 anyway would have them run, and the rest of the run would stay constrained
 and tool-free; a backend following the OpenAI specification cannot.
 
-The schema is forwarded exactly as written, with its references, composition
-and bounds; nare does not flatten or trim it to suit a backend. A backend that
-cannot enforce some keyword refuses or ignores it under its own rules, and nare's
-validator still checks the answer.
+On the openai rail the schema is forwarded exactly as written, with its
+references, composition and bounds; nare does not flatten or trim it to suit a
+backend. A backend that cannot enforce some keyword refuses or ignores it under
+its own rules, and nare's validator still checks the answer.
+
+### Keyword limits on the anthropic rail
+
+Anthropic refuses a keyword it cannot enforce with a 400 instead of ignoring
+it, so the anthropic rail sends the schema through the Anthropic SDK's own
+`transform_schema`. What the decode-time constraint then enforces, and what only
+nare's validator checks after decoding:
+
+| Keyword | At decode time | Checked by nare after decoding |
+| --- | --- | --- |
+| `type`, `properties`, `required`, `items`, `enum`, `anyOf`, `allOf`, local `$ref` and `$defs`, `minItems` of 0 or 1 | enforced | yes |
+| `oneOf` | sent as `anyOf`, so exclusivity is not enforced | yes |
+| `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `minLength`, `maxLength`, `pattern`, `maxItems`, `minItems` above 1, `uniqueItems`, `const`, `default` | moved into the description, not enforced | yes |
+| `additionalProperties` | every object is sent closed (`false`), so a declared property is the only one decoded | yes |
+
+`nare contract` names the keywords in the third row under
+`structured_output.anthropic_not_enforced_at_decode`. A constrained answer that
+breaks one of them fails validation as any answer does: the correction turn
+follows, and a second failure ends the run with `schema_violation`.
+
+These schemas are refused at startup on the anthropic rail (exit 2, nothing on
+stdout, the reason on stderr), instead of with a 400 on the correction turn
+after the first answer was spent:
+
+- a subschema with no `type`, `anyOf`, `oneOf`, `allOf` or `$ref`, which the
+  transform cannot convert;
+- a map: a schema-valued `additionalProperties`, or `true` on an object that
+  declares no properties, which a closed object would decode with no entries;
+- `definitions` instead of `$defs`, which the transform does not carry;
+- `allOf` with a `$ref`, which Anthropic does not support;
+- an `enum` holding objects or arrays;
+- more than 24 optional properties, or more than 16 properties with a union
+  type (`anyOf` or a type list), Anthropic's documented limits for one
+  request.
+
+Anthropic can still refuse a schema past its internal grammar limits ("Schema
+is too complex for compilation"); that is a provider failure (`stop_reason`
+null), as a strict-mode refusal is on the openai rail.
 
 `strict: true` follows OpenAI's strict mode, which refuses (HTTP 400) a schema
 that does not mark every property required with `additionalProperties` false.
 Such a refusal ends the run as a provider failure (`stop_reason` null), not as
 `schema_violation`. vLLM enforces the schema without that restriction.
 
-`--structured-output` without `--schema`, or with `--provider anthropic`,
-never starts (exit 2). The one exception is a resume whose budget is already
+`--structured-output` without `--schema`, or with a schema the anthropic rail
+refuses, never starts (exit 2). The one exception is a resume whose budget is already
 spent: it reports that result without building a transport, so no model is
 called. In the library, `run(structured_output="json_schema")`
-raises `ValueError` before any turn when there is no schema or the transport
-does not set `supports_structured_output = True`; a supporting transport's
+raises `ValueError` before any turn when there is no schema, the transport
+does not set `supports_structured_output = True`, or the transport's
+`check_response_schema(schema)` refuses the schema; a supporting transport's
 `turn` and `stream_turn` accept a keyword-only `response_schema`. Without the
 flag every request, event and session field is unchanged, and transports are
 called with `(messages, tools)` only. `nare contract` advertises the capability

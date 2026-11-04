@@ -321,6 +321,11 @@ def check_structured_output(
         raise ValueError(
             f"{type(transport).__name__} does not support structured output"
         )
+    # A rail that can refuse a schema at startup does, rather than with a
+    # provider failure on the correction turn after the first answer.
+    vet = getattr(transport, "check_response_schema", None)
+    if callable(vet):
+        vet(schema)
 
 
 def _constrained(
