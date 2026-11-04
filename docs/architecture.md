@@ -16,7 +16,8 @@ The core is a library. Every surface is a thin adapter over it.
       |                      and the policy that narrows both
       v
     transport/        everything vendor-shaped, turn() plus context_window()
-                      anthropic.py and openai.py; which rail is configuration
+                      anthropic.py, openai.py and the scripted replay.py;
+                      which rail is configuration
 
 `events.py` depends on nothing at all. `session.py` depends only on
 `events.py`, because a session carries the events its steps produced. `session.py` also imports
@@ -50,14 +51,21 @@ scripted list of replies, inherits nothing, and imports no vendor code, so
 every path is an ordinary unit test with no mocking framework and no network.
 The one live test is deselected by default.
 
+`transport/replay.py` is the shipped counterpart for callers:
+`--provider fake --replay FILE` replays a JSON script through the real CLI, so
+a caller tests its integration with no key. It sits below the transport line
+like the vendor arms, imports no vendor code, and checks the whole script at
+startup. The scripts in `docs/replay/` run in nare's own tests, so the
+examples a caller copies cannot rot.
+
 ## Known ceilings
 
 Extension points are marked in the source with `ponytail:` comments.
 
 - Tool calls dispatch sequentially in `loop.py`. `asyncio.gather` is the
   upgrade once a run is measurably slow because of it.
-- `make_transport()` has one `match` arm. That arm is the extension point; a
-  registry is slice 4.
+- `make_transport()` has one `match` arm per rail. The arms are the extension
+  point; a registry is slice 4.
 - `search` holds each text file in memory whole while it matches it, so the
   digest in its evidence is of the bytes it matched. Hashing while streaming
   is the upgrade for files larger than memory.

@@ -53,6 +53,59 @@ prompt text out of argv. Model context limits still apply: a large prompt needs
 an appropriate `--context-window`, rather than disabling or claiming to bypass
 the context guard.
 
+## Scripted runs
+
+A caller's tests can drive nare end to end with no key and no network:
+
+    nare run --yes --jsonl --provider fake --replay script.json "..."
+
+`--provider fake` replays the replies in `script.json`, one per model turn,
+and talks to nothing. Everything above the transport runs for real: the
+tools, approval, budgets, schema validation, the session file, the event
+stream and the exit code. So the paths a real model will not produce on
+demand, a blocked run, a truncated turn, a transport error, are reachable in a
+test, and they look exactly as they would in production. Library callers get
+the same thing as `nare.ReplayTransport`.
+
+The script is a JSON object with a `replies` list. Each reply is an object
+with any of these keys:
+
+| Key | Meaning |
+| --- | --- |
+| `text` | The model's text for the turn |
+| `thinking` | Reasoning, emitted as a `thinking` event |
+| `tool_calls` | A list of `{"name", "args", "id"}`. `args` defaults to `{}`, `id` to `call_<reply>_<n>`. `ask` is a tool call like any other |
+| `stop_reason` | One of `end_turn`, `tool_use`, `max_tokens`, `stop_sequence`, `refusal`. Defaults to `tool_use` with tool calls, else `end_turn`. `max_tokens` is a truncated turn |
+| `usage` | `input`, `output`, `cache_read`, `cache_write`, each a nonnegative integer, default 0 |
+| `cost` | The dollars a backend reported for the turn, as a nonnegative number |
+
+or is `{"error": "..."}` and nothing else, which fails that turn as a
+transport error does: the run ends `error` with `stop_reason: null` and
+`error: "RuntimeError: ..."`, exit 1. A run that asks for more turns than the
+script holds fails the same way, naming the turn.
+
+The whole script is checked at startup. An unreadable file, a key the table
+does not name, or a value of the wrong type exits 2 before anything runs,
+naming the reply and the field. `--provider fake` without `--replay`, or
+`--replay` with another provider, exits 2 too. With `--stream`, each reply's
+thinking and text arrive as deltas before the reply, as a streaming backend
+sends them. The fake rail does not constrain decoding, so `--structured-output`
+is refused on it; `--schema` validation is the loop's and works as usual.
+
+Four scripts ship in [`docs/replay/`](replay/), one per outcome a caller has to
+handle, and nare's own tests run each of them through a real subprocess:
+
+| Script | Status | Exit | `stop_reason` |
+| --- | --- | --- | --- |
+| [`done.json`](replay/done.json) | `done` | 0 | `end_turn` |
+| [`blocked.json`](replay/blocked.json) | `blocked` | 0 | `tool_use` |
+| [`error.json`](replay/error.json) | `error` | 1 | null |
+| [`truncated.json`](replay/truncated.json) | `error` | 1 | `max_tokens` |
+
+The script format is part of this contract under the same rules as the rest:
+a new optional key keeps the version, and removing or renaming a key, or
+changing what one means, bumps it.
+
 ## The redaction rule set
 
 Every event's `text`, and whatever text a caller pipes through:
