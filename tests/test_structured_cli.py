@@ -106,7 +106,7 @@ def backend() -> Iterator[tuple[str, list[dict[str, Any]]]]:
             },
             "tool_calls",
         ),
-        ({"content": '{"name": "ada"} and some stray tokens'}, "stop"),
+        ({"content": '{"name": "ada"} {"name": "bob"}'}, "stop"),
         ({"content": '{"name": "ada"}'}, "stop"),
     ]
 

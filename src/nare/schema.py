@@ -453,6 +453,12 @@ def validate(value: Any, schema: dict[str, Any]) -> list[str]:
 def extract_json(text: str) -> Any:
     """The answer as data. A model that was asked for JSON often still wraps it
     in a fence or a sentence, and refusing that is pedantry rather than rigour.
+
+    In order: the whole reply, then each fenced block, then the one document
+    that starts at the first `{` or `[`. Prose before and after that document
+    is tolerated; nothing is ever repaired or merged, and nare never picks
+    between two documents. When no route yields exactly one document, the
+    error says which of those it was, because it goes back to the model.
     """
     candidates = [text.strip(), *(m.group(1).strip() for m in _FENCE.finditer(text))]
     for candidate in candidates:
@@ -462,4 +468,51 @@ def extract_json(text: str) -> Any:
             return json.loads(candidate)
         except ValueError:
             continue
-    raise ValueError("no JSON found in the answer")
+    return _embedded_document(text)
+
+
+_DECODER = json.JSONDecoder()
+_OPENERS = re.compile(r"[{\[]")
+
+
+def _incomplete(exc: json.JSONDecodeError, text: str) -> bool:
+    """The decode ran out of answer rather than meeting a wrong character."""
+    return exc.pos >= len(text.rstrip()) or exc.msg.startswith("Unterminated string")
+
+
+def _embedded_document(text: str) -> Any:
+    first = _OPENERS.search(text)
+    if first is None:
+        raise ValueError("no JSON document found in the answer")
+    start = first.start()
+    try:
+        value, end = _DECODER.raw_decode(text, start)
+    except json.JSONDecodeError as exc:
+        if _incomplete(exc, text):
+            raise ValueError(
+                f"the JSON document starting at character {start} is incomplete: "
+                "the answer ends before it closes"
+            ) from None
+        raise ValueError(
+            f"no JSON document found in the answer: the text at character {start} "
+            f"is not valid JSON ({exc.msg} at character {exc.pos})"
+        ) from None
+    # Everything after the document must be prose. A bracket there that
+    # decodes is a second document, and one the answer ends inside is a
+    # document that was never finished; either way, taking the first would
+    # be a guess.
+    for opener in _OPENERS.finditer(text, end):
+        try:
+            _DECODER.raw_decode(text, opener.start())
+        except json.JSONDecodeError as exc:
+            if _incomplete(exc, text):
+                raise ValueError(
+                    "the answer has text after the JSON document that starts an "
+                    f"incomplete JSON document at character {opener.start()}"
+                ) from None
+            continue
+        raise ValueError(
+            f"the answer has two JSON documents, at characters {start} and "
+            f"{opener.start()}; send exactly one"
+        )
+    return value

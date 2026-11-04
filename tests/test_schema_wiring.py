@@ -211,8 +211,34 @@ async def test_the_correction_restates_the_schema() -> None:
     correction = json.dumps(
         [block for message in provider.calls[1][0] for block in message.content]
     )
-    assert "no JSON found" in correction
+    assert "no JSON document found" in correction
     assert "required" in correction
+
+
+async def test_a_document_with_a_note_after_it_needs_no_correction() -> None:
+    provider = FakeProvider([text_reply('{"name": "ada"}\n\nNote: fixed the env.')])
+    session = new_session("go")
+
+    await drain(session, provider, schema=PERSON)
+
+    assert session.status == "done"
+    assert session.output == {"name": "ada"}
+    assert len(provider.calls) == 1
+
+
+async def test_two_documents_are_corrected_with_a_message_saying_so() -> None:
+    provider = FakeProvider(
+        [text_reply('{"name": "ada"} {"name": "bob"}'), text_reply('{"name": "ada"}')]
+    )
+    session = new_session("go")
+
+    await drain(session, provider, schema=PERSON)
+
+    correction = json.dumps(
+        [block for message in provider.calls[1][0] for block in message.content]
+    )
+    assert "two JSON documents, at characters 0 and 16" in correction
+    assert session.output == {"name": "ada"}
 
 
 async def test_a_run_without_a_schema_says_nothing_extra() -> None:

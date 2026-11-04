@@ -665,6 +665,34 @@ Every validation error names the JSON path of the failing value, for example
 back in the one correction turn. A failed `anyOf` or `oneOf` lists each
 alternative's errors.
 
+### Finding the document in an answer
+
+The answer is the final turn's text. nare takes the JSON value from it, then
+validates that value:
+
+1. the whole text, if it parses as JSON;
+2. otherwise the first fenced code block, with or without a language tag,
+   that parses;
+3. otherwise the one document that starts at the first `{` or `[`, with any
+   prose before it and after it tolerated. `Here it is: {"a": 1}` and
+   `{"a": 1}` followed by `Note: fixed the env.` both yield `{"a": 1}`.
+
+nare never repairs or merges JSON (a trailing comma or single quotes stay
+invalid), and never picks between documents. These are refused, and the
+refusal says which it was, so the correction turn tells the model what to fix:
+
+| Answer | Message |
+| --- | --- |
+| No `{` or `[` at all | `no JSON document found in the answer` |
+| The first `{` or `[` starts invalid JSON | `no JSON document found in the answer: the text at character N is not valid JSON (...)` |
+| The answer ends inside the document | `the JSON document starting at character N is incomplete: ...` |
+| A second document after the first | `the answer has two JSON documents, at characters N and M; send exactly one` |
+| Text after the document that starts a document the answer ends inside | `the answer has text after the JSON document that starts an incomplete JSON document at character N` |
+
+Character positions count from 0 in the final turn's text. Prose after the
+document may hold braces or brackets that are not JSON (`{braces}`); one that
+does decode, such as a citation `[1]`, counts as a second document.
+
 ## Schema-constrained answers
 
     nare run --yes --jsonl --contract 2 --provider openai --model MODEL \
