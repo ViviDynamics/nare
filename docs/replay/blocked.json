@@ -1,0 +1,13 @@
+{
+  "replies": [
+    {
+      "tool_calls": [
+        {
+          "name": "ask",
+          "args": {"questions": ["Which config file should change, dev or prod?"]}
+        }
+      ],
+      "usage": {"input": 90, "output": 20}
+    }
+  ]
+}
