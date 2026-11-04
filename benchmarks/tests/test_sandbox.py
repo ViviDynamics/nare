@@ -418,3 +418,124 @@ def test_the_snapshot_sees_a_server_that_escaped_with_setsid(tmp_path: Path) -> 
         after = json.loads((artifacts / "after.json").read_text())
     assert [p["args"] for p in after["processes"]] == ["sleep 300"]
     assert after["database_files"] == ["/tmp/pg/PG_VERSION"]
+
+
+def docker_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, config: Config, case: Case
+) -> list[str]:
+    """The `docker run` argv run_agent builds, without Docker."""
+    import subprocess
+
+    from benchmarks.runner import sandbox as mod
+
+    seen: list[list[str]] = []
+
+    def fake(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        seen.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("benchmarks.runner.sandbox.subprocess.run", fake)
+    mod.run_agent(case, tmp_path, tmp_path, config)
+    return seen[0]
+
+
+def test_arguments_reach_docker_after_the_script_and_never_inside_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from dataclasses import replace
+
+    from benchmarks.runner.nare_args import RunArgs
+    from benchmarks.runner.sandbox import _AGENT_SCRIPT
+
+    case = replace(make_case(tmp_path), args=("--tools", "read,list,search"))
+    run_args = RunArgs(recorded=("--effort", "low"), passed=("--effort", "low"))
+    command = docker_command(
+        monkeypatch, tmp_path, replace(CONFIG, run_args=run_args), case
+    )
+    # Run arguments, then the case's: the order a rep's evidence shows.
+    assert command[command.index(IMAGE) + 1 :] == [
+        "sh", "-c", _AGENT_SCRIPT, "nare-bench",
+        "--effort", "low", "--tools", "read,list,search",
+    ]  # fmt: skip
+    assert "--effort" not in _AGENT_SCRIPT
+    assert "read,list,search" not in _AGENT_SCRIPT
+
+
+def test_a_run_file_is_mounted_read_only_at_in(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from dataclasses import replace
+
+    from benchmarks.runner.nare_args import RunArgs
+
+    inputs = tmp_path / "inputs"
+    run_args = RunArgs(
+        recorded=("--system-file", "p.md"),
+        files={"p.md": "sha256:aa"},
+        passed=("--system-file", "/in/0-p.md"),
+        inputs=inputs,
+    )
+    command = docker_command(
+        monkeypatch, tmp_path, replace(CONFIG, run_args=run_args), make_case(tmp_path)
+    )
+    mount = command.index(f"{inputs}:/in:ro")
+    assert command[mount - 1] == "-v"
+    assert mount < command.index(IMAGE)
+    assert command[-2:] == ["--system-file", "/in/0-p.md"]
+
+
+def test_there_is_no_in_mount_without_a_run_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from benchmarks.runner.sandbox import _AGENT_SCRIPT
+
+    command = docker_command(monkeypatch, tmp_path, CONFIG, make_case(tmp_path))
+    assert not any(part.endswith(":/in:ro") for part in command)
+    assert command[-4:] == ["sh", "-c", _AGENT_SCRIPT, "nare-bench"]
+
+
+def test_the_agent_script_passes_its_parameters_to_nare_unexpanded(
+    tmp_path: Path,
+) -> None:
+    """The real script under sh: each parameter reaches nare as one argument,
+    after the runner's flags and before the prompt, and nothing in one runs."""
+    import os
+    import subprocess
+
+    from benchmarks.runner.sandbox import _AGENT_SCRIPT
+
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    (stubs / "nare").write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    (stubs / "nare").chmod(0o755)
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "a.txt").write_text("x\n")
+    env = {
+        **os.environ,
+        "PATH": f"{stubs}:{os.environ['PATH']}",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "BENCH_PROMPT": "do it",
+        "BENCH_MODEL": "m",
+        "BENCH_MAX_TURNS": "3",
+        "BENCH_MAX_TOKENS": "",
+    }
+    given = [
+        "--system",
+        "$(touch pwned) `touch pwned`; be terse",
+        "--tools",
+        "read,list",
+    ]
+    done = subprocess.run(
+        ["sh", "-c", _AGENT_SCRIPT, "nare-bench", *given],
+        cwd=work,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    args = done.stdout.splitlines()
+    assert args[args.index("m") + 1 : args.index("--")] == given
+    assert args[-1] == "do it"
+    assert not (work / "pwned").exists()

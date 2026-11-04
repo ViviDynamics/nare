@@ -20,6 +20,7 @@ from pathlib import Path
 
 from benchmarks.runner.case import Case
 from benchmarks.runner.config import Config
+from benchmarks.runner.nare_args import INPUTS
 from nare.session import new_session, save
 
 IMAGE = "nare-bench:local"
@@ -64,8 +65,10 @@ def build_image(root: Path) -> None:
 
 # The agent's script. Values arrive as environment variables rather than
 # interpolated text: a prompt is arbitrary user data, and splicing it into a
-# shell command is how quoting bugs become arbitrary execution. nare is not
-# exec'd: what it left running and what it installed die with this
+# shell command is how quoting bugs become arbitrary execution. The same goes
+# for nare's own arguments: the run's, then the case's, arrive as positional
+# parameters after the script and are expanded with "$@", never as text. nare
+# is not exec'd: what it left running and what it installed die with this
 # container, so the script reads them into /out/after.json after it exits.
 _AGENT_SCRIPT = """\
 set -e
@@ -75,7 +78,8 @@ git -c user.email=bench@nare.invalid -c user.name=nare-bench commit -qm fixture
 status=0
 nare run --yes --jsonl --session /out/session.json \
      --max-turns "$BENCH_MAX_TURNS" --model "$BENCH_MODEL" \
-     ${BENCH_MAX_TOKENS:+--max-tokens "$BENCH_MAX_TOKENS"} -- "$BENCH_PROMPT" \
+     ${BENCH_MAX_TOKENS:+--max-tokens "$BENCH_MAX_TOKENS"} \
+     "$@" -- "$BENCH_PROMPT" \
      || status=$?
 python3 -I -c "$BENCH_LEFTOVERS" /out/after.json || true
 exit "$status"
@@ -120,6 +124,7 @@ def _docker_run(
     *,
     artifacts: Path | None = None,
     read_only: bool = False,
+    inputs: Path | None = None,
     env: dict[str, str] | None = None,
     passthrough: tuple[str, ...] = (),
 ) -> tuple[int, str, str, bool]:
@@ -142,6 +147,8 @@ def _docker_run(
     if artifacts is not None:
         mount = f"{artifacts}:/out:ro" if read_only else f"{artifacts}:/out"
         command += ["-v", mount]
+    if inputs is not None:
+        command += ["-v", f"{inputs}:{INPUTS}:ro"]
     for key, value in (env or {}).items():
         command += ["-e", f"{key}={value}"]
     for key in passthrough:
@@ -173,16 +180,19 @@ def run_agent(
 ) -> RunArtifacts:
     """Run one repetition of the agent against a prepared sandbox.
 
-    `--effort` is deliberately never passed: which levels a model takes, and
-    what a level means behind a proxy, vary by model, and a flag whose
-    meaning varies by model has no place in a controlled measurement.
+    The runner never passes `--effort` of its own accord: which levels a model
+    takes, and what a level means behind a proxy, vary by model. An operator may
+    pass it as a run argument. It is then part of the variant, and comparisons
+    never cross models, so a level is only ever compared with the same level on
+    the same model.
     """
     started = time.monotonic()
     code, out, err, timed_out = _docker_run(
         workdir,
-        ["sh", "-c", _AGENT_SCRIPT],
+        ["sh", "-c", _AGENT_SCRIPT, "nare-bench", *config.run_args.passed, *case.args],
         case.timeout,
         artifacts=artifacts,
+        inputs=config.run_args.inputs,
         # Provider and endpoint come from the resolved config, not the host
         # environment: `--base-url` must steer the agent, not just the judge.
         env={
