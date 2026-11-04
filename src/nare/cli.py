@@ -242,15 +242,29 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
         choices=["low", "medium", "high"],
         help="reasoning effort",
     )
-    parser.add_argument(
+    # Each file route is exclusive with its argv form, as --prompt-file is
+    # with a positional prompt: a caller that sent both meant one of them.
+    system = parser.add_mutually_exclusive_group()
+    system.add_argument(
         "--system",
         metavar="TEXT",
         help="replace nare's default system prompt with TEXT; --system '' sends none",
     )
-    parser.add_argument(
+    system.add_argument(
+        "--system-file",
+        metavar="PATH",
+        help="--system, read from a UTF-8 file, which keeps it out of argv",
+    )
+    append = parser.add_mutually_exclusive_group()
+    append.add_argument(
         "--append-system",
         metavar="TEXT",
         help="add TEXT after the system prompt: the default, or --system's",
+    )
+    append.add_argument(
+        "--append-system-file",
+        metavar="PATH",
+        help="--append-system, read from a UTF-8 file",
     )
     parser.add_argument(
         "--tools",
@@ -304,6 +318,51 @@ def system_from_args(args: argparse.Namespace) -> str | None:
         base = DEFAULT_SYSTEM if tools_from_args(args) else None
     parts = [part for part in (base, args.append_system) if part and part.strip()]
     return "\n\n".join(parts) or None
+
+
+def read_system_files(args: argparse.Namespace) -> None:
+    """Read --system-file and --append-system-file into their argv forms,
+    as --prompt-file is read: UTF-8, every byte kept, nothing trimmed.
+    """
+    for flag, path_name, text_name in (
+        ("--system-file", "system_file", "system"),
+        ("--append-system-file", "append_system_file", "append_system"),
+    ):
+        path = getattr(args, path_name, None)
+        if path is None:
+            continue
+        try:
+            setattr(args, text_name, Path(path).read_bytes().decode("utf-8"))
+        except (OSError, UnicodeError) as exc:
+            raise ValueError(f"{flag} {path}: {exc}") from exc
+
+
+def adopt_system(args: argparse.Namespace, session: Session) -> None:
+    """Settle the system prompt this run sends, and record it on the session.
+
+    A resume given no system option sends what the session recorded: falling
+    back to the default would swap the model's instructions mid-session with
+    no error, and change the prefix a caching backend matches on. A resume
+    given one sends it, and says so when it differs from the record. A
+    session saved before the record existed has none and keeps the flags.
+
+    The file holds the redacted copy, so the comparison is made redacted: the
+    same prompt resent is never reported as a change.
+    """
+    given = args.system is not None or args.append_system is not None
+    if session.system is not None and not given:
+        args.system, args.append_system = session.system, None
+    sent = system_from_args(args) or ""
+    if session.system is not None and given and redact(sent) != session.system:
+        session.events.append(
+            Event(
+                "progress",
+                "system prompt changed: this run sends a different system "
+                "prompt from the one the session recorded",
+                {"system_prompt": {"changed": True}},
+            )
+        )
+    session.system = sent
 
 
 def transport_from_args(args: argparse.Namespace) -> Transport:
@@ -380,6 +439,7 @@ def validate_run_args(args: argparse.Namespace) -> Prices | None:
     # replays the stale prefix next time. Resuming a file means updating it.
     if args.resume and not args.session:
         args.session = args.resume
+    read_system_files(args)
     if args.budget_tokens is not None and args.budget_tokens <= 0:
         raise ValueError("--budget-tokens must be a positive integer")
     if args.context_window is not None and args.context_window <= 0:
@@ -595,6 +655,7 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         if args.structured_output is not None and schema is None:
             raise ValueError("--structured-output requires --schema")
         session = _load_or_new(args)
+        adopt_system(args, session)
         configure_budgets(session, args.budget_tokens, args.budget_usd)
         if check_budget(session):
             # Already-spent sessions report their artifacts even when provider
