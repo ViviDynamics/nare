@@ -261,10 +261,12 @@ can still reject context as `max_tokens`.
 With a configured base URL, window discovery uses `/v1/model/info` with a
 5 second timeout; failures use 32000. Direct endpoints make no discovery request.
 
-nare validates a subset of JSON Schema: `type`, `properties`, `required`,
-`items`, `enum`, and `additionalProperties`. A schema using anything else is
-refused at startup rather than validated in part, because an answer that was
-only partly checked is worse than one that was not checked at all.
+nare validates the subset of JSON Schema that generators emit (types,
+properties and maps, enums and `const`, bounds, composition and local `$ref`),
+listed in [the contract](docs/contract.md#answer-schemas). A schema using
+anything else is refused at startup rather than validated in part, because an
+answer that was only partly checked is worse than one that was not checked at
+all.
 
 `nare contract` prints the machine contract this build speaks: the version,
 the exit codes, the statuses, the event types, and the redaction rule set. A

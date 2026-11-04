@@ -164,9 +164,7 @@ def test_named_properties_are_not_checked_against_additional_properties() -> Non
     }
 
     assert validate({"count": 3, "x": "y"}, schema) == []
-    assert validate({"count": 3, "x": 4}, schema) == [
-        "x: expected string, got integer"
-    ]
+    assert validate({"count": 3, "x": 4}, schema) == ["x: expected string, got integer"]
 
 
 def test_a_map_of_arrays_checks_each_item_by_path() -> None:

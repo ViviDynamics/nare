@@ -561,7 +561,7 @@ validates without edits.
 
 | Kind | Keywords |
 | --- | --- |
-| Types and shape | `type` (a single type name), `properties`, `required`, `items` (one schema), `additionalProperties` (`true` or `false`), `enum`, `const` |
+| Types and shape | `type` (a single type name), `properties`, `required`, `items` (one schema), `additionalProperties` (`true`, `false`, or a schema every unnamed property's value must satisfy), `enum`, `const` |
 | Strings | `minLength`, `maxLength` (counted in characters), `pattern` |
 | Arrays | `minItems`, `maxItems`, `uniqueItems` |
 | Numbers | `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` (numbers, not the draft 4 booleans) |
@@ -578,13 +578,17 @@ beside a `$ref` apply as well. `pattern` is matched with Python's `re.search`,
 so it is unanchored as JSON Schema specifies; a pattern Python cannot compile is
 refused. `const`, `enum` and `uniqueItems` compare by JSON equality: `1` equals
 `1.0`, and `true` is not `1`. `default` is never written into the answer.
+A schema-valued `additionalProperties` is how generators describe a map (a
+pydantic `dict[str, X]`, a zod `record`, an OpenAPI map): every property not
+named in `properties` is checked against it, and it may be or contain a `$ref`.
 
 Not supported, so refused: `format`, `not`, `if`/`then`/`else`,
-`patternProperties`, `dependentSchemas`, a schema-valued
-`additionalProperties`, a list-valued `type`, and remote references.
+`patternProperties`, `propertyNames`, `minProperties`, `maxProperties`,
+`dependentSchemas`, a list-valued `type`, and remote references.
 
 Every validation error names the JSON path of the failing value, for example
-`findings[0].title: expected at most 80 characters, got 81`, and all errors go
+`findings[0].title: expected at most 80 characters, got 81` or, for a map value,
+`env.HOME: expected string, got integer`, and all errors go
 back in the one correction turn. A failed `anyOf` or `oneOf` lists each
 alternative's errors.
 
