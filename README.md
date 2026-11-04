@@ -98,7 +98,9 @@ example scripts.
     nare run --yes --jsonl "add a docstring to foo() in bar.py"
 
 Stdout is typed JSONL, terminated by one `result` line carrying status,
-questions, usage, and stop_reason. Stderr is logging. `--session PATH` writes
+questions, usage, and stop_reason. `usage.total` is the token count to use
+(cache included, what `--budget-tokens` counts), and a `done` run carries its
+final reply in `text`. Stderr is logging. `--session PATH` writes
 the session, and `--resume PATH` continues it. The file is redacted, and from
 the first message redaction changes on it leaves out signed and redacted
 thinking, because newer Claude models reject thinking whose earlier context

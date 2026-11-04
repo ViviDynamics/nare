@@ -116,7 +116,8 @@ def test_max_tokens_probe_and_cumulative_stop(tmp_path: Path) -> None:
     assert error["detail"]["budget"]["used_tokens"] == 30
     assert error["detail"]["budget"]["tokens"] == 25
     saved = json.loads(session.read_text())
-    assert saved["usage"] == result["usage"]
+    # The session keeps the counters; the result adds their total.
+    assert {**saved["usage"], "total": 30} == result["usage"]
     assert saved["budget"]["tokens"] == 25
     assert [
         b["tool_use_id"]

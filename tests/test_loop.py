@@ -259,6 +259,7 @@ async def test_step_emits_progress_and_cost_events() -> None:
         "cache_write": 0,
         "cost": None,
         "estimated": False,
+        "total": 15,
     }
     assert session.events[2].text == "all done"
 

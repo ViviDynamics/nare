@@ -250,8 +250,13 @@ every other event leaves the key out.
 
 The last line is not an event. It is the `result` object, carrying
 `session_id`, `status`, `questions`, `usage`, `stop_reason`, `turns`,
-`retries`, `contract`, `nare`, `output`, `budget` and `error`. A caller that reads only one line should read
-that one.
+`retries`, `contract`, `nare`, `output`, `text`, `budget` and `error`. A caller
+that reads only one line should read that one.
+
+`text` is the final reply of a run that ended `done`: the text of its last
+assistant turn, redacted as events are, so it is the `output` event's `text`.
+It is there with or without `--schema` (with one it is the answer as written,
+and `output` is the validated document). Any other status has `text` null.
 
 Secrets are redacted when an event is constructed, not when it is written, so
 an unredacted event never exists.
@@ -445,9 +450,14 @@ contract version.
 
 ## Budgets and partial results
 
-`usage` contains cumulative `input`, `output`, `cache_read`, `cache_write`, and
-`cost` (dollars or null), and `estimated` (true when any cost was calculated
-from prices rather than reported by the backend). Streamed cost headers are
+`usage` contains cumulative `input`, `output`, `cache_read`, `cache_write`,
+`total`, `cost` (dollars or null), and `estimated` (true when any cost was
+calculated from prices rather than reported by the backend). **`usage.total` is
+the token count to use**: the sum of the four token fields, equal to
+`budget.used_tokens` on every result, and what `--budget-tokens` counts. Adding
+`input` and `output` alone undercounts any run that used the prompt cache. Each
+`cost` event's `detail` has the same fields for its one turn, `total` included;
+the session file keeps the four counters without `total`. Streamed cost headers are
 ignored; configured prices override discovered model-info prices. With neither,
 cost is unknown. Token categories are disjoint. For OpenAI,
 `input=prompt_tokens-cached_tokens`, `cache_read=cached_tokens`, and cache_write

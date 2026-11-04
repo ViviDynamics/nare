@@ -15,7 +15,7 @@ from typing import Any, Literal, cast
 
 from nare.accounting import Prices, finite_number, turn_usage
 from nare.compact import compact, context_chars, estimate
-from nare.events import Event, LiveText
+from nare.events import Event, LiveText, redact
 from nare.mcp import Server, connect
 from nare.schema import extract_json, validate
 from nare.session import Message, Session, append_user_text
@@ -144,7 +144,7 @@ def check_budget(s: Session) -> bool:
     s.stop_reason = "budget"
     s.error = "; ".join(reasons)
     s.events.append(
-        Event("error", s.error, {"budget": budget_record(s), "usage": asdict(s.usage)})
+        Event("error", s.error, {"budget": budget_record(s), "usage": s.usage.wire()})
     )
     return True
 
@@ -174,6 +174,20 @@ ASK_NOT_DELIVERED = (
 
 def _final_text(content: list[dict[str, Any]]) -> str:
     return "\n".join(b.get("text", "") for b in content if b.get("type") == "text")
+
+
+def final_text(s: Session) -> str | None:
+    """The final reply of a run that ended done, redacted as events are.
+
+    None for any other status: a blocked, failed or stopped run has no final
+    reply, whatever its last message says.
+    """
+    if s.status != "done":
+        return None
+    for message in reversed(s.messages):
+        if message.role == "assistant":
+            return redact(_final_text(message.content))
+    return None
 
 
 def schema_instruction(schema: dict[str, Any]) -> str:
@@ -455,7 +469,7 @@ async def step(
             f"{usage.input} in / {usage.output} out, "
             + (f"${usage.cost:.6f}" if usage.cost is not None else "cost unknown")
             + (" (estimate)" if usage.estimated else ""),
-            asdict(usage),
+            usage.wire(),
         )
     )
 
