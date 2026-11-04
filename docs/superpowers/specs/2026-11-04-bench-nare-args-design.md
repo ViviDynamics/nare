@@ -195,6 +195,21 @@ runner prints that rep's stderr and exits 2, instead of recording every rep
 as an error. This is also right with no arguments at all (a key nare cannot
 use, for example).
 
+A stopped run writes no results file, so `compare` and `bless` never read a
+half run as the newest one. Why it stopped is still written down, in two
+places that outlive the terminal:
+
+- the rep's own evidence directory, kept as for any rep: `stdout.jsonl`,
+  `stderr.txt`, and the session if nare wrote one
+- `stopped.txt` in the run's evidence directory
+  (`benchmarks/results/<stamp>/`, or `<stamp>.<model>/` in a matrix), which
+  states the case, the rep, the model and provider, nare's exit code, that no
+  result line came and the rep did not time out, the run and case arguments
+  nare was given, where the rep's evidence is, and nare's stderr and stdout
+  verbatim
+
+The message the runner prints names `stopped.txt`.
+
 ## 7. How arguments reach the container
 
 The script keeps its rule that values never reach it as interpolated text.
@@ -386,7 +401,9 @@ aggregates from it.
       only that.
 - [ ] Reserved flags, flags in the wrong list, and a flag in both lists exit
       2 naming the flag.
-- [ ] A rep whose nare never started stops the run with exit 2.
+- [ ] A rep whose nare never started stops the run with exit 2, writes no
+      results file, and leaves `stopped.txt` with the reason, the arguments
+      and nare's stderr and stdout, beside the rep's kept evidence.
 - [ ] Each results line records the context window the rep used and how many
       times it compacted.
 - [ ] Existing baselines and results load unchanged and read as the default
