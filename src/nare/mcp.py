@@ -1,4 +1,9 @@
-"""Explicit MCP sources, with bounded requests and session-owned connections."""
+"""Explicit MCP sources, with bounded requests and session-owned connections.
+
+The `mcp` package is imported only by the code that connects to a server.
+It is most of nare's import time, and a run without `--mcp-config` never
+touches it; parsing and validating the configuration need none of it.
+"""
 
 from __future__ import annotations
 
@@ -6,16 +11,29 @@ import asyncio
 import json
 import math
 import re
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any, TextIO
 from urllib.parse import urlsplit
 
 import httpx2
-from mcp import ClientSession, StdioServerParameters, types
-from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamable_http_client
+
+if TYPE_CHECKING:
+    from mcp import ClientSession
+
+
+def _errlog() -> TextIO:
+    """The process's own stderr, fd 2, for a stdio server's stderr.
+
+    The SDK's default is `sys.stderr` as it was when `mcp` was imported. That
+    used to be nare's startup; imported lazily, it would be whatever replaced
+    `sys.stderr` by the first connect, such as a terminal UI's or a test
+    runner's capture, which has no file descriptor to hand a child.
+    """
+    return sys.__stderr__ if sys.__stderr__ is not None else sys.stderr
+
 
 _NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]*\Z")
 
@@ -130,6 +148,8 @@ async def _bounded[Result](
 def _tool(
     session: ClientSession, name: str, schema: dict[str, Any], timeout: float
 ) -> ExternalTool:
+    from mcp import types
+
     async def call(args: dict[str, Any]) -> tuple[str, bool]:
         result = await _bounded(session.call_tool(name, args), timeout)
         if not isinstance(result, types.CallToolResult):
@@ -154,17 +174,22 @@ async def connect(
     stack = AsyncExitStack()
     try:
         tools: dict[str, ExternalTool] = {}
+        if servers:
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+            from mcp.client.streamable_http import streamable_http_client
         for alias, config in servers.items():
             if config.command is not None:
-                # ponytail: no errlog, so a server's stderr goes to fd 2 and
-                # can paint over `nare tui` until it redraws. An errlog
-                # parameter threaded through connect() and run(), which the
-                # TUI points at a file, is the upgrade when a server is chatty.
+                # ponytail: a server's stderr goes to fd 2 and can paint
+                # over `nare tui` until it redraws. An errlog parameter
+                # threaded through connect() and run(), which the TUI points
+                # at a file, is the upgrade when a server is chatty.
                 streams = await stack.enter_async_context(
                     stdio_client(
                         StdioServerParameters(
                             command=config.command, args=config.args, env=config.env
-                        )
+                        ),
+                        errlog=_errlog(),
                     )
                 )
             else:
@@ -195,6 +220,8 @@ async def connect(
 async def _discover(
     session: ClientSession, alias: str, timeout: float, tools: dict[str, ExternalTool]
 ) -> None:
+    from mcp import types
+
     await session.initialize()
     cursor: str | None = None
     seen: set[str] = set()
