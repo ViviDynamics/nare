@@ -394,7 +394,7 @@ def _load_or_new(args: argparse.Namespace) -> Session:
 
 def _emit(event: Event, jsonl: bool) -> None:
     if jsonl:
-        print(json.dumps(asdict(event)), flush=True)
+        print(json.dumps(event.wire()), flush=True)
     else:
         print(f"[{event.type}] {event.text}", flush=True)
 
