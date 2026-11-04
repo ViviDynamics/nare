@@ -82,6 +82,62 @@ def test_user_text_assistant_markdown_and_folded_thinking() -> None:
     assert "Fixed it" in text
 
 
+def _thought_shape(content: list[dict[str, Any]]) -> list[str | None]:
+    messages = [
+        Message("user", [{"type": "text", "text": "go"}]),
+        Message("assistant", content),
+    ]
+    return [b.title for b in render_messages(messages, 0, 2)]
+
+
+def test_thinking_stored_after_text_is_drawn_above_it() -> None:
+    # The proxy's Anthropic route stores the text at index 0, the thinking at 1.
+    content = [
+        {"type": "text", "text": "17 times 23 is 391."},
+        {"type": "thinking", "thinking": "compute"},
+    ]
+    assert _thought_shape(content) == [None, "thinking", None]
+    blocks = render_messages([Message("assistant", content)], 0, 1)
+    assert blocks[0].title == "thinking"
+
+
+def test_thinking_stored_before_text_keeps_its_order() -> None:
+    content = [
+        {"type": "thinking", "thinking": "compute"},
+        {"type": "text", "text": "391"},
+    ]
+    assert _thought_shape(content) == [None, "thinking", None]
+    blocks = render_messages([Message("assistant", content)], 0, 1)
+    assert blocks[0].title == "thinking"
+
+
+def test_thinking_between_tool_calls_keeps_its_order() -> None:
+    content: list[dict[str, Any]] = [
+        {"type": "thinking", "thinking": "first"},
+        {"type": "tool_use", "id": "c1", "name": "bash", "input": {"command": "ls"}},
+        {"type": "thinking", "thinking": "second"},
+        {"type": "tool_use", "id": "c2", "name": "bash", "input": {"command": "pwd"}},
+    ]
+    messages = [
+        Message("user", [{"type": "text", "text": "go"}]),
+        Message("assistant", content),
+        answer("a", call_id="c1"),
+        answer("b", call_id="c2"),
+    ]
+    blocks = render_messages(messages, 0, 2)
+    assert [b.title for b in blocks] == [None, "thinking", None, "thinking", None]
+
+
+def test_drawing_text_then_thinking_leaves_the_stored_order_alone() -> None:
+    content: list[dict[str, Any]] = [
+        {"type": "text", "text": "391"},
+        {"type": "thinking", "thinking": "compute"},
+    ]
+    message = Message("assistant", content)
+    render_messages([message], 0, 1)
+    assert [b["type"] for b in message.content] == ["text", "thinking"]
+
+
 def test_a_tool_call_shows_its_folded_result() -> None:
     long = "\n".join(f"line {n}" for n in range(12))
     messages = [call("bash", {"command": "seq 12"}), answer(long)]

@@ -78,7 +78,7 @@ def render_messages(
                 for b in messages[index + 1].content
                 if b.get("type") == "tool_result"
             }
-        for block in message.content:
+        for block in _drawn_order(message.content):
             kind = block.get("type")
             if kind == "text":
                 markdown = _markdown(str(block.get("text", "")))
@@ -90,6 +90,31 @@ def render_messages(
                 answer = answers.get(block.get("id"))
                 blocks.append(Block(_call(block, answer, root)))
     return blocks
+
+
+def _drawn_order(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The order to draw a message's blocks in. Some routes store a reply's
+    thinking after its text (a translated reasoning model), though the model
+    thought first. A thinking block that directly follows a text block is drawn
+    above it. Every other order is drawn as stored. The stored list is not
+    changed: signed thinking must go back to the provider as it came.
+    """
+    ordered: list[dict[str, Any]] = []
+    index = 0
+    while index < len(content):
+        block = content[index]
+        following = content[index + 1] if index + 1 < len(content) else None
+        if (
+            block.get("type") == "text"
+            and following
+            and following.get("type") == "thinking"
+        ):
+            ordered += [following, block]
+            index += 2
+        else:
+            ordered.append(block)
+            index += 1
+    return ordered
 
 
 def _markdown(text: str) -> Markdown:
