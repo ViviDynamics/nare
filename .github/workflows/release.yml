@@ -113,11 +113,23 @@ jobs:
             if (files.length !== 2) {
               throw new Error(`expected a wheel and an sdist in dist/, found ${files.join(', ') || 'nothing'}`);
             }
+            // The hashes go in the notes, so a caller can pin the bytes as well
+            // as the version. The assets never change after this call.
+            const { createHash } = require('node:crypto');
+            const digests = files
+              .map((file) => {
+                const digest = createHash('sha256')
+                  .update(require('node:fs').readFileSync(file))
+                  .digest('hex');
+                return `    ${digest}  ${require('node:path').basename(file)}`;
+              })
+              .join('\n');
+            const notes = `${commit.data.commit.message}\n\nSHA-256:\n\n${digests}\n`;
             execFileSync('gh', [
               'release', 'create', version,
               '--target', sha,
               '--title', version,
-              '--notes', commit.data.commit.message,
+              '--notes', notes,
               ...files,
             ], { stdio: 'inherit', env: { ...process.env, GH_TOKEN: process.env.GITHUB_TOKEN } });
             console.log(`Created release ${version} with ${files.length} asset(s)`);
@@ -174,6 +186,13 @@ jobs:
           set -euo pipefail
           version='${{ needs.release.outputs.version }}'
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/nare"
+          # A version's image is pushed once (docs/contract.md, Releases). A
+          # rerun rebuilds different bytes, so it leaves a published one, and
+          # latest, as they are.
+          if docker buildx imagetools inspect "${image}:${version}" >/dev/null 2>&1; then
+            echo "${image}:${version} is already published; leaving it"
+            exit 0
+          fi
           # Both architectures in one manifest: the runners are amd64 and the
           # machines that pull this are arm64, and a single-arch image makes
           # every local run go through emulation.

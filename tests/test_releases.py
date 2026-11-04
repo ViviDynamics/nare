@@ -38,7 +38,7 @@ def withdrawn() -> dict[str, str]:
 
 def readme_pin() -> str:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    pins = re.findall(r"^\s*V=(\S+)$", readme, flags=re.MULTILINE)
+    pins: list[str] = re.findall(r"^\s*V=(\S+)$", readme, flags=re.MULTILINE)
     assert len(pins) == 1, pins
     return pins[0]
 
