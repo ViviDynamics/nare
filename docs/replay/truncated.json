@@ -1,0 +1,9 @@
+{
+  "replies": [
+    {
+      "text": "Here is the first half of the answer, and then the",
+      "stop_reason": "max_tokens",
+      "usage": {"input": 100, "output": 8192}
+    }
+  ]
+}

@@ -187,11 +187,17 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--provider",
-        choices=["anthropic", "openai"],
+        choices=["anthropic", "openai", "fake"],
         default=os.environ.get("NARE_PROVIDER", "anthropic"),
         help="model provider: anthropic, or openai for anything speaking Chat "
-        "Completions, including a proxy or a local server via --base-url "
+        "Completions, including a proxy or a local server via --base-url, or "
+        "fake to replay a --replay script with no key or network "
         "(env: NARE_PROVIDER)",
+    )
+    parser.add_argument(
+        "--replay",
+        metavar="FILE",
+        help="the JSON script of replies --provider fake replays, one per turn",
     )
     parser.add_argument(
         "--model",
@@ -314,6 +320,7 @@ def transport_from_args(args: argparse.Namespace) -> Transport:
         image_input=args.image_input,
         proxy_num_retries=args.proxy_num_retries,
         cache_breakpoints=args.cache_breakpoints,
+        replay=args.replay,
     )
 
 
@@ -365,6 +372,10 @@ def validate_run_args(args: argparse.Namespace) -> Prices | None:
             raise ValueError("--proxy-num-retries must be a nonnegative integer")
         if args.provider != "openai":
             raise ValueError("--proxy-num-retries requires the openai provider")
+    if args.provider == "fake" and args.replay is None:
+        raise ValueError("--provider fake requires --replay FILE")
+    if args.replay is not None and args.provider != "fake":
+        raise ValueError("--replay requires --provider fake")
     # A resume with nowhere to write back silently throws the run away and
     # replays the stale prefix next time. Resuming a file means updating it.
     if args.resume and not args.session:

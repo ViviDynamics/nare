@@ -1,0 +1,13 @@
+{
+  "replies": [
+    {
+      "text": "Looking at the project first.",
+      "tool_calls": [{"name": "list", "args": {"path": "."}}],
+      "usage": {"input": 120, "output": 18}
+    },
+    {
+      "text": "The project root is listed. Nothing needed changing.",
+      "usage": {"input": 180, "output": 12}
+    }
+  ]
+}

@@ -72,6 +72,13 @@ error names the option to turn off. See
 There is no `--api-key` flag on either: argv is world-readable through `ps`
 and `/proc`.
 
+A third rail is for tests. `--provider fake --replay script.json` replays a
+scripted list of replies, with no key and no network, through the real tools,
+session file, events and exit codes, so a caller's CI can cover a blocked run,
+a truncated turn and a transport error. See
+[scripted runs](docs/contract.md#scripted-runs) for the format and the four
+example scripts.
+
 ## Use
 
     nare run --yes --jsonl "add a docstring to foo() in bar.py"

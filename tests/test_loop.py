@@ -394,6 +394,7 @@ def test_the_public_api_is_the_documented_surface() -> None:
         "Message",
         "Policy",
         "Reply",
+        "ReplayTransport",
         "Session",
         "ToolCall",
         "Transport",
