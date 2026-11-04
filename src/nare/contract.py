@@ -40,6 +40,10 @@ EXIT_CODES: dict[Status, int] = {"done": 0, "blocked": 0, "error": 1}
 # wrong rather than its task.
 NEVER_STARTED = 2
 
+# The signals `nare run` stops on cleanly: it saves the session and writes a
+# result with stop_reason interrupted, as --timeout does with timeout.
+STOP_SIGNALS = ("SIGINT", "SIGTERM")
+
 # What ended a run, as a caller branches on it. A stop reason alone can mean
 # a provider's word (end_turn) or nare's (budget); the kind says what a caller
 # does about it:
@@ -47,10 +51,11 @@ NEVER_STARTED = 2
 #   limit     a limit ended it, so the task is unjudged; a larger limit or a
 #             resume may finish it
 #   answer    the model ended without an acceptable answer
+#   stopped   the caller stopped the run, which says nothing about the task
 #   failure   something broke, so nothing was checked
 # Null is the one value no completed response produced: the provider call, or
 # nare itself, raised.
-StopReasonKind = Literal["finished", "limit", "answer", "failure"]
+StopReasonKind = Literal["finished", "limit", "answer", "stopped", "failure"]
 STOP_REASONS: tuple[tuple[str | None, StopReasonKind, tuple[Status, ...]], ...] = (
     # The provider's word for a turn it completed. The loop decides done or
     # blocked from whether the turn called tools, not from this value.
@@ -61,9 +66,11 @@ STOP_REASONS: tuple[tuple[str | None, StopReasonKind, tuple[Status, ...]], ...] 
     ("max_turns", "limit", ("error",)),
     ("context", "limit", ("error",)),
     ("budget", "limit", ("error",)),
+    ("timeout", "limit", ("error",)),
     ("refusal", "answer", ("error",)),
     ("schema_violation", "answer", ("error",)),
     ("no_answer", "answer", ("error",)),
+    ("interrupted", "stopped", ("error",)),
     (None, "failure", ("error",)),
     ("mcp", "failure", ("error",)),
     ("session_write", "failure", ("error",)),
@@ -141,6 +148,14 @@ def describe() -> dict[str, Any]:
             "id_on": ["tool_use", "tool_result", "evidence", "image"],
             "fields": ["tool_use_id", "is_error", "chars"],
             "content": {"built_in": False, "mcp": True},
+        },
+        # Additive: a run bounded by wall clock, or stopped by a signal, still
+        # saves its session and writes a result line.
+        "deadline": {
+            "flag": "--timeout",
+            "signals": list(STOP_SIGNALS),
+            "stop_reasons": {"timeout": "timeout", "signal": "interrupted"},
+            "exit": EXIT_CODES["error"],
         },
         "image_input": {
             "flag": "--image-input",

@@ -61,8 +61,9 @@ def test_sigint_during_bash_exits_cleanly_and_kills_children(tmp_path: Path) -> 
                 time.sleep(0.01)
             assert len(pids) == 3, "bash did not start both sleeps"
             proc.send_signal(signal.SIGINT)
-            _, stderr = proc.communicate(timeout=5)
-            assert proc.returncode == 130
+            stdout, stderr = proc.communicate(timeout=5)
+            # A stopped run ends error/interrupted, with a result (#143).
+            assert proc.returncode == 1
             for pid in pids:
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline:
@@ -74,8 +75,8 @@ def test_sigint_during_bash_exits_cleanly_and_kills_children(tmp_path: Path) -> 
                 else:
                     pytest.fail(f"process {pid} survived SIGINT")
             assert "Traceback" not in stderr
-            assert len(stderr.splitlines()) == 1
-            assert "interrupted" in stderr.lower()
+            assert stderr == ""
+            assert "SIGINT" in stdout
         finally:
             if pids:
                 with contextlib.suppress(ProcessLookupError):

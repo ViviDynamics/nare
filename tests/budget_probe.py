@@ -7,6 +7,7 @@ No environment credentials or network are used.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from dataclasses import asdict
@@ -40,6 +41,9 @@ class ScriptedTransport:
         )
         self.path.with_suffix(".calls.json").write_text(json.dumps(self.calls))
         raw = self.script["replies"][len(self.calls) - 1]
+        if "delay" in raw:
+            # A model call that takes this long, for deadline and signal tests.
+            await asyncio.sleep(raw["delay"])
         if "error" in raw:
             raise RuntimeError(raw["error"])
         usage = raw.get("usage", {"input": 10, "output": 5})

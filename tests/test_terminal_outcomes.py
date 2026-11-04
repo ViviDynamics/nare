@@ -27,7 +27,7 @@ from nare.loop import run
 from nare.session import Status, new_session
 
 DOC = Path(__file__).parent.parent / "docs" / "contract.md"
-KINDS = {"finished", "limit", "answer", "failure"}
+KINDS = {"finished", "limit", "answer", "stopped", "failure"}
 
 
 def stop_reason_rows() -> list[dict[str, Any]]:

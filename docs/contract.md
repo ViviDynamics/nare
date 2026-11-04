@@ -281,6 +281,8 @@ has a kind, which says what a caller can do about it:
 - `limit`: a limit ended the run, so it says nothing about the task. A larger
   limit, or a resume, may finish it.
 - `answer`: the model ended without an answer nare could accept.
+- `stopped`: the caller stopped the run with a signal. It says nothing about
+  the task and is not a failure; a resume continues it.
 - `failure`: something broke, so the task was not checked at all.
 
 | stop_reason | Kind | Status | Meaning |
@@ -290,9 +292,11 @@ has a kind, which says what a caller can do about it:
 | `max_turns` | `limit` | `error` | Invocation's turn count limit reached (`--max-turns`) |
 | `context` | `limit` | `error` | Estimated context still exceeds the window after eligible elision |
 | `budget` | `limit` | `error` | Session token/USD ceiling reached, or USD accounting is unknown |
+| `timeout` | `limit` | `error` | Invocation's wall clock limit reached (`--timeout`; see Run deadline and stop signals) |
 | `refusal` | `answer` | `error` | Provider refused to continue |
 | `schema_violation` | `answer` | `error` | Second invalid structured answer |
 | `no_answer` | `answer` | `error` | The model sent reasoning and no answer, which is what a proxy that drops one of them produces |
+| `interrupted` | `stopped` | `error` | SIGTERM or SIGINT stopped the run (see Run deadline and stop signals) |
 | null | `failure` | `error` | No completed response: the provider call raised (a transport failure, after any retries), or nare did |
 | `mcp` | `failure` | `error` | An MCP server failed to start, list its tools, or close (see MCP tool sources) |
 | `session_write` | `failure` | `error` | The run ended but `--session` could not be written, so it cannot be resumed |
@@ -316,6 +320,39 @@ elif kinds.get(result["stop_reason"]) == "failure":
 A stop reason this table does not list comes from a newer nare; treat it by
 its `status`. New stop reasons and additive usage/result/session fields keep
 the contract version.
+
+## Run deadline and stop signals
+
+    nare run --yes --jsonl --timeout 600 --session review.json "review the patch"
+
+`--timeout SECONDS` bounds one invocation by wall clock, counted from when the
+run starts, as `--max-turns` counts turns per invocation. It is a positive
+finite number; anything else never starts (exit 2). SIGTERM and SIGINT stop
+`nare run` the same way. Either one:
+
+1. stops the model call, tool call or MCP startup in flight, at once rather
+   than after the turn. A tool call it interrupts is answered with an error
+   result in the transcript, so the session resumes;
+2. kills the `bash` commands this invocation started: the one running, and any
+   a finished call left running in the background (a `[still running: ...]`
+   result). Groups an earlier invocation of a resumed session left running
+   were reported then and are left alone;
+3. emits an `error` event whose `detail.stop` is `{"reason": "timeout",
+   "timeout": <seconds>, "process_groups": [<pgid>, ...]}` or `{"reason":
+   "interrupted", "signal": "SIGTERM" | "SIGINT", "process_groups": [...]}`,
+   listing the groups it killed;
+4. saves the session (with `--session` or `--resume`) at the last completed
+   turn, and writes the `result` line with `status` `error` and `stop_reason`
+   `timeout` or `interrupted`;
+5. exits 1.
+
+A second signal while nare is stopping acts as it would without nare's
+handlers (SIGINT raises, SIGTERM kills), so a stop that hangs can still be
+forced; that one writes no result. SIGKILL cannot be caught, which is why the
+session is also saved after every turn. A SIGINT used to exit 130 with no
+result line; it now exits 1 with one. `nare contract` advertises the flag, the
+signals and the stop reasons under `deadline`. They are additive and keep the
+contract version.
 
 ## Budgets and partial results
 
