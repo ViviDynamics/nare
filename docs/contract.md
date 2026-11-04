@@ -386,6 +386,7 @@ has a kind, which says what a caller can do about it:
 | --- | --- | --- | --- |
 | `end_turn`, `stop_sequence`, `tool_use` | `finished` | `done`, `blocked` | Provider completed the turn. The loop decides `done` or `blocked` from whether the turn called tools, not from this value |
 | `max_tokens` | `limit` | `error` | Provider cut the response off at the output cap (`--max-tokens`), or at the context window |
+| `repetition` | `limit` | `error` | The reply repeated one span until it was cut off, and the cut-off budget (`--max-cutoffs`) is spent |
 | `max_turns` | `limit` | `error` | Invocation's turn count limit reached (`--max-turns`) |
 | `context` | `limit` | `error` | Estimated context still exceeds the window after eligible elision |
 | `budget` | `limit` | `error` | Session token/USD ceiling reached, or USD accounting is unknown |

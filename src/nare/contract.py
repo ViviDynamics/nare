@@ -64,6 +64,7 @@ STOP_REASONS: tuple[tuple[str | None, StopReasonKind, tuple[Status, ...]], ...] 
     ("stop_sequence", "finished", ("done", "blocked")),
     ("tool_use", "finished", ("done", "blocked")),
     ("max_tokens", "limit", ("error",)),
+    ("repetition", "limit", ("error",)),
     ("max_turns", "limit", ("error",)),
     ("context", "limit", ("error",)),
     ("budget", "limit", ("error",)),
@@ -114,7 +115,12 @@ def describe() -> dict[str, Any]:
     a module-level import back into session would be a cycle. One definition of
     the version is worth a function-level import.
     """
-    from nare.loop import RETRIES_DEFAULT, RETRY_SECONDS_DEFAULT
+    from nare.loop import (
+        CUTOFF_REASONS,
+        CUTOFFS_DEFAULT,
+        RETRIES_DEFAULT,
+        RETRY_SECONDS_DEFAULT,
+    )
     from nare.session import Status
     from nare.tools import (
         EVIDENCE_TOOLS,
@@ -181,6 +187,20 @@ def describe() -> dict[str, Any]:
         },
         # Additive: a run bounded by wall clock, or stopped by a signal, still
         # saves its session and writes a result line.
+        # Additive: a reply the model cut off, at the output cap or by repeating
+        # itself, is corrected within this per-invocation budget before the run
+        # ends with that stop reason.
+        "cut_off_replies": {
+            "flag": "--max-cutoffs",
+            "default": CUTOFFS_DEFAULT,
+            "per": "invocation",
+            "stop_reasons": list(CUTOFF_REASONS),
+            "event": "progress",
+            "event_detail": "cutoff",
+            "result_field": "cutoffs",
+            "session_field": "cutoffs",
+            "budget_keys": ["cutoffs", "used_cutoffs"],
+        },
         # Additive: a cap on the tool calls one invocation runs.
         "tool_call_limit": {
             "flag": "--max-tool-calls",

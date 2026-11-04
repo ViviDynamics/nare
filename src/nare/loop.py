@@ -58,6 +58,13 @@ STRUCTURED_OUTPUT_MODES: tuple[str, ...] = ("json_schema",)
 # told what happened instead of that a tool broke.
 INTERRUPTED = "interrupted by the user"
 
+# Cut-off replies, the output cap or a repetition, each get a correction within
+# a per-invocation budget. The library default is none, which is what an
+# embedder that never asked for the budget has always got; the CLI default is
+# CUTOFFS_DEFAULT.
+CUTOFFS_DEFAULT = 2
+CUTOFF_REASONS: tuple[StopReason, ...] = ("max_tokens", "repetition")
+
 RETRIES_DEFAULT = 3
 RETRY_SECONDS_DEFAULT = 60.0
 RETRY_FIRST_WAIT = 2.0
