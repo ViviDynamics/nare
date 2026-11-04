@@ -280,13 +280,13 @@ def check_response_schema(schema: dict[str, Any]) -> None:
     correction turn after the run had spent its first answer.
     """
     prefix = "--structured-output on the anthropic provider cannot send this schema"
-    pending = [(schema, "")]
-    while pending:
-        node, path = pending.pop()
+    queue = [(schema, "")]
+    while queue:
+        node, path = queue.pop()
         reason = _refusal(node, path)
         if reason is not None:
             raise ValueError(f"{prefix}: {reason}")
-        pending += _subschemas(node, path)
+        queue += _subschemas(node, path)
     optional, unions = _count(response_format_from(schema)["schema"])
     if optional > MAX_OPTIONAL_PROPERTIES:
         raise ValueError(
