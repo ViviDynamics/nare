@@ -29,6 +29,7 @@ from nare.contract import (
     STOP_SIGNALS,
     describe,
 )
+from nare.corrections import SCHEMA_CORRECTIONS_DEFAULT
 from nare.events import Event, redact
 from nare.loop import (
     MAX_TURNS_DEFAULT,
@@ -170,6 +171,17 @@ def build_parser() -> argparse.ArgumentParser:
             "run at most N tool calls in this invocation, built-in and MCP. "
             "Past the cap a call is refused and the model told to answer; one "
             "that calls again ends the run with stop_reason tool_calls"
+        ),
+    )
+    run_parser.add_argument(
+        "--max-corrections",
+        type=int,
+        metavar="N",
+        help=(
+            "let the --schema answer be corrected up to N times in this run "
+            "(default 1). A correction is free, and does not count, when the "
+            "answer has fewer distinct errors than any earlier one; free corrections "
+            "need N above 1. Each correction names the earlier fixes to keep"
         ),
     )
     run_parser.add_argument(
@@ -578,6 +590,7 @@ def _emit_result(
     *,
     max_tool_calls: int | None = None,
     tool_calls_from: int | None = None,
+    max_corrections: int | None = None,
 ) -> None:
     if jsonl:
         print(
@@ -592,6 +605,14 @@ def _emit_result(
                         session,
                         max_tool_calls=max_tool_calls,
                         tool_calls_from=tool_calls_from,
+                        max_corrections=max_corrections,
+                    ),
+                    # Every correction the run made, free or charged, with the
+                    # distinct errors it answered. Present only when there was one.
+                    **(
+                        {"corrections": session.schema_correction_log}
+                        if session.schema_correction_log
+                        else {}
                     ),
                     "stop_reason": session.stop_reason,
                     "turns": session.turns,
@@ -708,6 +729,13 @@ async def _execute(
     saved_turns = -1
     groups_from = len(session.process_groups)
     tool_calls_from = session.tool_calls
+    corrections_limit = (
+        SCHEMA_CORRECTIONS_DEFAULT
+        if args.max_corrections is None
+        else args.max_corrections
+    )
+    # Reported only for a schema run, as the budget it spends.
+    corrections_budget = None if schema is None else corrections_limit
     stop = _Stop(getattr(args, "timeout", None))
     stop.install()
     try:
@@ -728,6 +756,7 @@ async def _execute(
                 structured_output=args.structured_output,
                 retry=args.retry,
                 max_tool_calls=args.max_tool_calls,
+                max_corrections=corrections_limit,
             )
             if transport is not None
             else _pending_events(session)
@@ -780,6 +809,7 @@ async def _execute(
         args.jsonl,
         max_tool_calls=args.max_tool_calls,
         tool_calls_from=tool_calls_from,
+        max_corrections=corrections_budget,
     )
     return EXIT_CODES.get(session.status, EXIT_CODES["error"])
 
@@ -853,6 +883,8 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
             finite_number(args.timeout, "--timeout")
         if args.max_tool_calls is not None and args.max_tool_calls <= 0:
             raise ValueError("--max-tool-calls must be a positive integer")
+        if args.max_corrections is not None and args.max_corrections <= 0:
+            raise ValueError("--max-corrections must be a positive integer")
         prices = validate_run_args(args)
         if args.prompt_file is not None:
             try:
@@ -868,6 +900,8 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         schema = schema_from_args(args)
         if args.structured_output is not None and schema is None:
             raise ValueError("--structured-output requires --schema")
+        if args.max_corrections is not None and schema is None:
+            raise ValueError("--max-corrections requires --schema")
         session = _load_or_new(args)
         adopt_system(args, session)
         configure_budgets(session, args.budget_tokens, args.budget_usd)

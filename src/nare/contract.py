@@ -188,6 +188,20 @@ def describe() -> dict[str, Any]:
             "stop_reason": "tool_calls",
             "budget_keys": ["tool_calls", "used_tool_calls"],
         },
+        # Additive: how many times a failing --schema answer may be corrected.
+        "schema_corrections": {
+            "flag": "--max-corrections",
+            "requires": "--schema",
+            "per": "run",
+            "default": 1,
+            "free_when": (
+                "fewer distinct errors than every earlier failing answer, "
+                "with a budget above 1"
+            ),
+            "stop_reason": "schema_violation",
+            "budget_keys": ["schema_corrections", "used_schema_corrections"],
+            "result": "corrections",
+        },
         "deadline": {
             "flag": "--timeout",
             "signals": list(STOP_SIGNALS),

@@ -16,6 +16,13 @@ from typing import Any, Literal, cast
 
 from nare.accounting import Prices, finite_number, turn_usage
 from nare.compact import compact, context_chars, estimate
+from nare.corrections import (
+    SCHEMA_CORRECTIONS_DEFAULT,
+    charge,
+    check_max_corrections,
+    correction_text,
+    record,
+)
 from nare.events import Event, LiveText, redact
 from nare.mcp import Server, connect
 from nare.schema import extract_json, validate
@@ -106,6 +113,7 @@ def budget_record(
     *,
     max_tool_calls: int | None = None,
     tool_calls_from: int | None = None,
+    max_corrections: int | None = None,
 ) -> dict[str, Any]:
     """The limits a run had and what it used. The tool call cap and its count
     are per invocation, so only a caller that knows where the invocation
@@ -116,6 +124,9 @@ def budget_record(
         record["tool_calls"] = max_tool_calls
     if tool_calls_from is not None:
         record["used_tool_calls"] = s.tool_calls - tool_calls_from
+    if max_corrections is not None:
+        record["schema_corrections"] = max_corrections
+        record["used_schema_corrections"] = s.schema_corrections
     return record
 
 
@@ -288,6 +299,16 @@ def state_schema(session: Session, schema: dict[str, Any]) -> None:
     session.schema_sha256 = digest
 
 
+def _parses(text: str) -> bool:
+    """Whether the answer is a JSON document at all, which is what makes its
+    validator messages comparable with an earlier answer's."""
+    try:
+        extract_json(text)
+    except ValueError:
+        return False
+    return True
+
+
 def _answer_errors(text: str, schema: dict[str, Any]) -> list[str]:
     """The validator's complaints about this answer, or none."""
     try:
@@ -452,6 +473,7 @@ async def step(
     retry: RetryPolicy = NO_RETRIES,
     on_event: Callable[[Event], None] | None = None,
     tool_calls: ToolCallLimit | None = None,
+    max_corrections: int = SCHEMA_CORRECTIONS_DEFAULT,
 ) -> Session:
     report = compact(s, context_window, image_input=policy.image_input)
     if report is not None:
@@ -602,21 +624,25 @@ async def step(
             return s
         complaint = "; ".join(errors)
         restated = schema_instruction(schema)
-        if s.schema_retried:
-            # One correction round, then stop. A model that cannot satisfy the
-            # schema twice will not satisfy it on the tenth turn either, and a
-            # caller waiting on data is better served by a named failure than
-            # by a budget spent in a loop.
+        granted = charge(s, errors, max_corrections, comparable=_parses(text))
+        if granted is None:
+            # The correction budget is spent. A model that cannot satisfy the
+            # schema after its allowed corrections will not satisfy it on the
+            # tenth turn either, and a caller waiting on data is better served
+            # by a named failure than by a budget spent in a loop.
             s.status = "error"
             s.stop_reason = "schema_violation"
             s.error = f"answer does not satisfy the schema: {complaint}"
             s.events.append(Event("error", s.error))
             return s
-        s.schema_retried = True
-        append_user_text(
-            s,
-            f"Your answer did not satisfy the required JSON Schema: {complaint}.\n"
-            f"{restated}",
+        append_user_text(s, correction_text(granted, errors, restated))
+        s.events.append(
+            Event(
+                "progress",
+                f"schema correction {granted.number} "
+                f"({'charged' if granted.charged else 'free'}): {complaint}",
+                {"schema_correction": record(granted)},
+            )
         )
         return s
 
@@ -749,6 +775,7 @@ async def _live_step(
     structured_output: str | None = None,
     retry: RetryPolicy = NO_RETRIES,
     tool_calls: ToolCallLimit | None = None,
+    max_corrections: int = SCHEMA_CORRECTIONS_DEFAULT,
 ) -> AsyncGenerator[Event, None]:
     queue: asyncio.Queue[Event] = asyncio.Queue()
     buffers: dict[Literal["progress", "thinking"], LiveText] = {
@@ -787,6 +814,7 @@ async def _live_step(
             retry,
             retried,
             tool_calls,
+            max_corrections=max_corrections,
         )
     )
     waiter: asyncio.Task[Event] | None = None
@@ -836,6 +864,7 @@ async def _run(
     structured_output: str | None = None,
     retry: RetryPolicy | None = None,
     max_tool_calls: int | None = None,
+    max_corrections: int = SCHEMA_CORRECTIONS_DEFAULT,
 ) -> AsyncGenerator[Event, None]:
     """Advance the session to a terminal status, yielding events as they occur.
 
@@ -956,6 +985,7 @@ async def _run(
                             structured_output,
                             retry or RetryPolicy(),
                             tool_calls,
+                            max_corrections,
                         )
                     ) as stream:
                         async for event in stream:
@@ -972,6 +1002,7 @@ async def _run(
                         structured_output=structured_output,
                         retry=retry or RetryPolicy(),
                         tool_calls=tool_calls,
+                        max_corrections=max_corrections,
                     )
                 if session.status not in ("done", "blocked"):
                     check_budget(session)
@@ -1027,9 +1058,11 @@ async def run(
     structured_output: StructuredOutput | None = None,
     retry: RetryPolicy | None = None,
     max_tool_calls: int | None = None,
+    max_corrections: int = SCHEMA_CORRECTIONS_DEFAULT,
 ) -> AsyncGenerator[Event, None]:
     check_structured_output(transport, schema, structured_output)
     check_max_tool_calls(max_tool_calls)
+    check_max_corrections(max_corrections)
     configure_budgets(session, budget_tokens, budget_usd)
     if context_window is not None and (
         isinstance(context_window, bool)
@@ -1067,6 +1100,7 @@ async def run(
                     structured_output=structured_output,
                     retry=retry,
                     max_tool_calls=max_tool_calls,
+                    max_corrections=max_corrections,
                 )
             ) as stream:
                 async for event in stream:
