@@ -6,11 +6,18 @@ import json
 import logging
 import os
 from collections.abc import AsyncGenerator
+from copy import deepcopy
 from dataclasses import asdict
 from typing import Any, cast
 
 import httpx2
-from anthropic import DEFAULT_TIMEOUT, APIStatusError, AsyncAnthropic, omit
+from anthropic import (
+    DEFAULT_TIMEOUT,
+    APIStatusError,
+    AsyncAnthropic,
+    omit,
+    transform_schema,
+)
 from anthropic.types import MessageParam, ToolParam
 
 from nare.accounting import Prices
@@ -200,8 +207,104 @@ def _with_cache_breakpoints(
     return messages, tools
 
 
+# Anthropic's documented ceilings across the strict schemas of one request.
+MAX_OPTIONAL_PROPERTIES = 24
+MAX_UNION_PROPERTIES = 16
+
+
+def response_format_from(schema: dict[str, Any]) -> dict[str, Any]:
+    """The output_config.format for a constrained answer turn.
+
+    Anthropic answers a keyword it cannot enforce with a 400 rather than
+    ignoring it, so the schema goes through the SDK's own transform: bounds,
+    lengths, patterns and the like move into descriptions, every object is
+    closed, and oneOf becomes anyOf. nare's validator still checks the answer
+    against the caller's schema, which this does not touch.
+    """
+    return {"type": "json_schema", "schema": transform_schema(deepcopy(schema))}
+
+
+def _subschemas(node: dict[str, Any], path: str) -> list[tuple[dict[str, Any], str]]:
+    found: list[tuple[dict[str, Any], str]] = []
+    for name, child in (node.get("properties") or {}).items():
+        found.append((child, f"{path}properties.{name}"))
+    if isinstance(node.get("items"), dict):
+        found.append((node["items"], f"{path}items"))
+    for keyword in ("anyOf", "oneOf", "allOf"):
+        for index, child in enumerate(node.get(keyword) or []):
+            found.append((child, f"{path}{keyword}[{index}]"))
+    for name, child in (node.get("$defs") or {}).items():
+        found.append((child, f"{path}$defs.{name}"))
+    return [(child, f"{where}.") for child, where in found if isinstance(child, dict)]
+
+
+def _refusal(node: dict[str, Any], path: str) -> str | None:
+    where = path.rstrip(".") or "the root"
+    if "definitions" in node:
+        return f"definitions at {where}: name them under $defs"
+    extra = node.get("additionalProperties")
+    if isinstance(extra, dict) or (extra is True and not node.get("properties")):
+        return (
+            f"a map at {where} (additionalProperties): a closed object would "
+            "decode with no entries"
+        )
+    if any(isinstance(c, dict) and "$ref" in c for c in node.get("allOf") or []):
+        return f"allOf with a $ref at {where}"
+    if any(isinstance(v, (dict, list)) for v in node.get("enum") or []):
+        return f"an enum of objects or arrays at {where}"
+    if not any(k in node for k in ("type", "anyOf", "oneOf", "allOf", "$ref")):
+        return f"a schema with no type at {where}"
+    return None
+
+
+def _count(node: dict[str, Any]) -> tuple[int, int]:
+    optional = unions = 0
+    required = set(node.get("required") or [])
+    for name, child in (node.get("properties") or {}).items():
+        if name not in required:
+            optional += 1
+        if isinstance(child, dict) and (
+            "anyOf" in child or isinstance(child.get("type"), list)
+        ):
+            unions += 1
+    for child, _ in _subschemas(node, ""):
+        more = _count(child)
+        optional, unions = optional + more[0], unions + more[1]
+    return optional, unions
+
+
+def check_response_schema(schema: dict[str, Any]) -> None:
+    """Refuse at startup a schema the anthropic rail cannot constrain.
+
+    Anything Anthropic refuses would otherwise surface mid-run, as a 400 on the
+    correction turn after the run had spent its first answer.
+    """
+    prefix = "--structured-output on the anthropic provider cannot send this schema"
+    queue = [(schema, "")]
+    while queue:
+        node, path = queue.pop()
+        reason = _refusal(node, path)
+        if reason is not None:
+            raise ValueError(f"{prefix}: {reason}")
+        queue += _subschemas(node, path)
+    optional, unions = _count(response_format_from(schema)["schema"])
+    if optional > MAX_OPTIONAL_PROPERTIES:
+        raise ValueError(
+            f"{prefix}: {optional} optional properties, above Anthropic's "
+            f"{MAX_OPTIONAL_PROPERTIES} optional limit; mark more of them required"
+        )
+    if unions > MAX_UNION_PROPERTIES:
+        raise ValueError(
+            f"{prefix}: {unions} properties with a union type (anyOf or a type "
+            f"list), above Anthropic's {MAX_UNION_PROPERTIES}"
+        )
+
+
 class AnthropicTransport:
     supports_image_input = True
+    # A constrained turn carries no tools, on this rail as on the openai one,
+    # so one rule covers which turns a caller's schema constrains.
+    supports_structured_output = True
 
     def __init__(
         self,
@@ -375,13 +478,32 @@ class AnthropicTransport:
             cast("list[ToolParam]", wire_tools),
         )
 
-    async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
+    def check_response_schema(self, schema: dict[str, Any]) -> None:
+        check_response_schema(schema)
+
+    def _output_config(self, response_schema: dict[str, Any] | None) -> Any:
+        config = dict(self.output_config or {})
+        if response_schema is not None:
+            config["format"] = response_format_from(response_schema)
+        return cast(Any, config) if config else omit
+
+    async def turn(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        response_schema: dict[str, Any] | None = None,
+    ) -> Reply:
         if self.streaming:
-            async for item in self.stream_turn(messages, tools):
+            async for item in self.stream_turn(
+                messages, tools, response_schema=response_schema
+            ):
                 if isinstance(item, Reply):
                     return item
             raise RuntimeError("stream ended without a reply")
-        wire_messages, wire_tools = self._wire(messages, tools)
+        wire_messages, wire_tools = self._wire(
+            messages, tools if response_schema is None else []
+        )
         raw = await self._client.messages.with_raw_response.create(
             model=self.model,
             max_tokens=self.max_tokens,
@@ -389,9 +511,7 @@ class AnthropicTransport:
             tools=wire_tools,
             system=self.system if self.system is not None else omit,
             thinking=cast(Any, self.thinking) if self.thinking else omit,
-            output_config=(
-                cast(Any, self.output_config) if self.output_config else omit
-            ),
+            output_config=self._output_config(response_schema),
         )
         response = await raw.parse()
         content = [block.model_dump(exclude_none=True) for block in response.content]
@@ -409,9 +529,15 @@ class AnthropicTransport:
         )
 
     async def stream_turn(
-        self, messages: list[Message], tools: list[dict[str, Any]]
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        response_schema: dict[str, Any] | None = None,
     ) -> AsyncGenerator[Delta | Reply, None]:
-        wire_messages, wire_tools = self._wire(messages, tools)
+        wire_messages, wire_tools = self._wire(
+            messages, tools if response_schema is None else []
+        )
         async with self._client.messages.stream(
             model=self.model,
             max_tokens=self.max_tokens,
@@ -419,9 +545,7 @@ class AnthropicTransport:
             tools=wire_tools,
             system=self.system if self.system is not None else omit,
             thinking=cast(Any, self.thinking) if self.thinking else omit,
-            output_config=(
-                cast(Any, self.output_config) if self.output_config else omit
-            ),
+            output_config=self._output_config(response_schema),
         ) as stream:
             finished = False
             complete_usage = False

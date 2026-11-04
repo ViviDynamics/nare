@@ -229,8 +229,11 @@ def test_contract_describes_structured_output() -> None:
         "flag": "--structured-output",
         "modes": ["json_schema"],
         "requires": "--schema",
-        "providers": ["openai"],
+        "providers": ["anthropic", "openai"],
         "constrained_turns": ["schema_correction", "tool_free_run"],
+        "anthropic_not_enforced_at_decode": describe()["structured_output"][
+            "anthropic_not_enforced_at_decode"
+        ],
         "event": "progress",
         "event_detail": "structured_output",
     }
@@ -243,6 +246,7 @@ def test_the_documented_contract_describes_structured_output() -> None:
     assert "## Schema-constrained answers" in text
     assert "--structured-output json_schema" in text
     assert '"response_format"' in text
+    assert '"output_config"' in text
 
 
 def test_the_advertised_modes_are_the_ones_the_loop_accepts() -> None:

@@ -45,20 +45,22 @@ def test_structured_output_without_a_schema_never_starts(
     assert "--structured-output requires --schema" in captured.err
 
 
-def test_the_anthropic_provider_cannot_be_constrained(
+def test_the_anthropic_provider_refuses_a_schema_it_cannot_constrain(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    schema_file: Path,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    path = tmp_path / "map.schema.json"
+    path.write_text(json.dumps({"type": "object", "additionalProperties": True}))
     code = main(
         ["run", "--yes", "--jsonl", "--provider", "anthropic", "--schema"]
-        + [str(schema_file), "--structured-output", "json_schema", "go"]
+        + [str(path), "--structured-output", "json_schema", "go"]
     )
     captured = capsys.readouterr()
     assert code == 2
     assert captured.out == ""
-    assert "does not support structured output" in captured.err
+    assert "anthropic provider cannot send this schema" in captured.err
 
 
 def test_only_known_modes_parse(capsys: pytest.CaptureFixture[str]) -> None:
