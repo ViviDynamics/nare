@@ -269,8 +269,9 @@ async def test_step_emits_a_tool_use_event(tmp_path: Path) -> None:
     await step(session, fake, approve_all, Policy())
     # The full order is a contract, not an accident: task 13 asserts a golden
     # JSONL stream, and the downstream adapter is built against this sequence.
-    # Note there is no `progress` here — this reply carries no text block.
-    assert [e.type for e in session.events] == ["cost", "tool_use"]
+    # The one `progress` is the call's result: the reply carries no text
+    # block.
+    assert [e.type for e in session.events] == ["cost", "tool_use", "progress"]
     tool_events = [e for e in session.events if e.type == "tool_use"]
     assert len(tool_events) == 1
     assert tool_events[0].text == "bash"
@@ -312,7 +313,15 @@ async def test_run_drives_to_done_and_yields_every_event(tmp_path: Path) -> None
         ]
     )
     kinds = await drain(session, fake)
-    assert kinds == ["progress", "cost", "tool_use", "progress", "cost", "output"]
+    assert kinds == [
+        "progress",
+        "cost",
+        "tool_use",
+        "progress",  # the write's result
+        "progress",
+        "cost",
+        "output",
+    ]
     assert session.status == "done"
     assert session.turns == 2
     assert target.read_text() == "hi"

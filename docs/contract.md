@@ -13,7 +13,8 @@ Read the contract as data instead of parsing this page:
 
 It prints the version, the exit codes, the statuses, the event types, the
 built-in tool names (`tools`), the navigation limits (`navigation`), the read
-evidence record (`evidence`) and the redaction rule set this build speaks.
+evidence record (`evidence`), the tool result record (`tool_results`) and the
+redaction rule set this build speaks.
 
 ## Refusing a contract you do not speak
 
@@ -91,7 +92,9 @@ matches the code.
 One JSON object per line on stdout, each with `type`, `text`, `detail` and
 `timestamp`. The types are `progress`, `tool_use`, `thinking`, `cost`, `error`
 and `output`. They match Conductor's `BackendEventType` so its adapter is a
-constructor call rather than a mapping table.
+constructor call rather than a mapping table. An event that belongs to one tool
+call also has a top-level `tool_use_id` (see [Tool results](#tool-results));
+every other event leaves the key out.
 
 The last line is not an event. It is the `result` object, carrying
 `session_id`, `status`, `questions`, `usage`, `stop_reason`, `turns`,
@@ -100,6 +103,43 @@ that one.
 
 Secrets are redacted when an event is constructed, not when it is written, so
 an unredacted event never exists.
+
+## Tool results
+
+Every tool call the model makes appears twice in the stream: once as it is
+asked for, and once as it ends. Both lines carry the provider's call id in a
+top-level `tool_use_id`, outside `detail`, because a `tool_use` event's
+`detail` is the call's arguments and a tool may take an argument of any name.
+
+    {"type": "tool_use", "text": "edit", "tool_use_id": "c1",
+     "detail": {"path": "src/db.py", "old": "6543", "new": "6544"}, ...}
+    {"type": "progress", "text": "edit result: error", "tool_use_id": "c1",
+     "detail": {"tool": "edit",
+                "tool_result": {"tool_use_id": "c1", "is_error": true,
+                                "chars": 41}}, ...}
+
+The result event is a `progress` event whose `detail` is
+`{"tool": <name>, "tool_result": <record>}`. Each `tool_use` event's id matches
+exactly one result event, so a caller can count calls by tool and outcome, and
+tell which ones failed, from the stream alone.
+
+- `is_error` is the value the model was sent. Results nare writes itself count
+  too: an `ask` beside other calls, a call from a truncated turn (`not run`), a
+  call left unanswered when dispatch fails, and an `ask` that was not
+  delivered all end in a result event with `is_error: true`.
+- `chars` is the length in characters of the result content the model was
+  sent, after the output cap.
+- A built-in tool's record has no content; the transcript holds it. An MCP
+  tool's record keeps the content it has always carried, redacted and capped
+  (see [MCP tool sources](#mcp-tool-sources)), and adds `chars`.
+
+A turn's result events come after its evidence and image events, in call
+order, once every call in the turn has ended. Read evidence and image
+`progress` events carry the call's `tool_use_id` as well; they are not result
+events, which are the ones with `detail.tool_result`.
+
+The `tool_use_id` field, the result events and the `tool_results` key of
+`nare contract` are additive and keep the contract version.
 
 ## What changes the version
 
@@ -111,7 +151,8 @@ redaction rule set.
 `result` object, a new session field with a default, a new flag, a new status
 value's behaviour being described more precisely without changing it. The read
 evidence record (a new `progress` detail key and a new `evidence` session
-field) is one of these.
+field) is one of these, and so are the tool result events and the
+`tool_use_id` field.
 
 A caller must therefore ignore fields and event types it does not recognise.
 That is the price of additive changes not bumping the number.
@@ -294,7 +335,7 @@ with `status=error`, `stop_reason=mcp`, exit 1. No model call occurs on startup
 failure. A failing tool call returns an ordinary `is_error` tool result so the
 model can adapt. `tool_use` events identify calls and redacted arguments;
 `progress` events carry redacted `detail.tool` and `detail.tool_result`, including
-content and error status. Text and structured MCP results are retained; other
+content, error status and size (see [Tool results](#tool-results)). Text and structured MCP results are retained; other
 content blocks are represented as JSON, rather than interpreted as model images.
 The standard tool output cap applies. Session transcripts preserve results in
 the same way as built-ins; raw transcripts can contain secrets and should be
@@ -433,7 +474,8 @@ A record holds no file content: paths, digests, sizes, ranges and names. It
 passes through the same redaction as every event detail, which leaves it
 unchanged unless a path itself looks like a credential; the session stores the
 redacted copy, so the two always agree. `tool_use_id` ties a record to its
-call in the transcript.
+call in the transcript; the event carries the same id at its top level, and
+the call's result event follows it.
 
 A `read`:
 

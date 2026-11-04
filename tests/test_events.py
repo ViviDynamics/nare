@@ -1,14 +1,13 @@
 import random
 import re
 import time
-from dataclasses import asdict
 
 from nare.events import Event, redact
 
 
 def test_event_fields_match_conductors_backend_event() -> None:
     e = Event("progress", "working")
-    assert set(asdict(e)) == {"timestamp", "type", "text", "detail"}
+    assert set(e.wire()) == {"timestamp", "type", "text", "detail"}
 
 
 def test_timestamp_is_iso_utc() -> None:

@@ -332,6 +332,33 @@ async def test_mcp_results_are_redacted_events(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_mcp_call_has_exactly_one_result_event(tmp_path: Path) -> None:
+    from nare.loop import run
+    from nare.mcp import parse_servers
+    from nare.session import new_session
+
+    path, _ = config(tmp_path)
+    events = [
+        e
+        async for e in run(
+            new_session("echo"),
+            transport=MCPModel(),
+            mcp_servers=parse_servers(json.loads(path.read_text())),
+        )
+    ]
+    [use] = [e for e in events if e.type == "tool_use"]
+    [result] = [e for e in events if "tool_result" in e.detail]
+    assert use.tool_use_id == result.tool_use_id == "c"
+    record = result.detail["tool_result"]
+    # The MCP result keeps its content, as it always has, and gains its size.
+    assert (record["content"], record["is_error"], record["chars"]) == (
+        "hello",
+        False,
+        len("hello"),
+    )
+
+
+@pytest.mark.asyncio
 async def test_early_close_cleans_child(tmp_path: Path) -> None:
     from nare.loop import run
     from nare.mcp import parse_servers

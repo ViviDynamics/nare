@@ -274,7 +274,7 @@ def test_golden_jsonl(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Non
             "source": "default",
         }
     }
-    assert emitted[1:6] == [
+    assert emitted[1:7] == [
         {
             "timestamp": "T",
             "type": "cost",
@@ -286,6 +286,21 @@ def test_golden_jsonl(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Non
             "type": "tool_use",
             "text": "write",
             "detail": {"path": str(target), "content": "hi"},
+            "tool_use_id": "call_1",
+        },
+        {
+            "timestamp": "T",
+            "type": "progress",
+            "text": "write result: ok",
+            "detail": {
+                "tool": "write",
+                "tool_result": {
+                    "tool_use_id": "call_1",
+                    "is_error": False,
+                    "chars": len(f"wrote 2 characters to {target}"),
+                },
+            },
+            "tool_use_id": "call_1",
         },
         {"timestamp": "T", "type": "progress", "text": "finished", "detail": {}},
         {
@@ -296,7 +311,7 @@ def test_golden_jsonl(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Non
         },
         {"timestamp": "T", "type": "output", "text": "finished", "detail": {}},
     ]
-    result = emitted[6]
+    result = emitted[7]
     assert result["type"] == "result"
     assert result["status"] == "done"
     assert result["stop_reason"] == "end_turn"
@@ -310,7 +325,7 @@ def test_golden_jsonl(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Non
         "cost": None,
         "estimated": False,
     }
-    assert len(emitted) == 7
+    assert len(emitted) == 8
 
 
 def test_every_line_is_json_and_the_result_is_last(

@@ -6,7 +6,7 @@ mapping table.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -113,12 +113,27 @@ class Event:
     text: str
     detail: dict[str, Any] = field(default_factory=dict)
     timestamp: str = field(default_factory=_now)
+    # The provider's id of the tool call this event belongs to, on every event
+    # that belongs to one. Top-level rather than in `detail`, because a
+    # tool_use event's detail is the call's arguments and a tool may take an
+    # argument of any name.
+    tool_use_id: str | None = None
 
     def __post_init__(self) -> None:
         # Redaction at construction, not at emission: an unredacted Event must
         # never exist, because every later surface trusts it.
         object.__setattr__(self, "text", redact(self.text))
         object.__setattr__(self, "detail", redact_value(self.detail))
+        if self.tool_use_id is not None:
+            object.__setattr__(self, "tool_use_id", redact(self.tool_use_id))
+
+    def wire(self) -> dict[str, Any]:
+        """The JSONL object. An event of no call keeps the four fields it
+        always had, so only the lines of a tool call change."""
+        out = asdict(self)
+        if out["tool_use_id"] is None:
+            del out["tool_use_id"]
+        return out
 
 
 # A credential name/separator/scheme at the end may acquire its value in the
