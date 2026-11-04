@@ -95,6 +95,16 @@ def describe() -> dict[str, Any]:
             "line_numbers_from": 1,
             "byte_end": "exclusive",
         },
+        # Additive: how each call ended. Every call's tool_use event and its
+        # one result event carry the same top-level tool_use_id.
+        "tool_results": {
+            "event": "progress",
+            "event_detail": "tool_result",
+            "id_field": "tool_use_id",
+            "id_on": ["tool_use", "tool_result", "evidence", "image"],
+            "fields": ["tool_use_id", "is_error", "chars"],
+            "content": {"built_in": False, "mcp": True},
+        },
         "image_input": {
             "flag": "--image-input",
             "tool": "read",

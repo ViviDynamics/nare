@@ -52,19 +52,19 @@ Out:
 
 ## Tasks
 
-- [ ] 1. `Event.tool_use_id`, left out of the wire form when unset: a plain
+- [x] 1. `Event.tool_use_id`, left out of the wire form when unset: a plain
   event serializes to the four fields; one with an id to five.
-- [ ] 2. `tool_use` events carry the call id: a scripted `bash` call's
+- [x] 2. `tool_use` events carry the call id: a scripted `bash` call's
   `tool_use` event has `tool_use_id` equal to the call id.
-- [ ] 3. One result event per call: `bash`, `edit`, `write`, `read` calls
+- [x] 3. One result event per call: `bash`, `edit`, `write`, `read` calls
   each produce one result event matching their id, with `is_error` and
   `chars`, and no content. A failed `edit` reports `is_error: true`.
-- [ ] 4. Synthetic results: `ask` beside other calls, a truncated turn, and a
+- [x] 4. Synthetic results: `ask` beside other calls, a truncated turn, and a
   lone failed `ask` beside a successful one each yield one result event with
   the transcript's `is_error`.
-- [ ] 5. MCP: one result event per MCP call, content kept, `chars` added.
-- [ ] 6. Evidence and image events carry `tool_use_id`.
-- [ ] 7. CLI JSONL: every `tool_use` line's id matches exactly one result
+- [x] 5. MCP: one result event per MCP call, content kept, `chars` added.
+- [x] 6. Evidence and image events carry `tool_use_id`.
+- [x] 7. CLI JSONL: every `tool_use` line's id matches exactly one result
   line; a plain line has no `tool_use_id` key.
-- [ ] 8. `nare contract` `tool_results` key, contract doc, architecture doc,
+- [x] 8. `nare contract` `tool_results` key, contract doc, architecture doc,
   terminal skip.

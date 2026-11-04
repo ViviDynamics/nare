@@ -284,3 +284,23 @@ def test_the_documented_contract_describes_read_evidence() -> None:
 
     assert "## Read evidence" in text
     assert '"evidence"' in text and '"sha256"' in text
+
+
+def test_contract_describes_tool_results() -> None:
+    assert describe()["tool_results"] == {
+        "event": "progress",
+        "event_detail": "tool_result",
+        "id_field": "tool_use_id",
+        "id_on": ["tool_use", "tool_result", "evidence", "image"],
+        "fields": ["tool_use_id", "is_error", "chars"],
+        "content": {"built_in": False, "mcp": True},
+    }
+
+
+def test_the_documented_contract_describes_tool_results() -> None:
+    doc = Path(__file__).parent.parent / "docs" / "contract.md"
+    text = doc.read_text(encoding="utf-8")
+
+    assert "## Tool results" in text
+    assert '"tool_use_id"' in text and '"chars"' in text
+    assert "`tool_results`" in text

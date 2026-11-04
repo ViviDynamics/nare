@@ -72,6 +72,15 @@ and appends the event's (redacted) copy to `Session.evidence`, so the stream
 and the file agree. A read reads its file once and hashes the buffer it
 decodes. See [the contract](contract.md#read-evidence).
 
+## Tool results
+
+`step()` emits one `progress` event per tool result once the turn's results are
+final: after nare has answered every call it wrote itself (a truncated turn, an
+`ask` beside other calls, a dispatch that died) and rewritten an undelivered
+`ask`, so the event and the transcript never disagree. Every event of a call
+carries its `tool_use_id` as a top-level `Event` field; `Event.wire()` leaves
+the key out of any other line. See [the contract](contract.md#tool-results).
+
 ## Measuring it
 
 `tests/` proves the harness honours its contract given a scripted model.
