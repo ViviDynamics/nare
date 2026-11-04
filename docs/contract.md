@@ -732,7 +732,8 @@ an unstreamed openai or anthropic turn. The openai path used to pass `{}` and
 run the tool with no arguments. The tool is not run.
 
 Arguments that repeat an object key are refused the same way, with the message
-`tool arguments are invalid: <path>: duplicate key: <key>; tool not run`. An
+`tool arguments are invalid: duplicate key: <key>; tool not run`, with the path to
+the object before the key when the repeat is nested (`scope: duplicate key: file`). An
 unstreamed anthropic reply is checked from its raw body, because the SDK
 would otherwise keep the last of a repeated key silently. A repeat outside
 any tool's input refuses every tool call in that reply.
