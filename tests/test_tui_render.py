@@ -557,3 +557,18 @@ def test_navigation_results_fold_to_their_header() -> None:
 
 def test_a_list_of_the_root_names_it() -> None:
     assert "● list ." in plain(render_messages([call("list", {})], 0, 1))
+
+
+def test_a_write_under_git_shows_a_git_badge_and_no_a_always(tmp_path: Path) -> None:
+    from nare.tui.render import approval_header
+
+    header = approval_header(
+        "write", {"path": ".git/config", "content": "x"}, Policy(root=tmp_path)
+    )
+    assert "[.git]" in header.plain
+    assert "a always" not in header.plain
+    plain = approval_header(
+        "write", {"path": "a.py", "content": "x"}, Policy(root=tmp_path)
+    )
+    assert "[.git]" not in plain.plain
+    assert "a always" in plain.plain

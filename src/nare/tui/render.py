@@ -26,7 +26,7 @@ from rich.text import Text
 from nare.session import Message, Session, Usage, unanswered
 from nare.tools import Policy, questions_from
 from nare.transport import ToolCall
-from nare.tui.approve import risks, scope
+from nare.tui.approve import FILE_WRITES, in_git_dir, risks, scope
 
 RESULT_LINES = 5
 DIFF_LINES = 20
@@ -345,6 +345,10 @@ def approval_header(tool: str, args: dict[str, Any], policy: Policy) -> Text:
         always = f" · a always {', '.join(sorted(programs))}" if programs else ""
     else:
         badges = []
+        if tool in FILE_WRITES and in_git_dir(path, policy):
+            # Asked about every time, so `a always` would promise what it cannot.
+            badges.append(".git")
+            always = ""
         if path:
             try:
                 path = _relative(str(policy.resolve(path)), root)

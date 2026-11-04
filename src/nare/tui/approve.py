@@ -91,8 +91,26 @@ _KEYWORDS = frozenset(
     | {"for", "select", "while", "until", "do", "done", "function", "coproc"}
 )
 
+# The tools that write a file, which a path argument names.
+FILE_WRITES = frozenset({"write", "edit"})
+
 # The key a person pressed, and the reason they typed with an n.
 Ask = Callable[[str, dict[str, Any]], Awaitable[tuple[str, str]]]
+
+
+def in_git_dir(path: str, policy: Policy) -> bool:
+    """Whether a write to `path` lands in the root's .git directory, or is
+    .git itself, through any `..` or symlink. git runs what that directory's
+    config and hooks name, so such a write always asks, even after `a`.
+    A path that cannot be resolved counts as inside.
+    """
+    base = policy.root.resolve() if policy.root is not None else Path.cwd().resolve()
+    try:
+        git = (base / ".git").resolve()
+        target = (base / path).resolve()
+    except (OSError, RuntimeError):
+        return True
+    return target == git or target.is_relative_to(git)
 
 
 def _tokens(command: str) -> list[str]:
@@ -589,7 +607,16 @@ class Approver:
 
     async def __call__(self, tool: str, args: dict[str, Any]) -> bool | str:
         """True to run the call; a denial is False, or the reason given."""
-        if tool in EXEMPT or tool in self.always:
+        if tool in EXEMPT:
+            return True
+        if tool in FILE_WRITES and in_git_dir(str(args.get("path", "")), self.policy):
+            # Asked about every time: `a` approves only this call, since a
+            # later write to .git must not ride on a grant for other paths.
+            key, reason = await self.ask(tool, args)
+            if key in ("y", "a"):
+                return True
+            return reason.strip() or False
+        if tool in self.always:
             return True
         command = str(args.get("command", ""))
         if tool == "bash" and self._unasked(command):
