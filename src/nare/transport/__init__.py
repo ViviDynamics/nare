@@ -21,6 +21,14 @@ from nare.session import Message, Usage
 if TYPE_CHECKING:
     from nare.accounting import Prices
 
+# Every environment variable a transport, or a vendor SDK below one, reads a
+# credential from. bash runs without them unless the policy opts in: a command
+# the model writes is not one of nare's own requests. A transport that reads a
+# new credential adds it here; a test fails until it does.
+CREDENTIAL_ENV = frozenset(
+    {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY"}
+)
+
 StopReason = Literal["end_turn", "tool_use", "max_tokens", "stop_sequence", "refusal"]
 
 

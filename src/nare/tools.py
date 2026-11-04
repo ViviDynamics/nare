@@ -29,7 +29,7 @@ from PIL import Image
 
 from nare.events import redact
 from nare.mcp import ExternalTool
-from nare.transport import ToolCall
+from nare.transport import CREDENTIAL_ENV, ToolCall
 
 MAX_TOOL_OUTPUT = 30_000
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
@@ -353,8 +353,20 @@ async def _lingers(pgid: int) -> bool:
     return True
 
 
+def _shell_env(credentials: bool) -> dict[str, str] | None:
+    """nare's environment without the provider credentials, or all of it when
+    the policy opts in (None inherits).
+
+    Read at each spawn, not at import, so the shell sees nare's environment as
+    it is now.
+    """
+    if credentials:
+        return None
+    return {k: v for k, v in os.environ.items() if k not in CREDENTIAL_ENV}
+
+
 async def _spawn(
-    command: str, cwd: str | None
+    command: str, cwd: str | None, *, credentials: bool = False
 ) -> asyncio.subprocess.Process | Exception:
     """Start the shell in its own group, and return a failure, not raise it.
 
@@ -370,13 +382,18 @@ async def _spawn(
             stdin=subprocess.DEVNULL,
             start_new_session=True,
             cwd=cwd,
+            env=_shell_env(credentials),
         )
     except Exception as exc:
         return exc
 
 
 async def bash_outcome(
-    command: str, timeout: int = 120, *, cwd: str | None = None
+    command: str,
+    timeout: int = 120,
+    *,
+    cwd: str | None = None,
+    credentials: bool = False,
 ) -> BashOutcome:
     """Run a command in bash with pipefail (sh without bash), in its own
     process group, with no stdin.
@@ -390,8 +407,12 @@ async def bash_outcome(
 
     stdin is DEVNULL because nare's own stdin belongs to conductor: a command
     that reads would either eat conductor's pipe or block until the timeout.
+
+    The environment is nare's without CREDENTIAL_ENV, the keys nare reads for
+    its own requests: `env` would put them in the transcript, and a file the
+    model reads can ask for exactly that. `credentials` restores them.
     """
-    spawn = asyncio.create_task(_spawn(command, cwd))
+    spawn = asyncio.create_task(_spawn(command, cwd, credentials=credentials))
     try:
         # Shielded: Popen has started the shell before asyncio connects its
         # pipes. asyncio's own cleanup for a cancel there kills the shell
@@ -469,11 +490,17 @@ async def bash_outcome(
     return BashOutcome(text, failed=killed, group=group)
 
 
-async def run_bash(command: str, timeout: int = 120, *, cwd: str | None = None) -> str:
+async def run_bash(
+    command: str,
+    timeout: int = 120,
+    *,
+    cwd: str | None = None,
+    credentials: bool = False,
+) -> str:
     """The text of bash_outcome(): what the model reads. dispatch() calls
     bash_outcome() itself, to learn whether the result is an error.
     """
-    return (await bash_outcome(command, timeout, cwd=cwd)).text
+    return (await bash_outcome(command, timeout, cwd=cwd, credentials=credentials)).text
 
 
 def ask(questions: list[str]) -> str:
@@ -1169,6 +1196,8 @@ class Policy:
     pending: frozenset[str] = frozenset()
     image_input: bool = False
     image_model: str = "unconfigured transport/model"
+    # Whether bash sees the provider credentials nare reads (CREDENTIAL_ENV).
+    bash_credentials: bool = False
 
     def __post_init__(self) -> None:
         unknown = sorted(self.tools - set(TOOLS) - self.external.keys() - self.pending)
@@ -1191,6 +1220,7 @@ class Policy:
                 if self.image_input
                 else {}
             ),
+            **({"bash_credentials": True} if self.bash_credentials else {}),
             "tools": sorted(self.tools),
             "root": None if self.root is None else str(self.root),
         }
@@ -1289,6 +1319,9 @@ async def dispatch(
             args["path"] = str(policy.resolve(str(args["path"])))
         if call.name == "bash" and policy.root is not None:
             args["cwd"] = str(policy.root.resolve())
+        if call.name == "bash":
+            # Set after the model's arguments, so it cannot be moved by them.
+            args["credentials"] = policy.bash_credentials
         output: str | dict[str, Any]
         record: Evidence | None = None
         if call.name == "read":

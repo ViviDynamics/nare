@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from fake_provider import FakeProvider, text_reply, tool_reply
 from nare.cli import main
 from nare.loop import run
@@ -119,3 +121,27 @@ def test_the_cli_passes_the_policy_through_to_the_session(
         "tools": [],
         "root": str(tmp_path),
     }
+
+
+def test_the_cli_records_the_bash_credentials_opt_in(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    session_path = tmp_path / "s.json"
+
+    code = main(
+        [
+            "run",
+            "go",
+            "--yes",
+            "--jsonl",
+            "--bash-credentials",
+            "--session",
+            str(session_path),
+        ],
+        transport=FakeProvider([text_reply("done")]),
+    )
+
+    assert code == 0
+    capsys.readouterr()
+    saved = json.loads(session_path.read_text(encoding="utf-8"))["policy"]
+    assert saved["bash_credentials"] is True

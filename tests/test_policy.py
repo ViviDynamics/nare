@@ -234,3 +234,93 @@ async def test_navigation_runs_only_when_the_allowlist_names_it(
 
     assert result["is_error"] is True
     assert "not allowed" in result["content"]
+
+
+# The bash environment: the provider credentials nare reads for its own
+# requests stay out of every command the model writes, unless the policy opts in.
+KEYS = {
+    "ANTHROPIC_API_KEY": "sk-ant-withheld-1",
+    "ANTHROPIC_AUTH_TOKEN": "withheld-2",
+    "OPENAI_API_KEY": "sk-withheld-3",
+}
+
+
+def set_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name, value in KEYS.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("NARE_TEST_VISIBLE", "still-here")
+
+
+async def test_bash_does_not_see_the_provider_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_keys(monkeypatch)
+
+    result = await dispatch(call("bash", command="env"), Policy())
+
+    assert result["is_error"] is False
+    for name, value in KEYS.items():
+        assert name not in result["content"]
+        assert value not in result["content"]
+    assert "NARE_TEST_VISIBLE=still-here" in result["content"]
+
+
+async def test_the_policy_opt_in_gives_bash_the_provider_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_keys(monkeypatch)
+
+    result = await dispatch(call("bash", command="env"), Policy(bash_credentials=True))
+
+    for name, value in KEYS.items():
+        assert f"{name}={value}" in result["content"]
+
+
+async def test_the_model_cannot_opt_bash_in_through_its_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_keys(monkeypatch)
+
+    result = await dispatch(call("bash", command="env", credentials=True), Policy())
+
+    for value in KEYS.values():
+        assert value not in result["content"]
+
+
+async def test_run_bash_withholds_the_keys_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nare.tools import run_bash
+
+    set_keys(monkeypatch)
+
+    output = await run_bash("env")
+
+    for value in KEYS.values():
+        assert value not in output
+
+
+def test_the_policy_records_the_opt_in_only_when_it_is_given() -> None:
+    assert "bash_credentials" not in Policy().recorded()
+    assert Policy(bash_credentials=True).recorded()["bash_credentials"] is True
+
+
+def test_every_credential_a_transport_reads_is_withheld() -> None:
+    """A credential variable added to a transport later is withheld too, or
+    this fails: the list is the transports' own, not a copy of it.
+    """
+    import re
+
+    import nare.transport
+    from nare.transport import CREDENTIAL_ENV
+
+    read: set[str] = set()
+    for source in Path(nare.transport.__file__).parent.glob("*.py"):
+        text = source.read_text(encoding="utf-8")
+        read |= set(re.findall(r"environ(?:\.get\(|\[)\s*\"([A-Z0-9_]+)\"", text))
+    credentials = {name for name in read if re.search("KEY|TOKEN|SECRET", name)}
+
+    assert credentials
+    assert credentials <= CREDENTIAL_ENV
+    # Read by the Anthropic SDK itself, not by nare's code.
+    assert {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"} <= CREDENTIAL_ENV
