@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from collections.abc import AsyncGenerator
@@ -23,6 +22,7 @@ from anthropic.types import MessageParam, ToolParam
 
 from nare.accounting import Prices
 from nare.repetition import RepetitionWatch, degenerate, looping
+from nare.schema import DuplicateKeyError, loads_unique
 from nare.session import Message, Usage, sent_back
 from nare.transport import (
     EFFORTS,
@@ -95,6 +95,34 @@ _STOP_REASONS: dict[str, StopReason] = {
     # consistent.
     "pause_turn": "end_turn",
 }
+
+
+def _repeated_arguments(body: str) -> dict[int | None, DuplicateKeyError]:
+    """The tool calls in an unstreamed reply whose input repeats a key, keyed
+    by content index, with the refusal for each. The SDK parses the reply with
+    json, which keeps the last of a repeated key without a word, so the raw
+    body is checked here. A repeat outside any tool input is keyed None, and
+    refuses every call in the reply rather than being trusted by accident.
+    """
+    try:
+        loads_unique(body)
+    except DuplicateKeyError as exc:
+        grouped: dict[int | None, list[tuple[tuple[str | int, ...], str]]] = {}
+        for location, key in exc.found:
+            owner: int | None = None
+            if (
+                len(location) >= 3
+                and location[0] == "content"
+                and isinstance(location[1], int)
+                and location[2] == "input"
+            ):
+                owner = location[1]
+                location = location[3:]
+            grouped.setdefault(owner, []).append((location, key))
+        return {owner: DuplicateKeyError(found) for owner, found in grouped.items()}
+    except ValueError:
+        return {}
+    return {}
 
 
 def stop_reason_from(raw: str | None) -> StopReason:
@@ -521,13 +549,23 @@ class AnthropicTransport:
         response = await raw.parse()
         content = [block.model_dump(exclude_none=True) for block in response.content]
         self._warn_proxy_reasoning(content)
+        repeats = _repeated_arguments(raw.http_response.text)
+        calls: list[ToolCall] = []
+        for index, block in enumerate(content):
+            if block.get("type") != "tool_use":
+                continue
+            args = block.get("input") or {}
+            error = None
+            refusal = repeats.get(index, repeats.get(None))
+            if refusal is not None:
+                args = {}
+                error = f"tool arguments are invalid: {refusal}; tool not run"
+            calls.append(
+                ToolCall(id=block["id"], name=block["name"], args=args, error=error)
+            )
         reply = Reply(
             content=content,
-            tool_calls=[
-                ToolCall(id=b["id"], name=b["name"], args=b.get("input") or {})
-                for b in content
-                if b.get("type") == "tool_use"
-            ],
+            tool_calls=calls,
             usage=usage_from(response.usage),
             stop_reason=stop_reason_from(response.stop_reason),
             cost=reported_cost(raw.headers),
@@ -641,10 +679,13 @@ class AnthropicTransport:
                 error = None
                 if index in fragments:
                     try:
-                        args = json.loads("".join(fragments[index]))
+                        args = loads_unique("".join(fragments[index]))
                         if not isinstance(args, dict):
                             raise ValueError("arguments must be a JSON object")
                         block["input"] = args
+                    except DuplicateKeyError as exc:
+                        block["input"] = {}
+                        error = f"tool arguments are invalid: {exc}; tool not run"
                     except ValueError:
                         block["input"] = {}
                         error = "incomplete or nonobject JSON arguments; tool not run"

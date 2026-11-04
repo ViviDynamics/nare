@@ -26,6 +26,7 @@ import httpx2
 
 from nare.accounting import Prices
 from nare.repetition import RepetitionWatch, degenerate, looping
+from nare.schema import DuplicateKeyError, loads_unique
 from nare.session import Message, Usage
 from nare.transport import (
     Delta,
@@ -233,7 +234,7 @@ def _arguments(raw: str) -> dict[str, Any]:
     the run over a mistake the model is able to fix on the next turn.
     """
     try:
-        parsed = json.loads(raw or "{}")
+        parsed = loads_unique(raw or "{}")
     except ValueError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
@@ -241,8 +242,10 @@ def _arguments(raw: str) -> dict[str, Any]:
 
 def _argument_error(raw: str) -> str | None:
     try:
-        if isinstance(json.loads(raw or "{}"), dict):
+        if isinstance(loads_unique(raw or "{}"), dict):
             return None
+    except DuplicateKeyError as exc:
+        return f"tool arguments are invalid: {exc}; tool not run"
     except ValueError:
         pass
     return "tool arguments are not a complete JSON object; tool not run"

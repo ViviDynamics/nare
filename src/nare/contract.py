@@ -245,6 +245,7 @@ def describe() -> dict[str, Any]:
             "unknown_parameters": "refused",
             "null_optional": "absent",
             "malformed_json": "is_error",
+            "repeated_keys": "is_error",
         },
         # Additive: how each tool's result is held to the output cap.
         "tool_output": {

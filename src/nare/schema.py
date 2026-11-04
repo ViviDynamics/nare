@@ -450,6 +450,77 @@ def validate(value: Any, schema: dict[str, Any]) -> list[str]:
     return _validate(value, schema, "", schema)
 
 
+class DuplicateKeyError(ValueError):
+    """An object repeats a key. json.loads keeps the last value and says
+    nothing, so a caller would act on a value the model did not clearly
+    intend; nare refuses the document instead. `found` lists every repeat as
+    (location, key), where location is the path to the object that repeats it.
+    """
+
+    def __init__(self, found: list[tuple[tuple[str | int, ...], str]]) -> None:
+        self.found = found
+        super().__init__(
+            "; ".join(
+                _at(_render(location), f"duplicate key: {key}")
+                for location, key in found
+            )
+        )
+
+
+def _render(location: tuple[str | int, ...]) -> str:
+    text = ""
+    for part in location:
+        if isinstance(part, int):
+            text += f"[{part}]"
+        else:
+            text += f".{part}" if text else part
+    return text
+
+
+class _Pairs(list[tuple[str, Any]]):
+    """An object as written: its (key, value) pairs in order, before a repeated
+    key is collapsed. json calls the hook for each object, innermost first. A
+    list is an array, so the two cannot be confused.
+    """
+
+
+def loads_unique(text: str | bytes) -> Any:
+    """json.loads, except that an object repeating a key raises
+    DuplicateKeyError instead of keeping the last value. Malformed JSON still
+    raises json.JSONDecodeError, a ValueError.
+    """
+    return _settle(json.loads(text, object_pairs_hook=_Pairs))
+
+
+def _settle(value: Any) -> Any:
+    found: list[tuple[tuple[str | int, ...], str]] = []
+    plain = _plain(value, (), found)
+    if found:
+        raise DuplicateKeyError(found)
+    return plain
+
+
+def _plain(
+    value: Any,
+    location: tuple[str | int, ...],
+    found: list[tuple[tuple[str | int, ...], str]],
+) -> Any:
+    if isinstance(value, _Pairs):
+        plain: dict[str, Any] = {}
+        repeated: set[str] = set()
+        for key, item in value:
+            if key in plain and key not in repeated:
+                repeated.add(key)
+                found.append((location, key))
+            plain[key] = _plain(item, (*location, key), found)
+        return plain
+    if isinstance(value, list):
+        return [
+            _plain(item, (*location, index), found) for index, item in enumerate(value)
+        ]
+    return value
+
+
 def extract_json(text: str) -> Any:
     """The answer as data. A model that was asked for JSON often still wraps it
     in a fence or a sentence, and refusing that is pedantry rather than rigour.
@@ -458,20 +529,23 @@ def extract_json(text: str) -> Any:
     that starts at the first `{` or `[`. Prose before and after that document
     is tolerated; nothing is ever repaired or merged, and nare never picks
     between two documents. When no route yields exactly one document, the
-    error says which of those it was, because it goes back to the model.
+    error says which of those it was, because it goes back to the model. A
+    document that repeats an object key is refused (DuplicateKeyError) rather
+    than read with its last value.
     """
     candidates = [text.strip(), *(m.group(1).strip() for m in _FENCE.finditer(text))]
     for candidate in candidates:
         if not candidate:
             continue
         try:
-            return json.loads(candidate)
+            value = json.loads(candidate, object_pairs_hook=_Pairs)
         except ValueError:
             continue
+        return _settle(value)
     return _embedded_document(text)
 
 
-_DECODER = json.JSONDecoder()
+_DECODER = json.JSONDecoder(object_pairs_hook=_Pairs)
 _OPENERS = re.compile(r"[{\[]")
 
 
@@ -515,4 +589,4 @@ def _embedded_document(text: str) -> Any:
             f"the answer has two JSON documents, at characters {start} and "
             f"{opener.start()}; send exactly one"
         )
-    return value
+    return _settle(value)

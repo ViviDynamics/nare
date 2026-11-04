@@ -7,7 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from nare.schema import SUPPORTED, UnsupportedSchema, extract_json, validate
+from nare.schema import (
+    SUPPORTED,
+    DuplicateKeyError,
+    UnsupportedSchema,
+    extract_json,
+    loads_unique,
+    validate,
+)
 
 PERSON = {
     "type": "object",
@@ -654,3 +661,64 @@ def test_the_contract_lists_every_supported_keyword() -> None:
     section = text.split("## Answer schemas", 1)[1].split("\n## ", 1)[0]
 
     assert {k for k in SUPPORTED if f"`{k}`" not in section} == set()
+
+
+def test_a_repeated_key_is_refused_naming_the_key() -> None:
+    with pytest.raises(DuplicateKeyError, match="duplicate key: a") as caught:
+        extract_json('{"a": 1, "a": 2}')
+
+    assert str(caught.value) == "duplicate key: a"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '```json\n{"a": 1, "a": 2}\n```',
+        'Here is the answer: {"a": 1, "a": 2} and that is all.',
+        '{"a": 1, "a": 2}\n\nNote: done.',
+    ],
+    ids=["fenced", "embedded-in-prose", "followed-by-prose"],
+)
+def test_a_repeated_key_is_refused_on_every_route(text: str) -> None:
+    with pytest.raises(DuplicateKeyError, match="duplicate key: a"):
+        extract_json(text)
+
+
+def test_a_repeated_key_several_levels_down_names_its_path() -> None:
+    text = '{"findings": [{"id": "x", "scope": {"file": "a.py", "file": "b.py"}}]}'
+
+    with pytest.raises(DuplicateKeyError) as caught:
+        extract_json(text)
+
+    assert str(caught.value) == "findings[0].scope: duplicate key: file"
+
+
+def test_every_repeat_is_reported_once_per_object() -> None:
+    with pytest.raises(DuplicateKeyError) as caught:
+        extract_json('{"a": 1, "b": 1, "a": 2, "b": 2, "a": 3}')
+
+    assert str(caught.value) == "duplicate key: a; duplicate key: b"
+    assert caught.value.found == [((), "a"), ((), "b")]
+
+
+def test_a_repeat_in_an_array_item_is_refused_by_position() -> None:
+    with pytest.raises(DuplicateKeyError, match=r"^\[1\]: duplicate key: k$"):
+        extract_json('[{"k": 1}, {"k": 1, "k": 2}]')
+
+
+def test_a_key_repeated_in_different_objects_is_not_a_repeat() -> None:
+    assert extract_json('{"a": {"x": 1}, "b": {"x": 2}}') == {
+        "a": {"x": 1},
+        "b": {"x": 2},
+    }
+
+
+def test_loads_unique_returns_the_plain_value_when_nothing_repeats() -> None:
+    assert loads_unique('{"a": [1, {"b": true}]}') == {"a": [1, {"b": True}]}
+
+
+def test_loads_unique_refuses_a_repeat_and_keeps_json_errors_as_value_errors() -> None:
+    with pytest.raises(DuplicateKeyError, match="duplicate key: a"):
+        loads_unique('{"a": 1, "a": 2}')
+    with pytest.raises(ValueError):
+        loads_unique("{oops")
