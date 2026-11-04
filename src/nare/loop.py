@@ -8,7 +8,7 @@ import asyncio
 import hashlib
 import json
 import math
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import aclosing
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
@@ -25,6 +25,8 @@ from nare.corrections import (
 )
 from nare.events import Event, LiveText, redact
 from nare.mcp import Server, connect
+from nare.reads import NO_READS, ReadRequirement, unmet
+from nare.reads import build as build_reads
 from nare.schema import extract_json, validate
 from nare.session import Message, Session, append_user_text
 from nare.tools import (
@@ -507,6 +509,43 @@ async def _with_retries(
             await retry.sleep(wait)
 
 
+def _hold_for_reads(s: Session, reads: ReadRequirement, max_corrections: int) -> bool:
+    """Hold a final answer the run has not read enough to rest on.
+
+    Returns False when nothing is owed, and the answer is accepted. Otherwise a
+    read correction is charged and the model told what is missing (returns True,
+    the run continues), or, with the budget spent, the run ends `error` with
+    `reads_required` (returns True, the run is over).
+    """
+    gaps = unmet(s, reads)
+    if not gaps:
+        return False
+    # The turn after a read hold is an ordinary turn: an earlier schema
+    # correction must not keep it constrained with its tools withheld, since
+    # the model now has to read.
+    s.schema_retried = False
+    granted = charge(s, gaps, max_corrections, comparable=False, kind="reads")
+    if granted is None:
+        s.status = "error"
+        s.stop_reason = "reads_required"
+        s.error = "final answer before the required reads: " + "; ".join(gaps)
+        s.events.append(Event("error", s.error))
+        return True
+    append_user_text(
+        s,
+        "Your final answer came before the reads it must rest on. Before you "
+        "answer, " + "; ".join(gaps) + ".",
+    )
+    s.events.append(
+        Event(
+            "progress",
+            f"read correction {granted.number} (charged): " + "; ".join(gaps),
+            {"read_correction": record(granted)},
+        )
+    )
+    return True
+
+
 async def step(
     s: Session,
     transport: Transport,
@@ -522,6 +561,7 @@ async def step(
     tool_calls: ToolCallLimit | None = None,
     max_corrections: int = SCHEMA_CORRECTIONS_DEFAULT,
     cutoffs: CutoffLimit | None = None,
+    reads: ReadRequirement = NO_READS,
 ) -> Session:
     report = compact(s, context_window, image_input=policy.image_input)
     if report is not None:
@@ -695,11 +735,15 @@ async def step(
             s.events.append(Event("error", s.error))
             return s
         if schema is None:
+            if _hold_for_reads(s, reads, max_corrections):
+                return s
             s.status = "done"
             s.events.append(Event("output", text))
             return s
         errors = _answer_errors(text, schema)
         if not errors:
+            if _hold_for_reads(s, reads, max_corrections):
+                return s
             s.output = extract_json(text)
             s.status = "done"
             s.events.append(Event("output", text, {"output": s.output}))
@@ -862,6 +906,7 @@ async def _live_step(
     tool_calls: ToolCallLimit | None = None,
     max_corrections: int = SCHEMA_CORRECTIONS_DEFAULT,
     cutoffs: CutoffLimit | None = None,
+    reads: ReadRequirement = NO_READS,
 ) -> AsyncGenerator[Event, None]:
     queue: asyncio.Queue[Event] = asyncio.Queue()
     buffers: dict[Literal["progress", "thinking"], LiveText] = {
@@ -902,6 +947,7 @@ async def _live_step(
             tool_calls,
             max_corrections=max_corrections,
             cutoffs=cutoffs,
+            reads=reads,
         )
     )
     waiter: asyncio.Task[Event] | None = None
@@ -953,6 +999,7 @@ async def _run(
     max_tool_calls: int | None = None,
     max_corrections: int = SCHEMA_CORRECTIONS_DEFAULT,
     max_cutoffs: int | None = None,
+    reads: ReadRequirement = NO_READS,
 ) -> AsyncGenerator[Event, None]:
     """Advance the session to a terminal status, yielding events as they occur.
 
@@ -1076,6 +1123,7 @@ async def _run(
                             tool_calls,
                             max_corrections,
                             cutoffs,
+                            reads,
                         )
                     ) as stream:
                         async for event in stream:
@@ -1094,6 +1142,7 @@ async def _run(
                         tool_calls=tool_calls,
                         max_corrections=max_corrections,
                         cutoffs=cutoffs,
+                        reads=reads,
                     )
                 if session.status not in ("done", "blocked"):
                     check_budget(session)
@@ -1151,11 +1200,20 @@ async def run(
     max_tool_calls: int | None = None,
     max_corrections: int = SCHEMA_CORRECTIONS_DEFAULT,
     max_cutoffs: int | None = None,
+    require_reads: int = 0,
+    require_read: Sequence[str] = (),
 ) -> AsyncGenerator[Event, None]:
     check_structured_output(transport, schema, structured_output)
     check_max_tool_calls(max_tool_calls)
     check_max_corrections(max_corrections)
     check_max_cutoffs(max_cutoffs)
+    reads = build_reads(
+        require_reads,
+        list(require_read),
+        root=policy.root if policy is not None else None,
+    )
+    if reads.active and "read" not in (policy or Policy()).tools:
+        raise ValueError("a read requirement needs the read tool")
     configure_budgets(session, budget_tokens, budget_usd)
     if context_window is not None and (
         isinstance(context_window, bool)
@@ -1195,6 +1253,7 @@ async def run(
                     max_tool_calls=max_tool_calls,
                     max_corrections=max_corrections,
                     max_cutoffs=max_cutoffs,
+                    reads=reads,
                 )
             ) as stream:
                 async for event in stream:
