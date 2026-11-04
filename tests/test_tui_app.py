@@ -680,6 +680,7 @@ async def test_a_follow_up_waits_behind_a_turn_already_started(tmp_path: Path) -
         app._send_follow_up("late")
         await until(pilot, lambda: app.run_state == "done" and transport.calls == 3)
         assert app.queued == []
+        assert app.session is not None
         texts = [
             block.get("text")
             for message in app.session.messages
