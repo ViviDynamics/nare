@@ -9,11 +9,11 @@ import pytest
 
 from fake_provider import FakeProvider, text_reply
 from nare.session import Message, Usage
-from nare.transport import Reply, StopReason, ToolCall, make_transport
+from nare.transport import EFFORTS, Reply, StopReason, ToolCall, make_transport
 from nare.transport.anthropic import (
     _STOP_REASONS,
     DEFAULT_MAX_TOKENS,
-    EFFORT_BUDGETS,
+    EFFORT_MAX_TOKENS,
     NONSTREAMING_MAX_TOKENS,
     AnthropicTransport,
     messages_from,
@@ -85,22 +85,68 @@ def test_explicit_max_tokens_is_bound() -> None:
     assert build(max_tokens=512).max_tokens == 512
 
 
-def test_no_effort_means_no_thinking_block() -> None:
-    assert build().thinking is None
+def test_no_effort_means_no_thinking_and_no_output_config() -> None:
+    t = build()
+    assert t.thinking is None
+    assert t.output_config is None
 
 
-@pytest.mark.parametrize("effort,budget", sorted(EFFORT_BUDGETS.items()))
-def test_effort_renders_a_thinking_budget(effort: str, budget: int) -> None:
+def test_the_effort_levels_are_the_five_anthropic_documents() -> None:
+    assert EFFORTS == ("low", "medium", "high", "xhigh", "max")
+
+
+@pytest.mark.parametrize("effort", EFFORTS)
+def test_effort_renders_output_config_with_adaptive_thinking(effort: str) -> None:
     t = build(effort=effort)
-    assert t.thinking == {"type": "enabled", "budget_tokens": budget}
-    assert t.max_tokens == min(budget + DEFAULT_MAX_TOKENS, NONSTREAMING_MAX_TOKENS)
-
-
-def test_effort_high_clamps_to_the_nonstreaming_ceiling() -> None:
-    # budget + 8192 would be 24576, which the SDK refuses without streaming.
-    t = build(effort="high")
-    assert t.thinking == {"type": "enabled", "budget_tokens": 16384}
+    assert t.thinking == {"type": "adaptive"}
+    assert t.output_config == {"effort": effort}
+    # Adaptive thinking counts toward max_tokens, so the default leaves room.
     assert t.max_tokens == NONSTREAMING_MAX_TOKENS == 21333
+
+
+def test_effort_streaming_defaults_to_a_larger_max_tokens() -> None:
+    assert build(effort="xhigh", streaming=True).max_tokens == EFFORT_MAX_TOKENS
+    assert EFFORT_MAX_TOKENS == 64000
+
+
+def test_effort_with_an_explicit_max_tokens_keeps_it() -> None:
+    assert build(effort="high", max_tokens=4096).max_tokens == 4096
+
+
+@pytest.mark.parametrize("budget", [1024, 4096])
+def test_a_thinking_budget_renders_the_legacy_shape(budget: int) -> None:
+    t = build(thinking_budget=budget)
+    assert t.thinking == {"type": "enabled", "budget_tokens": budget}
+    assert t.output_config is None
+    assert t.max_tokens == budget + DEFAULT_MAX_TOKENS
+
+
+def test_a_thinking_budget_with_effort_sends_both() -> None:
+    # What Opus 4.5, the one budget model that takes effort, documents.
+    t = build(thinking_budget=2048, effort="medium")
+    assert t.thinking == {"type": "enabled", "budget_tokens": 2048}
+    assert t.output_config == {"effort": "medium"}
+    assert t.max_tokens == 2048 + DEFAULT_MAX_TOKENS
+
+
+def test_a_large_thinking_budget_clamps_to_the_nonstreaming_ceiling() -> None:
+    assert build(thinking_budget=16384).max_tokens == NONSTREAMING_MAX_TOKENS
+
+
+def test_a_thinking_budget_at_or_above_max_tokens_raises() -> None:
+    with pytest.raises(ValueError, match="must exceed"):
+        build(thinking_budget=4096, max_tokens=4096)
+
+
+@pytest.mark.parametrize("budget", [0, -1, True, 1.5])
+def test_an_invalid_thinking_budget_raises(budget: Any) -> None:
+    with pytest.raises(ValueError, match="thinking_budget"):
+        build(thinking_budget=budget)
+
+
+def test_the_openai_rail_refuses_a_thinking_budget() -> None:
+    with pytest.raises(ValueError, match="anthropic"):
+        make_transport("openai", model="m", api_key="k", thinking_budget=2048)
 
 
 def test_temperature_is_refused_outright() -> None:
@@ -113,15 +159,6 @@ def test_temperature_is_refused_outright() -> None:
 def test_temperature_is_refused_with_effort_too() -> None:
     with pytest.raises(ValueError, match="temperature"):
         build(effort="high", temperature=0.2)
-
-
-def test_effort_with_max_tokens_at_or_below_the_budget_raises() -> None:
-    with pytest.raises(ValueError, match="16384"):
-        build(effort="high", max_tokens=16384)
-
-
-def test_effort_with_max_tokens_above_the_budget_is_accepted() -> None:
-    assert build(effort="high", max_tokens=20000).max_tokens == 20000
 
 
 def test_max_tokens_above_the_nonstreaming_ceiling_raises() -> None:
@@ -193,6 +230,7 @@ async def test_temperature_never_reaches_the_wire() -> None:
 async def test_unset_sampling_params_are_omitted_entirely() -> None:
     body = await outbound()
     assert "thinking" not in body
+    assert "output_config" not in body
     assert "system" not in body
 
 
@@ -202,11 +240,21 @@ async def test_system_reaches_the_wire() -> None:
     )
 
 
-async def test_effort_renders_thinking_clamped_to_the_ceiling() -> None:
-    body = await outbound(effort="high")
-    assert body["thinking"] == {"type": "enabled", "budget_tokens": 16384}
+@pytest.mark.parametrize("effort", EFFORTS)
+async def test_effort_reaches_the_wire_as_output_config(effort: str) -> None:
+    body = await outbound(effort=effort)
+    assert body["output_config"] == {"effort": effort}
+    assert body["thinking"] == {"type": "adaptive"}
+    # The shape current Claude models reject is gone from the request.
+    assert "budget_tokens" not in json.dumps(body)
     assert "temperature" not in body
     assert body["max_tokens"] == 21333
+
+
+async def test_a_thinking_budget_reaches_the_wire() -> None:
+    body = await outbound(thinking_budget=2048)
+    assert body["thinking"] == {"type": "enabled", "budget_tokens": 2048}
+    assert "output_config" not in body
 
 
 async def test_tool_schemas_pass_through_anthropic_shaped() -> None:
@@ -566,7 +614,7 @@ def test_effort_resolves_under_the_models_cap_rather_than_the_global_one() -> No
     assert build(effort="medium").max_tokens > 8192
 
 
-def test_an_effort_budget_the_model_cannot_afford_fails_loudly() -> None:
-    # high wants 16384 of thinking, which this model cannot fit under 8192.
+def test_a_thinking_budget_the_model_cannot_afford_fails_loudly() -> None:
+    # 16384 of thinking cannot fit under this model's 8192.
     with pytest.raises(ValueError, match="must exceed"):
-        build(model=OPUS, effort="high")
+        build(model=OPUS, thinking_budget=16384)

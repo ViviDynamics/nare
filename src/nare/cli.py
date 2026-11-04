@@ -47,7 +47,7 @@ from nare.mcp import parse_servers
 from nare.schema import UnsupportedSchema, check_supported
 from nare.session import Session, loads, new_session, reopen, save, unanswered
 from nare.tools import TOOLS, Policy, approve_all, stop_group
-from nare.transport import Transport, make_transport
+from nare.transport import EFFORTS, Transport, make_transport
 
 log = logging.getLogger(__name__)
 
@@ -287,8 +287,18 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--effort",
-        choices=["low", "medium", "high"],
-        help="reasoning effort",
+        choices=EFFORTS,
+        help="reasoning effort. anthropic: output_config.effort with adaptive "
+        "thinking, and a model that does not take a level refuses it. openai: "
+        "sent as reasoning_effort, and what a level means is the server's",
+    )
+    parser.add_argument(
+        "--thinking-budget",
+        type=int,
+        metavar="TOKENS",
+        help="anthropic only: a fixed thinking budget (thinking.budget_tokens), "
+        "for the older models that still need one; current models refuse it, "
+        "so use --effort there",
     )
     # Each file route is exclusive with its argv form, as --prompt-file is
     # with a positional prompt: a caller that sent both meant one of them.
@@ -431,6 +441,7 @@ def transport_from_args(args: argparse.Namespace) -> Transport:
         temperature=args.temperature,
         max_tokens=args.max_tokens,
         effort=args.effort,
+        thinking_budget=args.thinking_budget,
         system=system_from_args(args),
         streaming=args.stream,
         image_input=args.image_input,
@@ -489,6 +500,11 @@ def validate_run_args(args: argparse.Namespace) -> Prices | None:
     """The startup checks nare run and nare tui share. Raises ValueError or
     OSError, which each caller turns into exit 2 before anything starts.
     """
+    if args.thinking_budget is not None:
+        if args.thinking_budget <= 0:
+            raise ValueError("--thinking-budget must be a positive integer")
+        if args.provider != "anthropic":
+            raise ValueError("--thinking-budget requires the anthropic provider")
     if args.proxy_num_retries is not None:
         if args.proxy_num_retries < 0:
             raise ValueError("--proxy-num-retries must be a nonnegative integer")

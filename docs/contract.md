@@ -743,7 +743,8 @@ Missing/incomplete final usage, stop reason or stream completion marker is a
 provider failure, rather than a successful turn with invented zero usage.
 Anthropic streaming requires `message_stop` and final output usage. Streaming
 permits Anthropic output limits above the SDK's nonstreaming ceiling; retain
-provider/model output limits and require max output to exceed a thinking budget.
+provider/model output limits and require max output to exceed a
+`--thinking-budget`.
 
 Budget enforcement remains **after each complete step**, including tool
 results. Streaming does not make the cumulative ceiling strict: the crossing
@@ -842,6 +843,43 @@ upstream, inside one of nare's attempts.
 `nare contract` advertises this under `request_retries` and `request_timeout`.
 The flags, event detail, result field and session field are additive and keep
 the contract version.
+
+## Reasoning effort
+
+    nare run --yes --jsonl --effort xhigh "..."
+
+`--effort` takes `low`, `medium`, `high`, `xhigh` or `max` on both rails. nare
+does not keep a table of which model takes which level: a model that does not
+take a level answers with its own error, which ends the run as any provider
+refusal does (`status=error`, `stop_reason` null, not retried).
+
+| Rail | `--effort LEVEL` sends | Notes |
+| --- | --- | --- |
+| anthropic | `output_config: {"effort": LEVEL}` and `thinking: {"type": "adaptive"}` | No `budget_tokens`. Adaptive thinking is sent because Opus 4.7 and 4.8 do not think without it; where thinking is always on it is the same as omitting it |
+| openai | `reasoning_effort: LEVEL` | Passed through. What a level means belongs to the server behind `--base-url`: one server may map an unknown level to its most expensive setting |
+
+Current Claude models refuse a fixed thinking budget with a 400. The older
+models that still need one (for example Haiku 4.5) are reached with
+`--thinking-budget TOKENS`, anthropic only, which sends `thinking: {"type":
+"enabled", "budget_tokens": TOKENS}`. With `--effort` as well, both are sent,
+which is what Opus 4.5 takes. The openai rail refuses `--thinking-budget`, and a
+nonpositive value exits 2.
+
+Thinking counts toward `max_tokens`, so the default leaves room for it when
+`--max-tokens` is not given:
+
+| Settings | Default `max_tokens` |
+| --- | --- |
+| neither | 8192 |
+| `--effort`, streamed | 64000 |
+| `--effort`, unstreamed | the model's nonstreaming ceiling (21333, lower for some models) |
+| `--thinking-budget N` | N + 8192, capped at that ceiling when unstreamed; `max_tokens` must exceed N |
+
+The session file records what the invocation sent as `effort` and
+`thinking_budget` (null when not sent); a resume without the flags records
+null. A file without them loads as null. `nare contract` lists the levels and
+each rail's request shape under `effort`. The new levels, flag, session fields
+and discovery key are additive and keep the contract version.
 
 ## Read-only navigation
 

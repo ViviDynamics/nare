@@ -59,6 +59,13 @@ timeout, a dropped connection, a stream that ends early, or HTTP 429, 502,
 retry is a `progress` event, and the `result` line counts them in `retries`.
 See [provider retries](docs/contract.md#provider-retries-and-the-request-timeout).
 
+`--effort` takes `low`, `medium`, `high`, `xhigh` or `max`. On the anthropic
+rail it sends `output_config.effort` with adaptive thinking; on the openai rail
+it is passed through as `reasoning_effort`, and what a level means is the
+server's. For an older Claude model that still needs a fixed thinking budget,
+`--thinking-budget TOKENS` (anthropic only) sends one instead. See
+[reasoning effort](docs/contract.md#reasoning-effort).
+
 Which rail matters for reasoning models. A model whose reasoning and answer
 arrive together can lose words or whole answers when a proxy translates to
 Anthropic's shape. LiteLLM can drop the start of an answer where reasoning

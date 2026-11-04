@@ -31,6 +31,12 @@ CREDENTIAL_ENV = frozenset(
 
 StopReason = Literal["end_turn", "tool_use", "max_tokens", "stop_sequence", "refusal"]
 
+# The levels Anthropic documents for output_config.effort. Not every model
+# takes every level; one that does not answers with its own error. The openai
+# rail passes the value through, and its meaning there is the server's.
+Effort = Literal["low", "medium", "high", "xhigh", "max"]
+EFFORTS: tuple[Effort, ...] = ("low", "medium", "high", "xhigh", "max")
+
 
 @dataclass(frozen=True)
 class ToolCall:
@@ -206,7 +212,8 @@ def make_transport(
     api_key: str | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
-    effort: Literal["low", "medium", "high"] | None = None,
+    effort: Effort | None = None,
+    thinking_budget: int | None = None,
     system: str | None = None,
     streaming: bool = False,
     image_input: bool = False,
@@ -245,12 +252,15 @@ def make_transport(
                 temperature=temperature,
                 max_tokens=max_tokens,
                 effort=effort,
+                thinking_budget=thinking_budget,
                 system=system,
                 streaming=streaming,
                 image_input=image_input,
                 request_timeout=request_timeout,
             )
         case "openai":
+            if thinking_budget is not None:
+                raise ValueError("thinking_budget requires the anthropic provider")
             from nare.transport.openai import OpenAITransport
 
             return OpenAITransport(

@@ -110,6 +110,10 @@ class Session:
     stop_reason: str | None = None
     error: str | None = None
     turns: int = 0
+    # The reasoning settings the last invocation sent, as nare named them:
+    # an --effort level and an anthropic --thinking-budget. None sent none.
+    effort: str | None = None
+    thinking_budget: int | None = None
     # Model requests resent after a transient failure, over the session's
     # life, like turns. A failed attempt is not a turn and adds no usage.
     retries: int = 0
