@@ -48,7 +48,7 @@ def test_a_longer_transcript_appends(tmp_path: Path) -> None:
 
 
 def test_a_merged_last_message_redraws(tmp_path: Path) -> None:
-    # Conductor's resume merges feedback into the trailing user message, then
+    # A caller's resume can merge feedback into the trailing user message, then
     # the run grows the list. Appending would never draw the feedback.
     path = tmp_path / "s.json"
     s = new_session("go")

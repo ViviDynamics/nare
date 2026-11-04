@@ -468,8 +468,8 @@ def test_a_failed_session_write_still_emits_the_result_line(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     # Losing the result line would break the consumer's parser. But the run
-    # is not `done` either: conductor derives everything from the four-value
-    # status, so a `done` line beside a non-zero exit still reads as finished
+    # is not `done` either: a caller may decide from the four-value
+    # status alone, so a `done` line beside a non-zero exit still reads as finished
     # work, and its next --resume would fail far from the cause.
     unwritable = tmp_path / "missing" / "deep" / "s.json"
     code = main(
@@ -557,7 +557,7 @@ def test_a_failed_session_write_leaves_the_previous_file_intact(
 def test_the_session_is_written_after_every_turn_not_just_at_the_end(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Conductor SIGTERMs a slow run, and SIGTERM's default handler exits
+    # A supervising caller SIGTERMs a slow run, and SIGTERM's default handler exits
     # without unwinding, so `finally` never runs. A run persisted only at the
     # end is not resumable after a kill -- which is the whole claim.
     path = tmp_path / "s.json"

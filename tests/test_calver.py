@@ -1,4 +1,4 @@
-"""The release version: `YYYY.M.N`, matching elm and conductor."""
+"""The release version: `YYYY.M.N`, the organization's CalVer scheme."""
 
 from __future__ import annotations
 

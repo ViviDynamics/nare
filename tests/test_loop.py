@@ -426,8 +426,8 @@ async def test_a_dying_dispatch_still_answers_every_tool_use() -> None:
 
 
 async def test_a_truncated_turn_is_an_error_not_a_finished_one() -> None:
-    # The adapter maps done -> completed, so reporting a cut-off answer as
-    # done would tell conductor the task succeeded.
+    # A caller reads done as "the task succeeded", so reporting a cut-off
+    # answer as done would tell it something false.
     session = new_session("write an essay")
     fake = FakeProvider([text_reply("half an ans", stop_reason="max_tokens")])
     await step(session, fake, approve_all, Policy())
@@ -479,7 +479,7 @@ async def test_a_truncated_tool_call_is_answered_but_never_run(tmp_path: Path) -
 
 
 async def test_max_turns_is_a_budget_for_this_invocation_not_a_lifetime_total() -> None:
-    # Conductor resumes the same session once per feedback round; a cumulative
+    # A caller may resume the same session once per feedback round; a cumulative
     # budget makes every resume past the Nth die before its first call.
     session = new_session("go")
     session.turns = 49

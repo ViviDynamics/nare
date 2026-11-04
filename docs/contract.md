@@ -182,8 +182,9 @@ matches the code.
 
 One JSON object per line on stdout, each with `type`, `text`, `detail` and
 `timestamp`. The types are `progress`, `tool_use`, `thinking`, `cost`, `error`
-and `output`. They match Conductor's `BackendEventType` so its adapter is a
-constructor call rather than a mapping table. An event that belongs to one tool
+and `output`. The shape is nare's own and this contract versions it: a caller
+that has an event type of its own maps these four fields onto it in its
+adapter, and can rely on them not changing without a version bump. An event that belongs to one tool
 call also has a top-level `tool_use_id` (see [Tool results](#tool-results));
 every other event leaves the key out.
 
@@ -468,10 +469,10 @@ if result["status"] == "error" and result["stop_reason"] == "budget":
 
 The approved design enforces budgets after steps, so a crossing step can
 overshoot by its actual token/USD usage. `--max-tokens` bounds only response
-output, not input/cache spend. If Scrutare SPEC requires a strict whole-review
-ceiling, this remains a mismatch: Scrutare must account for overshoot and
-success on crossing turns in its own allocation policy. nare does not allocate
-budgets across personas or orchestrate reviews.
+output, not input/cache spend. A caller that needs a strict ceiling across
+several runs must account for overshoot and for success on crossing turns in
+its own allocation policy. nare does not allocate budgets across runs or
+orchestrate them.
 
 ## MCP tool sources
 

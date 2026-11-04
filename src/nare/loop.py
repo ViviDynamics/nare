@@ -150,8 +150,8 @@ def check_budget(s: Session) -> bool:
 
 
 # A turn the vendor cut off, or that the model refused, is not a finished one.
-# The conductor adapter maps done -> completed, so reporting either as done
-# would tell it the task succeeded. The transport already takes care to map
+# A caller reads done as "the task succeeded", so reporting either as done
+# would tell it something false. The transport already takes care to map
 # model_context_window_exceeded to max_tokens for exactly this reason; the
 # loop is where that distinction was being thrown away.
 _UNFINISHED: dict[StopReason, str] = {
@@ -794,7 +794,7 @@ async def _run(
     # allowed to do.
     session.policy = policy.recorded()
     # Counted from where this invocation started, not from the session's
-    # lifetime total. Conductor resumes the same session once per feedback
+    # lifetime total. A caller may resume the same session once per feedback
     # round, and a cumulative budget makes every resume past the Nth die
     # instantly with a message that reads like a runaway loop.
     budget_from = session.turns

@@ -1,6 +1,8 @@
 # nare
 
-An internal agent harness for optimizing Coordinare across the environments it targets.
+A standalone agent harness: a headless CLI and a library that run a model
+against a project's tools and report what happened as typed events, a session
+file and an exit code.
 
 ## Install
 

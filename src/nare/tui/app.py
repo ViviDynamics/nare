@@ -593,8 +593,8 @@ class AttachApp(App[None]):
     async def on_mount(self) -> None:
         self.query_one(Transcript).anchor()
         await self.poll()
-        # Polling continues after done or blocked: Conductor resumes the same
-        # path for its next round. The screen owns the timer: a pruned screen
+        # Polling continues after done or blocked: a caller may resume the
+        # same path for its next round. The screen owns the timer: a pruned screen
         # stops its timers before it prunes its children, while the App's
         # own timers outlive the widgets during shutdown, and a tick there
         # finds no #status.

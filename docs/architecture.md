@@ -47,8 +47,14 @@ the second transport arrives.
 ## What nare knows nothing about
 
 Git, GitHub, pull requests, branches, cards, roles, review cycles, lifecycle.
-Conductor derives all of that from four statuses plus work it does itself. A
+A caller derives all of that from four statuses plus work it does itself. A
 change that teaches nare any of those words is crossing the boundary.
+
+Nor does nare know its callers. It names no other product in its code, flags,
+tools or documentation, and defines its contracts on its own terms; a caller's
+adapter maps them onto that caller's types. See
+[ADR 0008](adr/0008-caller-agnostic.md). A test fails when a caller's name
+appears.
 
 ## Determinism
 

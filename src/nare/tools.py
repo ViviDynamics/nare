@@ -472,8 +472,8 @@ async def bash_outcome(
     Async, not a worker thread: a thread in communicate() cannot be cancelled,
     so an interrupted command ran on and quitting the TUI waited for it.
 
-    stdin is DEVNULL because nare's own stdin belongs to conductor: a command
-    that reads would either eat conductor's pipe or block until the timeout.
+    stdin is DEVNULL because nare's own stdin belongs to its caller: a command
+    that reads would either eat the caller's pipe or block until the timeout.
 
     The environment is nare's without CREDENTIAL_ENV, the keys nare reads for
     its own requests: `env` would put them in the transcript, and a file the
