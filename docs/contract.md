@@ -572,10 +572,13 @@ invocation saw, the last one included). With the budget spent, the run ends
 `error` with `stop_reason` `max_tokens` or `repetition`, which is a `limit`.
 `--max-cutoffs 0` ends at the first cut, as nare did before this option.
 
-The flag, the stop reason, the event detail, and the result and session fields
-are additive and keep the contract version. The default changes what a cut-off
-reply does on the command line: a run that used to end `error` at its first
-cut-off now continues. Pass `--max-cutoffs 0` for the old outcome.
+**Decision: the command-line default stays at 2, and the contract stays at
+version 2.** The flag, the stop reason, the event detail, and the result and
+session fields are additive and keep the contract version.
+
+Behavior change: on the command line, a run that used to end `error` at its
+first cut-off (`max_tokens`) now gets corrected and continues. `--max-cutoffs 0`
+restores the old outcome. The library default is still no budget.
 
 When a schema was supplied, nare retains the latest complete JSON document that
 passes that schema in `result.output` and session `output`, including a document
