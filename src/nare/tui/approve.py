@@ -98,19 +98,41 @@ FILE_WRITES = frozenset({"write", "edit"})
 Ask = Callable[[str, dict[str, Any]], Awaitable[tuple[str, str]]]
 
 
-def in_git_dir(path: str, policy: Policy) -> bool:
-    """Whether a write to `path` lands in the root's .git directory, or is
-    .git itself, through any `..` or symlink. git runs what that directory's
-    config and hooks name, so such a write always asks, even after `a`.
-    A path that cannot be resolved counts as inside.
+def _git_dir(policy: Policy) -> Path:
+    """The .git directory protected: the root's, or with no root the nearest
+    one above the cwd, as git finds its repository.
     """
-    base = policy.root.resolve() if policy.root is not None else Path.cwd().resolve()
+    if policy.root is not None:
+        return policy.root.resolve() / ".git"
+    here = Path.cwd().resolve()
+    for above in (here, *here.parents):
+        if (above / ".git").exists():
+            return above / ".git"
+    return here / ".git"
+
+
+def _folded(path: Path) -> tuple[str, ...]:
+    """The parts of a resolved path, case folded: macOS and Windows volumes
+    fold case, so `.GIT/hooks` is the directory `.git/hooks`.
+    """
+    return tuple(part.casefold() for part in path.parts)
+
+
+def in_git_dir(path: str, policy: Policy) -> bool:
+    """Whether a write to `path` lands in the protected .git directory, or is
+    .git itself, through any `..`, symlink or letter case. git runs what that
+    directory's config and hooks name, so such a write always asks, even
+    after `a`. A path that cannot be resolved counts as inside.
+    """
+    # A relative path is relative to the root, or with none to the cwd, as
+    # Policy.resolve and bash read it.
     try:
-        git = (base / ".git").resolve()
-        target = (base / path).resolve()
-    except (OSError, RuntimeError):
+        anchor = policy.root.resolve() if policy.root is not None else Path.cwd()
+        git = _folded(_git_dir(policy).resolve())
+        target = _folded((anchor / path).resolve())
+    except (OSError, RuntimeError, ValueError):
         return True
-    return target == git or target.is_relative_to(git)
+    return target[: len(git)] == git
 
 
 def _tokens(command: str) -> list[str]:

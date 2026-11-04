@@ -607,3 +607,40 @@ async def test_git_is_only_the_root_git_directory(tmp_path: Path) -> None:
     assert await approver("write", {"path": ".gitignore", "content": ""}) is True
     assert await approver("write", {"path": ".github/x", "content": ""}) is True
     assert keys.asked == ["write"]
+
+
+async def test_after_a_a_git_write_in_another_case_still_asks(tmp_path: Path) -> None:
+    # macOS and Windows volumes fold case, so .GIT/hooks is the same directory.
+    (tmp_path / ".git").mkdir()
+    keys = Keys("a", "n")
+    approver = Approver(keys, Policy(root=tmp_path))
+    assert await approver("write", {"path": "src/x.py", "content": ""}) is True
+    assert (
+        await approver("write", {"path": ".GIT/hooks/pre-commit", "content": ""})
+        is False
+    )
+    assert keys.asked == ["write", "write"]
+
+
+async def test_with_no_root_a_write_to_the_enclosing_git_asks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # git finds its repository from a subdirectory, so the write asks too.
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "sub").mkdir()
+    monkeypatch.chdir(tmp_path / "sub")
+    keys = Keys("a", "n")
+    approver = Approver(keys, Policy())
+    assert await approver("write", {"path": "x.py", "content": ""}) is True
+    assert (
+        await approver("write", {"path": "../.git/hooks/pre-commit", "content": ""})
+        is False
+    )
+    assert keys.asked == ["write", "write"]
+
+
+async def test_a_path_the_check_cannot_resolve_asks(tmp_path: Path) -> None:
+    keys = Keys("n")
+    approver = Approver(keys, Policy(root=tmp_path))
+    assert await approver("write", {"path": "a\x00b", "content": ""}) is False
+    assert keys.asked == ["write"]
