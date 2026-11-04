@@ -225,3 +225,129 @@ async def test_a_repeated_key_is_a_correction_not_a_silent_answer(
     # The refusal reaches the model as the correction, not as a silent collapse.
     corrections = [str(m.content) for m in session.messages if m.role == "user"]
     assert any("duplicate key: name" in text for text in corrections)
+
+
+async def test_a_check_error_reaches_the_model_as_the_next_correction(
+    notes: Policy,
+) -> None:
+    from nare.schema import SchemaError
+
+    def check(answer: Any) -> list[SchemaError]:
+        if answer["name"] == "bob":
+            return [SchemaError("name_unknown", ("name",), "no such person: bob")]
+        return []
+
+    provider = FakeProvider(
+        [text_reply('{"name": "bob"}'), text_reply('{"name": "ada"}')]
+    )
+    session = new_session("who?")
+
+    events = await drain(session, provider, schema=PERSON, policy=notes, check=check)
+
+    assert session.status == "done"
+    assert session.output == {"name": "ada"}
+    corrections = [str(m.content) for m in session.messages if m.role == "user"]
+    assert any("name: no such person: bob" in text for text in corrections)
+    [progress] = [e for e in events if "schema correction" in e.text]
+    assert progress.detail["errors"][0]["code"] == "name_unknown"
+    assert progress.detail["errors"][0]["location"] == ["name"]
+
+
+async def test_a_check_that_raises_ends_the_run_with_an_error_event(
+    notes: Policy,
+) -> None:
+    def check(answer: Any) -> list[Any]:
+        raise RuntimeError("lookup failed")
+
+    session = new_session("who?")
+
+    events = await drain(
+        session,
+        FakeProvider([text_reply('{"name": "ada"}')]),
+        schema=PERSON,
+        policy=notes,
+        check=check,
+    )
+
+    assert session.status == "error"
+    assert session.output is None
+    assert session.error == "check raised RuntimeError: lookup failed"
+    assert events[-1].type == "error"
+    assert events[-1].text == session.error
+
+
+async def test_a_check_runs_only_on_an_answer_that_passes_the_schema(
+    notes: Policy,
+) -> None:
+    seen: list[Any] = []
+
+    def check(answer: Any) -> list[Any]:
+        seen.append(answer)
+        return []
+
+    provider = FakeProvider([text_reply('{"age": 1}'), text_reply('{"name": "ada"}')])
+
+    await drain(new_session("who?"), provider, schema=PERSON, policy=notes, check=check)
+
+    assert seen == [{"name": "ada"}]
+
+
+async def test_a_check_without_a_schema_is_refused(notes: Policy) -> None:
+    with pytest.raises(ValueError, match="check requires a schema"):
+        await drain(
+            new_session("who?"),
+            FakeProvider([text_reply("{}")]),
+            policy=notes,
+            check=lambda answer: [],
+        )
+
+
+async def test_an_unexpected_property_correction_says_to_remove_the_key(
+    notes: Policy,
+) -> None:
+    provider = FakeProvider(
+        [
+            text_reply('{"name": "ada", "note": "kept beside it"}'),
+            text_reply('{"name": "ada"}'),
+        ]
+    )
+    session = new_session("who?")
+
+    await drain(session, provider, schema=PERSON, policy=notes)
+
+    assert session.status == "done"
+    corrections = [str(m.content) for m in session.messages if m.role == "user"]
+    assert any('remove the key "note"' in text for text in corrections)
+
+
+async def test_a_schema_violation_error_event_carries_the_structured_errors(
+    notes: Policy,
+) -> None:
+    provider = FakeProvider([text_reply('{"age": 1}'), text_reply('{"name": 7}')])
+
+    events = await drain(new_session("who?"), provider, schema=PERSON, policy=notes)
+
+    final = events[-1]
+    assert final.type == "error"
+    assert [e["code"] for e in final.detail["errors"]] == ["type"]
+    assert final.detail["errors"][0]["location"] == ["name"]
+
+
+async def test_a_repeated_key_is_a_structured_duplicate_key_error(
+    notes: Policy,
+) -> None:
+    provider = FakeProvider(
+        [text_reply('{"name": "a", "name": "b"}'), text_reply('{"name": "a"}')]
+    )
+
+    events = await drain(new_session("who?"), provider, schema=PERSON, policy=notes)
+
+    [progress] = [e for e in events if "schema correction" in e.text]
+    assert progress.detail["errors"] == [
+        {
+            "code": "duplicate_key",
+            "location": [],
+            "message": "duplicate key: name",
+            "guidance": None,
+        }
+    ]
