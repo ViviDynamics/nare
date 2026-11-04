@@ -70,8 +70,10 @@ keeps the contract version; removing or renaming one bumps it.
 | `--budget-tokens` | yes | | Cumulative session token budget ([Budgets and partial results](#budgets-and-partial-results)) |
 | `--budget-usd` | yes | | Cumulative session dollar budget |
 | `--effort` | yes | `low`, `medium`, `high` | Reasoning effort |
-| `--system` | yes | | Replace the default system prompt |
+| `--system` | yes | | Replace the default system prompt ([System prompt input](#system-prompt-input)) |
+| `--system-file` | yes | | `--system`, read from a UTF-8 file |
 | `--append-system` | yes | | Add text after the system prompt |
+| `--append-system-file` | yes | | `--append-system`, read from a UTF-8 file |
 | `--tools` | yes | | Comma-separated tools the run may call, or `none` |
 | `--root` | yes | | Confine file tools to a directory and run `bash` in it |
 | `--bash-credentials` | no | | Let `bash` see the provider credentials nare reads ([The bash environment](#the-bash-environment)) |
