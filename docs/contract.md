@@ -523,7 +523,8 @@ earlier valid document. There is no invented empty findings list, automatic
 merging of separate documents, or promotion of incomplete JSON. Without a
 schema, output remains unset unless retained from a previously validated run;
 callers can recover raw assistant text from the transcript/progress events and
-validate it themselves. Pass the schema again on continuation. A caller retains
+validate it themselves. Pass the schema again on continuation; a different one
+is stated to the model (see [Correction by resume](#correction-by-resume)). A caller retains
 all documents it wants to aggregate from its own event stream.
 
 For example:
@@ -1158,6 +1159,57 @@ flag every request, event and session field is unchanged, and transports are
 called with `(messages, tools)` only. `nare contract` advertises the capability
 under `structured_output`. The flag, event detail and discovery field are
 additive and keep the contract version.
+
+## Correction by resume
+
+A caller whose own checks reject an answer can correct it without starting
+over. The transcript is already in the session file, so a resume sends only
+the correction, not the original prompt again:
+
+    nare run --yes --jsonl --contract 2 --resume review.json \
+      --tools none --max-turns 2 --schema stricter.schema.json \
+      "Finding 2 cites the wrong file. Answer again with the file that holds it."
+
+- The prompt is appended to the transcript as a follow-up, so the model
+  answers with the whole earlier run in view.
+- `--tools none` offers no tools: every turn is an answer. With
+  `--structured-output json_schema` on the openai provider, every turn of
+  such a run is constrained (see
+  [Schema-constrained answers](#schema-constrained-answers)).
+- `--max-turns 2` allows the answer and nare's one schema correction turn.
+  The correction round is per run, so a resume has its own. A second invalid
+  answer ends the run `error`/`schema_violation`, exit 1.
+- The system prompt the session recorded is sent again unless a system option
+  is given (see [System prompt input](#system-prompt-input)).
+- Budgets carry over: usage is cumulative across resumes, and persisted token
+  and dollar limits still apply unless a flag or the environment overrides
+  them. A session already at a limit refuses before any model call (see
+  [Budgets and partial results](#budgets-and-partial-results)).
+  `--max-turns` counts this invocation only.
+
+### A changed schema
+
+The session records the SHA-256 of the schema it stated to the model, in
+`schema_sha256`, computed over the schema's JSON with sorted keys and no
+whitespace, so reordering keys or reformatting the file is not a change.
+
+- The same schema on a resume adds nothing to the transcript.
+- A different schema adds one user message before the first turn, after the
+  follow-up prompt: `The required JSON Schema has changed.` and then the new
+  schema, stated exactly as the first one was. One `progress` event says so,
+  with `detail` `{"schema": {"changed": true}}`, and the new digest is
+  recorded. Answers are validated against the new schema.
+- A retained `output` that does not satisfy the new schema is dropped, so
+  `result.output` is always a document that passes the schema this run was
+  given. One that does satisfy it is kept.
+- A resume without `--schema` states nothing and validates nothing.
+- A file saved before nare recorded the digest has `schema_sha256` absent. Its
+  first resume with a schema states nothing new, as before, and records the
+  digest from then on.
+
+A `schema_sha256` that is neither a string nor `null` makes the session file
+malformed (exit 2). The session field and the event detail are additive and
+keep the contract version.
 
 ## Prompt-cache breakpoints
 

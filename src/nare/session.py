@@ -122,6 +122,10 @@ class Session:
     output: Any = None
     schema_retried: bool = False
     schema_stated: bool = False
+    # The SHA-256 of the schema last stated to the model, over its canonical
+    # JSON, so a resume with a different --schema can say so: None when no
+    # schema was stated, or in a file saved before nare recorded it.
+    schema_sha256: str | None = None
     # Set when a person interrupts a run, so a file left `working` reads as
     # stopped, not as running. reopen() clears it.
     interrupted_at: str | None = None
@@ -299,6 +303,8 @@ def loads(text: str) -> Session:
         # prompt is what the record exists to prevent.
         if not isinstance(raw.get("system"), (str, type(None))):
             raise TypeError("system must be a string or null")
+        if not isinstance(raw.get("schema_sha256"), (str, type(None))):
+            raise TypeError("schema_sha256 must be a string or null")
         return Session(**raw)
     except (AttributeError, KeyError, TypeError) as exc:
         raise ValueError(f"malformed session file: {exc}") from exc
