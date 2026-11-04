@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -86,6 +87,7 @@ from benchmarks.runner.sandbox import (
     sandbox,
 )
 from benchmarks.runner.triage import triage_transport
+from nare.contract import NEVER_STARTED
 from nare.transport import Transport
 
 CheckRunner = Callable[[Case, str, int], tuple[int, str]]
@@ -272,6 +274,75 @@ def new_stamp() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
 
 
+class NeverStarted(Exception):
+    """nare refused its invocation, so no rep of this run can start.
+
+    Exit 2 with no result line and no timeout is nare's own argument parser: a
+    run argument or a case argument it rejects. Every later rep would be
+    refused the same way, so the run stops instead of recording an error per
+    rep. `log` is the file that keeps the reason, when one was written.
+    """
+
+    def __init__(
+        self, case: str, rep: int, stderr: str, log: Path | None = None
+    ) -> None:
+        self.case = case
+        self.rep = rep
+        self.stderr = stderr
+        self.log = log
+        message = (
+            f"{case} rep {rep}: nare refused its invocation and never started "
+            f"(exit {NEVER_STARTED}), so the run stopped here. Its stderr:\n"
+            f"{stderr.rstrip()}"
+        )
+        if log is not None:
+            message += f"\nThe reason is kept in {log}"
+        super().__init__(message)
+
+
+def _listed(tokens: Sequence[str]) -> str:
+    return shlex.join(tokens) or "(none)"
+
+
+def _section(title: str, body: str) -> str:
+    """A titled block of verbatim text, ended by exactly one newline."""
+    return f"{title}\n{body}" + ("" if body.endswith("\n") else "\n")
+
+
+def stopped_log(
+    case: Case, rep: int, config: Config, result: RunArtifacts, kept_ref: str
+) -> str:
+    """The text of stopped.txt: why a run stopped before its first rep ran.
+
+    Nothing is redacted or shortened. The arguments carry no credential (the
+    key reaches nare in the environment), and a shortened stderr can lose the
+    one line that says why. The run args are the paths nare was given, under
+    /in, so a run with files also names the host file each came from.
+    """
+    lines = [
+        "nare never started, so the run stopped.",
+        f"case: {case.id}",
+        f"rep: {rep}",
+        f"model: {config.model} ({config.provider})",
+        f"exit: {result.exit_code} (never_started), no result line, not timed out",
+        f"run args: {_listed(config.run_args.passed)}",
+        f"case args: {_listed(case.args)}",
+    ]
+    if config.run_args.files:
+        files = "; ".join(
+            f"{path} {digest}" for path, digest in config.run_args.files.items()
+        )
+        lines.append(f"run files: {files}")
+    lines.append(f"evidence: {kept_ref}")
+    return (
+        "\n".join(lines)
+        + "\n\n"
+        + _section("nare's stderr:", result.stderr)
+        + "\n"
+        + _section("nare's stdout:", result.stdout or "(empty)")
+    )
+
+
 def keep_evidence(dest: Path, artifacts: Path, result: RunArtifacts) -> None:
     """Copy what a rep produced out of its sandbox before the sandbox goes.
 
@@ -304,6 +375,14 @@ async def run_rep(
         result = run_agent(case, workdir, artifacts, config)
         keep_evidence(kept, artifacts, result)
         line = parse_stdout(result.stdout)
+        if line is None and not result.timed_out and result.exit_code == NEVER_STARTED:
+            # nare's own parser refused the invocation: every rep would be.
+            # The log is written first, and is the record of why.
+            log = evidence / "stopped.txt"
+            log.write_text(
+                stopped_log(case, rep, config, result, kept_ref), encoding="utf-8"
+            )
+            raise NeverStarted(case.id, rep, result.stderr, log)
         use = context_use(result.stdout)
         if line is None or infra_error(line):
             # No result line means the run never produced one: a crash, a
@@ -414,6 +493,35 @@ def write_results(
             payload["checks"] = [asdict(c) for c in rec.checks]
             handle.write(json.dumps(payload) + "\n")
     return path
+
+
+def set_aside_partial_results(root: Path, stamp: str) -> None:
+    """Move every results file this run wrote into its evidence directory.
+
+    A stopped run leaves no results file as the newest run, which `bless`
+    would read as if it were whole: a matrix that stopped on its second model,
+    or a first pass whose confirmation never ran. The file is moved, never
+    deleted, to `<evidence>/results.partial.jsonl`, and each move is printed.
+    """
+    directory = root / "benchmarks" / "results"
+    for path in sorted(
+        (*directory.glob(f"{stamp}.jsonl"), *directory.glob(f"{stamp}.*.jsonl"))
+    ):
+        evidence = path.with_suffix("")
+        evidence.mkdir(parents=True, exist_ok=True)
+        target = evidence / "results.partial.jsonl"
+        path.replace(target)
+        print(
+            f"bench: the partial results of the stopped run are in {target}",
+            file=sys.stderr,
+        )
+
+
+def stop_run(exc: NeverStarted, root: Path, stamp: str) -> int:
+    """`run` stopped because nare never started: say why, and exit 2."""
+    print(f"bench: {exc}", file=sys.stderr)
+    set_aside_partial_results(root, stamp)
+    return 2
 
 
 def latest_results(root: Path) -> Path | None:
@@ -885,10 +993,20 @@ def run_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) -> i
     for (_, baseline), (_, config) in zip(matrix, configs, strict=True):
         print(f"\n== {config.model} ({config.provider}) ==")
         name = f"{stamp}.{slugify(config.model)}"
-        transport, records = run_model(root, cases, config, name)
-        final = confirm(
-            root, cases, config, transport, name, records, baseline, args.strict_tokens
-        )
+        try:
+            transport, records = run_model(root, cases, config, name)
+            final = confirm(
+                root,
+                cases,
+                config,
+                transport,
+                name,
+                records,
+                baseline,
+                args.strict_tokens,
+            )
+        except NeverStarted as exc:
+            return stop_run(exc, root, stamp)
         print(render(final))
         columns.append((config.model, final))
     print()
@@ -1107,16 +1225,27 @@ def main(argv: list[str] | None = None) -> int:
             print(f"bench: {exc}", file=sys.stderr)
             return 2
         stamp = new_stamp()
-        transport, records = run_model(root, cases, config, stamp)
-        if baseline is None:
-            print(render_first_run(summarize(records)))
-            print(
-                f"\nno baseline yet; bless one with: bin/bench bless --tier {args.tier}"
+        try:
+            transport, records = run_model(root, cases, config, stamp)
+            if baseline is None:
+                print(render_first_run(summarize(records)))
+                print(
+                    "\nno baseline yet; bless one with: "
+                    f"bin/bench bless --tier {args.tier}"
+                )
+                return 0
+            final = confirm(
+                root,
+                cases,
+                config,
+                transport,
+                stamp,
+                records,
+                baseline,
+                args.strict_tokens,
             )
-            return 0
-        final = confirm(
-            root, cases, config, transport, stamp, records, baseline, args.strict_tokens
-        )
+        except NeverStarted as exc:
+            return stop_run(exc, root, stamp)
         print(render(final))
         return final.exit_code
 
