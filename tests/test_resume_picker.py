@@ -7,7 +7,7 @@ import pytest
 from fake_provider import FakeProvider, text_reply
 from nare.cli import build_parser, main
 from nare.session import dumps, loads, new_session, save, saved_in
-from nare.tui.app import SessionPicker
+from nare.tui.app import SessionPicker, prepare
 from test_tui_app import make, until
 
 
@@ -113,8 +113,20 @@ def test_run_resume_without_a_path_exits_two(
 ) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.chdir(tmp_path)
-    assert (
-        main(["run", "--yes", "--resume", "--provider", "fake", "--replay", "x", "hi"])
-        == 2
+    for argv in (
+        ["run", "--yes", "--resume", "--provider", "fake", "--replay", "x", "hi"],
+        ["run", "--yes", "--resume", "--provider", "fake", "--replay", "x"],
+    ):
+        assert main(argv) == 2
+        assert "--resume needs a path" in capsys.readouterr().err
+
+
+def test_a_session_the_picker_chose_is_the_one_saved_back(tmp_path: Path) -> None:
+    folder = tmp_path / "sessions"
+    folder.mkdir()
+    chosen = saved(folder, "chosen", str(tmp_path), "pick me", age=0)
+    args = build_parser().parse_args(
+        ["tui", "--model", "fake", "--root", str(tmp_path), "--resume", str(chosen)]
     )
-    assert "--resume needs a path" in capsys.readouterr().err
+    prepare(args, FakeProvider([]))
+    assert args.session == str(chosen)

@@ -969,7 +969,7 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         source = "stdin (-)" if args.prompt == "-" else "positional prompt"
         print(f"nare: {source} conflicts with --prompt-file", file=sys.stderr)
         return NEVER_STARTED
-    if args.prompt is None and args.prompt_file is None and not args.resume:
+    if args.prompt is None and args.prompt_file is None and args.resume is None:
         print("nare run needs a prompt, or --resume PATH", file=sys.stderr)
         return NEVER_STARTED
 
