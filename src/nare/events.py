@@ -1,6 +1,8 @@
-"""Typed events. Field names and type values match conductor's BackendEvent
-verbatim, so its adapter is `BackendEvent(**json.loads(line))` and not a
-mapping table.
+"""Typed events: nare's own record of what a run did, one JSON object per line.
+
+Four fields (`type`, `text`, `detail`, `timestamp`) and six types. The shape is
+nare's, versioned by the contract (docs/contract.md); a caller that wants its
+own event type maps these onto it in its adapter.
 """
 
 from __future__ import annotations

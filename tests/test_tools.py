@@ -468,8 +468,8 @@ async def test_a_cancel_when_loop_shutdown_also_cancels_the_spawn_still_ends(
 def test_commands_do_not_inherit_nares_stdin(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # nare's stdin belongs to conductor. Piping a line into nare and running
-    # `cat` printed it back, so anything that reads would eat conductor's
+    # nare's stdin belongs to its caller. Piping a line into nare and running
+    # `cat` printed it back, so anything that reads would eat the caller's
     # input or block until the timeout. Asserted on the kwargs rather than
     # behaviorally: pytest already replaces fd 0, so a `cat` test would pass
     # with or without the fix.

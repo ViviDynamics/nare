@@ -300,7 +300,7 @@ def loads(text: str) -> Session:
 def reopen(s: Session, text: str | None = None) -> None:
     """Make a finished session runnable again, with the caller's text if any.
 
-    Resuming is how conductor's relay_feedback works, and how a person answers
+    Resuming is how a caller relays feedback, and how a person answers
     `ask` or follows up in the TUI. `output` is kept: an exhausted resume still
     reports the partial findings it already holds.
     """
@@ -342,9 +342,9 @@ def save(s: Session, path: str | Path) -> None:
     file lands in the workdir, which is a git checkout. The unique name matters
     because a fixed `.tmp` collides when two runs share one session path.
 
-    The rename is what survives a kill: conductor SIGTERMs a run and then
-    resumes the same path, and a plain write truncates before it writes, so a
-    signal in that window leaves a partial file and no backup.
+    The rename is what survives a kill: a supervising caller may SIGTERM a
+    run and then resume the same path, and a plain write truncates before it
+    writes, so a signal in that window leaves a partial file and no backup.
     """
     directory = Path(path).parent
     with tempfile.NamedTemporaryFile(

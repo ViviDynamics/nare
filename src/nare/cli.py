@@ -1,8 +1,8 @@
 """`nare run` — the headless CLI.
 
-A thin adapter over the library. Conductor's performer spawns this exactly as
-it spawns claude or opencode, which keeps nare's own surface on the critical
-path so it cannot rot.
+A thin adapter over the library. A caller spawns this as it would any other
+agent CLI, which keeps nare's own surface on the critical path so it cannot
+rot.
 """
 
 from __future__ import annotations
@@ -534,7 +534,7 @@ def _load_or_new(args: argparse.Namespace) -> Session:
     if not args.resume:
         return new_session(args.prompt)
     session = loads(Path(args.resume).read_text(encoding="utf-8"))
-    # Resuming is how conductor's relay_feedback works: reopen and keep going.
+    # Resuming is how a caller relays feedback: reopen and keep going.
     reopen(session, args.prompt)
     return session
 
@@ -728,9 +728,9 @@ async def _execute(
             try:
                 save(session, args.session)
             except OSError as exc:
-                # Not just a non-zero exit: conductor derives everything from
-                # the four-value status, so a `done` result line beside exit 1
-                # still reads as finished work. Unpersisted work is not done.
+                # Not just a non-zero exit: a caller may decide from the
+                # four-value status alone, so a `done` result line beside exit
+                # 1 still reads as finished work. Unpersisted work is not done.
                 log.error("could not write --session %s: %s", args.session, exc)
                 session.status = "error"
                 session.stop_reason = "session_write"

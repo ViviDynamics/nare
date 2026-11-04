@@ -5,7 +5,7 @@ import time
 from nare.events import Event, redact
 
 
-def test_event_fields_match_conductors_backend_event() -> None:
+def test_an_event_has_exactly_the_four_contract_fields() -> None:
     e = Event("progress", "working")
     assert set(e.wire()) == {"timestamp", "type", "text", "detail"}
 
