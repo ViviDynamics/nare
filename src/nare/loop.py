@@ -5,6 +5,7 @@ an async generator: resumable by construction, deterministic under test.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -207,6 +208,46 @@ def schema_instruction(schema: dict[str, Any]) -> str:
         "final message:\n"
         f"{json.dumps(schema)}"
     )
+
+
+def schema_digest(schema: dict[str, Any]) -> str:
+    """The schema's identity: key order and whitespace are not a change."""
+    canonical = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def state_schema(session: Session, schema: dict[str, Any]) -> None:
+    """Tell the model the schema, once, and again only when it changes.
+
+    Said in the transcript rather than in a system prompt: a resume carries it
+    forward, and a reader can see exactly what the model was asked for. A
+    resume that validated against a schema the model was never shown would
+    fail on an answer the model had no way to get right.
+    """
+    digest = schema_digest(schema)
+    if not session.schema_stated:
+        append_user_text(session, schema_instruction(schema))
+        session.schema_stated = True
+    elif session.schema_sha256 not in (None, digest):
+        append_user_text(
+            session,
+            f"The required JSON Schema has changed. {schema_instruction(schema)}",
+        )
+        session.events.append(
+            Event(
+                "progress",
+                "schema changed: this run validates against a different schema "
+                "from the one the session stated",
+                {"schema": {"changed": True}},
+            )
+        )
+        # Retained output is a document that passes the run's schema. One
+        # that passed only the old schema is not this run's answer.
+        if session.output is not None and validate(session.output, schema):
+            session.output = None
+    # A file saved before the digest was recorded states nothing new, as it
+    # did, and is recorded from here on.
+    session.schema_sha256 = digest
 
 
 def _answer_errors(text: str, schema: dict[str, Any]) -> list[str]:
@@ -798,12 +839,8 @@ async def _run(
             f"{getattr(transport, 'model', 'unspecified')}"
         ),
     )
-    if schema is not None and not session.schema_stated:
-        # Said once, in the transcript rather than in a system prompt: a resume
-        # carries it forward, and a reader can see exactly what the model was
-        # asked for.
-        append_user_text(session, schema_instruction(schema))
-        session.schema_stated = True
+    if schema is not None:
+        state_schema(session, schema)
     # Recorded before the first turn, so a run that dies still says what it was
     # allowed to do.
     session.policy = policy.recorded()
