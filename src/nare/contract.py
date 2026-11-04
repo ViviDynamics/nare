@@ -99,11 +99,11 @@ def flags_of(parser: argparse.ArgumentParser) -> dict[str, dict[str, Any]]:
 def _run_parser() -> argparse.ArgumentParser:
     from nare.cli import build_parser
 
-    for action in build_parser()._actions:
-        if isinstance(action, argparse._SubParsersAction):
-            run: argparse.ArgumentParser = action.choices["run"]
-            return run
-    raise AssertionError("nare's parser has no run command")  # pragma: no cover
+    commands = next(
+        a for a in build_parser()._actions if isinstance(a, argparse._SubParsersAction)
+    )
+    run: argparse.ArgumentParser = commands.choices["run"]
+    return run
 
 
 def describe() -> dict[str, Any]:
