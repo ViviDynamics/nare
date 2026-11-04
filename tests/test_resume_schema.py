@@ -211,3 +211,14 @@ def test_a_digest_that_is_not_a_string_is_malformed() -> None:
     raw["schema_sha256"] = 7
     with pytest.raises(ValueError, match="schema_sha256"):
         loads(json.dumps(raw))
+
+
+def test_the_contract_documents_correction_by_resume() -> None:
+    doc = Path(__file__).parent.parent / "docs" / "contract.md"
+    text = doc.read_text(encoding="utf-8")
+    section = text.split("## Correction by resume", 1)[1].split("\n## ", 1)[0]
+    assert "--resume review.json" in section
+    assert "--tools none --max-turns 2 --schema" in section
+    assert "`schema_sha256`" in section
+    assert '{"schema": {"changed": true}}' in section
+    assert CHANGED in section

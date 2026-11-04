@@ -39,14 +39,14 @@ Out:
 
 ## Tasks
 
-- [ ] 1. First statement records the digest: a run with a schema saves
+- [x] 1. First statement records the digest: a run with a schema saves
   `schema_sha256` of its canonical JSON.
-- [ ] 2. A resume with a different schema puts it in the transcript once,
+- [x] 2. A resume with a different schema puts it in the transcript once,
   with the change event; a second resume with the same schema adds nothing.
-- [ ] 3. A resume with the same schema, keys reordered, adds nothing.
-- [ ] 4. A retained output failing the new schema is dropped; one passing it
+- [x] 3. A resume with the same schema, keys reordered, adds nothing.
+- [x] 4. A retained output failing the new schema is dropped; one passing it
   is kept.
-- [ ] 5. A session without a digest loads, states nothing new on resume, and
+- [x] 5. A session without a digest loads, states nothing new on resume, and
   records the digest.
-- [ ] 6. CLI: `--resume --schema NEW` puts the new schema in the saved
+- [x] 6. CLI: `--resume --schema NEW` puts the new schema in the saved
   transcript once. Docs.
