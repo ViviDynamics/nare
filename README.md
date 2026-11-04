@@ -204,6 +204,18 @@ into a session of its own, as `pg_ctl` does, is not caught. **PageUp** and
 **PageDown** scroll the transcript while you type; it stops following new
 output until you scroll back to the bottom or send a prompt.
 
+**Copy**: drag over text in the transcript with the mouse, then press Ctrl-C.
+The selection copies during a turn too. A copy clears the selection, so the
+next Ctrl-C interrupts. nare copies with the terminal's OSC 52 clipboard escape,
+so the copy reaches your clipboard only if the terminal accepts that escape
+(tmux may need `set-clipboard on`). The notice counts the characters nare
+sent. It cannot tell whether the terminal kept them. To select with the
+terminal instead, hold Shift while you drag (in most terminals). A folded
+thinking box does not take a selection.
+**Paste**: use the terminal's paste key (often Ctrl-Shift-V, Cmd-V on macOS, or
+right-click). Ctrl-V inside nare does not read the system clipboard, and it
+says so.
+
 Every run is saved. Without `--session`, the file goes to
 `$XDG_STATE_HOME/nare/sessions/<id>.json` (`~/.local/state/...` when
 `XDG_STATE_HOME` is unset), outside the project. A `--session` path inside

@@ -11,8 +11,10 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from rich.console import Console, RenderableType
+from rich.console import Console, Group, RenderableType
+from rich.markdown import Markdown
 from rich.text import Text
+from textual import events
 from textual.app import App
 from textual.pilot import Pilot
 from textual.widgets import Input, Static
@@ -478,6 +480,131 @@ async def test_a_settled_turn_leaves_a_scrolled_up_transcript_alone(
         await until(pilot, lambda: app.run_state == "done")
         await pilot.pause()
         assert transcript.scroll_y == transcript.max_scroll_y
+
+
+async def drag_over(pilot: Pilot[None], widget: Static, line: int = 0) -> str:
+    """Drag across a widget's line with the mouse, as a person would."""
+    await pilot.mouse_down(widget, offset=(0, line))
+    await pilot.hover(widget, offset=(60, line))
+    await pilot.mouse_up(widget, offset=(60, line))
+    # Textual fills in the selection a few event loop turns after the drag.
+    for _ in range(3):
+        await pilot.pause()
+    return app_selection(widget.app)
+
+
+def app_selection(app: App[None]) -> str:
+    return app.screen.get_selected_text() or ""
+
+
+def user_block(app: TuiApp) -> Static:
+    # While a turn is stalled, its prompt is the newest transcript line.
+    return cast(Static, app.query_one(Transcript).children[-1])
+
+
+async def test_ctrl_c_copies_a_selection_during_a_turn(tmp_path: Path) -> None:
+    transport = Stalled()
+    app = make(tmp_path, transport, prompt="go")
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: transport.calls == 1)
+        selected = await drag_over(pilot, user_block(app), line=1)
+        assert "go" in selected
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        # The selection reached the clipboard and the turn was not cancelled.
+        assert app.clipboard == selected
+        assert app.worker is not None and app.worker.is_running
+        assert not app.worker.is_cancelled
+        assert app.run_state == "working"
+        assert any("copied" in n.message.lower() for n in app._notifications)
+        # The copy cleared the selection, so the next Ctrl+C interrupts.
+        assert app_selection(app) == ""
+        await pilot.press("ctrl+c")
+        await until(pilot, lambda: app.run_state == "interrupted")
+
+
+async def test_ctrl_c_copies_a_selection_when_idle(tmp_path: Path) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        transcript = app.query_one(Transcript)
+        transcript.add([Block(Text("copy this line"))])
+        await pilot.pause()
+        target = [
+            w for w in transcript.query(Static) if "copy this line" in str(w.content)
+        ][0]
+        selected = await drag_over(pilot, target)
+        assert selected == "copy this line"
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert app.clipboard == selected
+        # An answer is a Rich group with Markdown in it: it copies too.
+        transcript.add([Block(Group(Text(), Markdown("alpha **beta**")))])
+        await pilot.pause()
+        answer = cast(Static, transcript.children[-1])
+        selected = await drag_over(pilot, answer, line=1)
+        assert selected == "alpha beta"
+        # A drag that stops inside the line copies only what it crossed.
+        await pilot.mouse_down(answer, offset=(0, 1))
+        await pilot.hover(answer, offset=(4, 1))
+        await pilot.mouse_up(answer, offset=(4, 1))
+        for _ in range(3):
+            await pilot.pause()
+        assert app_selection(app) == "alpha"
+
+
+async def test_a_drag_after_a_wide_character_starts_on_the_right_one(
+    tmp_path: Path,
+) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        transcript = app.query_one(Transcript)
+        # The bold span splits the line into segments. Each segment's offset
+        # counts characters, and "日" takes two cells but one character.
+        transcript.add([Block(Group(Text(), Markdown("**日** 本語x")))])
+        await pilot.pause()
+        answer = cast(Static, transcript.children[-1])
+        strip = answer.render_line(1)
+        offsets = []
+        for segment in strip:
+            meta = segment.style.meta if segment.style is not None else {}
+            if segment.text and "offset" in meta:
+                offsets.append(meta["offset"][0])
+        assert offsets[:2] == [0, 1]
+        # Cells 3 and 4 hold "本" (cell 2 is the space before it).
+        await pilot.mouse_down(answer, offset=(3, 1))
+        await pilot.hover(answer, offset=(4, 1))
+        await pilot.mouse_up(answer, offset=(4, 1))
+        for _ in range(3):
+            await pilot.pause()
+        # Starts on 本, not on the character before it (a cell-based offset
+        # would start one character late, at 語).
+        selected = app_selection(app)
+        assert selected.startswith("本")
+        assert "日" not in selected
+
+
+async def test_ctrl_v_does_not_paste_a_stale_clipboard(tmp_path: Path) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.copy_to_clipboard("copied earlier")
+        await pilot.press("ctrl+v")
+        await pilot.pause()
+        assert app.query_one(Input).value == ""
+        assert any("terminal" in n.message.lower() for n in app._notifications)
+
+
+async def test_a_terminal_paste_lands_in_the_input(tmp_path: Path) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one(Input).focus()
+        await pilot.pause()
+        app.post_message(events.Paste("pasted from outside"))
+        await pilot.pause()
+        assert app.query_one(Input).value == "pasted from outside"
 
 
 async def test_page_keys_scroll_the_transcript_while_you_type(tmp_path: Path) -> None:
