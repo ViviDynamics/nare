@@ -58,6 +58,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--contract` | yes | | The contract version the caller speaks ([Refusing a contract](#refusing-a-contract-you-do-not-speak)) |
 | `--schema` | yes | | JSON Schema file the final answer must satisfy ([Answer schemas](#answer-schemas)) |
 | `--structured-output` | yes | `json_schema` | Constrain answers at decode time ([Schema-constrained answers](#schema-constrained-answers)) |
+| `--timeout` | yes | | Wall clock for this invocation ([Run deadline and stop signals](#run-deadline-and-stop-signals)) |
 | `--request-timeout` | yes | | HTTP timeout for each model request ([Provider retries and the request timeout](#provider-retries-and-the-request-timeout)) |
 | `--request-retries` | yes | | Resend a model request after a transient failure, up to this many times |
 | `--request-retry-seconds` | yes | | Longest wait between one request's retries |
