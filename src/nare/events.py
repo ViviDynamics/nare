@@ -17,7 +17,7 @@ EventType = Literal["progress", "tool_use", "thinking", "cost", "error", "output
 # One version number for the rule set, and one stable name per rule. Both are
 # published through `nare contract`, so a caller can tell when the redaction it
 # is paying for has changed without diffing patterns.
-REDACTION_VERSION = 1
+REDACTION_VERSION = 2
 REDACTION_RULES: tuple[str, ...] = (
     "anthropic-key",
     "openai-key",
@@ -35,52 +35,176 @@ _PREFIX_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("github-token", re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}")),
 )
 
-# No \b around the keyword: `_` is a word character, so \btoken\b never
-# matches inside AUTH_TOKEN and \bauth\b never matches inside
-# Authorization. Affixes are allowed instead, which is what the real
-# names look like.
+# A credential rule matches a credential NAME and a credential-shaped VALUE,
+# never a keyword inside a longer word and never a code expression. The shapes
+# it must not touch are in tests/test_events.py (the false-positive fixtures),
+# and the ones it must catch are the true-positive fixtures beside them.
 _CREDENTIAL_RUN = re.compile(r"[\w.\-]+")
-_CREDENTIAL_KEYWORD = re.compile(
-    r"(?i)(?:api[_-]?key|auth|token|secret|password|passwd|credential)"
+
+# A name is split into its words at `_`, `-`, `.` and camelCase, and a word
+# must BE a credential word. So `authorId` (words: author, Id) does not match,
+# while `AUTH_TOKEN`, `apiKey` and `getAuthToken` each do.
+_NAME_WORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
+_CREDENTIAL_WORDS = frozenset(
+    {
+        "auth",
+        "authorization",
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "credential",
+        "credentials",
+        "apikey",
+    }
 )
-# The optional scheme word covers `Bearer <token>`, where the secret is the
-# SECOND word after the colon.
-_CREDENTIAL_TAIL = re.compile(
-    r"""(?i)["']?\s*[:=]\s*["']?(?:bearer|basic|token)?\s*\S+"""
+# An all-caps name with a credential word glued on the end (`PGPASSWORD`) is
+# a credential name too. A mixed-case glued word is not matched.
+_CREDENTIAL_SUFFIXES = (
+    "PASSWORD",
+    "PASSWD",
+    "SECRET",
+    "TOKEN",
+    "CREDENTIAL",
+    "CREDENTIALS",
+    "APIKEY",
 )
+
+# What separates a name from its value: `KEY=`, `"key":`, `key: `.
+_VALUE_SEPARATOR = re.compile(r"""["']?\s{0,8}[:=]\s{0,8}""")
+# A scheme word before the secret: `Bearer <token>`. The scheme is itself the
+# signal, so the value after it is redacted at any length. Spaces and tabs only:
+# a scheme word at the end of a line is prose, not a header value.
+_SCHEME = re.compile(r"(?i)(?:bearer|basic|token)[ \t]{1,8}")
+_SCHEME_VALUE = re.compile(r'(?:[^\s"\'\\]|\\.)+')
+# A quoted value is one unbroken word, so a match cannot run past its closing
+# quote and take the JSON structure around it with it.
+_DOUBLE_QUOTED = re.compile(r'((?:[^\s"\'\\]|\\.)+)"')
+_SINGLE_QUOTED = re.compile(r"""([^\s"']+)'""")
+# A bare value runs to the first space, quote, bracket, separator or `=`. It may
+# hold any other symbol, because secrets do (`P@ssw0rd!`). The trailing `=` of
+# base64 padding is left outside the value.
+_BARE_VALUE = re.compile(r"""[^\s"'`(){}\[\]<>,;:=]+""")
+_NUMBER = re.compile(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
+# A lower-case snake identifier (`db_secret_v2`) is a name, not a value.
+_IDENTIFIER = re.compile(r"[a-z0-9]+(?:[-_][a-z0-9]+)+")
+# A dotted member access (`self.token_value1`) is code, not a value.
+_MEMBER_PATH = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+")
+# CamelCase words with digits (`Auth0Client`, `Auth0Config2`) are type and class
+# names. Random secrets rarely have that shape.
+_CAMEL_WORDS = re.compile(r"[A-Z][a-z]+\d*(?:[A-Z][a-z]+\d*)+")
+_HAS_LETTER = re.compile(r"[A-Za-z]")
+_HAS_DIGIT = re.compile(r"[0-9]")
+_NOT_A_VALUE_START = ("$", "/", "~", "./", "../", "-", "+")
+
+
+def _is_credential_name(name: str) -> bool:
+    words = _NAME_WORD.findall(name)
+    lowered = [word.lower() for word in words]
+    if any(word in _CREDENTIAL_WORDS for word in lowered):
+        return True
+    if any(
+        a == "api" and b == "key" for a, b in zip(lowered, lowered[1:], strict=False)
+    ):
+        return True
+    return any(word.isupper() and word.endswith(_CREDENTIAL_SUFFIXES) for word in words)
+
+
+def _looks_like_secret(value: str) -> bool:
+    """Eight or more characters with a letter and a digit, and not code, a path,
+    a URL, a number or a reference. A shape test, not entropy scoring: each
+    exclusion is a shape that the false-positive fixtures showed up as code."""
+    return (
+        len(value) >= 8
+        and _HAS_LETTER.search(value) is not None
+        and _HAS_DIGIT.search(value) is not None
+        and not value.startswith(_NOT_A_VALUE_START)
+        and "://" not in value
+        and _NUMBER.fullmatch(value) is None
+        and _IDENTIFIER.fullmatch(value) is None
+        and (_MEMBER_PATH.fullmatch(value) is None or value.startswith("eyJ"))
+        and _CAMEL_WORDS.fullmatch(value) is None
+    )
+
+
+def _scheme_value_is_secret(value: str) -> bool:
+    """After `Bearer` or `basic`, a token has a digit, a symbol or real length.
+    Prose has none of those: `basic auth enabled` is not a header value."""
+    return not value.startswith("$") and (
+        _HAS_DIGIT.search(value) is not None
+        or re.search(r"[._\-+/=]", value) is not None
+        or len(value) >= 20
+    )
+
+
+def _secret_value(text: str, pos: int) -> tuple[int | None, int] | None:
+    """The secret-shaped value starting at `pos`, as (replace_from, end).
+
+    `end` is the last character of the secret, never a closing quote. A quoted
+    value replaces only its own text, so `"key": "value"` keeps its quotes and
+    its JSON shape. A bare or scheme value is replaced as a whole assignment,
+    which is `None` here and means "from the name's start" to the caller.
+    """
+    quote = text[pos : pos + 1] if text[pos : pos + 1] in ("'", '"') else ""
+    start = pos + len(quote)
+    scheme = _SCHEME.match(text, start)
+    if scheme is not None:
+        value = _SCHEME_VALUE.match(text, scheme.end())
+        if value is None or value.group().startswith("$"):
+            return None
+        # `Bearer` is a header in practice, so any value after it is a token.
+        # `basic` and `token` also appear in prose, so their value must look like one.
+        if not scheme.group().lower().startswith("bearer") and not (
+            _scheme_value_is_secret(value.group())
+        ):
+            return None
+        return (start if quote else None, value.end())
+    if quote:
+        body = (_DOUBLE_QUOTED if quote == '"' else _SINGLE_QUOTED).match(text, start)
+        if body is None or not _looks_like_secret(body.group(1)):
+            return None
+        return (start, body.end(1))
+    bare = _BARE_VALUE.match(text, start)
+    if bare is None or text[bare.end() : bare.end() + 1] == "(":
+        return None
+    if not _looks_like_secret(bare.group()):
+        return None
+    return (None, bare.end())
+
+
+def _credential_span(text: str, name_end: int) -> tuple[int | None, int] | None:
+    """The (replace_from, end) of a credential value after a name, or None."""
+    separator = _VALUE_SEPARATOR.match(text, name_end)
+    if separator is None:
+        return None
+    return _secret_value(text, separator.end())
 
 
 def _redact_credentials(text: str) -> str:
     """The key/value rule, in linear time.
 
-    Written out as three passes rather than one regex because the single
-    regex cannot be linear: matching `[\\w.-]*(keyword)[\\w.-]*` at every
-    start position re-scans the run between them, so a megabyte of word
-    characters took minutes before the first value was even ruled out. The
-    equivalent linear shape, proven on this pattern, is:
-
-    A match spans from the start of the maximal `\\w.-` run holding a keyword
-    to the end of the value tail after that run. The tail is matched at the
-    run's end, so which keyword occurrence the legacy pattern would have
-    picked cannot change the span, and a run whose tail does not match can
-    only fail everywhere: the tail's quote, separator and scheme characters
-    are never run characters, so the greedy run before it is maximal, and
-    `[=:]` cannot occur inside a run. The differential tests against the
-    legacy rule above hold this to its word.
+    A match is a credential name, then its separator, then a secret-shaped
+    value. Each value scan is bounded by the value's own characters: a bare
+    value stops at the first character outside its alphabet, a quoted one at
+    its quote, and the scheme form at whitespace. Those scans start after a
+    separator, and separators are not value characters, so the scans cover
+    disjoint stretches of the text and the whole pass stays linear.
     """
     pieces: list[str] = []
     replaced = 0
     for run in _CREDENTIAL_RUN.finditer(text):
         if run.start() < replaced:
             continue
-        if not _CREDENTIAL_KEYWORD.search(text, run.start(), run.end()):
+        if not _is_credential_name(run.group()):
             continue
-        tail = _CREDENTIAL_TAIL.match(text, run.end())
-        if tail is None:
+        span = _credential_span(text, run.end())
+        if span is None:
             continue
-        pieces.append(text[replaced : run.start()])
+        replace_from, end = span
+        start = run.start() if replace_from is None else replace_from
+        pieces.append(text[replaced:start])
         pieces.append(REDACTED)
-        replaced = tail.end()
+        replaced = end
     pieces.append(text[replaced:])
     return "".join(pieces)
 
@@ -142,8 +266,43 @@ class Event:
 # next delta. Hold it, and every unfinished word (including key prefixes),
 # until the existing redactor has the complete unit to inspect.
 _MAYBE_CREDENTIAL = re.compile(
-    r"""(?i)["']?\s*(?:[:=]\s*["']?\s*(?:(?:bearer|basic|token)\s*)?)?\Z"""
+    r"""(?i)["']?\s{0,8}"""
+    r"""(?:[:=]\s{0,8}["']?\s{0,8}(?:(?:bearer|basic|token)[ \t]{1,8})?)?\Z"""
 )
+
+
+def _token_start(text: str, pos: int) -> int:
+    """The start of the whitespace-delimited token that holds `pos`."""
+    while pos > 0 and not text[pos - 1].isspace():
+        pos -= 1
+    return pos
+
+
+def _cut_before_open_name(text: str, cut: int) -> int:
+    """Back the cut up over every credential name whose value reaches the cut.
+
+    A separator or a scheme word may run across whitespace (`token\\n=value`,
+    `token: Bearer \\nvalue`), so a cut can fall inside the span of a name before
+    it. That name would lose its value to the next piece, and the value's
+    decision depends on the name, so the name moves to the held side with it.
+    The cut always lands on a token start, never inside a token, and a name
+    whose span stops before the cut is decided and stays out of the hold. The
+    spans are read from the whole prefix, so a name is only held when its value
+    really is at or past the cut. Moving the cut can bring an earlier name into
+    reach, so the scan repeats until nothing moves.
+    """
+    moved = True
+    while moved:
+        moved = False
+        for run in _CREDENTIAL_RUN.finditer(text, 0, cut):
+            if not _is_credential_name(run.group()):
+                continue
+            span = _credential_span(text, run.end())
+            if span is not None and span[1] >= cut:
+                cut = _token_start(text, run.start())
+                moved = True
+                break
+    return cut
 
 
 class LiveText:
@@ -161,16 +320,21 @@ class LiveText:
         for word in _CREDENTIAL_RUN.finditer(prefix):
             if word.start() < complete_value_end:
                 continue
-            if not _CREDENTIAL_KEYWORD.search(word.group()):
+            if not _is_credential_name(word.group()):
                 continue
             if _MAYBE_CREDENTIAL.fullmatch(prefix[word.end() :]):
-                boundary = word.start()
+                # Hold from the start of the word's whitespace token, never from
+                # the middle of one: a cut between `=` and the name after it
+                # would judge the value against a lookahead that is not there.
+                boundary = _cut_before_open_name(
+                    prefix, _token_start(prefix, word.start())
+                )
                 break
-            tail = _CREDENTIAL_TAIL.match(prefix, word.end())
-            if tail is not None:
+            span = _credential_span(prefix, word.end())
+            if span is not None:
                 # A keyword inside a completed value belongs to this assignment,
                 # so withholding it would split the value from its redaction rule.
-                complete_value_end = tail.end()
+                complete_value_end = span[1]
         output = redact(self.pending[:boundary])
         self.pending = self.pending[boundary:]
         return output

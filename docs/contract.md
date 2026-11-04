@@ -1,6 +1,6 @@
 # The machine contract
 
-This is contract version 2.
+This is contract version 3.
 
 A caller drives nare as a subprocess and turns three things into decisions: the
 JSONL event stream on stdout, the session file, and the exit code. This document
@@ -222,6 +222,24 @@ is redacted by the same rule set. The rules, in the order they are applied, are
 `anthropic-key`, `openai-key`, `github-token` and `credential-assignment`.
 Matching is replaced with `[redacted]`.
 
+Version 3 narrowed `credential-assignment`, so it removes secrets and leaves
+code alone. A credential name is a whole word of a name, split at `_`, `-`, `.`
+and camelCase: `token`, `auth`, `authorization`, `password`, `passwd`, `secret`,
+`credential`, `credentials` or `api` followed by `key`, and an all-caps name
+ending in one of them (`PGPASSWORD`). `authorId` is not one. The name must be
+followed by `:` or `=` (with up to eight spaces either side) and a value that looks
+like a secret: eight or more characters with a letter and a digit, either as one
+bare token (a run up to the next space, quote, bracket, `:`, `,`, `;` or `=`, so
+`P@ssw0rd!` is whole) or as one quoted word, whose JSON escapes are part of it.
+Not a secret: a `${NAME}` or `$NAME` reference, a value starting with `-`, `+`,
+`/`, `~` or `./`, a URL, a number such as `12345678e9`, a dotted member access
+such as `self.token_value1` (a JWT is not one), a snake_case or kebab-case name,
+or a CamelCase type name such as `Auth0Client`. A `Bearer` scheme
+word redacts the value after it at any length, because it is a header in
+practice. A `Basic` or `token` scheme word redacts only a token-like value (one
+with a digit, a symbol, or 20 or more characters), so prose after it is not. A quoted value
+keeps its quotes, so a redacted JSON document still parses.
+
 The rule set has an identity, printed by `nare contract` under `redaction`: a
 `version` and the rule names. A caller that also redacts its own published
 output runs `nare redact` instead of copying the patterns, and reads the
@@ -412,8 +430,10 @@ kinds instead of copying them:
 ```python
 import json, subprocess
 
-kinds = {r["stop_reason"]: r["kind"]
-         for r in json.loads(subprocess.check_output(["nare", "contract"]))["stop_reasons"]}
+kinds = {
+    r["stop_reason"]: r["kind"]
+    for r in json.loads(subprocess.check_output(["nare", "contract"]))["stop_reasons"]
+}
 result = json.loads(events[-1])
 if kinds.get(result["stop_reason"]) == "limit":
     ...  # ran out of room: retry with a larger limit, or resume
