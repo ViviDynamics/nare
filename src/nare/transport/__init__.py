@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from collections.abc import AsyncGenerator, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -112,17 +113,24 @@ def make_transport(
     image_input: bool = False,
     proxy_num_retries: int | None = None,
     cache_breakpoints: bool = False,
+    replay: str | os.PathLike[str] | None = None,
 ) -> Transport:
     """Build a transport from configuration.
 
-    Two arms. `openai` reaches anything speaking Chat Completions, which is a
+    Three arms. `openai` reaches anything speaking Chat Completions, which is a
     proxy, vLLM, llama.cpp or Ollama as much as it is OpenAI, and `--base-url`
     is how a caller says which. A registry is slice 4, with the rest of the
     extension surface.
 
     `cache_breakpoints` reaches the openai arm only. The anthropic arm always
     marks its breakpoints, so the option asks it for nothing it lacks.
+
+    `fake` replays the JSON script at `replay` and talks to nothing, which is
+    how a caller tests its integration with no key and no network. The
+    vendor options mean nothing to it and are ignored.
     """
+    if replay is not None and kind != "fake":
+        raise ValueError("replay requires the fake provider")
     match kind:
         case "anthropic":
             if proxy_num_retries is not None:
@@ -156,9 +164,15 @@ def make_transport(
                 proxy_num_retries=proxy_num_retries,
                 cache_breakpoints=cache_breakpoints,
             )
+        case "fake":
+            if replay is None:
+                raise ValueError("the fake provider requires a replay script")
+            from nare.transport.replay import ReplayTransport
+
+            return ReplayTransport.from_file(replay, model=model, streaming=streaming)
         case _:
             raise ValueError(
-                f"unknown provider {kind!r}; nare supports: anthropic, openai"
+                f"unknown provider {kind!r}; nare supports: anthropic, openai, fake"
             )
 
 
