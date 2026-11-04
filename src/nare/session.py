@@ -120,6 +120,9 @@ class Session:
     # Tool calls the session has run over its life, as `turns` counts turns.
     # --max-tool-calls counts from where an invocation started.
     tool_calls: int = 0
+    # Cut-off replies (the output cap, or a repetition) over the session's life,
+    # as `retries` counts failed requests. A file without it loads with 0.
+    cutoffs: int = 0
     last_input_tokens: int = 0
     last_input_messages: int = 0
     last_input_chars: int = 0

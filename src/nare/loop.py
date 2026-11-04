@@ -213,8 +213,40 @@ def check_budget(s: Session) -> bool:
 # loop is where that distinction was being thrown away.
 _UNFINISHED: dict[StopReason, str] = {
     "max_tokens": "the model's turn was cut off at max_tokens",
+    "repetition": "the model's reply repeated one span until it was cut off",
     "refusal": "the model refused to continue",
 }
+
+# What a corrected cut-off says to the model. A turn that carried tool calls
+# is told they did not run, since its calls were never sent to the tools.
+_CUTOFF_GUIDANCE: dict[str, str] = {
+    "repetition": (
+        "Your last reply repeated the same text until it was cut off. Reason "
+        "briefly, write each record once, and return the complete answer."
+    ),
+    "max_tokens": (
+        "Your last reply was cut off at the output limit before it finished. "
+        "Reason briefly, and return the complete answer."
+    ),
+}
+_CALLS_NOT_RUN = " Its tool calls did not run."
+
+
+@dataclass
+class CutoffLimit:
+    """--max-cutoffs for one invocation: the budget, and every cut-off reply
+    the invocation has seen, the last one included."""
+
+    limit: int
+    used: int = 0
+
+
+def check_max_cutoffs(value: int | None) -> None:
+    if value is not None and (
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+    ):
+        raise ValueError("max_cutoffs must be a nonnegative integer")
+
 
 # An ask beside other calls is not a question about the request: the turn has
 # already acted on one reading of it. Honouring it told the caller that work
@@ -481,6 +513,7 @@ async def step(
     on_event: Callable[[Event], None] | None = None,
     tool_calls: ToolCallLimit | None = None,
     max_corrections: int = SCHEMA_CORRECTIONS_DEFAULT,
+    cutoffs: CutoffLimit | None = None,
 ) -> Session:
     report = compact(s, context_window, image_input=policy.image_input)
     if report is not None:
@@ -570,7 +603,38 @@ async def step(
     usage = turn_usage(reply, prices)
     s.usage += usage
     s.turns += 1
-    s.messages.append(Message(role="assistant", content=reply.content))
+    # A cut-off reply is corrected while the invocation's budget lasts. The
+    # decision is made before the reply is kept: an empty one has nothing to
+    # keep, and an empty assistant turn is one the vendors reject on resume.
+    corrected = False
+    if reply.stop_reason in CUTOFF_REASONS:
+        s.cutoffs += 1
+        if cutoffs is not None:
+            corrected = cutoffs.used < cutoffs.limit
+            cutoffs.used += 1
+            outcome = (
+                f"correction {cutoffs.used} of {cutoffs.limit}"
+                if corrected
+                else f"cut-off budget of {cutoffs.limit} spent"
+            )
+            s.events.append(
+                Event(
+                    "progress",
+                    f"reply cut off ({reply.stop_reason}) after "
+                    f"{reply.usage.output} output tokens: {outcome}",
+                    {
+                        "cutoff": {
+                            "kind": reply.stop_reason,
+                            "output_tokens": reply.usage.output,
+                            "attempt": cutoffs.used,
+                            "limit": cutoffs.limit,
+                            "corrected": corrected,
+                        }
+                    },
+                )
+            )
+    if not (corrected and not reply.content):
+        s.messages.append(Message(role="assistant", content=reply.content))
 
     for block in [] if streamed else reply.content:
         if block.get("type") == "text":
@@ -598,6 +662,9 @@ async def step(
     s.stop_reason = reply.stop_reason
 
     if not reply.tool_calls:
+        if unfinished and corrected:
+            append_user_text(s, _CUTOFF_GUIDANCE[reply.stop_reason])
+            return s
         if unfinished:
             s.status = "error"
             s.error = unfinished
@@ -759,7 +826,10 @@ async def step(
         for call, result in zip(reply.tool_calls, results, strict=True):
             s.events.append(result_event(call.name, result, policy))
 
-    if unfinished:
+    if unfinished and corrected:
+        # Merged into the tool results just kept, so the turn stays well formed.
+        append_user_text(s, _CUTOFF_GUIDANCE[reply.stop_reason] + _CALLS_NOT_RUN)
+    elif unfinished:
         s.status = "error"
         s.error = unfinished
         s.events.append(Event("error", unfinished))
@@ -783,6 +853,7 @@ async def _live_step(
     retry: RetryPolicy = NO_RETRIES,
     tool_calls: ToolCallLimit | None = None,
     max_corrections: int = SCHEMA_CORRECTIONS_DEFAULT,
+    cutoffs: CutoffLimit | None = None,
 ) -> AsyncGenerator[Event, None]:
     queue: asyncio.Queue[Event] = asyncio.Queue()
     buffers: dict[Literal["progress", "thinking"], LiveText] = {
@@ -822,6 +893,7 @@ async def _live_step(
             retried,
             tool_calls,
             max_corrections=max_corrections,
+            cutoffs=cutoffs,
         )
     )
     waiter: asyncio.Task[Event] | None = None
@@ -872,6 +944,7 @@ async def _run(
     retry: RetryPolicy | None = None,
     max_tool_calls: int | None = None,
     max_corrections: int = SCHEMA_CORRECTIONS_DEFAULT,
+    max_cutoffs: int | None = None,
 ) -> AsyncGenerator[Event, None]:
     """Advance the session to a terminal status, yielding events as they occur.
 
@@ -952,6 +1025,7 @@ async def _run(
     budget_from = session.turns
     # Per invocation too, for the same reason.
     tool_calls = ToolCallLimit(max_tool_calls) if max_tool_calls is not None else None
+    cutoffs = CutoffLimit(max_cutoffs) if max_cutoffs is not None else None
     while session.status == "working":
         if check_budget(session):
             pass
@@ -993,6 +1067,7 @@ async def _run(
                             retry or RetryPolicy(),
                             tool_calls,
                             max_corrections,
+                            cutoffs,
                         )
                     ) as stream:
                         async for event in stream:
@@ -1010,6 +1085,7 @@ async def _run(
                         retry=retry or RetryPolicy(),
                         tool_calls=tool_calls,
                         max_corrections=max_corrections,
+                        cutoffs=cutoffs,
                     )
                 if session.status not in ("done", "blocked"):
                     check_budget(session)
@@ -1066,10 +1142,12 @@ async def run(
     retry: RetryPolicy | None = None,
     max_tool_calls: int | None = None,
     max_corrections: int = SCHEMA_CORRECTIONS_DEFAULT,
+    max_cutoffs: int | None = None,
 ) -> AsyncGenerator[Event, None]:
     check_structured_output(transport, schema, structured_output)
     check_max_tool_calls(max_tool_calls)
     check_max_corrections(max_corrections)
+    check_max_cutoffs(max_cutoffs)
     configure_budgets(session, budget_tokens, budget_usd)
     if context_window is not None and (
         isinstance(context_window, bool)
@@ -1108,6 +1186,7 @@ async def run(
                     retry=retry,
                     max_tool_calls=max_tool_calls,
                     max_corrections=max_corrections,
+                    max_cutoffs=max_cutoffs,
                 )
             ) as stream:
                 async for event in stream:
