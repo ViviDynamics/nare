@@ -814,7 +814,13 @@ async def _run(
                 turn_policy = replace(policy, tools=frozenset(), external={})
             elif remaining <= 5:
                 warning = f"{remaining} turns left: wrap up and summarise."
-                append_user_text(session, warning)
+                # Only a run with tools, built-in or MCP, has anything to wrap
+                # up. A tool-free run's every turn is an answer: the text
+                # would be an instruction its caller never wrote, ahead of
+                # that answer, and would make the request depend on the turn
+                # count. The event still tells a watching caller the count.
+                if policy.schemas():
+                    append_user_text(session, warning)
                 session.events.append(Event("progress", warning))
             try:
                 if getattr(transport, "streaming", False):

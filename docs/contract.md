@@ -369,7 +369,10 @@ when no flag was supplied or provider construction would fail for lack of creden
 active limits must allow continuation. USD usage with a historical unknown
 cannot be repaired by adding prices later. `--max-turns` remains per invocation.
 With five or fewer turns remaining, the next user message and a progress event
-carry a wrap-up warning. At the cap, one extra accounted request with tools
+carry a wrap-up warning. A run that offers no tools, built-in or MCP (for
+example `--tools none`), gets the progress event only: every turn of it is an
+answer, so the warning never reaches the model and the request does not
+depend on the turn count. At the cap, one extra accounted request with tools
 disabled asks for a summary, provided no token/USD ceiling has stopped the run.
 The outcome stays `error`/`max_turns` and includes a `continue` hint. The summary
 counts in `turns` and usage; it does not grant another tool turn.

@@ -268,6 +268,8 @@ and names `NARE_PRICE_IN` and `NARE_PRICE_OUT`; done/blocked still win. Legacy
 nonempty sessions without dollar accounting load with unknown cost.
 
 With five or fewer turns left, nare tells the model and the person to wrap up.
+A run with no tools (`--tools none` and no MCP tools) tells only the person,
+as a `progress` event: every turn of it is an answer, with nothing to wrap up.
 At `--max-turns` (50 by default), one extra, accounted turn with tools disabled
 requests a summary. The run still exits with `error` and `stop_reason=max_turns`,
 and explains that `continue` starts another run with the same turn allowance.
