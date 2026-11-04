@@ -730,7 +730,9 @@ when there is one, with nare's environment minus the provider credentials, as
 result that names the status and carries stderr. A command still running after
 `timeout` seconds (default 30) is killed with its process group, and the result
 reads `timed out after N seconds`. An unknown field, a missing or empty
-`command`, or a non-positive `timeout` exits 2 before the run starts.
+`command`, or a non-positive `timeout` exits 2 before the run starts. A run
+cancelled while a command is running kills it, with its process group, too.
+An `input_schema` that nare cannot enforce is refused at registration.
 
 Names are 1 to 64 letters, digits, underscores or hyphens. A name may not be a
 built-in name, and may not contain `__`, the separator MCP uses for `alias__tool`,

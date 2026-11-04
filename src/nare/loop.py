@@ -643,11 +643,11 @@ async def step(
 ) -> Session:
     if tools:
         # The allowlist is the policy's, as for built-ins: a registered tool is
-        # offered only when `policy.tools` names it.
+        # offered only when `policy.tools` names it. `pending` is kept, so a name
+        # the policy allows but no tool supplies stays allowed.
         policy = replace(
             policy,
             external={**policy.external, **external_tools(tools)},
-            pending=frozenset(),
         )
     report = compact(s, context_window, image_input=policy.image_input)
     if report is not None:

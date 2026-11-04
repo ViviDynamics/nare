@@ -53,9 +53,9 @@ Out:
 
 ## Tasks
 
-- [ ] 1. `Tool` validation: a bad name, a built-in name, `__`, an empty description, a non-object schema, a non-callable `call`, and a duplicate name each raise `ValueError` before a run starts.
-- [ ] 2. Dispatch: arguments are checked before approval (an unknown parameter is an `is_error` and approval is never asked); a `ToolError`, a raised exception, and a non-str result each become one ordinary result.
-- [ ] 3. `run(tools=...)` and `step(tools=...)`: a registered tool is offered and callable; a `Policy` allowlist that does not name it keeps it out of `schemas()` and refuses a call; `pending` allows an unregistered name to be named.
-- [ ] 4. Events: a caller tool gives one `tool_use` and one `tool_result` event with the same id, and a `progress` event labelled `caller result`.
-- [ ] 5. `--command-tools`: the file is parsed and validated before any model call (exit 2 on a bad file); a command's stdout is the result; a non-zero exit and a timeout are error results; `--tools` filters it like built-ins.
-- [ ] 6. `nare contract` and docs: `caller_tools` describes the feature; `content` and `tool_output` gain `caller`; `docs/contract.md`, `README.md` and ADR 0009 are updated.
+- [x] 1. `Tool` validation: a bad name, a built-in name, `__`, an empty description, a non-object schema, a non-callable `call`, and a duplicate name each raise `ValueError` before a run starts.
+- [x] 2. Dispatch: arguments are checked before approval (an unknown parameter is an `is_error` and approval is never asked); a `ToolError`, a raised exception, and a non-str result each become one ordinary result.
+- [x] 3. `run(tools=...)` and `step(tools=...)`: a registered tool is offered and callable; a `Policy` allowlist that does not name it keeps it out of `schemas()` and refuses a call; `pending` allows an unregistered name to be named.
+- [x] 4. Events: a caller tool gives one `tool_use` and one `tool_result` event with the same id, and a `progress` event labelled `caller result`.
+- [x] 5. `--command-tools`: the file is parsed and validated before any model call (exit 2 on a bad file); a command's stdout is the result; a non-zero exit and a timeout are error results; `--tools` filters it like built-ins.
+- [x] 6. `nare contract` and docs: `caller_tools` describes the feature; `content` and `tool_output` gain `caller`; `docs/contract.md`, `README.md` and ADR 0009 are updated.

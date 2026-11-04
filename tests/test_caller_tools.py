@@ -456,3 +456,66 @@ def test_the_documented_contract_describes_caller_tools() -> None:
     assert "## Caller tools" in text
     assert "--command-tools" in text
     assert "as `tools=` to `nare.run`" in text
+
+
+def test_tool_rejects_a_schema_nare_cannot_enforce() -> None:
+    # Refused at registration, so a run never meets it at the first call.
+    with pytest.raises(ValueError, match="lookup"):
+        Tool(
+            name="lookup",
+            description="x",
+            input_schema={"type": "object", "properties": []},
+            call=lookup,
+        )
+
+
+async def test_a_step_keeps_names_the_policy_allows_as_pending() -> None:
+    # A name allowlisted but not registered stays allowed beside step's tools.
+    model = FakeProvider([final_reply()])
+    policy = Policy(
+        tools=frozenset(TOOLS) | {"srv__later", "lookup"},
+        pending=frozenset({"srv__later", "lookup"}),
+    )
+    await step(new_session("go"), model, lambda n, a: True, policy, tools=[tool()])
+    assert "lookup" in [s["name"] for s in model.calls[0][1]]
+
+
+async def test_a_cancelled_command_tool_is_killed(tmp_path: Path) -> None:
+    import asyncio
+    import os
+
+    from nare.caller_tools import command_tools
+
+    pid_file = tmp_path / "pid"
+    script = write_command(
+        tmp_path,
+        "import os, time, pathlib, sys\n"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+        "time.sleep(30)\n",
+    )
+    (lookup_tool,) = command_tools(
+        {
+            "lookup": {
+                "description": "x",
+                "input_schema": LOOKUP_SCHEMA,
+                "command": [sys.executable, str(script)],
+                "timeout": 60,
+            }
+        }
+    )
+    task = asyncio.create_task(lookup_tool.call({"id": 1}))
+    for _ in range(200):
+        if pid_file.exists():
+            break
+        await asyncio.sleep(0.02)
+    pid = int(pid_file.read_text())
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    for _ in range(200):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError("the cancelled command is still running")

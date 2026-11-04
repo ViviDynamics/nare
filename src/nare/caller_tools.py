@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from nare.mcp import ExternalTool
+from nare.schema import UnsupportedSchema, check_supported
 from nare.tools import TOOLS, _shell_env, check_arguments
 
 # A command tool that does not say how long it may run is stopped after this.
@@ -75,6 +76,12 @@ class Tool:
             raise ValueError(f"tool {self.name} needs an object input_schema")
         if not callable(self.call):
             raise ValueError(f"tool {self.name} needs a callable call")
+        # Refused now, not at the first call: a schema nare cannot enforce would
+        # otherwise fail inside the run.
+        try:
+            check_supported(self.input_schema)
+        except UnsupportedSchema as exc:
+            raise ValueError(f"tool {self.name} input_schema: {exc}") from exc
 
 
 def _as_text(value: Any) -> str:
@@ -165,6 +172,11 @@ def _command_call(
             _kill_group(process)
             await process.wait()
             raise ToolError(f"timed out after {timeout:g} seconds") from None
+        except asyncio.CancelledError:
+            # A cancelled run (a quit, an interrupt, a deadline) must not leave
+            # the command running in its group.
+            _kill_group(process)
+            raise
         text = out.decode("utf-8", "replace")
         if process.returncode != 0:
             detail = err.decode("utf-8", "replace").strip() or text.strip()
