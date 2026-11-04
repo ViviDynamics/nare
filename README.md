@@ -269,7 +269,8 @@ answer that was only partly checked is worse than one that was not checked at
 all.
 
 `nare contract` prints the machine contract this build speaks: the version,
-the exit codes, the statuses, the event types, and the redaction rule set. A
+the exit codes, the statuses, the stop reasons and the kind of ending each one
+is, the event types, and the redaction rule set. A
 caller pins what it understands with `nare run --contract N`, and nare refuses
 to start when the numbers differ rather than emitting a stream the caller
 would mis-read.

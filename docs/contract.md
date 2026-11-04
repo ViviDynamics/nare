@@ -11,7 +11,8 @@ Read the contract as data instead of parsing this page:
 
     nare contract
 
-It prints the version, the exit codes, the statuses, the event types, the
+It prints the version, the exit codes, the statuses, the stop reasons
+(`stop_reasons`), the event types, the
 built-in tool names (`tools`), the navigation limits (`navigation`), the read
 evidence record (`evidence`) and the redaction rule set this build speaks.
 
@@ -141,19 +142,49 @@ holding a `blocked` version 1 session has to start that task again.
 
 ## Stop reasons
 
-| stop_reason | Meaning |
-| --- | --- |
-| `end_turn`, `stop_sequence` | Provider ended the response; status determines completion |
-| `tool_use` | Provider requested tools; may be working or blocked on ask |
-| `max_tokens` | Provider truncated the response (including rejected context) |
-| `refusal` | Provider refused to continue |
-| `schema_violation` | Second invalid structured answer |
-| `max_turns` | Invocation's turn count limit reached |
-| `context` | Estimated context still exceeds the window after eligible elision |
-| `budget` | Session token/USD ceiling reached, or USD accounting is unknown |
-| null | No completed response for this failure, e.g. provider exception |
+Every result names what ended the run in `stop_reason`, and a caller branches
+on the `status` and `stop_reason` pair, never on the `error` text. Each value
+has a kind, which says what a caller can do about it:
 
-New stop reasons and additive usage/result/session fields keep the contract version.
+- `finished`: the model ended the run, and `status` says how.
+- `limit`: a limit ended the run, so it says nothing about the task. A larger
+  limit, or a resume, may finish it.
+- `answer`: the model ended without an answer nare could accept.
+- `failure`: something broke, so the task was not checked at all.
+
+| stop_reason | Kind | Status | Meaning |
+| --- | --- | --- | --- |
+| `end_turn`, `stop_sequence`, `tool_use` | `finished` | `done`, `blocked` | Provider completed the turn. The loop decides `done` or `blocked` from whether the turn called tools, not from this value |
+| `max_tokens` | `limit` | `error` | Provider cut the response off at the output cap (`--max-tokens`), or at the context window |
+| `max_turns` | `limit` | `error` | Invocation's turn count limit reached (`--max-turns`) |
+| `context` | `limit` | `error` | Estimated context still exceeds the window after eligible elision |
+| `budget` | `limit` | `error` | Session token/USD ceiling reached, or USD accounting is unknown |
+| `refusal` | `answer` | `error` | Provider refused to continue |
+| `schema_violation` | `answer` | `error` | Second invalid structured answer |
+| `no_answer` | `answer` | `error` | The model sent reasoning and no answer, which is what a proxy that drops one of them produces |
+| null | `failure` | `error` | No completed response: the provider call raised (a transport failure), or nare did |
+| `mcp` | `failure` | `error` | An MCP server failed to start, list its tools, or close (see MCP tool sources) |
+| `session_write` | `failure` | `error` | The run ended but `--session` could not be written, so it cannot be resumed |
+
+`nare contract` prints the same table under `stop_reasons`, one object per
+value with its `stop_reason`, `kind` and `statuses`, so a caller can read the
+kinds instead of copying them:
+
+```python
+import json, subprocess
+
+kinds = {r["stop_reason"]: r["kind"]
+         for r in json.loads(subprocess.check_output(["nare", "contract"]))["stop_reasons"]}
+result = json.loads(events[-1])
+if kinds.get(result["stop_reason"]) == "limit":
+    ...  # ran out of room: retry with a larger limit, or resume
+elif kinds.get(result["stop_reason"]) == "failure":
+    ...  # could not check: report that, not a task failure
+```
+
+A stop reason this table does not list comes from a newer nare; treat it by
+its `status`. New stop reasons and additive usage/result/session fields keep
+the contract version.
 
 ## Budgets and partial results
 

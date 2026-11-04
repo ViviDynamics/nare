@@ -496,6 +496,7 @@ async def _execute(
                 # still reads as finished work. Unpersisted work is not done.
                 log.error("could not write --session %s: %s", args.session, exc)
                 session.status = "error"
+                session.stop_reason = "session_write"
                 session.error = f"could not write --session {args.session}: {exc}"
                 _emit(Event("error", session.error), args.jsonl)
     _emit_result(session, args.jsonl)
