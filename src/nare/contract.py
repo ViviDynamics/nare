@@ -77,6 +77,7 @@ def describe() -> dict[str, Any]:
     a module-level import back into session would be a cycle. One definition of
     the version is worth a function-level import.
     """
+    from nare.loop import RETRIES_DEFAULT, RETRY_SECONDS_DEFAULT
     from nare.session import Status
     from nare.tools import (
         EVIDENCE_TOOLS,
@@ -184,6 +185,30 @@ def describe() -> dict[str, Any]:
             "constrained_turns": ["schema_correction", "tool_free_run"],
             "event": "progress",
             "event_detail": "structured_output",
+        },
+        # Additive: in-run resends of a transient model request failure.
+        "request_retries": {
+            "flags": {
+                "retries": "--request-retries",
+                "seconds": "--request-retry-seconds",
+            },
+            "env": {
+                "retries": "NARE_REQUEST_RETRIES",
+                "seconds": "NARE_REQUEST_RETRY_SECONDS",
+            },
+            "default": {"retries": RETRIES_DEFAULT, "seconds": RETRY_SECONDS_DEFAULT},
+            "per": "model_request",
+            "providers": ["anthropic", "openai"],
+            "event": "progress",
+            "event_detail": "retry",
+            "result_field": "retries",
+            "session_field": "retries",
+        },
+        "request_timeout": {
+            "flag": "--request-timeout",
+            "env": "NARE_REQUEST_TIMEOUT",
+            "default": 600.0,
+            "providers": ["anthropic", "openai"],
         },
         "proxy_num_retries": {
             "flag": "--proxy-num-retries",

@@ -12,6 +12,7 @@ import asyncio
 import importlib.util
 import json
 import logging
+import math
 import os
 import sys
 from collections.abc import AsyncIterator, Mapping
@@ -25,7 +26,10 @@ from nare.contract import CONTRACT_VERSION, EXIT_CODES, NEVER_STARTED, describe
 from nare.events import Event, redact
 from nare.loop import (
     MAX_TURNS_DEFAULT,
+    RETRIES_DEFAULT,
+    RETRY_SECONDS_DEFAULT,
     STRUCTURED_OUTPUT_MODES,
+    RetryPolicy,
     budget_record,
     check_budget,
     check_structured_output,
@@ -170,6 +174,32 @@ def build_parser() -> argparse.ArgumentParser:
 
 def add_run_flags(parser: argparse.ArgumentParser) -> None:
     """The flags nare run and nare tui share, so the two cannot drift."""
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        metavar="SECONDS",
+        default=os.environ.get("NARE_REQUEST_TIMEOUT"),
+        help="HTTP timeout for each model request, on both providers: the "
+        "longest wait to connect or for the next bytes (default 600; "
+        "env: NARE_REQUEST_TIMEOUT)",
+    )
+    parser.add_argument(
+        "--request-retries",
+        type=int,
+        metavar="N",
+        default=os.environ.get("NARE_REQUEST_RETRIES", RETRIES_DEFAULT),
+        help="resend a model request up to N times after a transient failure "
+        "(timeout, dropped connection, HTTP 429/502/503/504/529); 0 never "
+        f"resends (default {RETRIES_DEFAULT}; env: NARE_REQUEST_RETRIES)",
+    )
+    parser.add_argument(
+        "--request-retry-seconds",
+        type=float,
+        metavar="SECONDS",
+        default=os.environ.get("NARE_REQUEST_RETRY_SECONDS", RETRY_SECONDS_DEFAULT),
+        help="most seconds one model request waits between its retries "
+        f"(default {RETRY_SECONDS_DEFAULT:g}; env: NARE_REQUEST_RETRY_SECONDS)",
+    )
     parser.add_argument(
         "--proxy-num-retries",
         type=int,
@@ -389,6 +419,7 @@ def transport_from_args(args: argparse.Namespace) -> Transport:
         proxy_num_retries=args.proxy_num_retries,
         cache_breakpoints=args.cache_breakpoints,
         replay=args.replay,
+        request_timeout=args.request_timeout,
     )
 
 
@@ -460,6 +491,19 @@ def validate_run_args(args: argparse.Namespace) -> Prices | None:
         raise ValueError("--context-window must be a positive integer")
     if args.budget_usd is not None:
         finite_number(args.budget_usd, "--budget-usd")
+    if args.request_timeout is not None and not (
+        math.isfinite(args.request_timeout) and args.request_timeout > 0
+    ):
+        raise ValueError("--request-timeout must be a positive finite number")
+    if args.request_retries < 0:
+        raise ValueError("--request-retries must be a nonnegative integer")
+    if not (
+        math.isfinite(args.request_retry_seconds) and args.request_retry_seconds >= 0
+    ):
+        raise ValueError("--request-retry-seconds must be a nonnegative finite number")
+    args.retry = RetryPolicy(
+        retries=args.request_retries, seconds=args.request_retry_seconds
+    )
     args.mcp_servers = (
         parse_servers(json.loads(Path(args.mcp_config).read_text(encoding="utf-8")))
         if args.mcp_config
@@ -497,6 +541,7 @@ def _emit_result(session: Session, jsonl: bool) -> None:
                     "budget": budget_record(session),
                     "stop_reason": session.stop_reason,
                     "turns": session.turns,
+                    "retries": session.retries,
                     "contract": CONTRACT_VERSION,
                     "nare": __version__,
                     "output": session.output,
@@ -544,6 +589,7 @@ async def _execute(
                 mcp_servers=args.mcp_servers,
                 mcp_allow_all=args.tools is None,
                 structured_output=args.structured_output,
+                retry=args.retry,
             )
             if transport is not None
             else _pending_events(session)

@@ -278,7 +278,7 @@ def test_live_redaction_handles_fragmented_credentials() -> None:
 
 @pytest.mark.asyncio
 async def test_dropped_stream_keeps_transcript_without_dispatch() -> None:
-    from nare.loop import run
+    from nare.loop import RetryPolicy, run
     from nare.session import new_session
 
     data = Bytes(openai_chunks()[:1])
@@ -291,8 +291,15 @@ async def test_dropped_stream_keeps_transcript_without_dispatch() -> None:
         model="m", api_key="test", streaming=True, http_client=client
     )
     session = new_session("hi")
+    # What a dropped stream leaves once no retry is left (see test_retry.py).
     events = [
-        event async for event in run(session, transport=transport, context_window=1000)
+        event
+        async for event in run(
+            session,
+            transport=transport,
+            context_window=1000,
+            retry=RetryPolicy(retries=0),
+        )
     ]
     assert session.status == "error"
     assert session.turns == 0

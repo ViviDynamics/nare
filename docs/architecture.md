@@ -27,11 +27,17 @@ Everything else sits on those two.
 ## The layer boundary
 
 The transport owns client construction, base_url and auth, the request and
-response wire format, tool schema translation, sampling parameters, retry
-policy, and `stop_reason` and `usage` normalization.
+response wire format, tool schema translation, sampling parameters, the
+request timeout, which failures are transient (`transient()`, which a
+transport may refine with its own `transient` method), and `stop_reason` and
+`usage` normalization.
 
 Everything else stays above it: the loop, turn counting, status, tool
-execution, approval, events and redaction, and cost in dollars.
+execution, approval, events and redaction, and cost in dollars. Resending a
+transient failure is the loop's (`RetryPolicy`), because a retry is an event
+and a count, and because only the loop knows a failed attempt left no turn
+and no usage behind. The SDK's own retries are off, so the caller's budget is
+the only one.
 
 Tool schema translation is the easy one to misplace. `TOOL_SCHEMAS` are
 Anthropic-shaped; a future OpenAI transport converts them at its own edge. If

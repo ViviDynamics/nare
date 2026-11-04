@@ -6,10 +6,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator, Callable
+import math
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing
 from copy import deepcopy
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Literal, cast
 
 from nare.accounting import Prices, finite_number, turn_usage
@@ -28,11 +29,14 @@ from nare.tools import (
 )
 from nare.transport import (
     Delta,
+    Reply,
     StopReason,
     StreamingStructuredTransport,
     StreamingTransport,
     StructuredTransport,
+    Transient,
     Transport,
+    transient,
 )
 
 MAX_TURNS_DEFAULT = 50
@@ -45,6 +49,55 @@ STRUCTURED_OUTPUT_MODES: tuple[str, ...] = ("json_schema",)
 # What an unanswered call says when a person stopped the turn, so the model is
 # told what happened instead of that a tool broke.
 INTERRUPTED = "interrupted by the user"
+
+RETRIES_DEFAULT = 3
+RETRY_SECONDS_DEFAULT = 60.0
+RETRY_FIRST_WAIT = 2.0
+RETRY_MAX_WAIT = 30.0
+
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    """How often one model request is resent after a transient failure.
+
+    Per request, not per run: a long run that meets a failure every few turns
+    should not run out on turn three. `seconds` bounds the waiting between
+    attempts, not the attempts, because one timed-out attempt alone can take
+    the whole request timeout. The transport says what is transient; the loop
+    decides how often, because a retry is an event and a count.
+    """
+
+    retries: int = RETRIES_DEFAULT
+    seconds: float = RETRY_SECONDS_DEFAULT
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.retries, bool)
+            or not isinstance(self.retries, int)
+            or self.retries < 0
+        ):
+            raise ValueError("retries must be a nonnegative integer")
+        if (
+            isinstance(self.seconds, bool)
+            or not isinstance(self.seconds, (int, float))
+            or not math.isfinite(self.seconds)
+            or self.seconds < 0
+        ):
+            raise ValueError("retry seconds must be a nonnegative finite number")
+
+    def wait(self, attempt: int, found: Transient) -> float:
+        """Exponential from 2 seconds, capped at 30; Retry-After lengthens it.
+
+        No jitter, so the wait an event reports is the wait nare took.
+        """
+        wait = min(RETRY_FIRST_WAIT * 2 ** (attempt - 1), RETRY_MAX_WAIT)
+        if found.retry_after is not None:
+            wait = max(wait, found.retry_after)
+        return float(wait)
+
+
+NO_RETRIES = RetryPolicy(retries=0, seconds=0)
 
 
 def budget_record(s: Session) -> dict[str, Any]:
@@ -235,6 +288,59 @@ def result_event(name: str, result: dict[str, Any], policy: Policy) -> Event:
     )
 
 
+async def _with_retries(
+    s: Session,
+    transport: Transport,
+    attempt: Callable[[], Awaitable[Reply]],
+    retry: RetryPolicy,
+    on_event: Callable[[Event], None] | None,
+) -> Reply:
+    """One model request, resent on a transient failure within the budget.
+
+    A failed attempt left nothing behind: the turn, usage and transcript are
+    only written once a reply arrives, and the messages resent are the same
+    ones, so a caching backend still finds its prefix. A failure that is not
+    transient, or that outlives the budget, is raised as it came.
+    """
+    classify = getattr(transport, "transient", None) or transient
+    made = 0
+    waited = 0.0
+    while True:
+        try:
+            return await attempt()
+        except Exception as exc:
+            found = classify(exc)
+            if found is None or made >= retry.retries:
+                raise
+            wait = retry.wait(made + 1, found)
+            if waited + wait > retry.seconds:
+                raise
+            made += 1
+            waited += wait
+            s.retries += 1
+            error = f"{type(exc).__name__}: {exc}"
+            event = Event(
+                "progress",
+                f"model request failed ({found.reason}); "
+                f"retry {made} of {retry.retries} in {wait:g}s: {error}",
+                {
+                    "retry": {
+                        "attempt": made,
+                        "retries": retry.retries,
+                        "reason": found.reason,
+                        "status": found.status,
+                        "wait": wait,
+                        "error": error,
+                    }
+                },
+            )
+            if on_event is not None:
+                on_event(event)
+            else:
+                s.events.append(event)
+            await retry.sleep(wait)
+
+
 async def step(
     s: Session,
     transport: Transport,
@@ -245,6 +351,8 @@ async def step(
     prices: Prices | None = None,
     on_delta: Callable[[Delta], None] | None = None,
     structured_output: str | None = None,
+    retry: RetryPolicy = NO_RETRIES,
+    on_event: Callable[[Event], None] | None = None,
 ) -> Session:
     report = compact(s, context_window, image_input=policy.image_input)
     if report is not None:
@@ -294,31 +402,37 @@ async def step(
         )
     # Off, the transport is called exactly as before: (messages, tools).
     streamed = bool(getattr(transport, "streaming", False)) and on_delta is not None
-    if streamed:
-        reply = None
-        async with aclosing(
-            cast(StreamingStructuredTransport, transport).stream_turn(
-                model_messages, [], response_schema=schema
-            )
-            if constrained
-            else cast(StreamingTransport, transport).stream_turn(model_messages, tools)
-        ) as stream:
-            async for item in stream:
-                if isinstance(item, Delta):
-                    assert on_delta is not None
-                    on_delta(item)
-                else:
-                    reply = item
-        if reply is None:
-            raise RuntimeError("stream ended without a completed reply")
-    else:
-        reply = await (
+
+    async def attempt() -> Reply:
+        if streamed:
+            reply = None
+            async with aclosing(
+                cast(StreamingStructuredTransport, transport).stream_turn(
+                    model_messages, [], response_schema=schema
+                )
+                if constrained
+                else cast(StreamingTransport, transport).stream_turn(
+                    model_messages, tools
+                )
+            ) as stream:
+                async for item in stream:
+                    if isinstance(item, Delta):
+                        assert on_delta is not None
+                        on_delta(item)
+                    else:
+                        reply = item
+            if reply is None:
+                raise RuntimeError("stream ended without a completed reply")
+            return reply
+        return await (
             cast(StructuredTransport, transport).turn(
                 model_messages, [], response_schema=schema
             )
             if constrained
             else transport.turn(model_messages, tools)
         )
+
+    reply = await _with_retries(s, transport, attempt, retry, on_event)
     s.last_input_tokens = (
         reply.usage.input + reply.usage.cache_read + reply.usage.cache_write
     )
@@ -520,6 +634,7 @@ async def _live_step(
     window: int,
     prices: Prices | None,
     structured_output: str | None = None,
+    retry: RetryPolicy = NO_RETRIES,
 ) -> AsyncGenerator[Event, None]:
     queue: asyncio.Queue[Event] = asyncio.Queue()
     buffers: dict[Literal["progress", "thinking"], LiveText] = {
@@ -532,6 +647,18 @@ async def _live_step(
         if text:
             queue.put_nowait(Event(delta.kind, text))
 
+    def flush() -> None:
+        for kind, buffer in buffers.items():
+            text = buffer.finish()
+            if text:
+                queue.put_nowait(Event(kind, text))
+
+    def retried(event: Event) -> None:
+        # The abandoned attempt's last words go out before the retry, so they
+        # never run into the next attempt's first ones.
+        flush()
+        queue.put_nowait(event)
+
     task = asyncio.create_task(
         step(
             s,
@@ -543,6 +670,8 @@ async def _live_step(
             prices,
             receive,
             structured_output,
+            retry,
+            retried,
         )
     )
     waiter: asyncio.Task[Event] | None = None
@@ -563,10 +692,7 @@ async def _live_step(
             waiter = None
         # Flush unfinished words even when the provider failed; these are
         # progress, never a completed assistant message or valid findings.
-        for kind, buffer in buffers.items():
-            text = buffer.finish()
-            if text:
-                queue.put_nowait(Event(kind, text))
+        flush()
         while not queue.empty():
             yield queue.get_nowait()
         await task
@@ -593,6 +719,7 @@ async def _run(
     budget_usd: float | None = None,
     prices: Prices | None = None,
     structured_output: str | None = None,
+    retry: RetryPolicy | None = None,
 ) -> AsyncGenerator[Event, None]:
     """Advance the session to a terminal status, yielding events as they occur.
 
@@ -703,6 +830,7 @@ async def _run(
                             window,
                             prices,
                             structured_output,
+                            retry or RetryPolicy(),
                         )
                     ) as stream:
                         async for event in stream:
@@ -717,6 +845,7 @@ async def _run(
                         window,
                         prices,
                         structured_output=structured_output,
+                        retry=retry or RetryPolicy(),
                     )
                 if session.status not in ("done", "blocked"):
                     check_budget(session)
@@ -755,6 +884,7 @@ async def run(
     mcp_servers: dict[str, Server] | None = None,
     mcp_allow_all: bool = False,
     structured_output: StructuredOutput | None = None,
+    retry: RetryPolicy | None = None,
 ) -> AsyncGenerator[Event, None]:
     check_structured_output(transport, schema, structured_output)
     configure_budgets(session, budget_tokens, budget_usd)
@@ -792,6 +922,7 @@ async def run(
                     budget_usd=budget_usd,
                     prices=prices,
                     structured_output=structured_output,
+                    retry=retry,
                 )
             ) as stream:
                 async for event in stream:
