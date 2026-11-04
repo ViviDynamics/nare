@@ -296,6 +296,12 @@ Past the cap a call is refused with an error telling the model to answer; a
 model that calls again ends the run with `stop_reason=tool_calls`.
 `result.budget.used_tool_calls` reports the calls the invocation ran.
 
+`--max-cutoffs N` (default 2) corrects a reply the model cut off, at the output cap
+or by repeating one span. The correction says to reason briefly and answer completely,
+and the reply's tool calls do not run. Past N the run ends `error` with
+`stop_reason=max_tokens` or `repetition`. `result.cutoffs` counts the cut-off replies
+over the session's life, and `result.budget.used_cutoffs` the ones this invocation saw.
+
 `--timeout SECONDS` bounds one `nare run` by wall clock. At the deadline, or on
 SIGTERM or SIGINT, nare stops the call in flight, kills the bash commands the
 run started, saves the session and writes the result line with

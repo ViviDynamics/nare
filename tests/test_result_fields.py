@@ -60,7 +60,7 @@ def test_the_result_total_counts_every_category_and_matches_the_budget(
 def test_the_total_equals_used_tokens_on_every_result(
     replies: list[Reply], status: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    result = run(["go"], replies, capsys)[-1]
+    result = run(["go", "--max-cutoffs", "0"], replies, capsys)[-1]
 
     assert result["status"] == status
     assert result["usage"]["total"] == result["budget"]["used_tokens"]
@@ -135,7 +135,7 @@ def test_the_final_reply_is_redacted_as_events_are(
 def test_a_run_that_is_not_done_has_no_final_reply(
     replies: list[Reply], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    result = run(["go"], replies, capsys)[-1]
+    result = run(["go", "--max-cutoffs", "0"], replies, capsys)[-1]
 
     assert result["status"] != "done"
     assert result["text"] is None

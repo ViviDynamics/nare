@@ -29,7 +29,9 @@ CREDENTIAL_ENV = frozenset(
     {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY"}
 )
 
-StopReason = Literal["end_turn", "tool_use", "max_tokens", "stop_sequence", "refusal"]
+StopReason = Literal[
+    "end_turn", "tool_use", "max_tokens", "stop_sequence", "refusal", "repetition"
+]
 
 # The levels Anthropic documents for output_config.effort. Not every model
 # takes every level; one that does not answers with its own error. The openai

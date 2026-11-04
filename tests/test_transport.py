@@ -22,13 +22,15 @@ from nare.transport.anthropic import (
 )
 
 
-def test_stop_reason_vocabulary_is_exactly_the_five() -> None:
+def test_stop_reason_vocabulary_is_exactly_the_six() -> None:
+    # repetition is nare's own stop: the transport found the reply looping.
     assert set(get_args(StopReason)) == {
         "end_turn",
         "tool_use",
         "max_tokens",
         "stop_sequence",
         "refusal",
+        "repetition",
     }
 
 
