@@ -12,6 +12,7 @@ mis-read bumps it.
 
 from __future__ import annotations
 
+import argparse
 from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any, Literal, get_args
 
@@ -75,6 +76,34 @@ STOP_REASONS: tuple[tuple[str | None, StopReasonKind, tuple[Status, ...]], ...] 
     ("mcp", "failure", ("error",)),
     ("session_write", "failure", ("error",)),
 )
+
+
+def flags_of(parser: argparse.ArgumentParser) -> dict[str, dict[str, Any]]:
+    """Every option a parser accepts, by its long name, in parser order.
+
+    Read from the parser itself, so a new flag is listed the moment it exists.
+    Defaults are left out on purpose: several come from the environment, and
+    the contract says what this build accepts, not how this machine is set.
+    """
+    flags: dict[str, dict[str, Any]] = {}
+    for action in parser._actions:
+        if not action.option_strings or isinstance(action, argparse._HelpAction):
+            continue
+        flags[max(action.option_strings, key=len)] = {
+            "takes_value": action.nargs != 0,
+            "choices": None if action.choices is None else list(action.choices),
+        }
+    return flags
+
+
+def _run_parser() -> argparse.ArgumentParser:
+    from nare.cli import build_parser
+
+    for action in build_parser()._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            run: argparse.ArgumentParser = action.choices["run"]
+            return run
+    raise AssertionError("nare's parser has no run command")  # pragma: no cover
 
 
 def describe() -> dict[str, Any]:
@@ -257,6 +286,9 @@ def describe() -> dict[str, Any]:
             "default": False,
             "marker": {"type": "ephemeral"},
         },
+        # Additive: every `nare run` option, so a caller checks that a flag
+        # exists instead of comparing release numbers.
+        "flags": flags_of(_run_parser()),
         # The redaction is part of what a caller relies on: event `text` and
         # whatever a caller pipes through `nare redact` carry it, and a rule
         # change is a change to what those mean.

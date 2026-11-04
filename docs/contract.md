@@ -15,8 +15,8 @@ It prints the version, the exit codes, the statuses, the stop reasons
 (`stop_reasons`), the event types, the
 built-in tool names (`tools`), the navigation limits (`navigation`), the read
 evidence record (`evidence`), the tool result record (`tool_results`), the
-system prompt routes (`system_input`) and the redaction rule set this build
-speaks.
+system prompt routes (`system_input`), every `nare run` option (`flags`) and
+the redaction rule set this build speaks.
 
 ## Refusing a contract you do not speak
 
@@ -29,6 +29,58 @@ both numbers named on stderr.
 
 The session file carries the same number. Resuming a session written under a
 different contract is refused for the same reason.
+
+## Run flags
+
+`nare contract` lists every `nare run` option under `flags`, keyed by name,
+so a caller checks that a flag exists before it spawns a run instead of
+comparing release numbers:
+
+```json
+"flags": {"--stream": {"takes_value": false, "choices": null},
+          "--effort": {"takes_value": true, "choices": ["low", "medium", "high"]}}
+```
+
+`takes_value` is false for a switch and true for an option that takes an
+argument; `choices` is the list of accepted values, or `null` when any value
+of the option's type is accepted. The key is read from the argument parser
+when `nare contract` runs, so it cannot drift from what `nare run` accepts.
+Defaults are not listed: several come from the environment. The positional
+prompt is advertised under `prompt_input`. A new flag is a new entry here and
+keeps the contract version; removing or renaming one bumps it.
+
+| Flag | Takes a value | Choices | What it does |
+| --- | --- | --- | --- |
+| `--prompt-file` | yes | | Read the task from a UTF-8 file ([Prompt input](#prompt-input)) |
+| `--stream` | no | | Stream text and reasoning while each turn runs ([Streaming model turns](#streaming-model-turns)) |
+| `--jsonl` | no | | Emit the JSONL event stream on stdout |
+| `--yes` | no | | Approve every tool call; required for unattended runs |
+| `--contract` | yes | | The contract version the caller speaks ([Refusing a contract](#refusing-a-contract-you-do-not-speak)) |
+| `--schema` | yes | | JSON Schema file the final answer must satisfy ([Answer schemas](#answer-schemas)) |
+| `--structured-output` | yes | `json_schema` | Constrain answers at decode time ([Schema-constrained answers](#schema-constrained-answers)) |
+| `--proxy-num-retries` | yes | | Send `num_retries` to an OpenAI-compatible proxy |
+| `--cache-breakpoints` | no | | Mark prompt-cache breakpoints on the openai rail ([Prompt-cache breakpoints](#prompt-cache-breakpoints)) |
+| `--provider` | yes | `anthropic`, `openai` | Model provider |
+| `--model` | yes | | Model name |
+| `--base-url` | yes | | Override the provider endpoint |
+| `--temperature` | yes | | Sampling temperature; not accepted by the anthropic provider |
+| `--max-tokens` | yes | | Output token cap per response |
+| `--context-window` | yes | | Context window used for elision |
+| `--budget-tokens` | yes | | Cumulative session token budget ([Budgets and partial results](#budgets-and-partial-results)) |
+| `--budget-usd` | yes | | Cumulative session dollar budget |
+| `--effort` | yes | `low`, `medium`, `high` | Reasoning effort |
+| `--system` | yes | | Replace the default system prompt |
+| `--append-system` | yes | | Add text after the system prompt |
+| `--tools` | yes | | Comma-separated tools the run may call, or `none` |
+| `--root` | yes | | Confine file tools to a directory and run `bash` in it |
+| `--resume` | yes | | Continue the session at a path |
+| `--mcp-config` | yes | | JSON file of MCP servers ([MCP tool sources](#mcp-tool-sources)) |
+| `--image-input` | no | | Declare that the model accepts image input ([Read-only image input](#read-only-image-input)) |
+| `--session` | yes | | Write the session to a path |
+| `--max-turns` | yes | | Stop after this many turns in this invocation |
+
+A test fails when this table and the parser disagree, so a new flag is
+documented here in the change that adds it.
 
 ## Prompt input
 
