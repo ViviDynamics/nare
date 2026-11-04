@@ -47,6 +47,83 @@ class Delta:
     text: str
 
 
+# Statuses that say "not now" rather than "not this": rate limited, a gateway
+# that lost its upstream or timed out, a service unavailable or overloaded
+# (529 is Anthropic's). 500 is not here: behind a proxy it is as often a
+# translation failure that resending repeats.
+RETRY_STATUSES = frozenset({429, 502, 503, 504, 529})
+
+TransientReason = Literal["timeout", "connection", "stream", "status", "overloaded"]
+
+
+@dataclass(frozen=True)
+class Transient:
+    """Why a failed model request is worth resending as it was."""
+
+    reason: TransientReason
+    status: int | None = None
+    retry_after: float | None = None
+
+
+class ProviderStatusError(RuntimeError):
+    """A provider answered a model request with an HTTP error status."""
+
+    def __init__(
+        self, message: str, *, status_code: int, retry_after: str | None = None
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.retry_after = retry_after
+
+
+class StreamDropped(RuntimeError):
+    """A streamed response ended before its completion marker arrived."""
+
+
+def retry_after_seconds(value: str | None) -> float | None:
+    """A Retry-After given in seconds. The HTTP-date form is ignored."""
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        return None
+    return seconds if math.isfinite(seconds) and seconds >= 0 else None
+
+
+def transient(exc: BaseException) -> Transient | None:
+    """Whether a model request's failure is transient, and why.
+
+    Walks the explicit cause chain, because an SDK raises its own error from
+    the transport's. Anything not named here is permanent: resending a request
+    the provider refused for what it is gets the same refusal.
+    """
+    current: BaseException | None = exc
+    while current is not None:
+        if isinstance(current, StreamDropped):
+            return Transient("stream")
+        if isinstance(current, httpx2.TimeoutException):
+            return Transient("timeout")
+        if isinstance(current, (httpx2.NetworkError, httpx2.RemoteProtocolError)):
+            return Transient("connection")
+        status = getattr(current, "status_code", None)
+        if isinstance(status, int) and status in RETRY_STATUSES:
+            return Transient("status", status=status, retry_after=_retry_after(current))
+        current = current.__cause__
+    return None
+
+
+def _retry_after(exc: BaseException) -> float | None:
+    raw = getattr(exc, "retry_after", None)
+    if isinstance(raw, str):
+        return retry_after_seconds(raw)
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    return retry_after_seconds(headers.get("retry-after"))
+
+
 class StreamingTransport(Protocol):
     streaming: bool
 
@@ -176,7 +253,17 @@ def make_transport(
             )
 
 
-__all__ = ["Reply", "StopReason", "ToolCall", "Transport", "make_transport"]
+__all__ = [
+    "ProviderStatusError",
+    "Reply",
+    "StopReason",
+    "StreamDropped",
+    "ToolCall",
+    "Transient",
+    "Transport",
+    "make_transport",
+    "transient",
+]
 
 
 def reported_cost(
