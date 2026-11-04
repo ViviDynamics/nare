@@ -44,13 +44,51 @@ MATCH_WIDTH = 200
 BINARY_SNIFF = 8192
 
 
-def _truncate(text: str) -> str:
-    """One output cap for every tool. `limit` bounds a read by LINES, which says
-    nothing about size: 2,000 lines of minified code is a context window.
+# What a cut bash stream says about seeing the rest of it.
+_BASH_HINT = (
+    "; to see all of it, redirect the output to a file and read that with "
+    "offset and limit"
+)
+
+
+def _cut_middle(text: str, room: int, what: str, hint: str = "") -> str:
+    """At most `room` characters of `text`: its head and its tail, with a
+    marker between them saying how much was cut, all within `room`.
+
+    Test runners, compilers and build tools print their verdict last, so a
+    head-only cut showed a long run's passes and never its failure.
     """
-    if len(text) <= MAX_TOOL_OUTPUT:
+    if len(text) <= room:
         return text
-    return text[:MAX_TOOL_OUTPUT] + f"\n[truncated at {MAX_TOOL_OUTPUT} chars]"
+    cut = len(text) - room
+    while True:
+        marker = f"\n[... {cut:,} characters of {what} cut here{hint} ...]\n"
+        keep = max(room - len(marker), 0)
+        if len(text) - keep == cut:
+            break
+        cut = len(text) - keep
+    head = keep // 2
+    return text[:head] + marker + text[len(text) - (keep - head) :]
+
+
+def _cap_streams(out: str, err: str, cap: int = MAX_TOOL_OUTPUT) -> str:
+    """stdout then stderr, within `cap` together, each cut in its middle.
+
+    Capped apart, so a flood of stdout cannot push stderr out: a stream that
+    fits in half the cap keeps all of it, and the other gets the rest.
+    """
+    if len(out) + len(err) <= cap:
+        return out + err
+    half = cap // 2
+    if len(err) <= half:
+        err_room = len(err)
+    elif len(out) <= half:
+        err_room = cap - len(out)
+    else:
+        err_room = half
+    return _cut_middle(out, cap - err_room, "stdout", _BASH_HINT) + _cut_middle(
+        err, err_room, "stderr", _BASH_HINT
+    )
 
 
 # Evidence: what one read, list or search returned, as a record that holds no
@@ -147,21 +185,29 @@ def _read_lines(data: bytes, offset: int, limit: int) -> tuple[str, Evidence]:
     exclusive, and cover each whole line returned with its line ending. A read
     the cap cuts ends at the last character returned, mid-line or not. A read
     that returns nothing has no range.
+
+    The cut is head-first, since paging covers the rest: `limit` bounds a read
+    by LINES, which says nothing about size, and 2,000 lines of minified code
+    is a context window. A read that stops before the end of the file says
+    which lines it returned and where to continue, after the returned text, so
+    the evidence still describes exactly the file's bytes.
     """
     lines = data.decode("utf-8").splitlines(keepends=True)
     # range() slices exactly as the list does, negative offsets included.
     chosen = range(len(lines))[offset : offset + limit]
     bodies = [(lines[i].splitlines() or [""])[0] for i in chosen]
     joined = "\n".join(bodies)
-    text = _truncate(joined)
     if not chosen:
-        return text, {"lines": None, "bytes": None, "truncated": False}
+        return joined, {"lines": None, "bytes": None, "truncated": False}
     start = len("".join(lines[: chosen[0]]).encode())
     truncated = len(joined) > MAX_TOOL_OUTPUT
+    partial = False
     if not truncated:
+        text = joined
         end = start + len("".join(lines[i] for i in chosen).encode())
         last = chosen[-1]
     else:
+        text = joined[:MAX_TOOL_OUTPUT]
         # Walk the returned characters back to the lines and bytes they came
         # from: each line before the cut whole, with its ending.
         end, last, room = start, chosen[0], MAX_TOOL_OUTPUT
@@ -171,14 +217,34 @@ def _read_lines(data: bytes, offset: int, limit: int) -> tuple[str, Evidence]:
             last = i
             if len(body) >= room:
                 end += len(body[:room].encode())
+                partial = len(body) > room
                 break
             end += len(lines[i].encode())
             room -= len(body) + 1
+    text += _read_notice(chosen[0] + 1, last + 1, len(lines), truncated, partial)
     return text, {
         "lines": {"first": chosen[0] + 1, "last": last + 1},
         "bytes": {"start": start, "end": end},
         "truncated": truncated,
     }
+
+
+def _read_notice(
+    first: int, last: int, total: int, truncated: bool, partial: bool
+) -> str:
+    """Where a read stopped, when it stopped before the end of the file.
+
+    Without it the model could not tell a short file from a partial read.
+    """
+    if not truncated and last >= total:
+        return ""
+    where = f"lines {first} to {last} of {total}"
+    if last < total:
+        where += f"; continue with offset={last}"
+    if not truncated:
+        return f"\n[{where}]"
+    inside = f", partway through line {last}" if partial else ""
+    return f"\n[truncated at {MAX_TOOL_OUTPUT} chars{inside}: {where}]"
 
 
 def read_file(path: str, offset: int = 0, limit: int = 2000) -> str:
@@ -473,10 +539,12 @@ async def bash_outcome(
             # so the model still sees the timeout and can adapt.
             raise subprocess.TimeoutExpired(command, timeout) from None
         raise
-    output = (out + err).decode(errors="replace").strip()
+    output = _cap_streams(
+        out.decode(errors="replace"), err.decode(errors="replace")
+    ).strip()
     code = proc.returncode
     assert code is not None  # communicate() returns after the exit
-    text = f"{_status(code)}\n{_truncate(output)}".rstrip()
+    text = f"{_status(code)}\n{output}".rstrip()
     killed = code < 0
     if killed and _KILLERS.search(command):
         # The likeliest killer is the command itself: pkill -f matches the
@@ -607,7 +675,7 @@ def _paginate[T](
     room: int,
 ) -> tuple[list[tuple[T, str]], str | None]:
     """Take records until the limit, or until the next line and its cursor
-    would pass MAX_TOOL_OUTPUT, so a page is never cut by _truncate() and
+    would pass MAX_TOOL_OUTPUT, so a page is never cut by the cap and
     never loses its cursor. `room` is what the header needs.
 
     The cursor is built only when there is a record after the page: a page
@@ -1305,7 +1373,11 @@ async def dispatch(
             return tool_result(call.id, f"{call.name} was not approved", is_error=True)
         if call.name in policy.external:
             text, failed = await policy.external[call.name].call(call.args)
-            return tool_result(call.id, _truncate(text), is_error=failed)
+            return tool_result(
+                call.id,
+                _cut_middle(text, MAX_TOOL_OUTPUT, "the result"),
+                is_error=failed,
+            )
         assert function is not None
         args = dict(call.args)
         if call.name in EVIDENCE_TOOLS:

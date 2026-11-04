@@ -67,7 +67,7 @@ async def test_an_offset_and_limit_record_the_bytes_of_those_lines(
         tmp_path, "read", {"path": "crlf.txt", "offset": 1, "limit": 2}
     )
 
-    assert result["content"] == "b\nc"
+    assert result["content"] == "b\nc\n[lines 2 to 3 of 4; continue with offset=3]"
     assert record["lines"] == {"first": 2, "last": 3}
     start = len("ä\r\n".encode())
     assert record["bytes"] == {"start": start, "end": start + len(b"b\r\nc\r\n")}

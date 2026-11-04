@@ -335,3 +335,21 @@ def test_the_documented_contract_states_the_bash_environment_rule() -> None:
     assert "--bash-credentials" in text
     for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY"):
         assert name in text.split("## The bash environment")[1].split("\n## ")[0]
+
+
+def test_contract_describes_the_tool_output_cap() -> None:
+    assert describe()["tool_output"] == {
+        "max_chars": 30000,
+        "bash": "head_and_tail_per_stream",
+        "mcp": "head_and_tail",
+        "read": "head_then_continue_notice",
+    }
+
+
+def test_the_documented_contract_describes_the_tool_output_cap() -> None:
+    doc = Path(__file__).parent.parent / "docs" / "contract.md"
+    text = doc.read_text(encoding="utf-8")
+
+    assert "## The tool output cap" in text
+    assert "continue with offset=" in text
+    assert "characters of stdout cut here" in text
