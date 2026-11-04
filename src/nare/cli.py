@@ -22,6 +22,7 @@ from typing import Any
 
 from nare import __version__
 from nare.accounting import Prices, finite_number, prices_from_env
+from nare.caller_tools import command_tools
 from nare.contract import (
     CONTRACT_VERSION,
     EXIT_CODES,
@@ -415,6 +416,12 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
         "--mcp-config", help="JSON file of named MCP stdio or Streamable HTTP servers"
     )
     parser.add_argument(
+        "--command-tools",
+        help="JSON file of tools this command line runs: an object keyed by tool "
+        "name, each with description, input_schema, command (an argv) and an "
+        "optional timeout in seconds",
+    )
+    parser.add_argument(
         "--image-input",
         action="store_true",
         help="declare that the selected model accepts PNG/JPEG image input",
@@ -541,10 +548,12 @@ def policy_from_args(args: argparse.Namespace) -> Policy:
         root = Path(args.root)
         if not root.is_dir():
             raise ValueError(f"--root {args.root} is not a directory")
+    command_names = {tool.name for tool in args.command_tools}
     unresolved_names = frozenset(
         name
         for name in tools
-        if any(name.startswith(alias + "__") for alias in args.mcp_servers)
+        if name in command_names
+        or any(name.startswith(alias + "__") for alias in args.mcp_servers)
     )
     return Policy(
         tools=tools,
@@ -600,6 +609,15 @@ def validate_run_args(args: argparse.Namespace) -> Prices | None:
         parse_servers(json.loads(Path(args.mcp_config).read_text(encoding="utf-8")))
         if args.mcp_config
         else {}
+    )
+    args.command_tools = (
+        command_tools(
+            json.loads(Path(args.command_tools).read_text(encoding="utf-8")),
+            root=None if args.root is None else Path(args.root),
+            credentials=args.bash_credentials,
+        )
+        if args.command_tools
+        else []
     )
     return prices_from_env()
 
@@ -802,6 +820,7 @@ async def _execute(
                 prices=prices,
                 mcp_servers=args.mcp_servers,
                 mcp_allow_all=args.tools is None,
+                tools=args.command_tools,
                 structured_output=args.structured_output,
                 retry=args.retry,
                 max_tool_calls=args.max_tool_calls,

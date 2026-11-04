@@ -381,6 +381,11 @@ Both stdio child servers and remote Streamable HTTP servers use the normal tool
 allowlist and approval seam. For configuration, names (`server__tool`), errors,
 credential isolation and resume semantics, see [the MCP contract](docs/contract.md#mcp-tool-sources).
 
+A caller can also register its own tools. The Python API takes `nare.Tool` values as
+`tools=` to `nare.run` or `nare.step`, and `nare run --command-tools tools.json` runs a
+command for each call. Both follow the tool allowlist and the approval seam. See
+[caller tools](docs/contract.md#caller-tools).
+
 Use `--stream` for live text and reasoning events while a model turn runs.
 It works on both providers and permits Anthropic outputs above the SDK's
 nonstreaming ceiling. Streaming can keep an idle proxy alive when the provider

@@ -384,6 +384,7 @@ class TuiApp(App[None]):
                 budget_usd=self.args.budget_usd,
                 prices=self.prices,
                 mcp_servers=self.args.mcp_servers,
+                tools=self.args.command_tools,
                 mcp_allow_all=self.args.tools is None,
                 retry=getattr(self.args, "retry", None),
             ):
