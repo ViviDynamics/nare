@@ -8,10 +8,13 @@ Every release publishes a wheel and a container image. nare is not on PyPI, so
 `pip install nare` does not work and this file will not pretend it does.
 
 Pin a version. `latest` is fine for a look around and wrong for anything that
-records what produced a result:
+records what produced a result. A published release is never deleted or moved,
+so a pin keeps working; see [the release policy](docs/contract.md#releases).
+The newest release is on the [releases page](https://github.com/ViviDynamics/nare/releases/latest),
+or `gh release view --repo ViviDynamics/nare --json tagName --jq .tagName`.
 
     # wheel, from the release
-    V=2026.9.7
+    V=2026.11.9
     uv tool install "https://github.com/ViviDynamics/nare/releases/download/$V/nare-$V-py3-none-any.whl"
 
     # container, same argv as the CLI
