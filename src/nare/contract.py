@@ -116,6 +116,7 @@ def describe() -> dict[str, Any]:
     a module-level import back into session would be a cycle. One definition of
     the version is worth a function-level import.
     """
+    from nare.caller_tools import COMMAND_TIMEOUT_DEFAULT
     from nare.loop import (
         CUTOFF_REASONS,
         CUTOFFS_DEFAULT,
@@ -184,7 +185,7 @@ def describe() -> dict[str, Any]:
             "id_field": "tool_use_id",
             "id_on": ["tool_use", "tool_result", "evidence", "image"],
             "fields": ["tool_use_id", "is_error", "chars"],
-            "content": {"built_in": False, "mcp": True},
+            "content": {"built_in": False, "mcp": True, "caller": True},
         },
         # Additive: a run bounded by wall clock, or stopped by a signal, still
         # saves its session and writes a result line.
@@ -262,7 +263,21 @@ def describe() -> dict[str, Any]:
             "max_chars": MAX_TOOL_OUTPUT,
             "bash": "head_and_tail_per_stream",
             "mcp": "head_and_tail",
+            "caller": "head_and_tail",
             "read": "head_then_continue_notice",
+        },
+        # Additive: tools the caller registers, in-process or by a command the
+        # command line runs. Checked, approved and recorded like built-ins.
+        "caller_tools": {
+            "in_process": "nare.Tool",
+            "flag": "--command-tools",
+            "default_timeout": COMMAND_TIMEOUT_DEFAULT,
+            "names": "1-64 letters, digits, _ or -; not a built-in name; no __",
+            "arguments": "checked against input_schema",
+            "before": "approval",
+            "failure": "is_error",
+            "allowlist": "--tools or policy.tools",
+            "event_label": "caller result",
         },
         # Additive: the provider credentials bash runs without, and how a
         # caller lets a task that needs one have it.

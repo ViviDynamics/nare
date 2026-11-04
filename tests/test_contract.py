@@ -310,7 +310,7 @@ def test_contract_describes_tool_results() -> None:
         "id_field": "tool_use_id",
         "id_on": ["tool_use", "tool_result", "evidence", "image"],
         "fields": ["tool_use_id", "is_error", "chars"],
-        "content": {"built_in": False, "mcp": True},
+        "content": {"built_in": False, "mcp": True, "caller": True},
     }
 
 
@@ -346,6 +346,7 @@ def test_contract_describes_the_tool_output_cap() -> None:
         "max_chars": 30000,
         "bash": "head_and_tail_per_stream",
         "mcp": "head_and_tail",
+        "caller": "head_and_tail",
         "read": "head_then_continue_notice",
     }
 

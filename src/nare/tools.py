@@ -1453,16 +1453,21 @@ _INPUT_SCHEMAS = {schema["name"]: schema["input_schema"] for schema in TOOL_SCHE
 _OWN_TYPE_CHECKS = frozenset({"ask"})
 
 
-def _arguments(name: str, args: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
-    """A built-in call's arguments checked against the tool's input schema:
-    the arguments to run with, and every problem, in the tool's terms.
+def check_arguments(
+    name: str,
+    schema: dict[str, Any],
+    args: dict[str, Any],
+    *,
+    own_type_check: bool = False,
+) -> tuple[dict[str, Any], list[str]]:
+    """A tool call's arguments checked against its input schema: the arguments
+    to run with, and every problem, in the tool's terms.
 
     A null optional parameter is read as absent: some models send every
     parameter, null when unused. Unknown parameters are refused, which also
     keeps the model away from the keywords nare sets itself (`base`, `cwd`,
-    `credentials`).
+    `credentials`). `own_type_check` leaves the types to the tool, as `ask` does.
     """
-    schema = _INPUT_SCHEMAS[name]
     properties: dict[str, Any] = schema.get("properties", {})
     required: list[str] = schema.get("required", [])
     args = {k: v for k, v in args.items() if v is not None or k in required}
@@ -1473,10 +1478,20 @@ def _arguments(name: str, args: dict[str, Any]) -> tuple[dict[str, Any], list[st
         for p in args
         if p not in properties
     ]
-    if name not in _OWN_TYPE_CHECKS:
+    if not own_type_check:
         known = {p: v for p, v in args.items() if p in properties}
         errors += validate(known, {"type": "object", "properties": properties})
     return args, errors
+
+
+def _arguments(name: str, args: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """A built-in call's arguments checked against the tool's input schema."""
+    return check_arguments(
+        name,
+        _INPUT_SCHEMAS[name],
+        args,
+        own_type_check=name in _OWN_TYPE_CHECKS,
+    )
 
 
 def tool_result(call_id: str, text: str, *, is_error: bool = False) -> dict[str, Any]:
@@ -1536,6 +1551,14 @@ async def dispatch(
             return tool_result(
                 call.id, f"{call.name}: {'; '.join(problems)}", is_error=True
             )
+    elif policy.external[call.name].arguments is not None:
+        checker = policy.external[call.name].arguments
+        assert checker is not None
+        checked, problems = checker(checked)
+        if problems:
+            return tool_result(
+                call.id, f"{call.name}: {'; '.join(problems)}", is_error=True
+            )
     try:
         # approve() is inside the try on purpose: a real approval seam prompts
         # a human or calls a service, so it can raise. Escaping here would
@@ -1551,7 +1574,7 @@ async def dispatch(
         if not approved:
             return tool_result(call.id, f"{call.name} was not approved", is_error=True)
         if call.name in policy.external:
-            text, failed = await policy.external[call.name].call(call.args)
+            text, failed = await policy.external[call.name].call(checked)
             return tool_result(
                 call.id,
                 _cut_middle(text, MAX_TOOL_OUTPUT, "the result"),

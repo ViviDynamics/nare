@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass, replace
 from typing import Any, Literal, cast
 
 from nare.accounting import Prices, finite_number, turn_usage
+from nare.caller_tools import Tool, external_tools
 from nare.compact import compact, context_chars, estimate
 from nare.corrections import (
     SCHEMA_CORRECTIONS_DEFAULT,
@@ -519,7 +520,8 @@ def result_event(name: str, result: dict[str, Any], policy: Policy) -> Event:
     }
     if name in policy.external:
         record = {**result, **record}
-        text = f"MCP result: {name}"
+        source = "caller" if policy.external[name].source == "caller" else "MCP"
+        text = f"{source} result: {name}"
     else:
         text = f"{name} result: {'error' if result['is_error'] else 'ok'}"
     return Event(
@@ -637,7 +639,16 @@ async def step(
     cutoffs: CutoffLimit | None = None,
     reads: ReadRequirement = NO_READS,
     check: Check | None = None,
+    tools: Sequence[Tool] = (),
 ) -> Session:
+    if tools:
+        # The allowlist is the policy's, as for built-ins: a registered tool is
+        # offered only when `policy.tools` names it.
+        policy = replace(
+            policy,
+            external={**policy.external, **external_tools(tools)},
+            pending=frozenset(),
+        )
     report = compact(s, context_window, image_input=policy.image_input)
     if report is not None:
         s.events.append(
@@ -668,18 +679,18 @@ async def step(
         if policy.image_input
         else _without_images(s.messages, policy.image_model)
     )
-    tools = policy.schemas()
-    constrained = _constrained(s, schema, structured_output, tools)
+    offered = policy.schemas()
+    constrained = _constrained(s, schema, structured_output, offered)
     if constrained:
         s.events.append(
             Event(
                 "progress",
                 f"schema-constrained answer turn ({structured_output})"
-                + ("; tools withheld" if tools else ""),
+                + ("; tools withheld" if offered else ""),
                 {
                     "structured_output": {
                         "mode": structured_output,
-                        "tools_withheld": bool(tools),
+                        "tools_withheld": bool(offered),
                     }
                 },
             )
@@ -696,7 +707,7 @@ async def step(
                 )
                 if constrained
                 else cast(StreamingTransport, transport).stream_turn(
-                    model_messages, tools
+                    model_messages, offered
                 )
             ) as stream:
                 async for item in stream:
@@ -713,7 +724,7 @@ async def step(
                 model_messages, [], response_schema=schema
             )
             if constrained
-            else transport.turn(model_messages, tools)
+            else transport.turn(model_messages, offered)
         )
 
     reply = await _with_retries(s, transport, attempt, retry, on_event)
@@ -1300,8 +1311,12 @@ async def run(
     require_reads: int = 0,
     require_read: Sequence[str] = (),
     check: Check | None = None,
+    tools: Sequence[Tool] = (),
 ) -> AsyncGenerator[Event, None]:
     check_structured_output(transport, schema, structured_output)
+    # Refused before any call: a bad registration is the caller's error, not a
+    # tool's, so it raises from the generator rather than ending the run.
+    caller = external_tools(tools)
     check_max_tool_calls(max_tool_calls)
     check_max_corrections(max_corrections)
     check_max_cutoffs(max_cutoffs)
@@ -1325,7 +1340,8 @@ async def run(
             yield session.events.pop(0)
         return
     try:
-        async with connect(mcp_servers or {}) as external:
+        async with connect(mcp_servers or {}) as mcp:
+            external = {**mcp, **caller}
             base = policy or Policy()
             names = (
                 base.tools | external.keys()

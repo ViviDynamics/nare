@@ -118,6 +118,13 @@ def parse_servers(value: Any) -> dict[str, Server]:
 class ExternalTool:
     schema: dict[str, Any]
     call: Callable[[dict[str, Any]], Awaitable[tuple[str, bool]]]
+    # "mcp" or "caller": which source registered it, for the event text.
+    source: str = "mcp"
+    # Checks the model's arguments against the tool's schema before approval,
+    # as built-ins are checked. None leaves them unchecked, as MCP always has.
+    arguments: Callable[[dict[str, Any]], tuple[dict[str, Any], list[str]]] | None = (
+        None
+    )
 
 
 async def _bounded[Result](

@@ -12,6 +12,7 @@ async def main() -> None:
 asyncio.run(main())
 """
 
+from nare.caller_tools import Tool, ToolError
 from nare.contract import NARE_VERSION
 from nare.events import Event
 from nare.loop import run, step
@@ -29,7 +30,9 @@ __all__ = [
     "Reply",
     "ReplayTransport",
     "Session",
+    "Tool",
     "ToolCall",
+    "ToolError",
     "Transport",
     "Usage",
     "approve_all",

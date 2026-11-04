@@ -90,6 +90,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--bash-credentials` | no | | Let `bash` see the provider credentials nare reads ([The bash environment](#the-bash-environment)) |
 | `--resume` | yes | | Continue the session at a path |
 | `--mcp-config` | yes | | JSON file of MCP servers ([MCP tool sources](#mcp-tool-sources)) |
+| `--command-tools` | yes | | JSON file of tools this command line runs ([caller tools](#caller-tools)) |
 | `--image-input` | no | | Declare that the model accepts image input ([Read-only image input](#read-only-image-input)) |
 | `--session` | yes | | Write the session to a path |
 | `--max-turns` | yes | | Stop after this many turns in this invocation |
@@ -671,6 +672,96 @@ the SDK's minimal OS environment and configured `env` to stdio servers; model AP
 keys are not inherited. HTTP uses only explicitly configured headers. No model
 sampling callback or credential sharing is enabled. Remote servers remain owned
 by their hosts; nare terminates its connection, not their server process.
+
+## Caller tools
+
+A caller adds tools the model can call beside the built-ins, in one of two ways.
+
+In-process, pass `nare.Tool` values as `tools=` to `nare.run` or `nare.step`:
+
+```python
+from nare import Tool, ToolError
+
+def lookup(args):
+    row = db.get(args["id"])
+    if row is None:
+        raise ToolError(f"no order {args['id']}")
+    return row  # a str is sent as is; anything else as JSON
+
+tool = Tool(
+    name="lookup_order",
+    description="Fetch one order by id.",
+    input_schema={"type": "object", "properties": {"id": {"type": "integer"}},
+                  "required": ["id"]},
+    call=lookup,
+)
+```
+
+`call` receives the model's arguments, checked against `input_schema`. It may be
+a plain function or a coroutine function; a plain function runs in a worker
+thread. Raising `ToolError` ends that call with its message as an error result.
+Any other exception ends it with `Type: message` as an error result. Neither
+ends the run. nare cannot stop a function that runs too long, so a caller bounds
+its own.
+
+From the command line, `--command-tools` names a JSON file, an object keyed by
+tool name:
+
+```json
+{
+  "lookup_order": {
+    "description": "Fetch one order by id.",
+    "input_schema": {"type": "object", "properties": {"id": {"type": "integer"}},
+                     "required": ["id"]},
+    "command": ["python", "lookup.py"],
+    "timeout": 10
+  }
+}
+```
+
+```sh
+nare run --yes --jsonl --command-tools tools.json "why did order 42 ship late?"
+```
+
+The command is an argv, run without a shell. It receives the checked arguments
+as one JSON object on stdin, and its stdout is the result. It runs in `--root`
+when there is one, with nare's environment minus the provider credentials, as
+`bash` does, unless `--bash-credentials` is set. A non-zero exit is an error
+result that names the status and carries stderr. A command still running after
+`timeout` seconds (default 30) is killed with its process group, and the result
+reads `timed out after N seconds`. An unknown field, a missing or empty
+`command`, or a non-positive `timeout` exits 2 before the run starts.
+
+Names are 1 to 64 letters, digits, underscores or hyphens. A name may not be a
+built-in name, and may not contain `__`, the separator MCP uses for `alias__tool`,
+so the two sources cannot collide. A name registered twice is refused.
+
+Arguments are checked before approval, as built-in arguments are. A call with
+an unknown or missing parameter, or a value of the wrong type, is an error
+result, and nobody is asked to approve it. A call that passes goes through the
+approval seam: `--yes` on the command line, or the `approve` callable in the
+library. A denial is an error result, as for built-ins.
+
+Caller tools follow the same allowlist as built-ins. With no `--tools` and no
+policy, every registered tool is offered. An explicit allowlist offers only the
+tools it names, and `--tools none` offers none. A name that is allowlisted but
+not registered is declared in the policy's `pending` set, as with MCP names:
+
+```python
+Policy(tools=frozenset({"read", "lookup_order"}), pending=frozenset({"lookup_order"}))
+```
+
+`step` has no implicit allow-all: the policy it receives names what the session
+offers.
+
+Each call writes one `tool_use` event and one `tool_result` progress event with
+the same `tool_use_id`, as built-in calls do. The progress text is
+`caller result: <name>`. Its content is kept, redacted and capped at the
+[tool output cap](#the-tool-output-cap), as MCP content is.
+
+The model chooses the arguments, and a caller tool runs with the caller's
+privileges. The check on arguments is a schema check, not a policy: a tool that
+writes or spends should validate what it does.
 
 ## The bash environment
 
