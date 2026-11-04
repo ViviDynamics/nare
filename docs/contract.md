@@ -142,7 +142,7 @@ with any of these keys:
 | `text` | The model's text for the turn |
 | `thinking` | Reasoning, emitted as a `thinking` event |
 | `tool_calls` | A list of `{"name", "args", "id"}`. `args` defaults to `{}`, `id` to `call_<reply>_<n>`. `ask` is a tool call like any other |
-| `stop_reason` | One of `end_turn`, `tool_use`, `max_tokens`, `stop_sequence`, `refusal`. Defaults to `tool_use` with tool calls, else `end_turn`. `max_tokens` is a truncated turn |
+| `stop_reason` | One of `end_turn`, `tool_use`, `max_tokens`, `stop_sequence`, `refusal`, `repetition`. Defaults to `tool_use` with tool calls, else `end_turn`. `max_tokens` is a truncated turn; `repetition` is a turn stopped for repeating one span ([Cut-off replies](#cut-off-replies)) |
 | `usage` | `input`, `output`, `cache_read`, `cache_write`, each a nonnegative integer, default 0 |
 | `cost` | The dollars a backend reported for the turn, as a nonnegative number |
 
@@ -255,7 +255,7 @@ every other event leaves the key out.
 
 The last line is not an event. It is the `result` object, carrying
 `session_id`, `status`, `questions`, `usage`, `stop_reason`, `turns`,
-`retries`, `contract`, `nare`, `output`, `text`, `budget` and `error`. A caller
+`retries`, `cutoffs`, `contract`, `nare`, `output`, `text`, `budget` and `error`. A caller
 that reads only one line should read that one.
 
 `text` is the final reply of a run that ended `done`: the text of its last
@@ -386,7 +386,7 @@ has a kind, which says what a caller can do about it:
 | stop_reason | Kind | Status | Meaning |
 | --- | --- | --- | --- |
 | `end_turn`, `stop_sequence`, `tool_use` | `finished` | `done`, `blocked` | Provider completed the turn. The loop decides `done` or `blocked` from whether the turn called tools, not from this value |
-| `max_tokens` | `limit` | `error` | Provider cut the response off at the output cap (`--max-tokens`), or at the context window |
+| `max_tokens` | `limit` | `error` | Provider cut the response off at the output cap (`--max-tokens`), or at the context window, and the cut-off budget (`--max-cutoffs`) is spent |
 | `repetition` | `limit` | `error` | The reply repeated one span until it was cut off, and the cut-off budget (`--max-cutoffs`) is spent |
 | `max_turns` | `limit` | `error` | Invocation's turn count limit reached (`--max-turns`) |
 | `context` | `limit` | `error` | Estimated context still exceeds the window after eligible elision |
@@ -892,7 +892,8 @@ On a streamed turn it arrives live, after the abandoned attempt's text. On an
 unstreamed turn it arrives with the turn's other events, when the request ends;
 its `timestamp` says when it happened. The `result` line and the session file
 carry `retries`, the count over the session's life, as `turns` is. A session
-file without it loads as 0.
+file without it loads as 0. The same is true of `cutoffs`, the count of cut-off
+replies, which the session file and the `result` line carry.
 
 A request that fails permanently, or still fails when its budget is spent,
 ends the run as before: `status=error`, `stop_reason` null, and `error` is the
