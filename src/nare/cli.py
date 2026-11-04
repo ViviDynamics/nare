@@ -32,6 +32,7 @@ from nare.contract import (
 from nare.corrections import SCHEMA_CORRECTIONS_DEFAULT
 from nare.events import Event, redact
 from nare.loop import (
+    CUTOFFS_DEFAULT,
     MAX_TURNS_DEFAULT,
     RETRIES_DEFAULT,
     RETRY_SECONDS_DEFAULT,
@@ -182,6 +183,20 @@ def build_parser() -> argparse.ArgumentParser:
             "(default 1). A correction is free, and does not count, when the "
             "answer has fewer distinct errors than any earlier one; free corrections "
             "need N above 1. Each correction names the earlier fixes to keep"
+        ),
+    )
+    run_parser.add_argument(
+        "--max-cutoffs",
+        type=int,
+        default=CUTOFFS_DEFAULT,
+        metavar="N",
+        help=(
+            "correct up to N replies cut off at the output cap or by repeating "
+            "one span, in this invocation. A correction tells the model to "
+            "reason briefly and answer completely, and the reply's tool calls "
+            "do not run. Past N the run ends error with stop_reason max_tokens "
+            "or repetition. 0 ends at the first cut "
+            f"(default {CUTOFFS_DEFAULT})"
         ),
     )
     run_parser.add_argument(
@@ -591,6 +606,8 @@ def _emit_result(
     max_tool_calls: int | None = None,
     tool_calls_from: int | None = None,
     max_corrections: int | None = None,
+    max_cutoffs: int | None = None,
+    cutoffs_from: int | None = None,
 ) -> None:
     if jsonl:
         print(
@@ -606,6 +623,8 @@ def _emit_result(
                         max_tool_calls=max_tool_calls,
                         tool_calls_from=tool_calls_from,
                         max_corrections=max_corrections,
+                        max_cutoffs=max_cutoffs,
+                        cutoffs_from=cutoffs_from,
                     ),
                     # Every correction the run made, free or charged, with the
                     # distinct errors it answered. Present only when there was one.
@@ -617,6 +636,7 @@ def _emit_result(
                     "stop_reason": session.stop_reason,
                     "turns": session.turns,
                     "retries": session.retries,
+                    "cutoffs": session.cutoffs,
                     "contract": CONTRACT_VERSION,
                     "nare": __version__,
                     "output": session.output,
@@ -736,6 +756,7 @@ async def _execute(
     )
     # Reported only for a schema run, as the budget it spends.
     corrections_budget = None if schema is None else corrections_limit
+    cutoffs_from = session.cutoffs
     stop = _Stop(getattr(args, "timeout", None))
     stop.install()
     try:
@@ -757,6 +778,7 @@ async def _execute(
                 retry=args.retry,
                 max_tool_calls=args.max_tool_calls,
                 max_corrections=corrections_limit,
+                max_cutoffs=args.max_cutoffs,
             )
             if transport is not None
             else _pending_events(session)
@@ -810,6 +832,8 @@ async def _execute(
         max_tool_calls=args.max_tool_calls,
         tool_calls_from=tool_calls_from,
         max_corrections=corrections_budget,
+        max_cutoffs=args.max_cutoffs,
+        cutoffs_from=cutoffs_from,
     )
     return EXIT_CODES.get(session.status, EXIT_CODES["error"])
 
@@ -885,6 +909,8 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
             raise ValueError("--max-tool-calls must be a positive integer")
         if args.max_corrections is not None and args.max_corrections <= 0:
             raise ValueError("--max-corrections must be a positive integer")
+        if args.max_cutoffs < 0:
+            raise ValueError("--max-cutoffs must be a nonnegative integer")
         prices = validate_run_args(args)
         if args.prompt_file is not None:
             try:

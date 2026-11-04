@@ -121,10 +121,14 @@ def budget_record(
     max_tool_calls: int | None = None,
     tool_calls_from: int | None = None,
     max_corrections: int | None = None,
+    max_cutoffs: int | None = None,
+    cutoffs_from: int | None = None,
 ) -> dict[str, Any]:
     """The limits a run had and what it used. The tool call cap and its count
     are per invocation, so only a caller that knows where the invocation
-    started (`tool_calls_from`) reports them.
+    started (`tool_calls_from`) reports them. The cut-off count is the same:
+    used_cutoffs counts every cut-off reply the invocation saw, the last one
+    included, where the cap counts the corrections it allowed.
     """
     record = {**s.budget, "used_tokens": s.usage.total_tokens, "used_usd": s.usage.cost}
     if max_tool_calls is not None:
@@ -134,6 +138,10 @@ def budget_record(
     if max_corrections is not None:
         record["schema_corrections"] = max_corrections
         record["used_schema_corrections"] = s.schema_corrections
+    if max_cutoffs is not None:
+        record["cutoffs"] = max_cutoffs
+    if cutoffs_from is not None:
+        record["used_cutoffs"] = s.cutoffs - cutoffs_from
     return record
 
 

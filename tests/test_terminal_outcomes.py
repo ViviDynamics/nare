@@ -138,8 +138,12 @@ SCENARIOS: dict[str, tuple[list[str], Any]] = {
     ),
     "blocked": ([], lambda: FakeProvider([tool_reply("ask", {"questions": ["?"]})])),
     "max_tokens": (
-        [],
+        ["--max-cutoffs", "0"],
         lambda: FakeProvider([text_reply("cut", stop_reason="max_tokens")]),
+    ),
+    "repetition": (
+        ["--max-cutoffs", "0"],
+        lambda: FakeProvider([text_reply("loop", stop_reason="repetition")]),
     ),
     "refusal": ([], lambda: FakeProvider([text_reply("", stop_reason="refusal")])),
     "no_answer": ([], lambda: FakeProvider([thinking_reply()])),

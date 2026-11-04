@@ -111,7 +111,7 @@ def test_a_blocked_run_exits_zero(capsys: Any) -> None:
 
 def test_a_failed_run_exits_one(capsys: Any) -> None:
     code = main(
-        ["run", "go", "--yes"],
+        ["run", "go", "--yes", "--max-cutoffs", "0"],
         transport=FakeProvider([text_reply("cut off", stop_reason="max_tokens")]),
     )
 

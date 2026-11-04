@@ -61,6 +61,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--structured-output` | yes | `json_schema` | Constrain answers at decode time, on both rails ([Schema-constrained answers](#schema-constrained-answers)) |
 | `--max-tool-calls` | yes | | Run at most this many tool calls in this invocation ([Budgets and partial results](#budgets-and-partial-results)) |
 | `--max-corrections` | yes | | Let a failing `--schema` answer be corrected up to this many times in the run, default 1 ([Schema corrections](#schema-corrections)) |
+| `--max-cutoffs` | yes | | Correct up to this many replies cut off at the output cap or by repeating one span, in this invocation ([Cut-off replies](#cut-off-replies)) |
 | `--timeout` | yes | | Wall clock for this invocation ([Run deadline and stop signals](#run-deadline-and-stop-signals)) |
 | `--request-timeout` | yes | | HTTP timeout for each model request ([Provider retries and the request timeout](#provider-retries-and-the-request-timeout)) |
 | `--request-retries` | yes | | Resend a model request after a transient failure, up to this many times |
@@ -539,6 +540,38 @@ cap is not saved: a resume gets the full allowance again. The session's
 turns; a file without it loads with 0. `nare contract` advertises the cap under
 `tool_call_limit`. The flag, the stop reason, the budget keys and the session
 field are additive and keep the contract version.
+
+## Cut-off replies
+
+A reply the vendor cut off at the output cap (`max_tokens`), or one that
+repeated one span until it was stopped (`repetition`), is not the end of the
+run while the cut-off budget lasts. `--max-cutoffs N` (`max_cutoffs` in the
+library) allows N corrections in one invocation, and defaults to 2 on the
+command line. Each correction tells the model to reason briefly, write each
+record once and return the complete answer. The reply's tool calls do not run,
+as they never do on a cut-off turn. An empty cut-off reply is not kept in the
+transcript.
+
+A reply is `repetition` when its last 2048 characters repeat one span of at
+most 256 characters (at least eight copies), or when the same test holds with
+each run of digits folded to one digit over the last 4096 characters, which
+catches a loop that counts upward. A stream is read only until the loop shows,
+so the output cap is not paid for. A reply that repeats and then closes is not
+flagged, and a long list of records that differ only in their numbers can be
+read as a loop (about 4 KB of them).
+
+Each cut-off is a `progress` event with a `cutoff` detail (`kind`, the
+`output_tokens` the reply used, `attempt`, `limit`, `corrected`). The result
+records `cutoffs`, the session's count of cut-off replies over its life, and
+`budget` records `cutoffs` (the cap) and `used_cutoffs` (cut-off replies this
+invocation saw, the last one included). With the budget spent, the run ends
+`error` with `stop_reason` `max_tokens` or `repetition`, which is a `limit`.
+`--max-cutoffs 0` ends at the first cut, as nare did before this option.
+
+The flag, the stop reason, the event detail, and the result and session fields
+are additive and keep the contract version. The default changes what a cut-off
+reply does on the command line: a run that used to end `error` at its first
+cut-off now continues. Pass `--max-cutoffs 0` for the old outcome.
 
 When a schema was supplied, nare retains the latest complete JSON document that
 passes that schema in `result.output` and session `output`, including a document

@@ -145,7 +145,8 @@ def test_error_is_a_transport_failure_and_exits_1(tmp_path: Path) -> None:
 
 
 def test_truncated_is_unfinished_and_exits_1(tmp_path: Path) -> None:
-    proc, lines, saved = replay("truncated.json", tmp_path)
+    # With no cut-off budget, the first cut ends the run, as it always has.
+    proc, lines, saved = replay("truncated.json", tmp_path, "--max-cutoffs", "0")
 
     assert proc.returncode == 1, proc.stderr
     result = lines[-1]
