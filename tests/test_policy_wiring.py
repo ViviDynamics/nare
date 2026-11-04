@@ -119,3 +119,27 @@ def test_the_cli_passes_the_policy_through_to_the_session(
         "tools": [],
         "root": str(tmp_path),
     }
+
+
+def test_the_cli_records_the_bash_credentials_opt_in(
+    tmp_path: Path, capsys: object
+) -> None:
+    session_path = tmp_path / "s.json"
+
+    code = main(
+        [
+            "run",
+            "go",
+            "--yes",
+            "--jsonl",
+            "--bash-credentials",
+            "--session",
+            str(session_path),
+        ],
+        transport=FakeProvider([text_reply("done")]),
+    )
+
+    assert code == 0
+    capsys.readouterr()  # type: ignore[attr-defined]
+    saved = json.loads(session_path.read_text(encoding="utf-8"))["policy"]
+    assert saved["bash_credentials"] is True

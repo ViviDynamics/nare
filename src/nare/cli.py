@@ -262,6 +262,15 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--bash-credentials",
+        action="store_true",
+        help=(
+            "let bash commands see the provider credentials nare reads "
+            "(ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY); "
+            "withheld by default, and recorded in the session's policy"
+        ),
+    )
+    parser.add_argument(
         "--resume",
         help="continue the session at this path, writing it back unless "
         "--session says otherwise",
@@ -353,7 +362,12 @@ def policy_from_args(args: argparse.Namespace) -> Policy:
         for name in tools
         if any(name.startswith(alias + "__") for alias in args.mcp_servers)
     )
-    return Policy(tools=tools, root=root, pending=unresolved_names)
+    return Policy(
+        tools=tools,
+        root=root,
+        pending=unresolved_names,
+        bash_credentials=args.bash_credentials,
+    )
 
 
 def validate_run_args(args: argparse.Namespace) -> Prices | None:

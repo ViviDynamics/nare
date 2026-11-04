@@ -381,6 +381,30 @@ keys are not inherited. HTTP uses only explicitly configured headers. No model
 sampling callback or credential sharing is enabled. Remote servers remain owned
 by their hosts; nare terminates its connection, not their server process.
 
+## The bash environment
+
+`bash` runs with nare's environment minus the provider credentials nare reads
+for its own requests: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and
+`OPENAI_API_KEY`. A command the model writes, `env` included, does not see
+them, so neither the transcript nor an instruction planted in a file the model
+reads can reach them. This is the same rule as for MCP stdio servers above:
+no child process nare starts inherits the model API keys. Every other variable
+is passed through unchanged. A credential a later transport reads joins the
+list, and `nare contract` prints it under `bash_env.withheld`.
+
+A task that needs a key in the shell opts in:
+
+    nare run --yes --jsonl --bash-credentials "publish the package"
+
+The opt-in is recorded in the session's policy as `"bash_credentials": true`,
+so a run that handed the shell its keys says so afterwards. Library callers
+pass `Policy(bash_credentials=True)`. Without the opt-in the policy has no
+`bash_credentials` key. Redaction is unchanged: it still applies to every
+event, and this removes the keys at the source instead of relying on it.
+
+Withholding is not a sandbox. A command can still read files, the network and
+anything else the environment gives it; confining those stays the caller's job.
+
 ## Streaming model turns
 
 ```sh

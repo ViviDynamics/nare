@@ -304,3 +304,21 @@ def test_the_documented_contract_describes_tool_results() -> None:
     assert "## Tool results" in text
     assert '"tool_use_id"' in text and '"chars"' in text
     assert "`tool_results`" in text
+
+
+def test_contract_describes_the_bash_environment() -> None:
+    assert describe()["bash_env"] == {
+        "withheld": ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY"],
+        "opt_in_flag": "--bash-credentials",
+        "policy_field": "bash_credentials",
+    }
+
+
+def test_the_documented_contract_states_the_bash_environment_rule() -> None:
+    doc = Path(__file__).parent.parent / "docs" / "contract.md"
+    text = doc.read_text(encoding="utf-8")
+
+    assert "## The bash environment" in text
+    assert "--bash-credentials" in text
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY"):
+        assert name in text.split("## The bash environment")[1].split("\n## ")[0]

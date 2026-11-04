@@ -128,6 +128,11 @@ reads return a named tool error. See [the image contract](docs/contract.md#read-
 `--root` gives `bash` that directory to start in. It is not a jail: a shell
 can still walk upward, so real confinement stays the sandbox's job.
 
+`bash` runs without the provider keys nare reads (`ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`), so a command cannot print them.
+`--bash-credentials` passes them through for a task that needs one, and the
+session's policy records it. See [the bash environment](docs/contract.md#the-bash-environment).
+
 `--schema FILE` makes the answer data rather than prose. The final answer must
 satisfy the JSON Schema in that file; a violation is reported back to the model
 once, and a second violation ends the run with `stop_reason=schema_violation`

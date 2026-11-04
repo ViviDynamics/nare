@@ -92,6 +92,7 @@ def describe() -> dict[str, Any]:
         SKIPPED_DIRS,
         TOOLS,
     )
+    from nare.transport import CREDENTIAL_ENV
 
     return {
         "contract": CONTRACT_VERSION,
@@ -147,6 +148,13 @@ def describe() -> dict[str, Any]:
             "max_bytes": MAX_IMAGE_BYTES,
             "max_pixels": MAX_IMAGE_PIXELS,
             "max_edge": MAX_IMAGE_EDGE,
+        },
+        # Additive: the provider credentials bash runs without, and how a
+        # caller lets a task that needs one have it.
+        "bash_env": {
+            "withheld": sorted(CREDENTIAL_ENV),
+            "opt_in_flag": "--bash-credentials",
+            "policy_field": "bash_credentials",
         },
         "prompt_input": {
             "file_flag": "--prompt-file",
