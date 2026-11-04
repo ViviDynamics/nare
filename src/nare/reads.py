@@ -52,26 +52,42 @@ def build(
     *,
     root: Path | None,
 ) -> ReadRequirement:
-    """A requirement from caller input, with each path made root-relative.
+    """A requirement from caller input, each path in the form evidence records.
 
-    Refuses a count that is not a positive integer when given, an empty path, and
-    a path outside the root. A path is matched the way the read tool shows it:
-    relative to the root, resolved when there is one, and to the working
-    directory when there is not.
+    With a root, the read tool resolves a path (following symlinks) before it
+    reads, and records it relative to the resolved root, so a required path is
+    resolved the same way: a link inside the root counts as its target, and a
+    link that points outside the root is refused here. Without a root the tool
+    reads any path and records it relative to the working directory when it is
+    under it, and absolute otherwise.
+
+    Refuses a count that is not a non-negative integer, and an empty path.
     """
     if isinstance(count, bool) or not isinstance(count, int) or count < 0:
         raise ValueError("require_reads must be a non-negative integer")
-    base = str(root.resolve()) if root is not None else os.getcwd()
     normal: list[str] = []
     for given in paths:
         if not isinstance(given, str) or not given.strip():
             raise ValueError("require_read needs a non-empty path")
-        absolute = os.path.abspath(
-            given if os.path.isabs(given) else os.path.join(base, given)
-        )
-        if not absolute.startswith(base.rstrip(os.sep) + os.sep) and absolute != base:
-            raise ValueError(f"required path {given} is outside the root {base}")
-        shown = os.path.relpath(absolute, base).replace(os.sep, "/")
+        if root is None:
+            base = os.getcwd()
+            absolute = os.path.abspath(os.path.join(base, given))
+            shown = (
+                os.path.relpath(absolute, base).replace(os.sep, "/")
+                if absolute.startswith(base.rstrip(os.sep) + os.sep)
+                else absolute
+            )
+        else:
+            base_path = root.resolve()
+            candidate = Path(given)
+            if not candidate.is_absolute():
+                candidate = base_path / candidate
+            resolved = candidate.resolve()
+            if not resolved.is_relative_to(base_path):
+                raise ValueError(
+                    f"required path {given} is outside the root {base_path}"
+                )
+            shown = resolved.relative_to(base_path).as_posix()
         if shown not in normal:
             normal.append(shown)
     return ReadRequirement(count=count, paths=tuple(normal))

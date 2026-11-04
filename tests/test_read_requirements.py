@@ -10,7 +10,13 @@ from typing import Any
 
 import pytest
 
-from fake_provider import FakeProvider, StructuredProvider, text_reply, tool_reply
+from fake_provider import (
+    FakeProvider,
+    StreamingProvider,
+    StructuredProvider,
+    text_reply,
+    tool_reply,
+)
 from nare.cli import main
 from nare.loop import run
 from nare.session import Session, new_session
@@ -253,3 +259,141 @@ def test_a_requirement_through_the_library_refuses_a_tool_free_policy(
 
     with pytest.raises(ValueError, match="read"):
         asyncio.run(go())
+
+
+async def test_a_read_hold_after_a_schema_correction_offers_tools_again(
+    root: Path,
+) -> None:
+    # A schema correction constrains the next turn. After a valid answer that
+    # the read hold sends back, the turn that follows must offer tools again:
+    # a withheld read tool would end the run with reads_required for nothing.
+    provider = StructuredProvider(
+        [
+            text_reply("not json"),
+            text_reply("{}"),
+            tool_reply("read", {"path": "a.txt"}),
+            text_reply("{}"),
+        ]
+    )
+    session = new_session("go")
+
+    await drain(
+        session,
+        provider,
+        policy=reads_only(root),
+        schema={"type": "object"},
+        structured_output="json_schema",
+        require_reads=1,
+        max_corrections=2,
+    )
+
+    assert session.status == "done"
+    assert provider.constraints[1] is not None
+    assert provider.constraints[2] is None
+    assert [bool(tools) for _, tools in provider.calls[2:]] == [True, True]
+
+
+async def test_an_answer_before_any_read_is_held(root: Path) -> None:
+    provider = FakeProvider(
+        [text_reply("guess"), tool_reply("read", {"path": "a.txt"}), text_reply("ok")]
+    )
+    session = new_session("go")
+
+    await drain(session, provider, policy=reads_only(root), require_reads=1)
+
+    assert session.status == "done"
+    assert "read at least 1 distinct files (read 0 so far)" in sent_text(provider, 1)
+
+
+async def test_a_streamed_run_is_held_until_it_has_read(root: Path) -> None:
+    provider = StreamingProvider(
+        [
+            text_reply("too early"),
+            tool_reply("read", {"path": "b.txt"}),
+            text_reply("now"),
+        ]
+    )
+    session = new_session("go")
+
+    await drain(session, provider, policy=reads_only(root), require_read=["b.txt"])
+
+    assert session.status == "done"
+    assert [e["charged"] for e in session.schema_correction_log] == [True]
+
+
+async def test_a_link_inside_the_root_counts_as_its_target(root: Path) -> None:
+    (root / "real.txt").write_text("real\n", encoding="utf-8")
+    (root / "link.txt").symlink_to(root / "real.txt")
+    provider = FakeProvider(
+        [
+            tool_reply("read", {"path": "link.txt"}),
+            text_reply("answer"),
+        ]
+    )
+    session = new_session("go")
+
+    await drain(session, provider, policy=reads_only(root), require_read=["link.txt"])
+
+    assert session.status == "done"
+    assert session.schema_correction_log == []
+
+
+def test_a_link_out_of_the_root_is_refused_at_startup(
+    root: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    from nare.reads import build
+
+    outside = tmp_path_factory.mktemp("elsewhere") / "x.txt"
+    outside.write_text("x\n", encoding="utf-8")
+    (root / "escape.txt").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="outside the root"):
+        build(0, ["escape.txt"], root=root)
+
+
+async def test_without_a_root_an_absolute_path_outside_cwd_counts(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "far.txt"
+    target.write_text("far\n", encoding="utf-8")
+    provider = FakeProvider(
+        [tool_reply("read", {"path": str(target)}), text_reply("answer")]
+    )
+    session = new_session("go")
+
+    await drain(
+        session,
+        provider,
+        policy=Policy(tools=frozenset({"read"})),
+        require_read=[str(target)],
+    )
+
+    assert session.status == "done"
+
+
+def test_max_corrections_is_allowed_with_a_read_requirement_and_no_schema(
+    root: Path, capsys: Any
+) -> None:
+    code = main(
+        [
+            "run",
+            "go",
+            "--yes",
+            "--jsonl",
+            "--root",
+            str(root),
+            "--tools",
+            "read",
+            "--require-reads",
+            "1",
+            "--max-corrections",
+            "2",
+        ],
+        transport=FakeProvider(
+            [tool_reply("read", {"path": "a.txt"}), text_reply("ok")]
+        ),
+    )
+
+    last = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert code == 0
+    assert last["budget"]["schema_corrections"] == 2

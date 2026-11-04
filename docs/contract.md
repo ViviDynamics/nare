@@ -1201,14 +1201,20 @@ resume starts it again, as the correction round is per run.
 distinct files, and `--require-read PATH` (repeatable) holds it until each named
 path has been read. Paths are relative to `--root`. Only a read that succeeded
 and stayed inside the root counts; a failed read, or one refused as outside the
-root, does not. A requirement needs the `read` tool.
+root, does not. A read with `offset` or `limit` counts as a read of its file. A
+link inside the root counts as its target, and a link that points outside it is
+refused at startup. Without `--root` a path may be any path the read tool
+accepts. A requirement needs the `read` tool.
 
 A held answer is a correction, charged against the same budget as schema
 corrections (`--max-corrections`), and the model is told what is missing. A
 read correction is never free, and it leaves the tools offered, even under
 `--structured-output`. When the budget is spent the run ends `error` with
-`reads_required`. A count of reads is over the session's life, so a resumed run
-keeps the files it already read.
+`reads_required`, and any `output` the answer had already validated stays on the
+session, as it does for `schema_violation`. `--max-corrections` sets this budget
+too, so it is accepted with a read requirement and no `--schema`. A count of
+reads is over the session's life, so a resumed run keeps the files it already
+read.
 
 With a requirement set, the result gains `reads`: each distinct file read, once,
 with its `path`, `sha256` and `size` (the latest read's digest), so a caller can

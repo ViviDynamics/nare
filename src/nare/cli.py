@@ -957,8 +957,11 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         schema = schema_from_args(args)
         if args.structured_output is not None and schema is None:
             raise ValueError("--structured-output requires --schema")
-        if args.max_corrections is not None and schema is None:
-            raise ValueError("--max-corrections requires --schema")
+        reads_required = bool(args.require_reads or args.require_read)
+        if args.max_corrections is not None and schema is None and not reads_required:
+            raise ValueError(
+                "--max-corrections requires --schema or a read requirement"
+            )
         if args.require_reads is not None and args.require_reads <= 0:
             raise ValueError("--require-reads must be a positive integer")
         if args.require_reads or args.require_read:

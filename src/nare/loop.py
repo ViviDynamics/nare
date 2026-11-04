@@ -520,6 +520,10 @@ def _hold_for_reads(s: Session, reads: ReadRequirement, max_corrections: int) ->
     gaps = unmet(s, reads)
     if not gaps:
         return False
+    # The turn after a read hold is an ordinary turn: an earlier schema
+    # correction must not keep it constrained with its tools withheld, since
+    # the model now has to read.
+    s.schema_retried = False
     granted = charge(s, gaps, max_corrections, comparable=False, kind="reads")
     if granted is None:
         s.status = "error"

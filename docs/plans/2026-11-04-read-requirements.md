@@ -45,6 +45,11 @@ caller decides what its answers cite. Tool-call health benchmarking (#159).
   the option the result is unchanged, so default output keeps its keys.
 - Flags, stop reason, result keys and correction `kind` are additive and keep
   contract version 2.
+- A read with `offset` or `limit` counts as a read of its file.
+- A read hold clears `schema_retried`, so the turn after it offers tools even
+  when an earlier schema correction constrained the turn before.
+- `--max-corrections` is accepted with a read requirement and no `--schema`,
+  since the budget is the same.
 
 ## Tasks
 
