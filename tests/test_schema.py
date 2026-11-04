@@ -131,9 +131,88 @@ def test_items_that_are_not_a_schema_are_refused() -> None:
         validate([1], {"type": "array", "items": "string"})
 
 
-def test_additional_properties_that_is_not_a_boolean_is_refused() -> None:
+@pytest.mark.parametrize("value", ["string", 1, None, ["a"]])
+def test_additional_properties_that_is_not_a_boolean_or_schema_is_refused(
+    value: object,
+) -> None:
     with pytest.raises(UnsupportedSchema, match="additionalProperties"):
-        validate({}, {"type": "object", "additionalProperties": {"type": "string"}})
+        validate({}, {"type": "object", "additionalProperties": value})
+
+
+MAP = {"type": "object", "additionalProperties": {"type": "string"}}
+
+
+def test_a_schema_valued_additional_properties_checks_every_map_value() -> None:
+    assert validate({"HOME": "/h", "SHELL": "sh"}, MAP) == []
+    assert validate({}, MAP) == []
+
+
+def test_a_map_value_of_the_wrong_type_names_its_path() -> None:
+    schema = {"type": "object", "properties": {"env": MAP}}
+
+    assert validate({"env": {"HOME": 1, "USER": "u", "N": None}}, schema) == [
+        "env.HOME: expected string, got integer",
+        "env.N: expected string, got null",
+    ]
+
+
+def test_named_properties_are_not_checked_against_additional_properties() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"count": {"type": "integer"}},
+        "additionalProperties": {"type": "string"},
+    }
+
+    assert validate({"count": 3, "x": "y"}, schema) == []
+    assert validate({"count": 3, "x": 4}, schema) == [
+        "x: expected string, got integer"
+    ]
+
+
+def test_a_map_of_arrays_checks_each_item_by_path() -> None:
+    schema = {
+        "type": "object",
+        "additionalProperties": {"type": "array", "items": {"type": "string"}},
+    }
+
+    assert validate({"a": ["b", 2]}, schema) == ["a[1]: expected string, got integer"]
+
+
+def test_a_map_value_ref_resolves_like_any_local_reference() -> None:
+    schema = {
+        "$defs": {"Item": {"type": "object", "required": ["id"]}},
+        "type": "object",
+        "additionalProperties": {"$ref": "#/$defs/Item"},
+    }
+
+    assert validate({"a": {"id": 1}}, schema) == []
+    assert validate({"a": {}}, schema) == ["a: missing required property: id"]
+
+
+def test_a_recursive_map_through_a_ref_validates_and_terminates() -> None:
+    schema = {
+        "$defs": {
+            "Tree": {"type": "object", "additionalProperties": {"$ref": "#/$defs/Tree"}}
+        },
+        "$ref": "#/$defs/Tree",
+    }
+
+    assert validate({"a": {"b": {}}}, schema) == []
+    assert validate({"a": {"b": 1}}, schema) == ["a.b: expected object, got integer"]
+
+
+def test_a_map_value_schema_is_checked_for_unsupported_keywords() -> None:
+    schema = {"type": "object", "additionalProperties": {"format": "date"}}
+
+    with pytest.raises(UnsupportedSchema, match="'format' at additionalProperties"):
+        validate({}, schema)
+
+
+def test_a_dangling_ref_in_a_map_value_schema_is_refused() -> None:
+    schema = {"type": "object", "additionalProperties": {"$ref": "#/$defs/Nope"}}
+
+    with pytest.raises(UnsupportedSchema, match="does not point at a schema"):
+        validate({}, schema)
 
 
 def test_properties_that_are_not_a_mapping_are_refused() -> None:

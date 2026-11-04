@@ -6,7 +6,7 @@ conflict with when vendored into another project's container. A real validator
 would be the fourth and fifth transitive dependency, so this module implements
 the keywords a caller actually constrains an answer with, including what
 schema generators emit (local `$ref`, `anyOf`/`oneOf`/`allOf`, `const`,
-bounds), and REFUSES any schema using a keyword it does not implement.
+bounds, a schema-valued `additionalProperties` for a map), and REFUSES any schema using a keyword it does not implement.
 docs/contract.md lists them. Under-validating quietly would
 hand a caller a "validated" object that nothing checked, which is the class of
 dishonesty nare exists to remove.
@@ -70,7 +70,7 @@ _SHAPES: dict[str, tuple[type | tuple[type, ...], str]] = {
     "required": (list, "a list of property names"),
     "items": (dict, "a schema"),
     "enum": (list, "a list of allowed values"),
-    "additionalProperties": (bool, "true or false"),
+    "additionalProperties": ((bool, dict), "true, false or a schema"),
     "uniqueItems": (bool, "true or false"),
     "pattern": (str, "a regular expression"),
     "$ref": (str, "a reference string"),
@@ -155,6 +155,14 @@ def _check(schema: Any, path: str, root: Any, refs: dict[str, dict[str, Any]]) -
         _check(sub, f"{path}.{name}" if path else name, root, refs)
     if "items" in schema:
         _check(schema["items"], f"{path}[]" if path else "[]", root, refs)
+    if isinstance(schema.get("additionalProperties"), dict):
+        label = "additionalProperties"
+        _check(
+            schema["additionalProperties"],
+            f"{path}.{label}" if path else label,
+            root,
+            refs,
+        )
     for keyword in _COMPOSITIONS:
         for index, sub in enumerate(schema.get(keyword, [])):
             label = f"{keyword}[{index}]"
@@ -295,10 +303,18 @@ def _validate(value: Any, schema: dict[str, Any], path: str, root: Any) -> list[
         for name in schema.get("required") or []:
             if name not in value:
                 errors.append(_at(path, f"missing required property: {name}"))
-        if schema.get("additionalProperties") is False:
-            for name in value:
-                if name not in properties:
-                    errors.append(_at(path, f"unexpected property: {name}"))
+        additional = schema.get("additionalProperties")
+        for name in value:
+            if name in properties:
+                continue
+            if additional is False:
+                errors.append(_at(path, f"unexpected property: {name}"))
+            elif isinstance(additional, dict):
+                # A map: every property the schema does not name is a value
+                # of the map, checked against the one value schema.
+                errors += _validate(
+                    value[name], additional, f"{path}.{name}" if path else name, root
+                )
         for name, sub in properties.items():
             if name in value:
                 errors += _validate(
