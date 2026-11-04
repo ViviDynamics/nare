@@ -37,7 +37,8 @@ from textual.selection import Selection
 from textual.strip import Strip
 from textual.timer import Timer
 from textual.visual import Visual
-from textual.widgets import Collapsible, Input, Static
+from textual.widgets import Collapsible, Input, OptionList, Static
+from textual.widgets.option_list import Option
 from textual.worker import Worker, WorkerCancelled
 
 from nare.accounting import Prices
@@ -50,7 +51,18 @@ from nare.cli import (
 from nare.contract import NARE_VERSION, NEVER_STARTED
 from nare.events import Event, redact
 from nare.loop import configure_budgets, run
-from nare.session import Session, Usage, loads, new_session, reopen, save, unanswered
+from nare.session import (
+    SavedSession,
+    Session,
+    Usage,
+    loads,
+    new_session,
+    reopen,
+    save,
+    saved_in,
+    sessions_dir,
+    unanswered,
+)
 from nare.tools import Policy, group_alive, stop_group
 from nare.transport import Transport
 from nare.tui.approve import Approver
@@ -137,6 +149,46 @@ class PromptInput(Input):
             "terminal's paste key (ctrl+shift+v, cmd+v or right-click).",
             title="Paste",
         )
+
+
+class SessionPicker(App[str | None]):
+    """`nare tui --resume` with no path: the saved sessions that started in
+    this directory, newest first. Enter resumes one; Esc starts nothing.
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "cancel", "cancel")]
+
+    def __init__(self, rows: list[SavedSession]) -> None:
+        super().__init__()
+        self.rows = rows
+
+    def compose(self) -> ComposeResult:
+        yield Static(
+            "Resume which session? enter resumes, esc cancels.", id="picker-title"
+        )
+        yield OptionList(
+            *(
+                Option(self._line(row), id=str(index))
+                for index, row in enumerate(self.rows)
+            ),
+            id="sessions",
+        )
+
+    def on_mount(self) -> None:
+        self.query_one(OptionList).focus()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.exit(str(self.rows[event.option_index].path))
+
+    def action_cancel(self) -> None:
+        self.exit(None)
+
+    @staticmethod
+    def _line(row: SavedSession) -> Text:
+        when = datetime.fromtimestamp(row.changed).strftime("%Y-%m-%d %H:%M")
+        prompt = row.prompt if len(row.prompt) <= 70 else row.prompt[:69] + "…"
+        # Text, not a string: a prompt is full of brackets, which markup reads.
+        return Text(f"{when}  {row.status:<11} {row.turns:>3} turns  {prompt}")
 
 
 class Transcript(VerticalScroll):
@@ -427,6 +479,11 @@ class TuiApp(App[None]):
     def _submit(self, text: str) -> None:
         if self.session is None:
             self.session = new_session(text, self.session_id)
+            # Where the run started, so the resume picker can find it again.
+            self.session.cwd = os.getcwd()
+            self.session.root = (
+                None if self.args.root is None else str(Path(self.args.root).resolve())
+            )
             adopt_system(self.args, self.session)
         else:
             reopen(self.session, text)
@@ -744,26 +801,13 @@ def logs_as_notices(app: App[None]) -> Iterator[None]:
         root.handlers = saved
 
 
-def _sessions_dir() -> Path | None:
-    """$XDG_STATE_HOME/nare/sessions. A relative XDG_STATE_HOME is ignored,
-    as the XDG spec says; None when there is no home directory either.
-    """
-    state = os.environ.get("XDG_STATE_HOME", "")
-    if not os.path.isabs(state):
-        try:
-            state = str(Path.home() / ".local" / "state")
-        except RuntimeError:  # no HOME and no passwd entry
-            return None
-    return Path(state) / "nare" / "sessions"
-
-
 def prepare(args: argparse.Namespace, transport: Transport | None = None) -> TuiApp:
     """Everything that can fail at startup, before Textual takes the screen."""
     prices = validate_run_args(args)
     policy = policy_from_args(args)
     session_id: str | None = None
     warning: str | None = None
-    sessions = _sessions_dir()
+    sessions = sessions_dir()
     if not args.session:
         # Every run is saved, outside the project.
         if sessions is None:
@@ -844,6 +888,22 @@ def main(args: argparse.Namespace, transport: Transport | None = None) -> int:
         with logs_as_notices(attach_app):
             attach_app.run()
         return attach_app.return_code or 0
+    if args.resume == "":
+        # --resume with no path: pick one of this directory's sessions first.
+        folder = sessions_dir()
+        here = os.getcwd()
+        rows = saved_in(folder, here)
+        if not rows:
+            print(
+                f"nare: no saved session started in {here} "
+                f"(looked in {folder or 'no sessions folder'})",
+                file=sys.stderr,
+            )
+            return NEVER_STARTED
+        chosen = SessionPicker(rows).run()
+        if chosen is None:
+            return 0
+        args.resume = chosen
     try:
         app = prepare(args, transport)
     except (ValueError, OSError) as exc:
