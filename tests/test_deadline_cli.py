@@ -38,7 +38,13 @@ def lines(out: str) -> list[dict[str, Any]]:
 class Slow(FakeProvider):
     """A model call that outlasts any deadline a test sets."""
 
-    async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
+    async def turn(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        tool_choice: str | None = None,
+    ) -> Reply:
         await asyncio.sleep(30)
         raise AssertionError("the deadline should have stopped this call")
 

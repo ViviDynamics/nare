@@ -22,14 +22,23 @@ class FakeProvider:
     def __init__(self, replies: list[Reply]) -> None:
         self._replies = list(replies)
         self.calls: list[tuple[list[Message], list[dict[str, Any]]]] = []
+        # One entry per call, what the loop asked for as tool_choice.
+        self.choices: list[str | None] = []
 
     async def context_window(self) -> int | None:
         return None
 
-    async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
+    async def turn(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        tool_choice: str | None = None,
+    ) -> Reply:
         self.calls.append(
             ([Message(m.role, list(m.content)) for m in messages], list(tools))
         )
+        self.choices.append(tool_choice)
         if not self._replies:
             raise AssertionError("FakeProvider ran out of scripted replies")
         return self._replies.pop(0)
@@ -41,10 +50,14 @@ class StreamingProvider(FakeProvider):
     streaming = True
 
     async def stream_turn(
-        self, messages: list[Message], tools: list[dict[str, Any]]
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        tool_choice: str | None = None,
     ) -> AsyncGenerator[Delta | Reply, None]:
         yield Delta("progress", "on it ")
-        yield await self.turn(messages, tools)
+        yield await self.turn(messages, tools, tool_choice=tool_choice)
 
 
 class StructuredProvider(FakeProvider):
@@ -62,9 +75,10 @@ class StructuredProvider(FakeProvider):
         tools: list[dict[str, Any]],
         *,
         response_schema: dict[str, Any] | None = None,
+        tool_choice: str | None = None,
     ) -> Reply:
         self.constraints.append(response_schema)
-        return await super().turn(messages, tools)
+        return await super().turn(messages, tools, tool_choice=tool_choice)
 
 
 class StreamingStructuredProvider(StructuredProvider):
@@ -86,7 +100,15 @@ class StrictArityProvider(FakeProvider):
 
     supports_structured_output = True
 
-    async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
+    async def turn(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        tool_choice: str | None = None,
+    ) -> Reply:
+        if tool_choice is not None:
+            raise AssertionError("this double takes no tool_choice")
         return await super().turn(messages, tools)
 
 

@@ -335,6 +335,7 @@ class OpenAITransport:
         messages: list[Message],
         tools: list[dict[str, Any]],
         response_schema: dict[str, Any] | None = None,
+        tool_choice: str | None = None,
     ) -> dict[str, Any]:
         wire_messages = messages_from(
             messages,
@@ -357,6 +358,8 @@ class OpenAITransport:
             payload["response_format"] = response_format_from(response_schema)
         elif wire_tools:
             payload["tools"] = wire_tools
+            if tool_choice:
+                payload["tool_choice"] = tool_choice
         if self.max_tokens is not None:
             payload["max_tokens"] = self.max_tokens
         # Omitted rather than defaulted: a server's own default is a better
@@ -376,18 +379,24 @@ class OpenAITransport:
         tools: list[dict[str, Any]],
         *,
         response_schema: dict[str, Any] | None = None,
+        tool_choice: str | None = None,
     ) -> Reply:
         if self.streaming:
             # Closed explicitly: a reply stopped early returns from inside the
             # stream, and the connection must not wait on garbage collection.
             async with aclosing(
-                self.stream_turn(messages, tools, response_schema=response_schema)
+                self.stream_turn(
+                    messages,
+                    tools,
+                    response_schema=response_schema,
+                    tool_choice=tool_choice,
+                )
             ) as items:
                 async for item in items:
                     if isinstance(item, Reply):
                         return item
             raise RuntimeError("stream ended without a reply")
-        payload = self._payload(messages, tools, response_schema)
+        payload = self._payload(messages, tools, response_schema, tool_choice)
         response = await self._client.post(
             f"{self._base_url}/chat/completions",
             headers={"authorization": f"Bearer {self._key}"},
@@ -409,9 +418,10 @@ class OpenAITransport:
         tools: list[dict[str, Any]],
         *,
         response_schema: dict[str, Any] | None = None,
+        tool_choice: str | None = None,
     ) -> AsyncGenerator[Delta | Reply, None]:
         payload = {
-            **self._payload(messages, tools, response_schema),
+            **self._payload(messages, tools, response_schema, tool_choice),
             "stream": True,
             "stream_options": {"include_usage": True},
         }

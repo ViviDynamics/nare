@@ -254,6 +254,11 @@ def response_format_from(schema: dict[str, Any]) -> dict[str, Any]:
     return {"type": "json_schema", "schema": transform_schema(deepcopy(schema))}
 
 
+def _tool_choice(choice: str | None, tools: list[Any]) -> Any:
+    """The wire tool_choice, or omitted: a choice needs tools to choose among."""
+    return {"type": choice} if choice and tools else omit
+
+
 def _subschemas(node: dict[str, Any], path: str) -> list[tuple[dict[str, Any], str]]:
     found: list[tuple[dict[str, Any], str]] = []
     for name, child in (node.get("properties") or {}).items():
@@ -523,12 +528,18 @@ class AnthropicTransport:
         tools: list[dict[str, Any]],
         *,
         response_schema: dict[str, Any] | None = None,
+        tool_choice: str | None = None,
     ) -> Reply:
         if self.streaming:
             # Closed explicitly: a reply stopped early returns from inside the
             # stream, and the connection must not wait on garbage collection.
             async with aclosing(
-                self.stream_turn(messages, tools, response_schema=response_schema)
+                self.stream_turn(
+                    messages,
+                    tools,
+                    response_schema=response_schema,
+                    tool_choice=tool_choice,
+                )
             ) as items:
                 async for item in items:
                     if isinstance(item, Reply):
@@ -542,6 +553,7 @@ class AnthropicTransport:
             max_tokens=self.max_tokens,
             messages=wire_messages,
             tools=wire_tools,
+            tool_choice=_tool_choice(tool_choice, wire_tools),
             system=self.system if self.system is not None else omit,
             thinking=cast(Any, self.thinking) if self.thinking else omit,
             output_config=self._output_config(response_schema),
@@ -580,6 +592,7 @@ class AnthropicTransport:
         tools: list[dict[str, Any]],
         *,
         response_schema: dict[str, Any] | None = None,
+        tool_choice: str | None = None,
     ) -> AsyncGenerator[Delta | Reply, None]:
         wire_messages, wire_tools = self._wire(
             messages, tools if response_schema is None else []
@@ -589,6 +602,7 @@ class AnthropicTransport:
             max_tokens=self.max_tokens,
             messages=wire_messages,
             tools=wire_tools,
+            tool_choice=_tool_choice(tool_choice, wire_tools),
             system=self.system if self.system is not None else omit,
             thinking=cast(Any, self.thinking) if self.thinking else omit,
             output_config=self._output_config(response_schema),

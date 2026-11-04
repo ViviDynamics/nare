@@ -52,6 +52,7 @@ from nare.transport import (
     StreamingStructuredTransport,
     StreamingTransport,
     StructuredTransport,
+    ToolChoiceTransport,
     Transient,
     Transport,
     transient,
@@ -272,6 +273,9 @@ def check_max_cutoffs(value: int | None) -> None:
 ASK_NOT_ALONE = (
     "ask was not recorded: call ask on its own, before making any change. "
     "The other calls in this turn ran."
+)
+SUMMARY_REFUSED = (
+    "Tools are disabled for the turn-limit summary: this call was not run."
 )
 ASK_NOT_DELIVERED = (
     "ask was not recorded: another ask in this turn failed, so nothing was "
@@ -629,6 +633,7 @@ async def step(
     reads: ReadRequirement = NO_READS,
     check: Check | None = None,
     tools: Sequence[Tool] = (),
+    summary: bool = False,
 ) -> Session:
     if tools:
         # The allowlist is the policy's, as for built-ins: a registered tool is
@@ -669,7 +674,14 @@ async def step(
         else _without_images(s.messages, policy.image_model)
     )
     offered = policy.schemas()
-    constrained = _constrained(s, schema, structured_output, offered)
+    # A summary keeps this turn's tools on the wire, so the request's prefix
+    # matches the turn before it: signed thinking binds to the tools array, and
+    # a tool set rebuilt mid-run is rejected by the vendor. tool_choice none
+    # keeps the model from calling them, and any call it makes is refused. A
+    # constrained turn withholds tools, so a summary of a run that offers tools
+    # is never constrained.
+    keep_tools = summary and bool(offered)
+    constrained = not keep_tools and _constrained(s, schema, structured_output, offered)
     if constrained:
         s.events.append(
             Event(
@@ -695,6 +707,10 @@ async def step(
                     model_messages, [], response_schema=schema
                 )
                 if constrained
+                else cast(ToolChoiceTransport, transport).stream_turn(
+                    model_messages, offered, tool_choice="none"
+                )
+                if keep_tools
                 else cast(StreamingTransport, transport).stream_turn(
                     model_messages, offered
                 )
@@ -713,6 +729,10 @@ async def step(
                 model_messages, [], response_schema=schema
             )
             if constrained
+            else cast(ToolChoiceTransport, transport).turn(
+                model_messages, offered, tool_choice="none"
+            )
+            if keep_tools
             else transport.turn(model_messages, offered)
         )
 
@@ -818,6 +838,11 @@ async def step(
             s.status = "done"
             s.events.append(Event("output", text))
             return s
+        if summary:
+            # The summary is not an answer: the run ends `max_turns` at the cap
+            # either way, so a free-text summary is not checked against the
+            # schema and does not spend a correction.
+            return s
         errors = _answer_errors(text, schema)
         if not errors and check is not None:
             try:
@@ -904,6 +929,9 @@ async def step(
             # measurably slow because of it, and not before.
             refused = False
             for call in reply.tool_calls:
+                if summary:
+                    results.append(tool_result(call.id, SUMMARY_REFUSED, is_error=True))
+                    continue
                 if call.name == "ask" and not only_asks and "ask" in policy.tools:
                     results.append(tool_result(call.id, ASK_NOT_ALONE, is_error=True))
                     continue
@@ -1000,6 +1028,7 @@ async def _live_step(
     cutoffs: CutoffLimit | None = None,
     reads: ReadRequirement = NO_READS,
     check: Check | None = None,
+    summary: bool = False,
 ) -> AsyncGenerator[Event, None]:
     queue: asyncio.Queue[Event] = asyncio.Queue()
     buffers: dict[Literal["progress", "thinking"], LiveText] = {
@@ -1042,6 +1071,7 @@ async def _live_step(
             cutoffs=cutoffs,
             reads=reads,
             check=check,
+            summary=summary,
         )
     )
     waiter: asyncio.Task[Event] | None = None
@@ -1191,14 +1221,12 @@ async def _run(
         else:
             remaining = max_turns - (session.turns - budget_from)
             summary = remaining <= 0
-            turn_policy = policy
             if summary:
                 append_user_text(
                     session,
                     "Turn limit reached. Tools are disabled. Summarise what was done, "
                     "what remains, and any processes left running.",
                 )
-                turn_policy = replace(policy, tools=frozenset(), external={})
             elif remaining <= 5:
                 warning = f"{remaining} turns left: wrap up and summarise."
                 # Only a run with tools, built-in or MCP, has anything to wrap
@@ -1218,7 +1246,7 @@ async def _run(
                             session,
                             transport,
                             approve,
-                            turn_policy,
+                            policy,
                             schema,
                             window,
                             prices,
@@ -1229,6 +1257,7 @@ async def _run(
                             cutoffs,
                             reads,
                             check=check,
+                            summary=summary,
                         )
                     ) as stream:
                         async for event in stream:
@@ -1238,7 +1267,7 @@ async def _run(
                         session,
                         transport,
                         approve,
-                        turn_policy,
+                        policy,
                         schema,
                         window,
                         prices,
@@ -1249,6 +1278,7 @@ async def _run(
                         cutoffs=cutoffs,
                         reads=reads,
                         check=check,
+                        summary=summary,
                     )
                 if session.status not in ("done", "blocked"):
                     check_budget(session)

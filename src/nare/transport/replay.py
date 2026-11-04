@@ -195,7 +195,13 @@ class ReplayTransport:
     async def context_window(self) -> int | None:
         return None
 
-    async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
+    async def turn(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        tool_choice: str | None = None,
+    ) -> Reply:
         if self._next >= len(self._turns):
             raise RuntimeError(
                 f"replay script has no reply for turn {self._next + 1}: "
@@ -208,9 +214,13 @@ class ReplayTransport:
         return scripted
 
     async def stream_turn(
-        self, messages: list[Message], tools: list[dict[str, Any]]
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        tool_choice: str | None = None,
     ) -> AsyncGenerator[Delta | Reply, None]:
-        reply = await self.turn(messages, tools)
+        reply = await self.turn(messages, tools, tool_choice=tool_choice)
         for block in reply.content:
             if block["type"] == "thinking":
                 yield Delta("thinking", block["thinking"])
