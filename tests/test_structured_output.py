@@ -208,3 +208,20 @@ async def test_structured_output_needs_a_schema_and_a_known_mode(
         await drain(new_session("who?"), provider, **kwargs)
 
     assert provider.calls == []
+
+
+async def test_a_repeated_key_is_a_correction_not_a_silent_answer(
+    notes: Policy,
+) -> None:
+    provider = FakeProvider(
+        [text_reply('{"name": "ada", "name": "bob"}'), text_reply('{"name": "ada"}')]
+    )
+    session = new_session("who?")
+
+    await drain(session, provider, schema=PERSON, policy=notes)
+
+    assert session.status == "done"
+    assert session.output == {"name": "ada"}
+    # The refusal reaches the model as the correction, not as a silent collapse.
+    corrections = [str(m.content) for m in session.messages if m.role == "user"]
+    assert any("duplicate key: name" in text for text in corrections)

@@ -727,12 +727,18 @@ lists the line each occurrence starts on. Excerpts are bounded (10 lines, 200
 characters a line, 20 line numbers), and an inexact match is never applied.
 
 Tool arguments that are not a complete JSON object are an `is_error` result
-too, on every path that receives them as text: a streamed turn on either
-provider, and an unstreamed openai turn, which used to pass `{}` and run the
-tool with no arguments. The tool is not run. (An unstreamed anthropic reply
-arrives with its arguments already parsed.)
+too, on every path that receives them: a streamed turn on either provider, and
+an unstreamed openai or anthropic turn. The openai path used to pass `{}` and
+run the tool with no arguments. The tool is not run.
 
-`nare contract` describes the check under `tool_arguments`.
+Arguments that repeat an object key are refused the same way, with the message
+`tool arguments are invalid: <path>: duplicate key: <key>; tool not run`. An
+unstreamed anthropic reply is checked from its raw body, because the SDK
+would otherwise keep the last of a repeated key silently. A repeat outside
+any tool's input refuses every tool call in that reply.
+
+`nare contract` describes the check under `tool_arguments`, including
+`repeated_keys`.
 
 ## The tool output cap
 
@@ -1208,6 +1214,7 @@ refusal says which it was, so the correction turn tells the model what to fix:
 | The answer ends inside the document | `the JSON document starting at character N is incomplete: ...` |
 | A second document after the first | `the answer has two JSON documents, at characters N and M; send exactly one` |
 | Text after the document that starts a document the answer ends inside | `the answer has text after the JSON document that starts an incomplete JSON document at character N` |
+| A document with an object that repeats a key, at any depth, on any of the routes above | `findings[0].scope: duplicate key: file`, one clause per repeat, naming the key and the path to its object (`duplicate key: a` at the root). The answer is not read with the last value of the repeated key |
 
 Character positions count from 0 in the final turn's text. Prose after the
 document may hold braces or brackets that are not JSON (`{braces}`); one that

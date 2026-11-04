@@ -367,6 +367,7 @@ def test_contract_describes_tool_argument_checks() -> None:
         "unknown_parameters": "refused",
         "null_optional": "absent",
         "malformed_json": "is_error",
+        "repeated_keys": "is_error",
     }
 
 

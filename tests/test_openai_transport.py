@@ -417,3 +417,41 @@ async def test_an_unstreamed_reply_reports_malformed_arguments(arguments: str) -
     result = await dispatch(call, Policy())
     assert result["is_error"] is True
     assert result["content"] == call.error
+
+
+async def test_an_unstreamed_reply_refuses_arguments_that_repeat_a_key() -> None:
+    from nare.tools import Policy, dispatch
+
+    reply, _ = await turn_with(
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "c1",
+                                "type": "function",
+                                "function": {
+                                    "name": "read",
+                                    "arguments": '{"path": "a", "path": "b"}',
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+    )
+
+    [call] = reply.tool_calls
+    assert call.args == {}
+    assert call.error is not None
+    assert "duplicate key: path" in call.error
+    result = await dispatch(call, Policy())
+    assert result["is_error"] is True
+    assert result["content"] == call.error

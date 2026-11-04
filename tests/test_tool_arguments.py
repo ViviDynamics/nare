@@ -7,8 +7,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import httpx2
 import pytest
 
+from nare.session import Message
 from nare.tools import TOOL_SCHEMAS, Policy, dispatch
 from nare.transport import ToolCall
 
@@ -153,3 +155,91 @@ async def test_a_null_required_parameter_is_still_an_error() -> None:
     result = await run("bash", {"command": None})
 
     assert result["content"] == "bash: command: expected string, got null"
+
+
+def _anthropic(handler: Any, *, streaming: bool = False) -> Any:
+    from nare.transport.anthropic import AnthropicTransport
+
+    return AnthropicTransport(
+        model="m",
+        api_key="test",
+        streaming=streaming,
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+    )
+
+
+_HI = [Message("user", [{"type": "text", "text": "hi"}])]
+_READ = {"name": "read", "description": "Read a file.", "input_schema": {}}
+_REPEATED = (
+    '{"id":"m","type":"message","role":"assistant","model":"m","content":['
+    '{"type":"text","text":"reading"},'
+    '{"type":"tool_use","id":"t1","name":"read","input":{"path":"a","path":"b"}},'
+    '{"type":"tool_use","id":"t2","name":"read","input":{"path":"ok"}}],'
+    '"stop_reason":"tool_use","stop_sequence":null,'
+    '"usage":{"input_tokens":7,"output_tokens":5}}'
+)
+
+
+async def test_an_unstreamed_anthropic_call_repeating_a_key_is_refused_alone() -> None:
+    transport = _anthropic(
+        lambda request: httpx2.Response(
+            200, headers={"content-type": "application/json"}, content=_REPEATED
+        )
+    )
+
+    reply = await transport.turn(_HI, [_READ])
+
+    refused, allowed = reply.tool_calls
+    assert refused.args == {}
+    assert refused.error is not None
+    assert "duplicate key: path" in refused.error
+    assert allowed.args == {"path": "ok"}
+    assert allowed.error is None
+
+
+async def test_a_streamed_anthropic_call_repeating_a_key_is_refused() -> None:
+    from test_streaming import Bytes, anthropic_chunks, sse
+
+    raw: list[dict[str, Any]] = [
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "tool_use",
+                "id": "a",
+                "name": "read",
+                "input": {},
+            },
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "input_json_delta",
+                "partial_json": '{"path": "a", "path": "b"}',
+            },
+        },
+        {"type": "content_block_stop", "index": 0},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "tool_use", "stop_sequence": None},
+            "usage": {"output_tokens": 5},
+        },
+        {"type": "message_stop"},
+    ]
+    chunks = [anthropic_chunks()[0], *[sse(p, str(p["type"])) for p in raw]]
+    transport = _anthropic(
+        lambda request: httpx2.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=Bytes(chunks),
+        ),
+        streaming=True,
+    )
+
+    reply = await transport.turn(_HI, [_READ])
+
+    [call] = reply.tool_calls
+    assert call.args == {}
+    assert call.error is not None
+    assert "duplicate key: path" in call.error
