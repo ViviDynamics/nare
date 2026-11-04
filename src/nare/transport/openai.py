@@ -18,11 +18,14 @@ import json
 import logging
 import os
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
+from dataclasses import replace
 from typing import Any
 
 import httpx2
 
 from nare.accounting import Prices
+from nare.repetition import RepetitionWatch, degenerate, looping
 from nare.session import Message, Usage
 from nare.transport import (
     Delta,
@@ -372,11 +375,14 @@ class OpenAITransport:
         response_schema: dict[str, Any] | None = None,
     ) -> Reply:
         if self.streaming:
-            async for item in self.stream_turn(
-                messages, tools, response_schema=response_schema
-            ):
-                if isinstance(item, Reply):
-                    return item
+            # Closed explicitly: a reply stopped early returns from inside the
+            # stream, and the connection must not wait on garbage collection.
+            async with aclosing(
+                self.stream_turn(messages, tools, response_schema=response_schema)
+            ) as items:
+                async for item in items:
+                    if isinstance(item, Reply):
+                        return item
             raise RuntimeError("stream ended without a reply")
         payload = self._payload(messages, tools, response_schema)
         response = await self._client.post(
@@ -389,7 +395,10 @@ class OpenAITransport:
             # The body carries the reason a proxy refused, which is the part a
             # caller needs: a scoped key naming the model it may not reach.
             raise self._failure(response)
-        return self._reply(response.json(), cost=reported_cost(response.headers))
+        reply = self._reply(response.json(), cost=reported_cost(response.headers))
+        if looping(reply.content):
+            return replace(reply, stop_reason="repetition")
+        return reply
 
     async def stream_turn(
         self,
@@ -419,6 +428,11 @@ class OpenAITransport:
             finish: str | None = None
             usage: dict[str, Any] | None = None
             done = False
+            # A reply whose text or reasoning starts to loop is stopped here:
+            # the rest of the stream would only repeat it to the output cap.
+            looped = False
+            text_watch = RepetitionWatch()
+            thought_watch = RepetitionWatch()
             data: list[str] = []
             async for line in response.aiter_lines():
                 if line.startswith("data:"):
@@ -446,9 +460,11 @@ class OpenAITransport:
                     if value:
                         reasoning.append(str(value))
                         yield Delta("thinking", str(value))
+                        looped = thought_watch.feed(str(value)) or looped
                     if delta.get("content"):
                         text.append(str(delta["content"]))
                         yield Delta("progress", str(delta["content"]))
+                        looped = text_watch.feed(str(delta["content"])) or looped
                     for part in delta.get("tool_calls") or []:
                         index = part["index"]
                         call = calls.setdefault(
@@ -458,22 +474,29 @@ class OpenAITransport:
                         function = part.get("function") or {}
                         for key in ("name", "arguments"):
                             call["function"][key] += function.get(key) or ""
-            if not done or finish is None or usage is None:
-                # No final marker is a connection that ended mid-response,
-                # which resending can cure; a finished stream that lacks the
-                # rest is the server's shape, which it cannot.
-                failure = StreamDropped if not done else RuntimeError
-                raise failure(
-                    "incomplete model stream: "
-                    "final marker, stop reason or usage missing"
-                )
-            if not all(
-                isinstance(usage.get(key), int)
-                and not isinstance(usage.get(key), bool)
-                and usage[key] >= 0
-                for key in ("prompt_tokens", "completion_tokens")
-            ):
-                raise RuntimeError("incomplete model stream: invalid final usage")
+                if looped:
+                    break
+            if not looped and not done:
+                # A connection that ended on a looping reply is the loop, not a
+                # failure to resend: the resend would loop the same way.
+                looped = degenerate("".join(text)) or degenerate("".join(reasoning))
+            if not looped:
+                if not done or finish is None or usage is None:
+                    # No final marker is a connection that ended mid-response,
+                    # which resending can cure; a finished stream that lacks
+                    # the rest is the server's shape, which it cannot.
+                    failure = StreamDropped if not done else RuntimeError
+                    raise failure(
+                        "incomplete model stream: "
+                        "final marker, stop reason or usage missing"
+                    )
+                if not all(
+                    isinstance(usage.get(key), int)
+                    and not isinstance(usage.get(key), bool)
+                    and usage[key] >= 0
+                    for key in ("prompt_tokens", "completion_tokens")
+                ):
+                    raise RuntimeError("incomplete model stream: invalid final usage")
             message = {
                 "content": "".join(text),
                 "reasoning_content": "".join(reasoning),
@@ -486,6 +509,9 @@ class OpenAITransport:
                 },
                 cost=reported_cost(response.headers, streamed=True),
             )
+            if looped:
+                # The stop was ours, so the provider's finish reason says nothing.
+                reply = replace(reply, stop_reason="repetition")
         yield reply
 
     def _failure(self, response: httpx2.Response) -> ProviderStatusError:

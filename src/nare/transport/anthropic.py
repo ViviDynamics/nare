@@ -6,8 +6,9 @@ import json
 import logging
 import os
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any, cast
 
 import httpx2
@@ -21,6 +22,7 @@ from anthropic import (
 from anthropic.types import MessageParam, ToolParam
 
 from nare.accounting import Prices
+from nare.repetition import RepetitionWatch, degenerate, looping
 from nare.session import Message, Usage, sent_back
 from nare.transport import (
     EFFORTS,
@@ -495,11 +497,14 @@ class AnthropicTransport:
         response_schema: dict[str, Any] | None = None,
     ) -> Reply:
         if self.streaming:
-            async for item in self.stream_turn(
-                messages, tools, response_schema=response_schema
-            ):
-                if isinstance(item, Reply):
-                    return item
+            # Closed explicitly: a reply stopped early returns from inside the
+            # stream, and the connection must not wait on garbage collection.
+            async with aclosing(
+                self.stream_turn(messages, tools, response_schema=response_schema)
+            ) as items:
+                async for item in items:
+                    if isinstance(item, Reply):
+                        return item
             raise RuntimeError("stream ended without a reply")
         wire_messages, wire_tools = self._wire(
             messages, tools if response_schema is None else []
@@ -516,7 +521,7 @@ class AnthropicTransport:
         response = await raw.parse()
         content = [block.model_dump(exclude_none=True) for block in response.content]
         self._warn_proxy_reasoning(content)
-        return Reply(
+        reply = Reply(
             content=content,
             tool_calls=[
                 ToolCall(id=b["id"], name=b["name"], args=b.get("input") or {})
@@ -527,6 +532,9 @@ class AnthropicTransport:
             stop_reason=stop_reason_from(response.stop_reason),
             cost=reported_cost(raw.headers),
         )
+        if looping(content):
+            return replace(reply, stop_reason="repetition")
+        return reply
 
     async def stream_turn(
         self,
@@ -550,19 +558,34 @@ class AnthropicTransport:
             finished = False
             complete_usage = False
             fragments: dict[int, list[str]] = {}
+            # The reply's text, kept apart from the stream's own snapshot so a
+            # stopped stream still has what arrived. A reply whose text or
+            # reasoning starts to loop is stopped here, not read to the cap.
+            answer: list[str] = []
+            looped = False
+            text_watch = RepetitionWatch()
+            thought_watch = RepetitionWatch()
             async for event in stream:
                 if event.type == "content_block_start":
                     if event.content_block.type == "text" and event.content_block.text:
+                        answer.append(event.content_block.text)
+                        looped = text_watch.feed(event.content_block.text) or looped
                         yield Delta("progress", event.content_block.text)
                     elif (
                         event.content_block.type == "thinking"
                         and event.content_block.thinking
                     ):
+                        looped = (
+                            thought_watch.feed(event.content_block.thinking) or looped
+                        )
                         yield Delta("thinking", event.content_block.thinking)
                 elif event.type == "content_block_delta":
                     if event.delta.type == "text_delta":
+                        answer.append(event.delta.text)
+                        looped = text_watch.feed(event.delta.text) or looped
                         yield Delta("progress", event.delta.text)
                     elif event.delta.type == "thinking_delta":
+                        looped = thought_watch.feed(event.delta.thinking) or looped
                         yield Delta("thinking", event.delta.thinking)
                     elif event.delta.type == "input_json_delta":
                         fragments.setdefault(event.index, []).append(
@@ -577,6 +600,29 @@ class AnthropicTransport:
                     )
                 elif event.type == "message_stop":
                     finished = True
+                if looped:
+                    break
+            if not finished and not looped:
+                # A connection that ended on a looping reply is the loop, not a
+                # failure to resend: the resend would loop the same way.
+                looped = degenerate("".join(answer))
+            if looped:
+                # The reasoning block is left out: a stream stopped part way has
+                # no signature for it, and the reply's text is what the loop
+                # produced. The snapshot gives the usage that did arrive.
+                snapshot = stream.current_message_snapshot
+                yield Reply(
+                    content=[{"type": "text", "text": "".join(answer)}]
+                    if answer
+                    else [],
+                    tool_calls=[],
+                    usage=usage_from(snapshot.usage)
+                    if snapshot is not None
+                    else Usage(),
+                    stop_reason="repetition",
+                    cost=None,
+                )
+                return
             if not finished:
                 raise StreamDropped("incomplete model stream: message_stop missing")
             if not complete_usage:
