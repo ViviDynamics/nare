@@ -21,6 +21,12 @@
 
 ## Test plan
 
+## Review
+
+- [ ] In nare's vocabulary: no other product's name in code, flags, tools,
+      tests or docs, and a request from one caller is rewritten into nare's
+      terms or left to that caller's adapter (docs/adr/0008-caller-agnostic.md)
+
 ## Related
 
 Closes #
