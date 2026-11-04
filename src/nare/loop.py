@@ -372,6 +372,9 @@ async def step(
                 "may have dropped it"
             )
             s.status = "error"
+            # The provider said the turn ended normally; left as end_turn, a
+            # caller could not tell this from any other failed finished turn.
+            s.stop_reason = "no_answer"
             s.events.append(Event("error", s.error))
             return s
         if schema is None:
@@ -610,15 +613,26 @@ async def _run(
         return
     window = context_window
     source = "flag"
-    if window is None:
-        window = await transport.context_window()
-        source = "backend"
+    discover_prices = getattr(transport, "prices", None)
+    try:
+        if window is None:
+            window = await transport.context_window()
+            source = "backend"
+        if prices is None and discover_prices is not None:
+            prices = await discover_prices()
+    except Exception as exc:
+        # A provider failure like any other, not a failure of the MCP
+        # connection that run() wraps this generator in.
+        session.status = "error"
+        session.stop_reason = None
+        session.error = f"{type(exc).__name__}: {exc}"
+        session.events.append(Event("error", session.error))
+        while session.events:
+            yield session.events.pop(0)
+        return
     if window is None:
         window = 32000
         source = "default"
-    discover_prices = getattr(transport, "prices", None)
-    if prices is None and discover_prices is not None:
-        prices = await discover_prices()
     session.events.append(
         Event(
             "progress",

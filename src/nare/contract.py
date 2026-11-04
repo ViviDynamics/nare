@@ -13,7 +13,7 @@ mis-read bumps it.
 from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
-from typing import TYPE_CHECKING, Any, get_args
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from nare.events import REDACTION_RULES, REDACTION_VERSION, EventType
 
@@ -39,6 +39,35 @@ EXIT_CODES: dict[Status, int] = {"done": 0, "blocked": 0, "error": 1}
 # and nothing reached stdout. A caller that sees this knows its invocation was
 # wrong rather than its task.
 NEVER_STARTED = 2
+
+# What ended a run, as a caller branches on it. A stop reason alone can mean
+# a provider's word (end_turn) or nare's (budget); the kind says what a caller
+# does about it:
+#   finished  the model ended the run; status says how
+#   limit     a limit ended it, so the task is unjudged; a larger limit or a
+#             resume may finish it
+#   answer    the model ended without an acceptable answer
+#   failure   something broke, so nothing was checked
+# Null is the one value no completed response produced: the provider call, or
+# nare itself, raised.
+StopReasonKind = Literal["finished", "limit", "answer", "failure"]
+STOP_REASONS: tuple[tuple[str | None, StopReasonKind, tuple[Status, ...]], ...] = (
+    # The provider's word for a turn it completed. The loop decides done or
+    # blocked from whether the turn called tools, not from this value.
+    ("end_turn", "finished", ("done", "blocked")),
+    ("stop_sequence", "finished", ("done", "blocked")),
+    ("tool_use", "finished", ("done", "blocked")),
+    ("max_tokens", "limit", ("error",)),
+    ("max_turns", "limit", ("error",)),
+    ("context", "limit", ("error",)),
+    ("budget", "limit", ("error",)),
+    ("refusal", "answer", ("error",)),
+    ("schema_violation", "answer", ("error",)),
+    ("no_answer", "answer", ("error",)),
+    (None, "failure", ("error",)),
+    ("mcp", "failure", ("error",)),
+    ("session_write", "failure", ("error",)),
+)
 
 
 def describe() -> dict[str, Any]:
@@ -71,6 +100,12 @@ def describe() -> dict[str, Any]:
         "never_started": NEVER_STARTED,
         "statuses": list(get_args(Status)),
         "event_types": list(get_args(EventType)),
+        # Additive: every value a result's stop_reason can take, the kind of
+        # ending it is and the statuses it comes with.
+        "stop_reasons": [
+            {"stop_reason": value, "kind": kind, "statuses": list(statuses)}
+            for value, kind, statuses in STOP_REASONS
+        ],
         # Additive: the names `--tools` accepts, so a caller can check that a
         # tool it means to allow exists before it spawns a run.
         "tools": sorted(TOOLS),
