@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import json
 import math
+import re
 from collections.abc import (
     AsyncGenerator,
     Awaitable,
@@ -277,6 +278,76 @@ ASK_NOT_ALONE = (
 SUMMARY_REFUSED = (
     "Tools are disabled for the turn-limit summary: this call was not run."
 )
+QUESTION_NUDGE = (
+    "Your reply asks a question, but a text reply ends the session as finished, "
+    "so the question may never be answered. If the request can be read more than "
+    "one way and the readings lead to different changes, call ask on its own with "
+    "your question. Otherwise, reply again without the question."
+)
+# Code a reply may quote, which a question inside does not make a question: a
+# fenced block (closed, or running to the end of the reply) or a backtick span
+# on one line. A URL's trailing '?' is not a question either.
+_CODE = re.compile(r"(`{3,}|~{3,})[\s\S]*?(?:\1|\Z)|(`+)[^\n]*?\2")
+_URL = re.compile(r"https?://\S+")
+# A '?' that ends a sentence: followed by space, the end, or closing markup.
+_SENTENCE_QUESTION = re.compile(r"\?(?=\s|$|[)\"'*_\]])")
+
+
+def asks_in_prose(text: str) -> bool:
+    """Whether a text reply asks a question outside code and URLs: a sentence-
+    ending '?' that is not in a fenced block, a backtick span or a link.
+    """
+    prose = _URL.sub(" ", _CODE.sub(" ", text))
+    return _SENTENCE_QUESTION.search(prose) is not None
+
+
+def _wrote_a_file(s: Session) -> bool:
+    """Whether a write or edit has succeeded in this session."""
+    writes = {
+        block.get("id")
+        for message in s.messages
+        if message.role == "assistant"
+        for block in message.content
+        if block.get("type") == "tool_use" and block.get("name") in ("write", "edit")
+    }
+    return any(
+        block.get("type") == "tool_result"
+        and block.get("tool_use_id") in writes
+        and not block.get("is_error")
+        for message in s.messages
+        if message.role == "user"
+        for block in message.content
+    )
+
+
+def _nudge_question(
+    s: Session, text: str, policy: Policy, *, enabled: bool, summary: bool
+) -> bool:
+    """Take one more turn when a headless text reply asked a question in prose.
+
+    A text reply ends the run as finished, so a question in one is never
+    answered. Once per session, and only before any write or edit: a model
+    that has done the work and offers follow-up is not nudged. Returns True
+    when the nudge was sent and the run continues.
+    """
+    # A summary is the last turn of a run that has reached its cap: a nudge
+    # would only add a turn the cap has already ruled out.
+    if not enabled or summary or s.ask_nudged or "ask" not in policy.tools:
+        return False
+    if _wrote_a_file(s) or not asks_in_prose(text):
+        return False
+    s.ask_nudged = True
+    append_user_text(s, QUESTION_NUDGE)
+    s.events.append(
+        Event(
+            "progress",
+            "reply asked a question in prose: nudged toward ask",
+            {"question_nudge": {"asked": True}},
+        )
+    )
+    return True
+
+
 ASK_NOT_DELIVERED = (
     "ask was not recorded: another ask in this turn failed, so nothing was "
     "sent. Call ask again, once, with all your questions."
@@ -659,6 +730,7 @@ async def step(
     check: Check | None = None,
     tools: Sequence[Tool] = (),
     summary: bool = False,
+    question_nudge: bool = False,
 ) -> Session:
     if tools:
         # The allowlist is the policy's, as for built-ins: a registered tool is
@@ -858,6 +930,10 @@ async def step(
             s.events.append(Event("error", s.error))
             return s
         if schema is None:
+            if _nudge_question(
+                s, text, policy, enabled=question_nudge, summary=summary
+            ):
+                return s
             if _hold_for_reads(s, reads, max_corrections):
                 return s
             s.status = "done"
@@ -1054,6 +1130,7 @@ async def _live_step(
     reads: ReadRequirement = NO_READS,
     check: Check | None = None,
     summary: bool = False,
+    question_nudge: bool = False,
 ) -> AsyncGenerator[Event, None]:
     queue: asyncio.Queue[Event] = asyncio.Queue()
     buffers: dict[Literal["progress", "thinking"], LiveText] = {
@@ -1097,6 +1174,7 @@ async def _live_step(
             reads=reads,
             check=check,
             summary=summary,
+            question_nudge=question_nudge,
         )
     )
     waiter: asyncio.Task[Event] | None = None
@@ -1151,6 +1229,7 @@ async def _run(
     reads: ReadRequirement = NO_READS,
     check: Check | None = None,
     inbox: Callable[[], list[str]] | None = None,
+    question_nudge: bool = False,
 ) -> AsyncGenerator[Event, None]:
     """Advance the session to a terminal status, yielding events as they occur.
 
@@ -1303,6 +1382,7 @@ async def _run(
                             reads,
                             check=check,
                             summary=summary,
+                            question_nudge=question_nudge,
                         )
                     ) as stream:
                         async for event in stream:
@@ -1324,6 +1404,7 @@ async def _run(
                         reads=reads,
                         check=check,
                         summary=summary,
+                        question_nudge=question_nudge,
                     )
                 if session.status not in ("done", "blocked"):
                     check_budget(session)
@@ -1386,6 +1467,7 @@ async def run(
     check: Check | None = None,
     inbox: Callable[[], list[str]] | None = None,
     tools: Sequence[Tool] = (),
+    question_nudge: bool = False,
 ) -> AsyncGenerator[Event, None]:
     check_structured_output(transport, schema, structured_output)
     # Refused before any call: a bad registration is the caller's error, not a
@@ -1445,6 +1527,7 @@ async def run(
                     reads=reads,
                     check=check,
                     inbox=inbox,
+                    question_nudge=question_nudge,
                 )
             ) as stream:
                 async for event in stream:
