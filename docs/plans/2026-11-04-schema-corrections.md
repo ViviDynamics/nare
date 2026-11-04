@@ -23,9 +23,12 @@ the repetition and length cut-offs (#183). Both build on the API this adds.
   then `schema_violation`. Free corrections are granted only when N is greater
   than 1, because with N=1 "free" would mean a second correction the caller did
   not allow.
-- "Distinct errors" are the validator's messages (`path: message`) with
-  duplicates removed, in the order they were reported. The codes compared
-  across replies are those strings.
+- "Distinct errors" are the validator's messages (`path: message`) with the
+  rejected value removed (so `expected string, got integer` and `expected
+  string, got null` are one code) and duplicates removed, in the order they were
+  reported. The codes compared across replies are those strings.
+- An answer that is not JSON is never free and names no earlier fix as kept: its
+  one complaint cannot show which rules it breaks.
 - "Fewer than any earlier reply" compares against the lowest distinct count
   seen so far in the run. Every free correction strictly lowers that minimum,
   so a run cannot loop on free corrections.
@@ -48,19 +51,19 @@ the repetition and length cut-offs (#183). Both build on the API this adds.
 
 ## Tasks
 
-- [ ] 1. A scripted run with N=2 and failing answers of 3, 2, 2 and 1 distinct
+- [x] 1. A scripted run with N=2 and failing answers of 3, 2, 2 and 1 distinct
   errors, then a valid answer: the second correction is free, the third is
   charged, and the run completes. Test: `tests/test_schema_corrections.py`.
-- [ ] 2. With N=1, two failing answers (3, then 2 errors) still end
+- [x] 2. With N=1, two failing answers (3, then 2 errors) still end
   `schema_violation` after one correction, as today.
-- [ ] 3. A correction message lists `earlier_corrections`: an answer that fixes
+- [x] 3. A correction message lists `earlier_corrections`: an answer that fixes
   error A and breaks error B is corrected with A named as kept-correct.
-- [ ] 4. Each correction is a progress event with `charged`, `codes`,
+- [x] 4. Each correction is a progress event with `charged`, `codes`,
   `earlier_corrections` and the limit.
-- [ ] 5. The result JSON reports `schema_corrections`, `used_schema_corrections`
+- [x] 5. The result JSON reports `schema_corrections`, `used_schema_corrections`
   and the `corrections` list, through the CLI.
-- [ ] 6. Invalid values never start (`0`, a bool, no `--schema`).
-- [ ] 7. A session file from before this change loads with one charged
+- [x] 6. Invalid values never start (`0`, a bool, no `--schema`).
+- [x] 7. A session file from before this change loads with one charged
   correction when `schema_retried` was true. `reopen()` clears the budget.
-- [ ] 8. Contract: `--max-corrections` in the run flags table and in
+- [x] 8. Contract: `--max-corrections` in the run flags table and in
   `nare contract`, the `schema_violation` row names the budget.

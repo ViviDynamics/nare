@@ -1145,8 +1145,8 @@ Each correction names the errors an earlier answer made that this one no longer
 makes, and asks the model to keep those fixes. The result's `budget` gains
 `schema_corrections` (the limit) and `used_schema_corrections` (the charged
 corrections), and a `corrections` list gives each correction's `charged` flag
-and `codes`, the distinct errors it answered. The list is present only when a
-correction happened. Each correction is also a `progress` event whose
+and `codes`, the distinct rules the answer broke, each named without the value
+it rejected. The list is present only when a correction happened. Each correction is also a `progress` event whose
 `schema_correction` detail carries the same fields. The budget is per run: a
 resume starts it again, as the correction round is per run.
 

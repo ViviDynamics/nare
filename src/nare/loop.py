@@ -299,6 +299,16 @@ def state_schema(session: Session, schema: dict[str, Any]) -> None:
     session.schema_sha256 = digest
 
 
+def _parses(text: str) -> bool:
+    """Whether the answer is a JSON document at all, which is what makes its
+    validator messages comparable with an earlier answer's."""
+    try:
+        extract_json(text)
+    except ValueError:
+        return False
+    return True
+
+
 def _answer_errors(text: str, schema: dict[str, Any]) -> list[str]:
     """The validator's complaints about this answer, or none."""
     try:
@@ -614,7 +624,7 @@ async def step(
             return s
         complaint = "; ".join(errors)
         restated = schema_instruction(schema)
-        granted = charge(s, errors, max_corrections)
+        granted = charge(s, errors, max_corrections, comparable=_parses(text))
         if granted is None:
             # The correction budget is spent. A model that cannot satisfy the
             # schema after its allowed corrections will not satisfy it on the

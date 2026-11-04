@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from fake_provider import FakeProvider, text_reply
+from fake_provider import FakeProvider, StreamingProvider, text_reply
 from nare.cli import main
 from nare.loop import run
 from nare.session import Session, dumps, loads, new_session, reopen
@@ -291,3 +291,70 @@ def test_max_corrections_without_a_schema_never_starts(
 
     assert code == 2
     assert capsys.readouterr().out == ""
+
+
+async def test_a_reply_that_is_not_json_claims_no_fixes_and_is_never_free() -> None:
+    # Two errors, then prose that is no answer at all: the prose cannot show a
+    # fix, so its correction is charged and names nothing as kept.
+    provider = FakeProvider(
+        [
+            text_reply(json.dumps({"name": "ada"})),
+            text_reply("sorry, no json here"),
+            text_reply(VALID),
+        ]
+    )
+    session = new_session("go")
+
+    events = await drain(session, provider, schema=PERSON, max_corrections=3)
+
+    marks = [
+        e.detail["schema_correction"] for e in events if "schema_correction" in e.detail
+    ]
+    assert [m["charged"] for m in marks] == [True, True]
+    assert marks[1]["earlier_corrections"] == []
+    assert session.status == "done"
+
+
+ENUM_PERSON: dict[str, Any] = {
+    "type": "object",
+    "properties": {"status": {"enum": ["open", "closed"]}},
+    "required": ["status"],
+}
+
+
+async def test_an_error_is_identified_by_its_rule_not_the_value_it_rejected() -> None:
+    # Still breaks the same rule on `status`, with another rejected value: it is
+    # the same error, so nothing is named as fixed.
+    provider = FakeProvider(
+        [
+            text_reply('{"status": "x"}'),
+            text_reply('{"status": "y"}'),
+            text_reply('{"status": "open"}'),
+        ]
+    )
+    session = new_session("go")
+
+    events = await drain(session, provider, schema=ENUM_PERSON, max_corrections=2)
+
+    marks = [
+        e.detail["schema_correction"] for e in events if "schema_correction" in e.detail
+    ]
+    assert session.status == "done"
+    assert (
+        marks[0]["codes"]
+        == marks[1]["codes"]
+        == ["status: expected one of ['open', 'closed']"]
+    )
+    assert marks[1]["earlier_corrections"] == []
+
+
+async def test_a_streamed_run_spends_the_same_budget() -> None:
+    provider = StreamingProvider(
+        [text_reply(answer_with(3)), text_reply(answer_with(2)), text_reply(VALID)]
+    )
+    session = new_session("go")
+
+    await drain(session, provider, schema=PERSON, max_corrections=2)
+
+    assert session.status == "done"
+    assert [e["charged"] for e in session.schema_correction_log] == [True, False]

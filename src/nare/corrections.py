@@ -59,24 +59,47 @@ class Correction:
     limit: int = SCHEMA_CORRECTIONS_DEFAULT
 
 
-def charge(s: Session, errors: list[str], limit: int) -> Correction | None:
+def code_of(error: str) -> str:
+    """The identity of one validator message: its path and the rule it broke,
+    without the value it rejected. `expected string, got integer` and `expected
+    string, got null` are one rule, so a field that stays wrong is not reported
+    as fixed because its value changed."""
+    return error.partition(", got ")[0]
+
+
+def charge(
+    s: Session,
+    errors: list[str],
+    limit: int,
+    *,
+    comparable: bool = True,
+) -> Correction | None:
     """Grant a correction for this failing answer, or refuse it.
+
+    `errors` are the validator's messages. `comparable` is False for an answer
+    that is not JSON at all: its one complaint says nothing about which rules
+    it breaks, so it is never free, names no earlier fix as kept, and leaves
+    the run's error record alone.
 
     Returns None when the budget is spent and the answer is not free: the caller
     then ends the run with `schema_violation`, and the session is unchanged.
     Otherwise the session's correction state is updated and the granted
     `Correction` is returned, and the caller appends the correction message.
     """
-    codes = list(dict.fromkeys(errors))
+    codes = list(dict.fromkeys(code_of(error) for error in errors))
     fewest = s.schema_fewest_errors
-    free = limit > 1 and fewest is not None and len(codes) < fewest
+    free = comparable and limit > 1 and fewest is not None and len(codes) < fewest
     if not free and used(s) >= limit:
         return None
-    earlier = [code for code in s.schema_errors_seen if code not in codes]
-    for code in codes:
-        if code not in s.schema_errors_seen:
-            s.schema_errors_seen.append(code)
-    s.schema_fewest_errors = len(codes) if fewest is None else min(fewest, len(codes))
+    earlier: list[str] = []
+    if comparable:
+        earlier = [code for code in s.schema_errors_seen if code not in codes]
+        for code in codes:
+            if code not in s.schema_errors_seen:
+                s.schema_errors_seen.append(code)
+        s.schema_fewest_errors = (
+            len(codes) if fewest is None else min(fewest, len(codes))
+        )
     charged = not free
     if charged:
         s.schema_corrections += 1
