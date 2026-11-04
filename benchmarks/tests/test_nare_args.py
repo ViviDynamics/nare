@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import re
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from benchmarks.runner.config import Config
 from benchmarks.runner.nare_args import (
     CASE_ONLY,
     HOST_FILE_FLAGS,
@@ -12,10 +15,12 @@ from benchmarks.runner.nare_args import (
     RUN_ONLY,
     ArgsError,
     Pair,
+    RunArgs,
     check_args,
     check_invocation,
     nare_contract,
     pairs,
+    stage_inputs,
     variant,
 )
 from benchmarks.runner.sandbox import _AGENT_SCRIPT
@@ -233,3 +238,114 @@ def test_the_key_parse_agrees_with_the_check(
     tokens: list[str], case_id: str | None
 ) -> None:
     assert pairs(tokens) == check_args(tokens, FLAGS, TOOLS, case_id=case_id)
+
+
+def digest(text: str) -> str:
+    return "sha256:" + hashlib.sha256(text.encode()).hexdigest()
+
+
+def write(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+def test_arguments_without_a_file_are_not_staged(tmp_path: Path) -> None:
+    dest = tmp_path / "inputs"
+    staged = stage_inputs(["--effort", "low"], base=tmp_path, root=tmp_path, dest=dest)
+    assert staged == RunArgs(recorded=("--effort", "low"), passed=("--effort", "low"))
+    assert not dest.exists()
+
+
+def test_a_system_file_is_copied_once_hashed_and_passed_under_in(
+    tmp_path: Path,
+) -> None:
+    prompt = write(tmp_path / "benchmarks" / "prompts" / "terse.md", "Be terse.\n")
+    dest = tmp_path / "results" / "stamp" / "inputs"
+    staged = stage_inputs(
+        ["--effort", "low", "--system-file", str(prompt)],
+        base=tmp_path,
+        root=tmp_path,
+        dest=dest,
+    )
+    recorded = "benchmarks/prompts/terse.md"
+    assert staged.recorded == ("--effort", "low", "--system-file", recorded)
+    assert staged.files == {recorded: digest("Be terse.\n")}
+    assert staged.passed == ("--effort", "low", "--system-file", "/in/0-terse.md")
+    assert staged.inputs == dest
+    # The copy is what the run measures: a later edit does not reach it.
+    prompt.write_text("Edited mid-run.\n")
+    assert (dest / "0-terse.md").read_text() == "Be terse.\n"
+
+
+def test_the_equals_form_is_staged_in_place(tmp_path: Path) -> None:
+    write(tmp_path / "p.md", "x")
+    staged = stage_inputs(
+        ["--append-system-file=p.md"],
+        base=tmp_path,
+        root=tmp_path,
+        dest=tmp_path / "in",
+    )
+    assert staged.recorded == ("--append-system-file=p.md",)
+    assert staged.passed == ("--append-system-file=/in/0-p.md",)
+
+
+def test_two_files_with_one_name_do_not_overwrite_each_other(tmp_path: Path) -> None:
+    write(tmp_path / "a" / "p.md", "one")
+    write(tmp_path / "b" / "p.md", "two")
+    dest = tmp_path / "in"
+    staged = stage_inputs(
+        ["--system-file", "a/p.md", "--append-system-file", "b/p.md"],
+        base=tmp_path,
+        root=tmp_path,
+        dest=dest,
+    )
+    assert staged.passed == (
+        "--system-file", "/in/0-p.md", "--append-system-file", "/in/1-p.md"
+    )  # fmt: skip
+    assert [(dest / n).read_text() for n in ("0-p.md", "1-p.md")] == ["one", "two"]
+
+
+def test_a_relative_path_is_read_from_base_and_recorded_from_the_root(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "benchmarks" / "prompts" / "terse.md", "x")
+    staged = stage_inputs(
+        ["--system-file", "prompts/terse.md"],
+        base=tmp_path / "benchmarks",
+        root=tmp_path,
+        dest=tmp_path / "in",
+    )
+    assert staged.recorded == ("--system-file", "benchmarks/prompts/terse.md")
+    assert list(staged.files) == ["benchmarks/prompts/terse.md"]
+
+
+def test_a_file_outside_the_checkout_is_recorded_by_its_absolute_path(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "checkout"
+    root.mkdir()
+    outside = write(tmp_path / "mine.md", "x").resolve().as_posix()
+    staged = stage_inputs(
+        ["--system-file", outside], base=root, root=root, dest=root / "in"
+    )
+    assert staged.recorded == ("--system-file", outside)
+    assert list(staged.files) == [outside]
+
+
+def test_a_run_file_that_cannot_be_read_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(
+        ArgsError,
+        match=re.escape("run arguments: --system-file absent.md: cannot read it"),
+    ):
+        stage_inputs(
+            ["--system-file", "absent.md"],
+            base=tmp_path,
+            root=tmp_path,
+            dest=tmp_path / "in",
+        )
+
+
+def test_a_config_passes_no_run_arguments_by_default() -> None:
+    config = Config("m", "anthropic", None, "m", "k", "ANTHROPIC_API_KEY")
+    assert config.run_args == RunArgs()

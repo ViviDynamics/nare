@@ -8,8 +8,9 @@ endpoint can run the benchmark with no further configuration.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
+from benchmarks.runner.nare_args import RunArgs
 from nare.cli import stream_from_env
 from nare.transport.anthropic import nonstreaming_ceiling
 
@@ -38,6 +39,9 @@ class Config:
     # itself; the judge streams on this. Through a proxy, a reasoning model's
     # non-streamed reply arrived with no content at all.
     stream: bool = False
+    # What a run passes to nare after `--`, as recorded and as the container
+    # gets it; compare and bless take it from the results.
+    run_args: RunArgs = field(default_factory=RunArgs)
 
 
 def _max_tokens_from(

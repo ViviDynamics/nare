@@ -1,14 +1,17 @@
 """Arguments a case or a run passes to `nare run`, and the key they make.
 
 They are checked against nare's contract before anything is spent, and keyed
-so that results from other run arguments never compare by default. Pure: no
-Docker, no network, no clock. This module imports no other runner module, since
-`config` imports it.
+so that results from other run arguments never compare by default. Pure except
+`stage_inputs`, its one filesystem function: no Docker, no network, no clock.
+This module imports no other runner module, since `config` imports it.
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 Pair = tuple[str, str | None]
@@ -43,10 +46,26 @@ RUN_ONLY = frozenset(
 CASE_ONLY = frozenset({"--schema", "--mcp-config", "--require-read", "--root"})
 # Flags whose value is a path on the host: keyed by digest, staged for nare.
 HOST_FILE_FLAGS = frozenset({"--system-file", "--append-system-file"})
+# Where each rep mounts the staged copies, read-only.
+INPUTS = "/in"
 
 
 class ArgsError(Exception):
     """Arguments nare or the benchmark would refuse. Always exit 2."""
+
+
+@dataclass(frozen=True)
+class RunArgs:
+    """A run's arguments to nare: as a results line records them, and as the
+    container gets them."""
+
+    recorded: tuple[str, ...] = ()
+    # Each recorded file path to the digest of the copy that was measured.
+    files: dict[str, str] = field(default_factory=dict)
+    # File values rewritten to a path under /in.
+    passed: tuple[str, ...] = ()
+    # The host directory mounted at /in, or None when no file was staged.
+    inputs: Path | None = None
 
 
 def check_args(
@@ -205,3 +224,61 @@ def variant(args: Sequence[str], files: Mapping[str, str]) -> tuple[Pair, ...]:
         for flag, value in pairs(args)
     ]
     return tuple(sorted(keyed, key=lambda pair: pair[0]))
+
+
+def stage_inputs(
+    tokens: Sequence[str], *, base: Path, root: Path, dest: Path
+) -> RunArgs:
+    """Copy each system prompt file once, hash the copy, and hand nare its path.
+
+    The one function in this module that touches the filesystem. A relative
+    value is read from `base`. It is recorded relative to `root` when it is
+    inside, else by its absolute path. The copy goes to `dest/<n>-<basename>`,
+    `n` counting the run's files from 0, so two files with one basename cannot
+    collide; nare is given `/in/<n>-<basename>`. The digest is of the copy, so a
+    prompt edited mid-run does not change the reps after it. Each value keeps
+    the operator's form, `--flag value` or `--flag=value`.
+    """
+    recorded: list[str] = []
+    passed: list[str] = []
+    files: dict[str, str] = {}
+    count = 0
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        i += 1
+        flag, equals, inline = token.partition("=")
+        if flag not in HOST_FILE_FLAGS or not (equals or i < len(tokens)):
+            recorded.append(token)
+            passed.append(token)
+            continue
+        if equals:
+            value = inline
+        else:
+            value = tokens[i]
+            i += 1
+        source = (base / value).resolve()
+        try:
+            data = source.read_bytes()
+        except OSError as exc:
+            raise ArgsError(
+                f"run arguments: {flag} {value}: cannot read it "
+                f"({exc.strerror or type(exc).__name__})"
+            ) from exc
+        name = f"{count}-{Path(value).name}"
+        count += 1
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / name).write_bytes(data)
+        try:
+            shown = source.relative_to(root.resolve()).as_posix()
+        except ValueError:
+            shown = source.as_posix()
+        files[shown] = "sha256:" + hashlib.sha256(data).hexdigest()
+        for out, text in ((recorded, shown), (passed, f"{INPUTS}/{name}")):
+            out.extend([f"{flag}={text}"] if equals else [flag, text])
+    return RunArgs(
+        recorded=tuple(recorded),
+        files=files,
+        passed=tuple(passed),
+        inputs=dest if files else None,
+    )
