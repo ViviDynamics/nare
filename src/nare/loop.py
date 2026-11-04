@@ -212,6 +212,29 @@ def _without_images(messages: list[Message], model: str) -> list[Message]:
     return copied
 
 
+def result_event(name: str, result: dict[str, Any], policy: Policy) -> Event:
+    """How one call ended. A built-in result is described, not repeated: the
+    transcript holds its content. An MCP result keeps its content, redacted
+    and capped like any event detail, as it always has."""
+    content = result["content"]
+    record: dict[str, Any] = {
+        "tool_use_id": result["tool_use_id"],
+        "is_error": result["is_error"],
+        "chars": len(content),
+    }
+    if name in policy.external:
+        record = {**result, **record}
+        text = f"MCP result: {name}"
+    else:
+        text = f"{name} result: {'error' if result['is_error'] else 'ok'}"
+    return Event(
+        "progress",
+        text,
+        {"tool": name, "tool_result": record},
+        tool_use_id=result["tool_use_id"],
+    )
+
+
 async def step(
     s: Session,
     transport: Transport,
@@ -382,7 +405,9 @@ async def step(
         return s
 
     for call in reply.tool_calls:
-        s.events.append(Event("tool_use", call.name, dict(call.args)))
+        s.events.append(
+            Event("tool_use", call.name, dict(call.args), tool_use_id=call.id)
+        )
 
     only_asks = all(call.name == "ask" for call in reply.tool_calls)
 
@@ -395,6 +420,7 @@ async def step(
             "progress",
             f"{record['tool']} evidence: {record['path']}",
             {"tool": record["tool"], "evidence": record},
+            tool_use_id=record["tool_use_id"],
         )
         s.events.append(event)
         s.evidence.append(event.detail["evidence"])
@@ -438,14 +464,7 @@ async def step(
                                     "height": image["height"],
                                 },
                             },
-                        )
-                    )
-                if call.name in policy.external:
-                    s.events.append(
-                        Event(
-                            "progress",
-                            f"MCP result: {call.name}",
-                            {"tool": call.name, "tool_result": result},
+                            tool_use_id=call.id,
                         )
                     )
     except asyncio.CancelledError:
@@ -460,19 +479,23 @@ async def step(
             tool_result(call.id, unanswered, is_error=True)
             for call in reply.tool_calls[len(results) :]
         ]
+        failed = any(r["is_error"] for r in results)
+        if only_asks and failed and not unfinished:
+            # The turn won't block, so an ask that succeeded was never
+            # delivered. Left saying "recorded", the model may stop and its
+            # question is lost.
+            results = [
+                r
+                if r["is_error"]
+                else tool_result(r["tool_use_id"], ASK_NOT_DELIVERED, is_error=True)
+                for r in results
+            ]
         s.messages.append(Message(role="user", content=results))
+        # One result event per call, from the results as the transcript holds
+        # them, so no event reports a value the model was not sent.
+        for call, result in zip(reply.tool_calls, results, strict=True):
+            s.events.append(result_event(call.name, result, policy))
 
-    failed = any(r["is_error"] for r in results)
-    if only_asks and failed and not unfinished:
-        # The turn won't block, so an ask that succeeded was never delivered.
-        # Left saying "recorded", the model may stop and its question is lost.
-        # Rewritten in place: `results` is the content just appended.
-        results[:] = [
-            r
-            if r["is_error"]
-            else tool_result(r["tool_use_id"], ASK_NOT_DELIVERED, is_error=True)
-            for r in results
-        ]
     if unfinished:
         s.status = "error"
         s.error = unfinished

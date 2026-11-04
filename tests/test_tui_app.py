@@ -428,6 +428,19 @@ def test_an_evidence_record_stays_out_of_the_live_area(tmp_path: Path) -> None:
     assert app.live.plain == "hello"
 
 
+def test_a_built_in_result_stays_out_of_the_live_area(tmp_path: Path) -> None:
+    app = make(tmp_path, FakeProvider([]))
+    record = {"tool_use_id": "c1", "is_error": False, "chars": 5}
+    app._event(
+        Event("progress", "bash result: ok", {"tool": "bash", "tool_result": record})
+    )
+    mcp = {**record, "content": "hello", "type": "tool_result"}
+    app._event(
+        Event("progress", "MCP result: a__b", {"tool": "a__b", "tool_result": mcp})
+    )
+    assert app.live.plain == "MCP result: a__b\n"
+
+
 async def test_the_newest_block_stays_in_view(tmp_path: Path) -> None:
     app = make(tmp_path, FakeProvider([]))
     async with app.run_test(size=(100, 40)) as pilot:

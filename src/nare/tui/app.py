@@ -415,6 +415,13 @@ class TuiApp(App[None]):
                 self.window = event.text
         elif "evidence" in event.detail:
             pass  # for callers: the call block already names what was read
+        elif (
+            "tool_result" in event.detail
+            and "content" not in event.detail["tool_result"]
+        ):
+            # A built-in result carries no content, and is for callers: the
+            # call block shows it. An MCP result keeps its notice line.
+            pass
         elif event.type in ("progress", "thinking"):
             # An image or MCP notice gets its own line; its call block keeps it.
             text = f"{event.text}\n" if event.detail else event.text

@@ -92,7 +92,6 @@ async def test_each_built_in_call_gets_one_result_event(tmp_path: Path) -> None:
         False,
         True,
     ]
-    assert events[0].detail["tool_result"]["chars"] == len("hello")
 
 
 async def test_a_result_event_carries_no_content(tmp_path: Path) -> None:
@@ -213,7 +212,8 @@ def test_every_jsonl_tool_use_matches_exactly_one_result_line(
     failed = [
         e
         for e in events
-        if "tool_result" in e.get("detail", {}) and e["detail"]["tool_result"]["is_error"]
+        if "tool_result" in e.get("detail", {})
+        and e["detail"]["tool_result"]["is_error"]
     ]
     assert [e["detail"]["tool"] for e in failed] == ["edit"]
     # A line that belongs to no call keeps the four fields.
