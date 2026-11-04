@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import shlex
 import statistics
@@ -148,11 +147,36 @@ def baseline_path(root: Path, model: str, tier: str) -> Path:
     return root / f"{slugify(model)}.{tier}.toml"
 
 
+_TOML_ESCAPES = {
+    '"': '\\"',
+    "\\": "\\\\",
+    "\b": "\\b",
+    "\t": "\\t",
+    "\n": "\\n",
+    "\f": "\\f",
+    "\r": "\\r",
+}
+
+
 def _toml_str(value: str) -> str:
-    # TOML basic strings and JSON strings share an escape syntax for every
-    # character these values can contain, so json.dumps is a correct encoder
-    # and a dependency-free one.
-    return json.dumps(value)
+    """A TOML basic string for any text, written to the file as UTF-8.
+
+    Hand-written because json.dumps is not a TOML encoder for these values. By
+    default it writes a character above U+FFFF as a surrogate pair, which TOML
+    refuses to read back; with ensure_ascii=False it leaves DEL literal, which
+    TOML also refuses. Run arguments and prompt paths are operator text, so
+    either could reach here. Quote, backslash and the control characters are
+    escaped, and every other character stays literal.
+    """
+    out: list[str] = []
+    for char in value:
+        if char in _TOML_ESCAPES:
+            out.append(_TOML_ESCAPES[char])
+        elif char < " " or char == "\x7f":
+            out.append(f"\\u{ord(char):04x}")
+        else:
+            out.append(char)
+    return '"' + "".join(out) + '"'
 
 
 def dumps_baseline(meta: BaselineMeta, summaries: Sequence[CaseSummary]) -> str:

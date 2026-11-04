@@ -434,3 +434,24 @@ def test_the_matrix_note_names_each_models_variant_when_any_has_one() -> None:
     assert note.splitlines()[-1] == (
         "Judge: j, for every model. Run arguments: a: none; b: --effort low."
     )
+
+
+def test_run_arguments_with_awkward_characters_round_trip(tmp_path: Path) -> None:
+    # An emoji is above U+FFFF, which JSON writes as a surrogate pair and TOML
+    # forbids. DEL and the controls must be escaped; the rest stays literal.
+    awkward = 'emoji\U0001f600 "quoted" back\\slash sp ace\x7fdel\x01\ttab\nnl.md'
+    meta = replace(
+        META,
+        nare_args=("--system-file", awkward, "--system", awkward),
+        nare_files={awkward: "sha256:" + "cd" * 32},
+    )
+    path = tmp_path / "b.toml"
+    path.write_text(dumps_baseline(meta, []), encoding="utf-8")
+    assert load_baseline(path).meta == meta
+
+
+def test_a_model_name_with_non_ascii_text_round_trips(tmp_path: Path) -> None:
+    meta = replace(META, model="modél-日本", judge_model="j\U0001f600")
+    path = tmp_path / "b.toml"
+    path.write_text(dumps_baseline(meta, []), encoding="utf-8")
+    assert load_baseline(path).meta == meta
