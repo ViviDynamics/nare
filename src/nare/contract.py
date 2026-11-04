@@ -72,6 +72,7 @@ STOP_REASONS: tuple[tuple[str | None, StopReasonKind, tuple[Status, ...]], ...] 
     ("tool_calls", "limit", ("error",)),
     ("refusal", "answer", ("error",)),
     ("schema_violation", "answer", ("error",)),
+    ("reads_required", "answer", ("error",)),
     ("no_answer", "answer", ("error",)),
     ("interrupted", "stopped", ("error",)),
     (None, "failure", ("error",)),
@@ -221,6 +222,15 @@ def describe() -> dict[str, Any]:
             "stop_reason": "schema_violation",
             "budget_keys": ["schema_corrections", "used_schema_corrections"],
             "result": "corrections",
+        },
+        # Additive: reads a final answer must rest on, held as corrections.
+        "read_requirements": {
+            "flags": ["--require-reads", "--require-read"],
+            "requires": "read",
+            "counts": "successful reads inside the root, distinct files",
+            "correction": {"kind": "reads", "budget": "shared with schema corrections"},
+            "stop_reason": "reads_required",
+            "result": "reads",
         },
         "deadline": {
             "flag": "--timeout",

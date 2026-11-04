@@ -62,6 +62,8 @@ keeps the contract version; removing or renaming one bumps it.
 | `--max-tool-calls` | yes | | Run at most this many tool calls in this invocation ([Budgets and partial results](#budgets-and-partial-results)) |
 | `--max-corrections` | yes | | Let a failing `--schema` answer be corrected up to this many times in the run, default 1 ([Schema corrections](#schema-corrections)) |
 | `--max-cutoffs` | yes | | Correct up to this many replies cut off at the output cap or by repeating one span, in this invocation ([Cut-off replies](#cut-off-replies)) |
+| `--require-reads` | yes | | Hold the final answer until the run has read at least this many distinct files ([Read requirements](#read-requirements)) |
+| `--require-read` | yes | | Hold the final answer until the run has read this path, relative to `--root`; repeatable ([Read requirements](#read-requirements)) |
 | `--timeout` | yes | | Wall clock for this invocation ([Run deadline and stop signals](#run-deadline-and-stop-signals)) |
 | `--request-timeout` | yes | | HTTP timeout for each model request ([Provider retries and the request timeout](#provider-retries-and-the-request-timeout)) |
 | `--request-retries` | yes | | Resend a model request after a transient failure, up to this many times |
@@ -395,6 +397,7 @@ has a kind, which says what a caller can do about it:
 | `tool_calls` | `limit` | `error` | Invocation's tool call cap reached (`--max-tool-calls`), and the model called a tool again after being told to answer |
 | `refusal` | `answer` | `error` | Provider refused to continue |
 | `schema_violation` | `answer` | `error` | A structured answer that fails once the run's correction budget is spent (`--max-corrections`, default one correction) |
+| `reads_required` | `answer` | `error` | A final answer came before the reads `--require-reads` or `--require-read` demand, and the correction budget is spent |
 | `no_answer` | `answer` | `error` | The model sent reasoning and no answer, which is what a proxy that drops one of them produces |
 | `interrupted` | `stopped` | `error` | SIGTERM or SIGINT stopped the run (see Run deadline and stop signals) |
 | null | `failure` | `error` | No completed response: the provider call raised (a transport failure, after any retries), or nare did |
@@ -1191,6 +1194,27 @@ and `codes`, the distinct rules the answer broke, each named without the value
 it rejected. The list is present only when a correction happened. Each correction is also a `progress` event whose
 `schema_correction` detail carries the same fields. The budget is per run: a
 resume starts it again, as the correction round is per run.
+
+### Read requirements
+
+`--require-reads N` holds a final answer until the run has read at least N
+distinct files, and `--require-read PATH` (repeatable) holds it until each named
+path has been read. Paths are relative to `--root`. Only a read that succeeded
+and stayed inside the root counts; a failed read, or one refused as outside the
+root, does not. A requirement needs the `read` tool.
+
+A held answer is a correction, charged against the same budget as schema
+corrections (`--max-corrections`), and the model is told what is missing. A
+read correction is never free, and it leaves the tools offered, even under
+`--structured-output`. When the budget is spent the run ends `error` with
+`reads_required`. A count of reads is over the session's life, so a resumed run
+keeps the files it already read.
+
+With a requirement set, the result gains `reads`: each distinct file read, once,
+with its `path`, `sha256` and `size` (the latest read's digest), so a caller can
+check what its answer cites against what was read. A correction entry carries
+`kind`, `reads` for a read correction and `schema` for a schema one. Without a
+requirement the result has no `reads` key.
 
 ### Finding the document in an answer
 

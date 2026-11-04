@@ -46,6 +46,8 @@ from nare.loop import (
     run,
 )
 from nare.mcp import parse_servers
+from nare.reads import build as build_reads
+from nare.reads import read_record
 from nare.schema import UnsupportedSchema, check_supported
 from nare.session import Session, loads, new_session, reopen, save, unanswered
 from nare.tools import TOOLS, Policy, approve_all, stop_group
@@ -197,6 +199,25 @@ def build_parser() -> argparse.ArgumentParser:
             "do not run. Past N the run ends error with stop_reason max_tokens "
             "or repetition. 0 ends at the first cut "
             f"(default {CUTOFFS_DEFAULT})"
+        ),
+    )
+    run_parser.add_argument(
+        "--require-reads",
+        type=int,
+        metavar="N",
+        help=(
+            "hold the final answer until the run has read at least N distinct "
+            "files (read tool, inside --root). A hold is a correction, charged "
+            "against --max-corrections; the result lists the files read"
+        ),
+    )
+    run_parser.add_argument(
+        "--require-read",
+        action="append",
+        metavar="PATH",
+        help=(
+            "hold the final answer until the run has read PATH (repeatable, "
+            "relative to --root). Same budget and result as --require-reads"
         ),
     )
     run_parser.add_argument(
@@ -608,6 +629,7 @@ def _emit_result(
     max_corrections: int | None = None,
     max_cutoffs: int | None = None,
     cutoffs_from: int | None = None,
+    reads_required: bool = False,
 ) -> None:
     if jsonl:
         print(
@@ -633,6 +655,9 @@ def _emit_result(
                         if session.schema_correction_log
                         else {}
                     ),
+                    # Each distinct file read, with its digest, when reads were
+                    # required. Present only then.
+                    **({"reads": read_record(session)} if reads_required else {}),
                     "stop_reason": session.stop_reason,
                     "turns": session.turns,
                     "retries": session.retries,
@@ -754,8 +779,11 @@ async def _execute(
         if args.max_corrections is None
         else args.max_corrections
     )
-    # Reported only for a schema run, as the budget it spends.
-    corrections_budget = None if schema is None else corrections_limit
+    reads_required = bool(args.require_reads or args.require_read)
+    # Reported for a schema run, or a run with reads required: each spends it.
+    corrections_budget = (
+        corrections_limit if schema is not None or reads_required else None
+    )
     cutoffs_from = session.cutoffs
     stop = _Stop(getattr(args, "timeout", None))
     stop.install()
@@ -779,6 +807,8 @@ async def _execute(
                 max_tool_calls=args.max_tool_calls,
                 max_corrections=corrections_limit,
                 max_cutoffs=args.max_cutoffs,
+                require_reads=args.require_reads or 0,
+                require_read=args.require_read or (),
             )
             if transport is not None
             else _pending_events(session)
@@ -834,6 +864,7 @@ async def _execute(
         max_corrections=corrections_budget,
         max_cutoffs=args.max_cutoffs,
         cutoffs_from=cutoffs_from,
+        reads_required=reads_required,
     )
     return EXIT_CODES.get(session.status, EXIT_CODES["error"])
 
@@ -928,6 +959,19 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
             raise ValueError("--structured-output requires --schema")
         if args.max_corrections is not None and schema is None:
             raise ValueError("--max-corrections requires --schema")
+        if args.require_reads is not None and args.require_reads <= 0:
+            raise ValueError("--require-reads must be a positive integer")
+        if args.require_reads or args.require_read:
+            # Refused here, before any turn, as a bad path or a missing tool is.
+            build_reads(
+                args.require_reads or 0,
+                args.require_read or [],
+                root=Path(args.root).resolve() if args.root else None,
+            )
+            if "read" not in tools_from_args(args):
+                raise ValueError(
+                    "--require-reads and --require-read need the read tool"
+                )
         session = _load_or_new(args)
         adopt_system(args, session)
         configure_budgets(session, args.budget_tokens, args.budget_usd)

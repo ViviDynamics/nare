@@ -57,6 +57,7 @@ class Correction:
     codes: list[str] = field(default_factory=list)
     earlier: list[str] = field(default_factory=list)
     limit: int = SCHEMA_CORRECTIONS_DEFAULT
+    kind: str = "schema"
 
 
 def code_of(error: str) -> str:
@@ -73,6 +74,7 @@ def charge(
     limit: int,
     *,
     comparable: bool = True,
+    kind: str = "schema",
 ) -> Correction | None:
     """Grant a correction for this failing answer, or refuse it.
 
@@ -85,6 +87,10 @@ def charge(
     then ends the run with `schema_violation`, and the session is unchanged.
     Otherwise the session's correction state is updated and the granted
     `Correction` is returned, and the caller appends the correction message.
+
+    `kind` is "schema" or "reads". Only a schema correction sets `schema_retried`,
+    which makes the next turn a constrained answer turn: a read correction must
+    leave the tools offered, since the model has to read what it was asked to.
     """
     codes = list(dict.fromkeys(code_of(error) for error in errors))
     fewest = s.schema_fewest_errors
@@ -103,14 +109,16 @@ def charge(
     charged = not free
     if charged:
         s.schema_corrections += 1
-    s.schema_retried = True
-    s.schema_correction_log.append({"charged": charged, "codes": codes})
+    if kind == "schema":
+        s.schema_retried = True
+    s.schema_correction_log.append({"kind": kind, "charged": charged, "codes": codes})
     return Correction(
         number=len(s.schema_correction_log),
         charged=charged,
         codes=codes,
         earlier=earlier,
         limit=limit,
+        kind=kind,
     )
 
 
@@ -137,4 +145,5 @@ def record(correction: Correction) -> dict[str, object]:
         "codes": correction.codes,
         "earlier_corrections": correction.earlier,
         "limit": correction.limit,
+        "kind": correction.kind,
     }
