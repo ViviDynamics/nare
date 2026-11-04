@@ -36,6 +36,7 @@ from benchmarks.runner.config import (
 )
 from benchmarks.runner.grade import (
     CheckResult,
+    context_use,
     grade_bash_check,
     grade_result_check,
     infra_error,
@@ -303,6 +304,7 @@ async def run_rep(
         result = run_agent(case, workdir, artifacts, config)
         keep_evidence(kept, artifacts, result)
         line = parse_stdout(result.stdout)
+        use = context_use(result.stdout)
         if line is None or infra_error(line):
             # No result line means the run never produced one: a crash, a
             # timeout, a Docker fault. A transport failure nare caught is the
@@ -328,6 +330,11 @@ async def run_rep(
                 max_tokens=config.max_tokens,
                 provider=config.provider,
                 judge_model=config.judge_model,
+                case_args=list(case.args),
+                nare_args=list(config.run_args.recorded),
+                nare_files=dict(config.run_args.files),
+                context_window=use.window,
+                compactions=use.compactions,
             )
 
         # Before the bash checks, so nothing a check writes reaches the judge.
@@ -377,6 +384,11 @@ async def run_rep(
         max_tokens=config.max_tokens,
         provider=config.provider,
         judge_model=config.judge_model,
+        case_args=list(case.args),
+        nare_args=list(config.run_args.recorded),
+        nare_files=dict(config.run_args.files),
+        context_window=use.window,
+        compactions=use.compactions,
     )
 
 

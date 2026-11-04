@@ -39,6 +39,14 @@ class RepRecord:
     # the results as they read the cap. Empty in results written before.
     provider: str = ""
     judge_model: str = ""
+    # What the rep ran with and saw. Each defaults to what a results line
+    # written before #156 means: no arguments, and a window and a compaction
+    # count nobody read.
+    case_args: list[str] = field(default_factory=list)
+    nare_args: list[str] = field(default_factory=list)
+    nare_files: dict[str, str] = field(default_factory=dict)
+    context_window: dict[str, int | str] | None = None
+    compactions: int | None = None
 
 
 @dataclass(frozen=True)

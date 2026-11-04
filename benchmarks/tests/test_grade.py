@@ -5,7 +5,9 @@ import json
 from benchmarks.runner.case import Check, Judge
 from benchmarks.runner.grade import (
     CheckResult,
+    ContextUse,
     ResultLine,
+    context_use,
     grade_bash_check,
     grade_result_check,
     infra_error,
@@ -184,3 +186,41 @@ def test_a_result_line_without_questions_reads_as_none_asked() -> None:
         line = parse_stdout(json.dumps(payload | questions))
         assert line is not None
         assert line.questions == []
+
+
+WINDOW = json.dumps(
+    {
+        "type": "progress",
+        "text": "context window 16000 (flag)",
+        "detail": {"context_window": {"tokens": 16000, "source": "flag"}},
+    }
+)
+COMPACTED = json.dumps(
+    {
+        "type": "progress",
+        "text": "compacted: elided 3 tool results, ~13000 -> ~6000 tokens",
+        "detail": {"compaction": {"elided": 3, "before": 13000.0, "after": 6000.0}},
+    }
+)
+
+
+def test_the_window_and_the_compactions_come_from_the_stream() -> None:
+    stream = "\n".join([WINDOW, EVENT, COMPACTED, "not json", COMPACTED, RESULT])
+    assert context_use(stream) == ContextUse(
+        window={"tokens": 16000, "source": "flag"}, compactions=2
+    )
+
+
+def test_a_stream_without_them_has_no_window_and_no_compactions() -> None:
+    assert context_use(f"{EVENT}\n{RESULT}\n") == ContextUse(window=None, compactions=0)
+    assert context_use("") == ContextUse(window=None, compactions=0)
+
+
+def test_a_malformed_window_is_not_recorded() -> None:
+    bad = json.dumps(
+        {
+            "type": "progress",
+            "detail": {"context_window": {"tokens": "many", "source": "x"}},
+        }
+    )
+    assert context_use(bad).window is None
