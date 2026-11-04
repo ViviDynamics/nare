@@ -58,6 +58,9 @@ keeps the contract version; removing or renaming one bumps it.
 | `--contract` | yes | | The contract version the caller speaks ([Refusing a contract](#refusing-a-contract-you-do-not-speak)) |
 | `--schema` | yes | | JSON Schema file the final answer must satisfy ([Answer schemas](#answer-schemas)) |
 | `--structured-output` | yes | `json_schema` | Constrain answers at decode time ([Schema-constrained answers](#schema-constrained-answers)) |
+| `--request-timeout` | yes | | HTTP timeout for each model request ([Provider retries and the request timeout](#provider-retries-and-the-request-timeout)) |
+| `--request-retries` | yes | | Resend a model request after a transient failure, up to this many times |
+| `--request-retry-seconds` | yes | | Longest wait between one request's retries |
 | `--proxy-num-retries` | yes | | Send `num_retries` to an OpenAI-compatible proxy |
 | `--cache-breakpoints` | no | | Mark prompt-cache breakpoints on the openai rail ([Prompt-cache breakpoints](#prompt-cache-breakpoints)) |
 | `--provider` | yes | `anthropic`, `openai`, `fake` | Model provider |
