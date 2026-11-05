@@ -53,8 +53,8 @@ script as `$S/<script>`.
    "Retried" means `verified-rerun` exited 0.
 3. State for a long chain lives in `.agents/state/<issue>.json` via `$S/state`.
    Read it before deciding, write it after acting. It is gitignored.
-4. Never force-push except on your own unmerged branch, and then only with
-   `--force-with-lease`. Never push to `main`.
+4. Never force-push except inside `rebase-main` on your own unmerged branch, and then
+   only with a lease. Never push to the default branch.
 5. Nothing from live infrastructure reaches a public repository: no internal addresses,
    host, node or hardware names, key aliases, client lists, spend logs, probe output or
    runbooks, in code, reports, commit messages, PR bodies or comments. `disclosure-guard`
@@ -69,6 +69,15 @@ script as `$S/<script>`.
    `.claude/settings.local.json` under `env`. Never in `repo.env.example` or a committed
    `.claude/settings.json`, where one login would claim everyone's work. Unset, the
    token's own login is used.
+
+## Model tiers (guidance for whoever routes work)
+
+| Stage | Tier |
+| --- | --- |
+| Resume detection, board and assignee updates, PR creation, CI watch, merge | cheapest available |
+| Flake vs real classification with a signatures file | mid |
+| Reading the issue, planning, implementing | mid or top |
+| Root-causing a real CI failure; code review | top |
 
 ## Setting up a fresh clone
 
