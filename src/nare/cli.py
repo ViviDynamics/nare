@@ -392,7 +392,8 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--region",
         help="AWS region for --provider bedrock. Without it: NARE_AWS_REGION, "
-        "then AWS_REGION, then AWS_DEFAULT_REGION",
+        "then AWS_REGION, then AWS_DEFAULT_REGION, then the active profile's "
+        "region in the AWS config file",
     )
     parser.add_argument(
         "--temperature",
