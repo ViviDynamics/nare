@@ -132,6 +132,18 @@ def test_a_reserved_flag_is_refused_in_either_list_and_either_form(
             check_args(tokens, FLAGS, TOOLS, case_id=case_id)
 
 
+@pytest.mark.parametrize("flag", ["--model", "--provider", "--base-url"])
+def test_a_flag_the_environment_owns_says_how_to_set_it(flag: str) -> None:
+    """The likeliest mistake is `-- --model M`: the refusal says what to do."""
+    with pytest.raises(ArgsError) as raised:
+        as_run(flag, "x")
+    message = str(raised.value)
+    assert "bin/bench's own --model, --provider or --base-url" in message
+    assert "before the --" in message
+    assert "NARE_MODEL, NARE_PROVIDER or NARE_BASE_URL" in message
+    assert ".py" not in message
+
+
 @pytest.mark.parametrize("flag", sorted(RUN_ONLY))
 def test_a_system_prompt_flag_is_a_run_argument_only(flag: str) -> None:
     assert as_run(flag, "x") == [(flag, "x")]

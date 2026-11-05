@@ -18,7 +18,10 @@ Pair = tuple[str, str | None]
 """A flag and its value: `None` for a flag that takes none."""
 
 _RUNNER = "the runner, which drives nare and reads its stream and session"
-_ENVIRONMENT = "the environment, as `case.py` already refuses them by name"
+_ENVIRONMENT = (
+    "the environment: pass bin/bench's own --model, --provider or --base-url "
+    "(before the --), or set NARE_MODEL, NARE_PROVIDER or NARE_BASE_URL"
+)
 
 # Refused in both lists, each with the owner the refusal names.
 RESERVED: dict[str, str] = {
