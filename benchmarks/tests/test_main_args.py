@@ -7,12 +7,13 @@ import json
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
 from benchmarks.runner.__main__ import (
     NeverStarted,
+    args_changed,
     main,
     read_results,
     run_case,
@@ -24,7 +25,14 @@ from benchmarks.runner.__main__ import (
 from benchmarks.runner.case import Case
 from benchmarks.runner.config import Config
 from benchmarks.runner.nare_args import RunArgs
-from benchmarks.runner.report import BaselineMeta, RepRecord, dumps_baseline
+from benchmarks.runner.report import (
+    Baseline,
+    BaselineMeta,
+    RepRecord,
+    baseline_path,
+    dumps_baseline,
+    load_baseline,
+)
 from benchmarks.runner.sandbox import RunArtifacts
 from benchmarks.tests.test_grade import COMPACTED, WINDOW
 from benchmarks.tests.test_judge import FakeJudge
@@ -32,8 +40,10 @@ from benchmarks.tests.test_main import (
     CONFIG,
     DONE_LINE,
     HAIKU,
+    KEPT,
     MATRIX_STAMP,
     NANO,
+    SONNET,
     fake_sandbox,
     matrix,
     record,
@@ -560,3 +570,276 @@ def test_the_matrix_takes_no_run_arguments(
     assert main(["run", "--matrix", "--", "--effort", "low"]) == 2
     assert ran.builds == 0
     assert "--matrix runs each baseline's own run arguments" in capsys.readouterr().err
+
+
+DIGEST = "sha256:" + "ab" * 32
+
+
+def blessed_with(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *nare_args: str,
+    files: dict[str, str] | None = None,
+) -> Path:
+    """Model m, blessed on openai and judged by j, with run arguments `nare_args`."""
+    baselines = results_dir(tmp_path, monkeypatch)
+    baselines.mkdir()
+    path = baseline_path(baselines, "m", "smoke")
+    meta = BaselineMeta(
+        "t", "abc1234", "openai", "m", "j", nare_args=nare_args, nare_files=files or {}
+    )
+    path.write_text(dumps_baseline(meta, [summary("edit-docstring", 1.0)]))
+    return path
+
+
+def ran_with(
+    *nare_args: str, files: dict[str, str] | None = None, **change: Any
+) -> RepRecord:
+    ran = replace(
+        record("edit-docstring", model="m"),
+        provider="openai",
+        judge_model="j",
+        nare_args=list(nare_args),
+        nare_files=files or {},
+    )
+    return replace(ran, **change)
+
+
+BASE = Baseline(BaselineMeta("t", "abc1234", "anthropic", "m", "m"), {})
+
+
+@pytest.mark.parametrize(
+    ("blessed", "now", "changed"),
+    [
+        ((), (), False),
+        (
+            ("--effort", "low", "--context-window", "16000"),
+            ("--context-window=16000", "--effort=low"),
+            False,
+        ),
+        ((), ("--effort", "low"), True),
+        (("--effort", "low"), ("--effort", "high"), True),
+    ],
+)
+def test_a_variant_change_is_by_key_not_by_text(
+    blessed: tuple[str, ...], now: tuple[str, ...], changed: bool
+) -> None:
+    baseline = Baseline(replace(BASE.meta, nare_args=blessed), {})
+    config = replace(CONFIG, run_args=RunArgs(recorded=now))
+    assert args_changed(baseline, config, False) is changed
+    assert args_changed(baseline, config, True) is False
+
+
+def test_a_run_file_is_compared_by_digest_not_by_path() -> None:
+    meta = replace(
+        BASE.meta,
+        nare_args=("--system-file", "a/p.md"),
+        nare_files={"a/p.md": "sha256:aa"},
+    )
+    moved = RunArgs(recorded=("--system-file", "b/p.md"), files={"b/p.md": "sha256:aa"})
+    edited = RunArgs(
+        recorded=("--system-file", "a/p.md"), files={"a/p.md": "sha256:bb"}
+    )
+    assert not args_changed(Baseline(meta, {}), replace(CONFIG, run_args=moved), False)
+    assert args_changed(Baseline(meta, {}), replace(CONFIG, run_args=edited), False)
+
+
+@pytest.mark.parametrize(
+    ("flags", "code"),
+    [([], 2), (["--allow-model-change"], 2), (["--allow-arg-change"], 0)],
+)
+def test_compare_refuses_results_from_another_variant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+    code: int,
+) -> None:
+    blessed_with(tmp_path, monkeypatch)
+    write_results(tmp_path, [ran_with("--context-window", "16000")])
+    assert main(["compare", "--model", "m", *flags]) == code
+    captured = capsys.readouterr()
+    if code == 2:
+        assert (
+            "baseline was blessed with run arguments none; "
+            "this run used --context-window 16000"
+        ) in captured.err
+    else:
+        assert captured.out.startswith(
+            "baseline run arguments: none\n"
+            "results run arguments:  --context-window 16000\n"
+        )
+
+
+def test_allow_arg_change_does_not_cover_a_judge_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    blessed_with(tmp_path, monkeypatch)
+    write_results(tmp_path, [ran_with("--effort", "low", judge_model="other")])
+    assert main(["compare", "--model", "m", "--allow-arg-change"]) == 2
+    assert "baseline was blessed on provider 'openai'" in capsys.readouterr().err
+    both = ["--allow-arg-change", "--allow-model-change"]
+    assert main(["compare", "--model", "m", *both]) == 0
+
+
+def test_results_from_before_compare_as_the_default_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    blessed_with(tmp_path, monkeypatch)
+    # A line as results files were written before #156: none of its keys.
+    payload = asdict(ran_with())
+    for key in (
+        "case_args",
+        "nare_args",
+        "nare_files",
+        "context_window",
+        "compactions",
+    ):
+        del payload[key]
+    results = tmp_path / "benchmarks" / "results"
+    results.mkdir()
+    (results / f"{STAMP}.jsonl").write_text(json.dumps(payload) + "\n")
+    assert main(["compare", "--model", "m"]) == 0
+    # One variant on both sides, so the table carries no note.
+    assert "run arguments" not in capsys.readouterr().out
+
+
+def test_run_refuses_another_variant_before_building_anything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ran = matrix(tmp_path, monkeypatch, NANO)
+    single = [
+        "run", "--case", "edit-docstring", "--model", "gpt-5-nano",
+        "--provider", "openai", "--judge-model", SONNET,
+    ]  # fmt: skip
+    assert main([*single, "--", "--effort", "low"]) == 2
+    assert main([*single, "--allow-model-change", "--", "--effort", "low"]) == 2
+    assert ran == []
+    err = capsys.readouterr().err
+    assert (
+        "baseline was blessed with run arguments none; this run used --effort low"
+        in err
+    )
+    assert main([*single, "--allow-arg-change", "--", "--effort", "low"]) == 0
+    assert [c.run_args.recorded for c in ran[1:]] == [("--effort", "low")]
+    assert "results run arguments:  --effort low" in capsys.readouterr().out
+
+
+def test_allow_arg_change_does_not_let_run_past_a_judge_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ran = matrix(tmp_path, monkeypatch, NANO)
+    other_judge = [
+        "run", "--case", "edit-docstring", "--model", "gpt-5-nano",
+        "--provider", "openai", "--judge-model", "j",
+    ]  # fmt: skip
+    assert main([*other_judge, "--allow-arg-change", "--", "--effort", "low"]) == 2
+    assert ran == []
+    assert "baseline was blessed on provider 'openai'" in capsys.readouterr().err
+    both = ["--allow-arg-change", "--allow-model-change"]
+    assert main([*other_judge, *both, "--", "--effort", "low"]) == 0
+    # Both sides' arguments, directly above the table they qualify.
+    assert (
+        "baseline run arguments: none\nresults run arguments:  --effort low\ncase "
+    ) in capsys.readouterr().out
+
+
+def test_bless_writes_the_variant_the_results_were_run_with(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    baselines = results_dir(tmp_path, monkeypatch)
+    terse = "benchmarks/prompts/terse.md"
+    write_results(tmp_path, [ran_with("--system-file", terse, files={terse: DIGEST})])
+    assert main(["bless", "--model", "m"]) == 0
+    meta = load_baseline(baseline_path(baselines, "m", "smoke")).meta
+    assert (meta.nare_args, meta.nare_files) == (
+        ("--system-file", terse),
+        {terse: DIGEST},
+    )
+
+
+def test_bless_will_not_keep_cases_measured_on_another_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    baselines = results_dir(tmp_path, monkeypatch)
+    baselines.mkdir()
+    blessed = baseline_path(baselines, "gpt-5-nano", "smoke")
+    blessed.write_text(dumps_baseline(NANO, [summary(c, 1.0) for c in KEPT]))
+    before = blessed.read_text()
+    ran = replace(
+        record("edit-docstring", model="gpt-5-nano"),
+        provider="openai",
+        judge_model=SONNET,
+        nare_args=["--effort", "low"],
+    )
+    write_results(tmp_path, [ran])
+    assert main(["bless", "--model", "gpt-5-nano"]) == 2
+    assert main(["bless", "--model", "gpt-5-nano", "--allow-model-change"]) == 2
+    assert blessed.read_text() == before
+    err = capsys.readouterr().err
+    assert "multi-file-rename, read-only-question" in err
+    assert "--allow-arg-change" in err
+    assert main(["bless", "--model", "gpt-5-nano", "--allow-arg-change"]) == 0
+    assert load_baseline(blessed).meta.nare_args == ("--effort", "low")
+
+
+def test_allow_arg_change_does_not_let_bless_relabel_the_cases_it_keeps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    baselines = results_dir(tmp_path, monkeypatch)
+    baselines.mkdir()
+    blessed = baseline_path(baselines, "gpt-5-nano", "smoke")
+    blessed.write_text(dumps_baseline(NANO, [summary(c, 1.0) for c in KEPT]))
+    before = blessed.read_text()
+    # Another variant and, unasked for, another judge.
+    ran = replace(
+        record("edit-docstring", model="gpt-5-nano"),
+        provider="openai",
+        judge_model="j",
+        nare_args=["--effort", "low"],
+    )
+    write_results(tmp_path, [ran])
+    assert main(["bless", "--model", "gpt-5-nano", "--allow-arg-change"]) == 2
+    assert blessed.read_text() == before
+    assert "under these results' labels" in capsys.readouterr().err
+    both = ["--allow-arg-change", "--allow-model-change"]
+    assert main(["bless", "--model", "gpt-5-nano", *both]) == 0
+    meta = load_baseline(blessed).meta
+    assert (meta.judge_model, meta.nare_args) == ("j", ("--effort", "low"))
+
+
+def test_bless_may_move_a_baseline_to_another_variant_when_it_replaces_every_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    baselines = results_dir(tmp_path, monkeypatch)
+    baselines.mkdir()
+    blessed = baseline_path(baselines, "gpt-5-nano", "smoke")
+    blessed.write_text(dumps_baseline(NANO, [summary("edit-docstring", 1.0)]))
+    ran = replace(
+        record("edit-docstring", model="gpt-5-nano"),
+        provider="openai",
+        judge_model=SONNET,
+        nare_args=["--effort", "low"],
+    )
+    write_results(tmp_path, [ran])
+    assert main(["bless", "--model", "gpt-5-nano"]) == 0
+    assert load_baseline(blessed).meta.nare_args == ("--effort", "low")
+
+
+@pytest.mark.parametrize(
+    "flags", [[], ["--allow-arg-change"], ["--allow-model-change"]]
+)
+def test_bless_refuses_a_run_file_outside_the_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+) -> None:
+    baselines = results_dir(tmp_path, monkeypatch)
+    outside = "/elsewhere/terse.md"
+    write_results(
+        tmp_path, [ran_with("--system-file", outside, files={outside: DIGEST})]
+    )
+    assert main(["bless", "--model", "m", *flags]) == 2
+    assert "outside the checkout" in capsys.readouterr().err
+    assert not baseline_path(baselines, "m", "smoke").exists()

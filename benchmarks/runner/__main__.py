@@ -64,6 +64,7 @@ from benchmarks.runner.nare_args import (
     check_invocation,
     nare_contract,
     stage_inputs,
+    variant,
 )
 from benchmarks.runner.report import (
     Baseline,
@@ -78,6 +79,7 @@ from benchmarks.runner.report import (
     load_baseline,
     render,
     render_matrix,
+    render_variant,
     slugify,
     summarize,
 )
@@ -152,6 +154,12 @@ def build_parser() -> argparse.ArgumentParser:
             action="store_true",
             help="compare against, or bless on top of, a baseline blessed on a "
             "different provider, model, judge or output cap",
+        )
+        child.add_argument(
+            "--allow-arg-change",
+            action="store_true",
+            help="compare against, or bless on top of, a baseline blessed with "
+            "different run arguments (what follows -- on run)",
         )
         if name == "run":
             child.add_argument(
@@ -640,6 +648,44 @@ def model_changed(baseline: Baseline, config: Config, allow: bool) -> bool:
     return True
 
 
+def args_changed(baseline: Baseline, config: Config, allow: bool) -> bool:
+    """Numbers are comparable within one variant of the run arguments.
+
+    Compared by the key, not the text: `--effort=low` is `--effort low`, and a
+    prompt file is its digest, so a moved prompt is the same variant and an
+    edited one is not. Only `--allow-arg-change` overrides this, and it
+    overrides nothing else.
+    """
+    if allow:
+        return False
+    blessed = variant(baseline.meta.nare_args, baseline.meta.nare_files)
+    if blessed == variant(config.run_args.recorded, config.run_args.files):
+        return False
+    print(
+        "bench: baseline was blessed with run arguments "
+        f"{render_variant(baseline.meta.nare_args, baseline.meta.nare_files)}; "
+        "this run used "
+        f"{render_variant(config.run_args.recorded, config.run_args.files)}. "
+        "Numbers are not comparable across run arguments. Pass "
+        "--allow-arg-change to override.",
+        file=sys.stderr,
+    )
+    return True
+
+
+def variant_note(baseline: Baseline, config: Config) -> str | None:
+    """Both sides' run arguments, printed above a table that compares across
+    variants, so a pasted table says so. None when they are one variant."""
+    blessed = (baseline.meta.nare_args, baseline.meta.nare_files)
+    ran = (config.run_args.recorded, config.run_args.files)
+    if variant(*blessed) == variant(*ran):
+        return None
+    return (
+        f"baseline run arguments: {render_variant(*blessed)}\n"
+        f"results run arguments:  {render_variant(*ran)}"
+    )
+
+
 def merge_baseline(
     kept: dict[str, CaseSummary],
     fresh: Sequence[CaseSummary],
@@ -789,8 +835,8 @@ def as_recorded(
     provider: str | None = None,
     judge_model: str | None = None,
 ) -> Config:
-    """The cap, provider and judge the results were run with, not the ones in
-    this shell: compare and bless never run the agent.
+    """The cap, provider, judge and run arguments the results were run with,
+    not the ones in this shell: compare and bless never run the agent.
 
     `provider` and `judge_model` are the flags. One that contradicts what the
     results recorded raises ConfigError naming both values, since bless would
@@ -808,12 +854,23 @@ def as_recorded(
                 f"the results were run with {name} {ran!r}, and {flag} says "
                 f"{given!r}; drop {flag}, or pass the one they were run with"
             )
-    return replace(
+    recorded = replace(
         config,
         max_tokens=next((r.max_tokens for r in records), None),
         provider=ran_provider or config.provider,
         judge_model=ran_judge or config.judge_model,
     )
+    if records:
+        # One run's lines share its arguments. A line from before they were
+        # recorded reads as none, the default variant.
+        recorded = replace(
+            recorded,
+            run_args=RunArgs(
+                recorded=tuple(records[0].nare_args),
+                files=dict(records[0].nare_files),
+            ),
+        )
+    return recorded
 
 
 def run_model(
@@ -1300,8 +1357,9 @@ def main(argv: list[str] | None = None) -> int:
         baseline = load_baseline(baseline_file) if baseline_file.exists() else None
         # Before the image and the reps: numbers the baseline cannot be
         # compared with would be paid for and then thrown away.
-        if baseline is not None and model_changed(
-            baseline, config, args.allow_model_change
+        if baseline is not None and (
+            model_changed(baseline, config, args.allow_model_change)
+            or args_changed(baseline, config, args.allow_arg_change)
         ):
             return 2
         try:
@@ -1330,6 +1388,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         except NeverStarted as exc:
             return stop_run(exc, root, stamp)
+        note = variant_note(baseline, config)
+        if note is not None:
+            print(note)
         print(render(final))
         return final.exit_code
 
@@ -1375,6 +1436,18 @@ def main(argv: list[str] | None = None) -> int:
     baseline_file = baseline_path(baselines, config.model, args.tier)
 
     if args.command == "bless":
+        # Whatever the --allow flags say: nobody else could reproduce such a
+        # baseline, and it would publish a local path.
+        for path in config.run_args.files:
+            if Path(path).is_absolute():
+                print(
+                    f"bench: {results_file.name}: the run arguments name {path}, "
+                    "which is outside the checkout; a baseline must name files "
+                    "anyone with the checkout can read, so move it into the "
+                    "checkout and run again",
+                    file=sys.stderr,
+                )
+                return 2
         baselines.mkdir(parents=True, exist_ok=True)
         old = load_baseline(baseline_file) if baseline_file.exists() else None
         tier_ids = {c.id for c in _select(root, args.tier, None)}
@@ -1395,6 +1468,19 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
+        # And under these results' run arguments.
+        if (
+            old is not None
+            and kept
+            and args_changed(old, config, args.allow_arg_change)
+        ):
+            print(
+                f"bench: blessing would keep {', '.join(kept)} from "
+                f"{baseline_file.name} under these results' run arguments; run "
+                "those cases too, or pass --allow-arg-change",
+                file=sys.stderr,
+            )
+            return 2
         meta = BaselineMeta(
             blessed=datetime.now(UTC).isoformat(timespec="seconds"),
             commit=_commit(),
@@ -1402,6 +1488,8 @@ def main(argv: list[str] | None = None) -> int:
             model=config.model,
             judge_model=config.judge_model,
             max_tokens=config.max_tokens,
+            nare_args=config.run_args.recorded,
+            nare_files=dict(config.run_args.files),
         )
         baseline_file.write_text(dumps_baseline(meta, merged), encoding="utf-8")
         print(
@@ -1420,6 +1508,8 @@ def main(argv: list[str] | None = None) -> int:
         config = replace(config, provider="")
     if model_changed(baseline, config, args.allow_model_change):
         return 2
+    if args_changed(baseline, config, args.allow_arg_change):
+        return 2
     comparison = compare(
         summaries,
         baseline,
@@ -1427,6 +1517,9 @@ def main(argv: list[str] | None = None) -> int:
         token_band=TOKEN_BAND,
         strict_tokens=args.strict_tokens,
     )
+    note = variant_note(baseline, config)
+    if note is not None:
+        print(note)
     print(render(comparison))
     return comparison.exit_code
 
