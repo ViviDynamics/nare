@@ -9,16 +9,20 @@ import pytest
 
 from fake_provider import (
     FakeProvider,
+    StreamingProvider,
     StreamingStructuredProvider,
     StrictArityProvider,
     StructuredProvider,
     text_reply,
     tool_reply,
 )
+from nare import Tool
 from nare.events import Event
 from nare.loop import run
-from nare.session import Session, new_session
+from nare.schema import SchemaError
+from nare.session import Session, Usage, new_session
 from nare.tools import Policy
+from nare.transport import Reply, StopReason, ToolCall
 
 PERSON: dict[str, Any] = {
     "type": "object",
@@ -351,3 +355,205 @@ async def test_a_repeated_key_is_a_structured_duplicate_key_error(
             "guidance": None,
         }
     ]
+
+
+def prose_tool_reply(
+    text: str,
+    name: str = "read",
+    args: dict[str, Any] | None = None,
+    *,
+    stop_reason: StopReason = "tool_use",
+) -> Reply:
+    """A tool turn whose text is prose, not a JSON answer."""
+    call_args = {"path": "NOTES.txt"} if args is None else args
+    return Reply(
+        content=[
+            {"type": "text", "text": text},
+            {"type": "tool_use", "id": "call_1", "name": name, "input": call_args},
+        ],
+        tool_calls=[ToolCall(id="call_1", name=name, args=call_args)],
+        usage=Usage(input=10, output=5),
+        stop_reason=stop_reason,
+    )
+
+
+def recording_check(seen: list[Any], raises_on: str | None = None) -> Any:
+    def check(answer: Any) -> list[SchemaError]:
+        seen.append(answer)
+        if raises_on is not None and answer["name"] == raises_on:
+            raise RuntimeError("lookup failed")
+        return []
+
+    return check
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["unstreamed", "streamed"])
+async def test_a_tool_turn_with_prose_and_no_json_does_not_end_the_run(
+    notes: Policy, streaming: bool
+) -> None:
+    # The #192 reproduction: prose and a tool call, no JSON, then a final answer.
+    seen: list[Any] = []
+    provider_type = StreamingProvider if streaming else FakeProvider
+    provider = provider_type(
+        [
+            prose_tool_reply("Let me read the notes first."),
+            text_reply('{"name": "ada"}'),
+        ]
+    )
+    session = new_session("who?")
+
+    await drain(
+        session, provider, schema=PERSON, policy=notes, check=recording_check(seen)
+    )
+
+    assert session.status == "done", session.error
+    assert session.output == {"name": "ada"}
+    assert session.tool_calls == 1
+    # The check runs on the final answer only, never on the tool turn.
+    assert seen == [{"name": "ada"}]
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["unstreamed", "streamed"])
+async def test_a_tool_turn_with_an_answer_is_not_checked(
+    notes: Policy, streaming: bool
+) -> None:
+    # A tool turn whose text is valid JSON still is not a candidate final answer,
+    # so a check that would raise on it never runs and never ends the run.
+    seen: list[Any] = []
+    provider_type = StreamingProvider if streaming else FakeProvider
+    provider = provider_type(
+        [
+            prose_tool_reply('{"name": "bob"}'),
+            text_reply('{"name": "ada"}'),
+        ]
+    )
+    session = new_session("who?")
+
+    await drain(
+        session,
+        provider,
+        schema=PERSON,
+        policy=notes,
+        check=recording_check(seen, raises_on="bob"),
+    )
+
+    assert session.status == "done", session.error
+    assert session.output == {"name": "ada"}
+    assert seen == [{"name": "ada"}]
+
+
+async def test_a_cut_off_tool_turn_with_prose_does_not_run_the_check(
+    notes: Policy,
+) -> None:
+    seen: list[Any] = []
+    provider = FakeProvider(
+        [
+            prose_tool_reply("partial thought", stop_reason="max_tokens"),
+            text_reply('{"name": "ada"}'),
+        ]
+    )
+    session = new_session("who?")
+
+    await drain(
+        session,
+        provider,
+        schema=PERSON,
+        policy=notes,
+        check=recording_check(seen),
+        max_cutoffs=1,
+    )
+
+    assert session.status == "done", session.error
+    assert session.output == {"name": "ada"}
+    assert seen == [{"name": "ada"}]
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["unstreamed", "streamed"])
+async def test_a_caller_tool_turn_with_prose_does_not_end_the_run(
+    notes: Policy, streaming: bool
+) -> None:
+    seen: list[Any] = []
+    lookup = Tool(
+        name="lookup",
+        description="Fetch one record by id.",
+        input_schema={"type": "object", "properties": {"id": {"type": "integer"}}},
+        call=lambda args: f"record {args['id']}",
+    )
+    policy = Policy(
+        tools=frozenset({"read", "lookup"}),
+        pending=frozenset({"lookup"}),
+        root=notes.root,
+    )
+    provider_type = StreamingProvider if streaming else FakeProvider
+    provider = provider_type(
+        [
+            prose_tool_reply("Looking that up.", name="lookup", args={"id": 1}),
+            text_reply('{"name": "ada"}'),
+        ]
+    )
+    session = new_session("who?")
+
+    await drain(
+        session,
+        provider,
+        schema=PERSON,
+        policy=policy,
+        check=recording_check(seen),
+        tools=[lookup],
+    )
+
+    assert session.status == "done", session.error
+    assert session.tool_calls == 1
+    assert seen == [{"name": "ada"}]
+
+
+async def test_a_read_hold_before_the_answer_does_not_end_the_run(
+    notes: Policy,
+) -> None:
+    # A final answer held for a read is a candidate that passed the schema. The
+    # hold is a correction, and the run continues to the answer after the read.
+    seen: list[Any] = []
+    provider = FakeProvider(
+        [
+            text_reply('{"name": "ada"}'),
+            tool_reply("read", {"path": "NOTES.txt"}),
+            text_reply('{"name": "ada"}'),
+        ]
+    )
+    session = new_session("who?")
+
+    await drain(
+        session,
+        provider,
+        schema=PERSON,
+        policy=notes,
+        check=recording_check(seen),
+        require_reads=1,
+    )
+
+    assert session.status == "done", session.error
+    assert session.output == {"name": "ada"}
+    assert seen == [{"name": "ada"}, {"name": "ada"}]
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["unstreamed", "streamed"])
+async def test_a_check_that_raises_on_a_final_answer_is_an_error_event(
+    notes: Policy, streaming: bool
+) -> None:
+    def check(answer: Any) -> list[Any]:
+        raise RuntimeError("lookup failed")
+
+    provider_type = StreamingProvider if streaming else FakeProvider
+    session = new_session("who?")
+
+    events = await drain(
+        session,
+        provider_type([prose_tool_reply("Reading."), text_reply('{"name": "ada"}')]),
+        schema=PERSON,
+        policy=notes,
+        check=check,
+    )
+
+    assert session.status == "error"
+    assert session.error == "check raised RuntimeError: lookup failed"
+    assert events[-1].type == "error"
