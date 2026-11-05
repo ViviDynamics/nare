@@ -10,14 +10,16 @@ import argparse
 import asyncio
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
 from collections import Counter, defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from benchmarks.runner.agreement import Header, Skip, render_summary
 from benchmarks.runner.case import Case, CaseError, load_cases
@@ -36,6 +38,7 @@ from benchmarks.runner.config import (
 )
 from benchmarks.runner.grade import (
     CheckResult,
+    context_use,
     grade_bash_check,
     grade_result_check,
     infra_error,
@@ -56,6 +59,15 @@ from benchmarks.runner.models import (
     list_models,
     render_models,
 )
+from benchmarks.runner.nare_args import (
+    ArgsError,
+    RunArgs,
+    check_invocation,
+    file_digest,
+    nare_contract,
+    stage_inputs,
+    variant,
+)
 from benchmarks.runner.report import (
     Baseline,
     BaselineMeta,
@@ -69,6 +81,7 @@ from benchmarks.runner.report import (
     load_baseline,
     render,
     render_matrix,
+    render_variant,
     slugify,
     summarize,
 )
@@ -85,6 +98,7 @@ from benchmarks.runner.sandbox import (
     sandbox,
 )
 from benchmarks.runner.triage import triage_transport
+from nare.contract import NEVER_STARTED
 from nare.transport import Transport
 
 CheckRunner = Callable[[Case, str, int], tuple[int, str]]
@@ -94,6 +108,19 @@ CONFIRM_REPS = 7
 # nothing about the fixture and must not read as a failing check.
 DID_NOT_RUN = range(124, 128)
 TOKEN_BAND = 0.10
+
+
+def split_run_args(argv: Sequence[str]) -> tuple[list[str], list[str] | None]:
+    """Bench's own arguments, and what follows the first `--` for nare.
+
+    Split before argparse, which would otherwise take nare's flags as bench's.
+    The second part is None when there is no `--`, and empty after a bare one.
+    """
+    tokens = list(argv)
+    if "--" not in tokens:
+        return tokens, None
+    at = tokens.index("--")
+    return tokens[:at], tokens[at + 1 :]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -108,7 +135,19 @@ def build_parser() -> argparse.ArgumentParser:
         ("bless", "write the latest results to the baseline"),
         ("verify", "check that each case's checks fail on its pristine fixture"),
     ):
-        child = sub.add_parser(name, help=help_text)
+        if name == "run":
+            # split_run_args takes what follows -- before argparse sees it,
+            # so argparse cannot list it on its own.
+            child = sub.add_parser(
+                name,
+                help=help_text,
+                usage="%(prog)s [options] [-- NARE_ARGS ...]",
+                epilog="Everything after -- goes to nare run as the run "
+                "arguments, for every selected case: for example "
+                "-- --effort low. See 'Arguments to nare' in benchmarks/README.md.",
+            )
+        else:
+            child = sub.add_parser(name, help=help_text)
         child.add_argument(
             "--tier", choices=["smoke", "full"], default="smoke", help="which tier"
         )
@@ -129,6 +168,12 @@ def build_parser() -> argparse.ArgumentParser:
             action="store_true",
             help="compare against, or bless on top of, a baseline blessed on a "
             "different provider, model, judge or output cap",
+        )
+        child.add_argument(
+            "--allow-arg-change",
+            action="store_true",
+            help="compare against, or bless on top of, a baseline blessed with "
+            "different run arguments (what follows -- on run)",
         )
         if name == "run":
             child.add_argument(
@@ -235,6 +280,86 @@ def _commit() -> str:
     return proc.stdout.strip() or "unknown"
 
 
+class GitError(Exception):
+    """git could not say whether it tracks a file: not installed, or no
+    checkout to ask. Neither answer may be assumed."""
+
+
+def git_tracks(root: Path, path: str) -> bool:
+    """Whether git tracks `path`, relative to the checkout at `root`.
+
+    The pathspec is literal, so a name with a `*` in it matches only itself.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", path],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise GitError("git is not on PATH") from exc
+    except OSError as exc:
+        raise GitError(
+            f"git could not run: {exc.strerror or type(exc).__name__}"
+        ) from exc
+    # 1 is a path git does not track; anything else is git failing to answer.
+    if proc.returncode in (0, 1):
+        return proc.returncode == 0
+    raise GitError(proc.stderr.strip() or f"git exited {proc.returncode}")
+
+
+def unblessable(root: Path, files: Mapping[str, str]) -> list[str]:
+    """Why each run file would make a baseline other checkouts cannot run.
+
+    `run --matrix` reads every file a baseline names again, on whatever
+    checkout runs it, and exits 2 for that model when one is missing or has
+    another digest, which stops the whole matrix. So a file must be inside
+    the checkout, still hold the digest the run measured, and be tracked by
+    git. Empty when every file passes, and git is asked only about a file
+    that got that far.
+    """
+    problems: list[str] = []
+    for path, digest in sorted(files.items()):
+        if Path(path).is_absolute():
+            problems.append(
+                f"the run arguments name {path}, which is outside the checkout; "
+                "a baseline must name files anyone with the checkout can read, "
+                "so move it into the checkout and run again"
+            )
+            continue
+        try:
+            now = file_digest((root / path).read_bytes())
+        except OSError:
+            problems.append(
+                f"{path}, which the run measured, cannot be read; restore it, "
+                "or run again"
+            )
+            continue
+        if now != digest:
+            problems.append(
+                f"{path} changed since the run: the run measured {digest[:19]}, "
+                f"and it is now {now[:19]}; restore the file the run measured, "
+                "or run again"
+            )
+            continue
+        try:
+            known = git_tracks(root, path)
+        except GitError as exc:
+            problems.append(
+                f"cannot ask git whether it tracks {path} ({exc}); a baseline "
+                "must name files every checkout has, so bless from a git "
+                "checkout, with git on PATH"
+            )
+            continue
+        if not known:
+            problems.append(
+                f"git does not track {path}, so no other checkout has it; "
+                "commit it first"
+            )
+    return problems
+
+
 def line_text(stdout: str, questions: Sequence[str] = ()) -> str:
     """What the judge reads as the agent's closing message.
 
@@ -271,6 +396,80 @@ def new_stamp() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
 
 
+class NeverStarted(Exception):
+    """nare refused its invocation, so no rep of this run can start.
+
+    Exit 2 with no result line and no timeout is nare refusing to start: its
+    argument parser, its validation of the run arguments, or the construction
+    of its transport (a key it cannot use, say), whether a run argument, a
+    case argument or the environment is to blame. Every later rep would be
+    refused the same way, so the run stops instead of recording an error per
+    rep. `log` is the file that keeps the reason, when one was written.
+    `kept` gains each file of graded records the stopped pass left on its way
+    out, which the stop then names.
+    """
+
+    def __init__(
+        self, case: str, rep: int, stderr: str, log: Path | None = None
+    ) -> None:
+        self.case = case
+        self.rep = rep
+        self.stderr = stderr
+        self.log = log
+        self.kept: list[Path] = []
+        message = (
+            f"{case} rep {rep}: nare refused its invocation and never started "
+            f"(exit {NEVER_STARTED}), so the run stopped here. Its stderr:\n"
+            f"{stderr.rstrip()}"
+        )
+        if log is not None:
+            message += f"\nThe reason is kept in {log}"
+        super().__init__(message)
+
+
+def _listed(tokens: Sequence[str]) -> str:
+    return shlex.join(tokens) or "(none)"
+
+
+def _section(title: str, body: str) -> str:
+    """A titled block of verbatim text, ended by exactly one newline."""
+    return f"{title}\n{body}" + ("" if body.endswith("\n") else "\n")
+
+
+def stopped_log(
+    case: Case, rep: int, config: Config, result: RunArtifacts, kept_ref: str
+) -> str:
+    """The text of stopped.txt: why a run stopped at a rep whose nare never started.
+
+    Nothing is redacted or shortened. The arguments carry no credential (the
+    key reaches nare in the environment), and a shortened stderr can lose the
+    one line that says why. The run args are the paths nare was given, under
+    /in, so a run with files also names the host file each came from.
+    """
+    lines = [
+        "nare never started, so the run stopped.",
+        f"case: {case.id}",
+        f"rep: {rep}",
+        f"model: {config.model} ({config.provider})",
+        f"exit: {result.exit_code} (never_started), no result line, not timed out",
+        f"run args: {_listed(config.run_args.passed)}",
+        f"case args: {_listed(case.args)}",
+    ]
+    if config.run_args.files:
+        files = "; ".join(
+            f"{path} {digest}" for path, digest in config.run_args.files.items()
+        )
+        lines.append(f"run files: {files}")
+    lines.append(f"evidence: {kept_ref}")
+    return (
+        "\n".join(lines)
+        + "\n\n"
+        + _section("nare's stderr:", result.stderr)
+        + "\n"
+        + _section("nare's stdout:", result.stdout or "(empty)")
+    )
+
+
 def keep_evidence(dest: Path, artifacts: Path, result: RunArtifacts) -> None:
     """Copy what a rep produced out of its sandbox before the sandbox goes.
 
@@ -303,6 +502,16 @@ async def run_rep(
         result = run_agent(case, workdir, artifacts, config)
         keep_evidence(kept, artifacts, result)
         line = parse_stdout(result.stdout)
+        if line is None and not result.timed_out and result.exit_code == NEVER_STARTED:
+            # nare refused to start (its parser, its argument checks or its
+            # transport): every rep would be.
+            # The log is written first, and is the record of why.
+            log = evidence / "stopped.txt"
+            log.write_text(
+                stopped_log(case, rep, config, result, kept_ref), encoding="utf-8"
+            )
+            raise NeverStarted(case.id, rep, result.stderr, log)
+        use = context_use(result.stdout)
         if line is None or infra_error(line):
             # No result line means the run never produced one: a crash, a
             # timeout, a Docker fault. A transport failure nare caught is the
@@ -328,6 +537,11 @@ async def run_rep(
                 max_tokens=config.max_tokens,
                 provider=config.provider,
                 judge_model=config.judge_model,
+                case_args=list(case.args),
+                nare_args=list(config.run_args.recorded),
+                nare_files=dict(config.run_args.files),
+                context_window=use.window,
+                compactions=use.compactions,
             )
 
         # Before the bash checks, so nothing a check writes reaches the judge.
@@ -377,6 +591,11 @@ async def run_rep(
         max_tokens=config.max_tokens,
         provider=config.provider,
         judge_model=config.judge_model,
+        case_args=list(case.args),
+        nare_args=list(config.run_args.recorded),
+        nare_files=dict(config.run_args.files),
+        context_window=use.window,
+        compactions=use.compactions,
     )
 
 
@@ -390,18 +609,80 @@ async def run_case(
     ]
 
 
+def _write_records(path: Path, records: Sequence[RepRecord]) -> None:
+    """One JSON line per rep: a results file, and what a stop keeps."""
+    with path.open("w", encoding="utf-8") as handle:
+        for rec in records:
+            payload = asdict(rec)
+            payload["checks"] = [asdict(c) for c in rec.checks]
+            handle.write(json.dumps(payload) + "\n")
+
+
 def write_results(
     root: Path, records: Sequence[RepRecord], stamp: str | None = None
 ) -> Path:
     directory = root / "benchmarks" / "results"
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{stamp or new_stamp()}.jsonl"
-    with path.open("w", encoding="utf-8") as handle:
-        for rec in records:
-            payload = asdict(rec)
-            payload["checks"] = [asdict(c) for c in rec.checks]
-            handle.write(json.dumps(payload) + "\n")
+    _write_records(path, records)
     return path
+
+
+# In a stopped run's evidence directory. The first is what the pass that stopped
+# had finished, or a whole results file `set_aside_partial_results` moved;
+# never both, since a pass writes its results file only when it finishes. The
+# second is what a confirmation re-run had finished, beside its first pass.
+PARTIAL = "results.partial.jsonl"
+CONFIRM_PARTIAL = "results.confirm.partial.jsonl"
+
+
+def keep_partial(exc: NeverStarted, path: Path, records: Sequence[RepRecord]) -> None:
+    """On a stop, write the graded records of each case the pass finished.
+
+    Judge verdicts are paid for, and the developer's rule is that a stopped run
+    keeps every log. Written in the evidence directory, never as a results
+    file, which `bless` would read as the newest run. Nothing when no case
+    finished.
+    """
+    if not records:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_records(path, records)
+    exc.kept.append(path)
+
+
+def set_aside_partial_results(root: Path, stamp: str) -> None:
+    """Move every results file this run wrote into its evidence directory.
+
+    A stopped run leaves no results file as the newest run, which `bless`
+    would read as if it were whole: a matrix that stopped on its second model,
+    or a first pass whose confirmation never ran. The file is moved, never
+    deleted, to `<evidence>/results.partial.jsonl`, and each move is printed.
+    """
+    directory = root / "benchmarks" / "results"
+    for path in sorted(
+        (*directory.glob(f"{stamp}.jsonl"), *directory.glob(f"{stamp}.*.jsonl"))
+    ):
+        evidence = path.with_suffix("")
+        evidence.mkdir(parents=True, exist_ok=True)
+        target = evidence / PARTIAL
+        path.replace(target)
+        print(
+            f"bench: the partial results of the stopped run are in {target}",
+            file=sys.stderr,
+        )
+
+
+def stop_run(exc: NeverStarted, root: Path, stamp: str) -> int:
+    """`run` stopped because nare never started: say why, and exit 2."""
+    print(f"bench: {exc}", file=sys.stderr)
+    for path in exc.kept:
+        print(
+            f"bench: the records of each case the stopped pass finished are in {path}",
+            file=sys.stderr,
+        )
+    set_aside_partial_results(root, stamp)
+    return 2
 
 
 def latest_results(root: Path) -> Path | None:
@@ -463,7 +744,14 @@ def read_results(path: Path) -> list[RepRecord]:
     return records
 
 
-def model_changed(baseline: Baseline, config: Config, allow: bool) -> bool:
+def _bench(where: str | None) -> str:
+    """The start of a refusal: `bench: `, and what it is about when given."""
+    return f"bench: {where}: " if where else "bench: "
+
+
+def model_changed(
+    baseline: Baseline, config: Config, allow: bool, *, where: str | None = None
+) -> bool:
     """Numbers are comparable within a model and nowhere else.
 
     Pinning the judge model too is the non-obvious half: if it changes under
@@ -472,7 +760,8 @@ def model_changed(baseline: Baseline, config: Config, allow: bool) -> bool:
     cut off at nare's default fails reps it passes with room to think. So is
     the provider: the same model on the other route can lose a reasoning
     model's thinking on the way. An empty `config.provider` is results that
-    never recorded theirs, which is unknown, not a mismatch.
+    never recorded theirs, which is unknown, not a mismatch. `where` names
+    the baseline in the message when there is more than one.
     """
     if allow:
         return False
@@ -489,7 +778,8 @@ def model_changed(baseline: Baseline, config: Config, allow: bool) -> bool:
 
     provider = repr(config.provider) if config.provider else "an unrecorded provider"
     print(
-        f"bench: baseline was blessed on provider {baseline.meta.provider!r} / "
+        f"{_bench(where)}baseline was blessed on provider "
+        f"{baseline.meta.provider!r} / "
         f"model {baseline.meta.model!r} / judge {baseline.meta.judge_model!r} / "
         f"output cap {cap(baseline.meta.max_tokens)}; this run used {provider} / "
         f"{config.model!r} / {config.judge_model!r} / {cap(config.max_tokens)}. "
@@ -498,6 +788,89 @@ def model_changed(baseline: Baseline, config: Config, allow: bool) -> bool:
         file=sys.stderr,
     )
     return True
+
+
+def args_changed(
+    baseline: Baseline,
+    config: Config,
+    allow: bool,
+    *,
+    where: str | None = None,
+    match: Literal["run", "matrix"] | None = "run",
+) -> bool:
+    """Numbers are comparable within one variant of the run arguments.
+
+    Compared by the key, not the text: `--effort=low` is `--effort low`, and a
+    prompt file is its digest, so a moved prompt is the same variant and an
+    edited one is not. Only `--allow-arg-change` overrides this, and it
+    overrides nothing else. With `match`, the refusal ends with how to match
+    the baseline: for a single run, the arguments to pass, on a line of their
+    own so they copy cleanly (a baseline's file paths are relative to the
+    checkout's root); for the matrix, which takes no `--`, to run it again.
+    """
+    if allow:
+        return False
+    meta = baseline.meta
+    blessed = variant(meta.nare_args, meta.nare_files)
+    if blessed == variant(config.run_args.recorded, config.run_args.files):
+        return False
+    print(
+        f"{_bench(where)}baseline was blessed with run arguments "
+        f"{render_variant(meta.nare_args, meta.nare_files)}; "
+        "this run used "
+        f"{render_variant(config.run_args.recorded, config.run_args.files)}. "
+        "Numbers are not comparable across run arguments. Pass "
+        "--allow-arg-change to override.",
+        file=sys.stderr,
+    )
+    if match is None:
+        return True
+    if match == "matrix":
+        hint = "run the matrix again, which runs each baseline's own arguments"
+    elif not meta.nare_args:
+        hint = "drop the -- and the arguments after it"
+    else:
+        root = " from the checkout's root" if meta.nare_files else ""
+        hint = f"run{root} with: -- {shlex.join(meta.nare_args)}"
+    print(f"{_bench(where)}to match the baseline, {hint}", file=sys.stderr)
+    return True
+
+
+def incomparable(
+    baseline: Baseline,
+    config: Config,
+    args: argparse.Namespace,
+    *,
+    where: str | None = None,
+) -> bool:
+    """Whether a model change or a variant change refuses the comparison.
+
+    Both are checked and each prints its refusal, so an operator who needs
+    both overrides learns so at once rather than one at a time. `where`, the
+    baseline's file name, is given for the matrix, where there are several.
+    """
+    model = model_changed(baseline, config, args.allow_model_change, where=where)
+    arguments = args_changed(
+        baseline,
+        config,
+        args.allow_arg_change,
+        where=where,
+        match="run" if where is None else "matrix",
+    )
+    return model or arguments
+
+
+def variant_note(baseline: Baseline, config: Config) -> str | None:
+    """Both sides' run arguments, printed above a table that compares across
+    variants, so a pasted table says so. None when they are one variant."""
+    blessed = (baseline.meta.nare_args, baseline.meta.nare_files)
+    ran = (config.run_args.recorded, config.run_args.files)
+    if variant(*blessed) == variant(*ran):
+        return None
+    return (
+        f"baseline run arguments: {render_variant(*blessed)}\n"
+        f"results run arguments:  {render_variant(*ran)}"
+    )
 
 
 def merge_baseline(
@@ -649,8 +1022,8 @@ def as_recorded(
     provider: str | None = None,
     judge_model: str | None = None,
 ) -> Config:
-    """The cap, provider and judge the results were run with, not the ones in
-    this shell: compare and bless never run the agent.
+    """The cap, provider, judge and run arguments the results were run with,
+    not the ones in this shell: compare and bless never run the agent.
 
     `provider` and `judge_model` are the flags. One that contradicts what the
     results recorded raises ConfigError naming both values, since bless would
@@ -668,26 +1041,71 @@ def as_recorded(
                 f"the results were run with {name} {ran!r}, and {flag} says "
                 f"{given!r}; drop {flag}, or pass the one they were run with"
             )
-    return replace(
+    recorded = replace(
         config,
         max_tokens=next((r.max_tokens for r in records), None),
         provider=ran_provider or config.provider,
         judge_model=ran_judge or config.judge_model,
     )
+    if records:
+        # One run's lines share its arguments. A line from before they were
+        # recorded reads as none, the default variant.
+        recorded = replace(
+            recorded,
+            run_args=RunArgs(
+                recorded=tuple(records[0].nare_args),
+                files=dict(records[0].nare_files),
+            ),
+        )
+    return recorded
 
 
 def run_model(
     root: Path, cases: Sequence[Case], config: Config, name: str
 ) -> tuple[Transport, list[RepRecord]]:
     """Every case at its own reps: results/<name>.jsonl, and each rep's
-    evidence under results/<name>/."""
+    evidence under results/<name>/. A stop writes no results file: the cases
+    it finished are kept in results/<name>/results.partial.jsonl."""
     transport = judge_transport(config)
     evidence = root / "benchmarks" / "results" / name
     records: list[RepRecord] = []
-    for case in cases:
-        records += asyncio.run(run_case(case, config, transport, case.reps, evidence))
+    try:
+        for case in cases:
+            records += asyncio.run(
+                run_case(case, config, transport, case.reps, evidence)
+            )
+    except NeverStarted as exc:
+        keep_partial(exc, evidence / PARTIAL, records)
+        raise
     print(f"results: {write_results(root, records, name)}")
     return transport, records
+
+
+def check_and_stage(
+    tokens: Sequence[str],
+    cases: Sequence[Case],
+    *,
+    base: Path,
+    root: Path,
+    dest: Path,
+) -> RunArgs:
+    """A run's arguments checked against nare's contract and the selected
+    cases, then each prompt file copied to `dest`: what one model is run under.
+
+    `base` is where a relative path is read from, `root` the checkout that
+    recorded paths are relative to. `dest` must be absolute, since docker reads
+    a relative `-v` source as a named volume. Every failure is an `ArgsError`,
+    a copy that cannot be written included, so the caller refuses the run with
+    exit 2 before the image is built.
+    """
+    check_invocation(tokens, {c.id: c.args for c in cases}, *nare_contract())
+    try:
+        return stage_inputs(tokens, base=base, root=root, dest=dest)
+    except OSError as exc:
+        raise ArgsError(
+            f"run arguments: cannot copy the prompt files into {dest} "
+            f"({exc.strerror or type(exc).__name__})"
+        ) from exc
 
 
 def confirm(
@@ -703,7 +1121,8 @@ def confirm(
     """Re-run each case whose pass rate dropped at CONFIRM_REPS, then compare.
 
     The re-run rewrites results/<name>.jsonl and its evidence instead of
-    starting a second of each.
+    starting a second of each. A stop keeps the re-run's finished cases in
+    results/<name>/results.confirm.partial.jsonl, beside the first pass.
     """
     first = compare(
         summarize(records),
@@ -715,11 +1134,17 @@ def confirm(
     if suspects:
         print(f"re-confirming {', '.join(suspects)} at {CONFIRM_REPS} reps...")
         evidence = root / "benchmarks" / "results" / name
-        for case in [c for c in cases if c.id in suspects]:
-            extra = asyncio.run(
-                run_case(case, config, transport, CONFIRM_REPS, evidence)
-            )
-            records = [r for r in records if r.case != case.id] + extra
+        rerun: list[RepRecord] = []
+        try:
+            for case in [c for c in cases if c.id in suspects]:
+                extra = asyncio.run(
+                    run_case(case, config, transport, CONFIRM_REPS, evidence)
+                )
+                rerun += extra
+                records = [r for r in records if r.case != case.id] + extra
+        except NeverStarted as exc:
+            keep_partial(exc, evidence / CONFIRM_PARTIAL, rerun)
+            raise
         write_results(root, records, name)
     return compare(
         summarize(records),
@@ -823,13 +1248,17 @@ def served_check(matrix: Sequence[tuple[Path, Config]], base_url: str | None) ->
 
 
 def run_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) -> int:
-    """`run --matrix`: each baseline's model in turn, against its own baseline.
+    """`run --matrix`: each baseline's model in turn, against its own baseline,
+    under that baseline's own run arguments.
 
     Everything that can refuse the run does so before the image is built: an
     empty matrix, a baseline file not at its model's name, a second judge, a
-    missing key, a cap above the non-streaming ceiling, a model or judge the
-    endpoint does not list. Sequential, never parallel: every run tags its
-    image nare-bench:local.
+    missing key, a cap above the non-streaming ceiling, run arguments nare
+    would now refuse, a prompt file that cannot be read or no longer has the
+    digest its baseline measured, a model or judge the endpoint does not
+    list. No flag lifts the digest refusal: an edited prompt is a new
+    experiment, which a single run with `--` measures. Sequential, never
+    parallel: every run tags its image nare-bench:local.
     """
     matrix = load_matrix(root, args.tier)
     if not matrix:
@@ -844,21 +1273,44 @@ def run_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) -> i
         print(f"bench: {why}", file=sys.stderr)
         return 2
     base_url = args.base_url or os.environ.get("NARE_BASE_URL") or None
+    # Taken before staging: each model's prompt copies live under its name.
+    stamp = new_stamp()
     configs: list[tuple[Path, Config]] = []
     for path, baseline in matrix:
+        meta = baseline.meta
+        evidence = root / "benchmarks" / "results" / f"{stamp}.{slugify(meta.model)}"
         try:
             config = baseline_config(
-                model=baseline.meta.model,
-                provider=baseline.meta.provider,
-                judge_model=baseline.meta.judge_model,
-                max_tokens=baseline.meta.max_tokens,
+                model=meta.model,
+                provider=meta.provider,
+                judge_model=meta.judge_model,
+                max_tokens=meta.max_tokens,
                 base_url=base_url,
                 env=os.environ,
             )
-        except ConfigError as exc:
+            # A baseline records its paths relative to the checkout. nare may
+            # have dropped or renamed a flag since the bless, so they are
+            # checked again.
+            staged = check_and_stage(
+                meta.nare_args, cases, base=root, root=root, dest=evidence / "inputs"
+            )
+        except (ConfigError, ArgsError) as exc:
             print(f"bench: {path.name}: {exc}", file=sys.stderr)
             return 2
-        configs.append((path, config))
+        moved = sorted(
+            file
+            for file in set(staged.files) | set(meta.nare_files)
+            if staged.files.get(file) != meta.nare_files.get(file)
+        )
+        for file in moved:
+            print(
+                f"bench: {path.name}: {file} no longer has the digest the baseline "
+                "measured; restore it, or bless that model again on the new file",
+                file=sys.stderr,
+            )
+        if moved:
+            return 2
+        configs.append((path, replace(config, run_args=staged)))
     code = served_check(configs, base_url)
     if code:
         return code
@@ -868,19 +1320,34 @@ def run_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) -> i
         print(f"bench: {exc}", file=sys.stderr)
         return 2
 
-    stamp = new_stamp()
     columns: list[tuple[str, Comparison]] = []
     for (_, baseline), (_, config) in zip(matrix, configs, strict=True):
         print(f"\n== {config.model} ({config.provider}) ==")
         name = f"{stamp}.{slugify(config.model)}"
-        transport, records = run_model(root, cases, config, name)
-        final = confirm(
-            root, cases, config, transport, name, records, baseline, args.strict_tokens
-        )
+        try:
+            transport, records = run_model(root, cases, config, name)
+            final = confirm(
+                root,
+                cases,
+                config,
+                transport,
+                name,
+                records,
+                baseline,
+                args.strict_tokens,
+            )
+        except NeverStarted as exc:
+            return stop_run(exc, root, stamp)
         print(render(final))
         columns.append((config.model, final))
+    # Each model ran its baseline's own variant, so the note names one per
+    # model and there is no second side to print.
+    variants = {
+        config.model: render_variant(config.run_args.recorded, config.run_args.files)
+        for _, config in configs
+    }
     print()
-    print(render_matrix(columns, matrix[0][1].meta.judge_model))
+    print(render_matrix(columns, matrix[0][1].meta.judge_model, variants=variants))
     return max(comparison.exit_code for _, comparison in columns)
 
 
@@ -906,7 +1373,13 @@ def baselines_table(root: Path, tier: str, selected: set[str]) -> int:
         )
         for _, baseline in matrix
     ]
-    print(render_matrix(columns, matrix[0][1].meta.judge_model))
+    variants = {
+        baseline.meta.model: render_variant(
+            baseline.meta.nare_args, baseline.meta.nare_files
+        )
+        for _, baseline in matrix
+    }
+    print(render_matrix(columns, matrix[0][1].meta.judge_model, variants=variants))
     return 0
 
 
@@ -928,6 +1401,11 @@ def compare_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) 
         return 2
     columns: list[tuple[str, Comparison]] = []
     judges: set[str] = set()
+    variants: dict[str, str] = {}
+    notes: list[str] = []
+    # Every model's refusals, each naming its baseline, before exit 2: the
+    # overrides are global, so stopping at the first would hide the rest.
+    refused = False
     for path in files:
         records = read_results(path)
         if not records:
@@ -951,9 +1429,17 @@ def compare_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) 
             ),
             records,
         )
-        if model_changed(baseline, config, args.allow_model_change):
-            return 2
+        if incomparable(baseline, config, args, where=baseline_file.name):
+            refused = True
+            continue
         judges.add(config.judge_model)
+        variants[model] = render_variant(
+            config.run_args.recorded, config.run_args.files
+        )
+        note = variant_note(baseline, config)
+        if note is not None:
+            indented = "\n".join(f"  {line}" for line in note.splitlines())
+            notes.append(f"{model}:\n{indented}")
         summaries = [s for s in summarize(records) if s.case in selected]
         columns.append(
             (
@@ -967,6 +1453,8 @@ def compare_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) 
                 ),
             )
         )
+    if refused:
+        return 2
     if not columns:
         print(f"bench: {stamp_of(files[0])} holds no results", file=sys.stderr)
         return 2
@@ -977,7 +1465,11 @@ def compare_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) 
             file=sys.stderr,
         )
         return 2
-    print(render_matrix(columns, ", ".join(sorted(judges))))
+    # Each model whose results ran another variant than its baseline, both
+    # sides, above the table they qualify.
+    for note in notes:
+        print(note)
+    print(render_matrix(columns, ", ".join(sorted(judges)), variants=variants))
     return max(comparison.exit_code for _, comparison in columns)
 
 
@@ -1015,11 +1507,27 @@ def show_models(args: argparse.Namespace, root: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    argv = sys.argv[1:] if argv is None else argv
+    own, nare = split_run_args(argv)
+    args = build_parser().parse_args(own)
     if args.command is None:
         print(
             "bench needs a subcommand: run, compare, bless, verify, "
             "compare-judges, or models",
+            file=sys.stderr,
+        )
+        return 2
+    if nare is not None and args.command != "run":
+        print(
+            f"bench: {args.command} takes no arguments for nare; only run passes "
+            "them, after --, and compare and bless read them from the results",
+            file=sys.stderr,
+        )
+        return 2
+    if nare is not None and args.matrix:
+        print(
+            "bench: --matrix runs each baseline's own run arguments; drop the -- "
+            "and what follows",
             file=sys.stderr,
         )
         return 2
@@ -1040,6 +1548,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.command == "verify":
+        try:
+            check_invocation((), {c.id: c.args for c in cases}, *nare_contract())
+        except ArgsError as exc:
+            print(f"bench: {exc}", file=sys.stderr)
+            return 2
         try:
             build_image(root)
         except SandboxError as exc:
@@ -1064,6 +1577,22 @@ def main(argv: list[str] | None = None) -> int:
             return run_matrix(args, root, cases)
         return compare_matrix(args, root, cases)
 
+    if args.command == "run":
+        # Before the key, the image and any rep, so a typo costs nothing. The
+        # stamp is taken here because the prompt copies live under its name.
+        stamp = new_stamp()
+        try:
+            run_args = check_and_stage(
+                nare or (),
+                cases,
+                base=Path.cwd(),
+                root=root,
+                dest=root / "benchmarks" / "results" / stamp / "inputs",
+            )
+        except ArgsError as exc:
+            print(f"bench: {exc}", file=sys.stderr)
+            return 2
+
     try:
         config = resolve_config(
             model=args.model,
@@ -1079,32 +1608,44 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.command == "run":
+        config = replace(config, run_args=run_args)
         baseline_file = baseline_path(
             root / "benchmarks" / "baselines", config.model, args.tier
         )
         baseline = load_baseline(baseline_file) if baseline_file.exists() else None
         # Before the image and the reps: numbers the baseline cannot be
         # compared with would be paid for and then thrown away.
-        if baseline is not None and model_changed(
-            baseline, config, args.allow_model_change
-        ):
+        if baseline is not None and incomparable(baseline, config, args):
             return 2
         try:
             build_image(root)
         except SandboxError as exc:
             print(f"bench: {exc}", file=sys.stderr)
             return 2
-        stamp = new_stamp()
-        transport, records = run_model(root, cases, config, stamp)
-        if baseline is None:
-            print(render_first_run(summarize(records)))
-            print(
-                f"\nno baseline yet; bless one with: bin/bench bless --tier {args.tier}"
+        try:
+            transport, records = run_model(root, cases, config, stamp)
+            if baseline is None:
+                print(render_first_run(summarize(records)))
+                print(
+                    "\nno baseline yet; bless one with: "
+                    f"bin/bench bless --tier {args.tier}"
+                )
+                return 0
+            final = confirm(
+                root,
+                cases,
+                config,
+                transport,
+                stamp,
+                records,
+                baseline,
+                args.strict_tokens,
             )
-            return 0
-        final = confirm(
-            root, cases, config, transport, stamp, records, baseline, args.strict_tokens
-        )
+        except NeverStarted as exc:
+            return stop_run(exc, root, stamp)
+        note = variant_note(baseline, config)
+        if note is not None:
+            print(note)
         print(render(final))
         return final.exit_code
 
@@ -1150,26 +1691,43 @@ def main(argv: list[str] | None = None) -> int:
     baseline_file = baseline_path(baselines, config.model, args.tier)
 
     if args.command == "bless":
+        # Whatever the --allow flags say, and before anything is written:
+        # nobody else could run such a baseline, and a file outside the
+        # checkout would publish a local path.
+        problems = unblessable(root, config.run_args.files)
+        for problem in problems:
+            print(f"bench: {results_file.name}: {problem}", file=sys.stderr)
+        if problems:
+            return 2
         baselines.mkdir(parents=True, exist_ok=True)
         old = load_baseline(baseline_file) if baseline_file.exists() else None
         tier_ids = {c.id for c in _select(root, args.tier, None)}
         merged = merge_baseline(old.cases if old else {}, summaries, tier_ids)
         fresh = {s.case for s in summaries if s.pass_rate is not None}
         kept = sorted({s.case for s in merged} - fresh)
-        # Kept cases were measured under the old baseline's provider, judge
-        # and cap, and would be written under these results' labels.
-        if (
-            old is not None
-            and kept
-            and model_changed(old, config, args.allow_model_change)
-        ):
-            print(
-                f"bench: blessing would keep {', '.join(kept)} from "
-                f"{baseline_file.name} under these results' labels; run those "
-                "cases too, or pass --allow-model-change",
-                file=sys.stderr,
-            )
-            return 2
+        # Kept cases were measured under the old baseline's provider, judge,
+        # cap and run arguments, and would be written under these results'.
+        # Both are checked, so both refusals print when both apply.
+        if old is not None and kept:
+            relabel = model_changed(old, config, args.allow_model_change)
+            if relabel:
+                print(
+                    f"bench: blessing would keep {', '.join(kept)} from "
+                    f"{baseline_file.name} under these results' labels; run "
+                    "those cases too, or pass --allow-model-change",
+                    file=sys.stderr,
+                )
+            # No hint to match the old variant: bless says what to do.
+            revariant = args_changed(old, config, args.allow_arg_change, match=None)
+            if revariant:
+                print(
+                    f"bench: blessing would keep {', '.join(kept)} from "
+                    f"{baseline_file.name} under these results' run arguments; "
+                    "run those cases too, or pass --allow-arg-change",
+                    file=sys.stderr,
+                )
+            if relabel or revariant:
+                return 2
         meta = BaselineMeta(
             blessed=datetime.now(UTC).isoformat(timespec="seconds"),
             commit=_commit(),
@@ -1177,6 +1735,8 @@ def main(argv: list[str] | None = None) -> int:
             model=config.model,
             judge_model=config.judge_model,
             max_tokens=config.max_tokens,
+            nare_args=config.run_args.recorded,
+            nare_files=dict(config.run_args.files),
         )
         baseline_file.write_text(dumps_baseline(meta, merged), encoding="utf-8")
         print(
@@ -1193,7 +1753,7 @@ def main(argv: list[str] | None = None) -> int:
         # Results written before the provider was recorded, and no flag to
         # say: the route they took is unknown, which is not a mismatch.
         config = replace(config, provider="")
-    if model_changed(baseline, config, args.allow_model_change):
+    if incomparable(baseline, config, args):
         return 2
     comparison = compare(
         summaries,
@@ -1202,6 +1762,9 @@ def main(argv: list[str] | None = None) -> int:
         token_band=TOKEN_BAND,
         strict_tokens=args.strict_tokens,
     )
+    note = variant_note(baseline, config)
+    if note is not None:
+        print(note)
     print(render(comparison))
     return comparison.exit_code
 

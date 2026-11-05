@@ -68,6 +68,60 @@ def parse_stdout(text: str) -> ResultLine | None:
     return found
 
 
+@dataclass(frozen=True)
+class ContextUse:
+    """What nare reported about its context: the window and the compactions.
+
+    Read from progress events, on every rep, error reps included: a rep that
+    died after compacting still compacted. `compactions` is None, unknown,
+    when the stream carried neither a window nor a compaction: nare emits its
+    window before its first turn, so such a rep never reached one, and a 0
+    would read as a rep that ran and never compacted.
+    """
+
+    window: dict[str, int | str] | None
+    compactions: int | None
+
+
+def _window_from(raw: Any) -> dict[str, int | str] | None:
+    if not isinstance(raw, dict):
+        return None
+    tokens, source = raw.get("tokens"), raw.get("source")
+    # `bool` is an `int`, and a window of `True` tokens is not a window.
+    if not isinstance(tokens, int) or isinstance(tokens, bool):
+        return None
+    if not isinstance(source, str):
+        return None
+    return {"tokens": tokens, "source": source}
+
+
+def context_use(text: str) -> ContextUse:
+    """The last `context_window` progress event and the count of `compaction` ones."""
+    window: dict[str, int | str] | None = None
+    compactions = 0
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict) or payload.get("type") != "progress":
+            continue
+        detail = payload.get("detail")
+        if not isinstance(detail, dict):
+            continue
+        seen = _window_from(detail.get("context_window"))
+        if seen is not None:
+            window = seen
+        if "compaction" in detail:
+            compactions += 1
+    if window is None and compactions == 0:
+        return ContextUse(window=None, compactions=None)
+    return ContextUse(window=window, compactions=compactions)
+
+
 Outcome = Literal["pass", "fail", "error"]
 
 

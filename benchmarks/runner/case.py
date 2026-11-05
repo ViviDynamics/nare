@@ -61,6 +61,9 @@ class Case:
     timeout: int
     checks: tuple[Check, ...]
     judge: Judge | None
+    # Flags for `nare run`. Checked against nare's contract by `nare_args`,
+    # not here: this module does not read nare.
+    args: tuple[str, ...] = ()
 
     @property
     def fixture(self) -> Path:
@@ -174,6 +177,14 @@ def load_case(directory: Path) -> Case:
     raw_judge = raw.get("judge")
     judge = _load_judge(raw_judge, where) if raw_judge is not None else None
 
+    raw_args = raw.get("args", [])
+    if not isinstance(raw_args, list) or not all(
+        isinstance(a, str) and a for a in raw_args
+    ):
+        raise CaseError(
+            f"{where}: args must be a list of non-empty strings, as nare run takes them"
+        )
+
     if not (directory / "fixture").is_dir():
         raise CaseError(f"{where}: no fixture/ directory beside case.toml")
 
@@ -188,6 +199,7 @@ def load_case(directory: Path) -> Case:
         timeout=int(raw.get("timeout", defaults.timeout)),
         checks=checks,
         judge=judge,
+        args=tuple(raw_args),
     )
 
 

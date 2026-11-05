@@ -176,3 +176,31 @@ def test_load_cases_filters_by_tier_and_sorts(tmp_path: Path) -> None:
 
 def test_load_cases_on_an_empty_root_returns_nothing(tmp_path: Path) -> None:
     assert load_cases(tmp_path) == []
+
+
+def with_args(value: str) -> str:
+    """GOOD with an args line among its top-level keys."""
+    return GOOD.replace("max_turns = 12", f"max_turns = 12\nargs = {value}")
+
+
+def test_a_case_without_args_passes_nothing(tmp_path: Path) -> None:
+    assert load_case(write_case(tmp_path, "fix-failing-test", GOOD)).args == ()
+
+
+@pytest.mark.parametrize(
+    ("value", "args"),
+    [('["--tools", "read,list,search"]', ("--tools", "read,list,search")), ("[]", ())],
+)
+def test_a_case_passes_its_args_as_written(
+    tmp_path: Path, value: str, args: tuple[str, ...]
+) -> None:
+    case = load_case(write_case(tmp_path, "fix-failing-test", with_args(value)))
+    assert case.args == args
+
+
+@pytest.mark.parametrize(
+    "value", ['"--tools read"', '["--tools", ""]', '["--max-tool-calls", 3]', "[[]]"]
+)
+def test_args_must_be_a_list_of_non_empty_strings(tmp_path: Path, value: str) -> None:
+    with pytest.raises(CaseError, match="args must be a list of non-empty strings"):
+        load_case(write_case(tmp_path, "fix-failing-test", with_args(value)))
