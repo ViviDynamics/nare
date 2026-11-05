@@ -309,9 +309,17 @@ non-empty, so every existing baseline file stays byte for byte as it is:
 
 - `run` checks the variant against the model's baseline before it builds
   anything, next to the existing provider, model, judge and cap check. A
-  different variant exits 2 with both argument lists in the message.
+  different variant exits 2 with both argument lists in the message, then
+  the arguments that would match the baseline, or, when the baseline is the
+  default variant, that the `--` and what follows should go;
+  `compare --matrix` says to run the matrix again instead (added in the
+  pre-PR review, 2026-11-04).
 - `compare` reads the variant from the results lines and refuses the same
   way.
+- When both checks refuse, `run`, `compare`, `compare --matrix` and `bless`
+  print both refusals before exiting 2, and `compare --matrix` prints every
+  model's, each naming its baseline file, so the operator learns every
+  override needed at once (added in the pre-PR review, 2026-11-04).
 - `bless` writes the results' variant into the baseline. It refuses, with
   exit 2:
   - keeping cases from an existing baseline blessed on another variant, as it

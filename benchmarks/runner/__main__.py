@@ -19,6 +19,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from benchmarks.runner.agreement import Header, Skip, render_summary
 from benchmarks.runner.case import Case, CaseError, load_cases
@@ -647,7 +648,14 @@ def read_results(path: Path) -> list[RepRecord]:
     return records
 
 
-def model_changed(baseline: Baseline, config: Config, allow: bool) -> bool:
+def _bench(where: str | None) -> str:
+    """The start of a refusal: `bench: `, and what it is about when given."""
+    return f"bench: {where}: " if where else "bench: "
+
+
+def model_changed(
+    baseline: Baseline, config: Config, allow: bool, *, where: str | None = None
+) -> bool:
     """Numbers are comparable within a model and nowhere else.
 
     Pinning the judge model too is the non-obvious half: if it changes under
@@ -656,7 +664,8 @@ def model_changed(baseline: Baseline, config: Config, allow: bool) -> bool:
     cut off at nare's default fails reps it passes with room to think. So is
     the provider: the same model on the other route can lose a reasoning
     model's thinking on the way. An empty `config.provider` is results that
-    never recorded theirs, which is unknown, not a mismatch.
+    never recorded theirs, which is unknown, not a mismatch. `where` names
+    the baseline in the message when there is more than one.
     """
     if allow:
         return False
@@ -673,7 +682,8 @@ def model_changed(baseline: Baseline, config: Config, allow: bool) -> bool:
 
     provider = repr(config.provider) if config.provider else "an unrecorded provider"
     print(
-        f"bench: baseline was blessed on provider {baseline.meta.provider!r} / "
+        f"{_bench(where)}baseline was blessed on provider "
+        f"{baseline.meta.provider!r} / "
         f"model {baseline.meta.model!r} / judge {baseline.meta.judge_model!r} / "
         f"output cap {cap(baseline.meta.max_tokens)}; this run used {provider} / "
         f"{config.model!r} / {config.judge_model!r} / {cap(config.max_tokens)}. "
@@ -684,29 +694,74 @@ def model_changed(baseline: Baseline, config: Config, allow: bool) -> bool:
     return True
 
 
-def args_changed(baseline: Baseline, config: Config, allow: bool) -> bool:
+def args_changed(
+    baseline: Baseline,
+    config: Config,
+    allow: bool,
+    *,
+    where: str | None = None,
+    match: Literal["run", "matrix"] | None = "run",
+) -> bool:
     """Numbers are comparable within one variant of the run arguments.
 
     Compared by the key, not the text: `--effort=low` is `--effort low`, and a
     prompt file is its digest, so a moved prompt is the same variant and an
     edited one is not. Only `--allow-arg-change` overrides this, and it
-    overrides nothing else.
+    overrides nothing else. With `match`, the refusal ends with how to match
+    the baseline: for a single run, the arguments to pass, on a line of their
+    own so they copy cleanly (a baseline's file paths are relative to the
+    checkout's root); for the matrix, which takes no `--`, to run it again.
     """
     if allow:
         return False
-    blessed = variant(baseline.meta.nare_args, baseline.meta.nare_files)
+    meta = baseline.meta
+    blessed = variant(meta.nare_args, meta.nare_files)
     if blessed == variant(config.run_args.recorded, config.run_args.files):
         return False
     print(
-        "bench: baseline was blessed with run arguments "
-        f"{render_variant(baseline.meta.nare_args, baseline.meta.nare_files)}; "
+        f"{_bench(where)}baseline was blessed with run arguments "
+        f"{render_variant(meta.nare_args, meta.nare_files)}; "
         "this run used "
         f"{render_variant(config.run_args.recorded, config.run_args.files)}. "
         "Numbers are not comparable across run arguments. Pass "
         "--allow-arg-change to override.",
         file=sys.stderr,
     )
+    if match is None:
+        return True
+    if match == "matrix":
+        hint = "run the matrix again, which runs each baseline's own arguments"
+    elif not meta.nare_args:
+        hint = "drop the -- and the arguments after it"
+    else:
+        root = " from the checkout's root" if meta.nare_files else ""
+        hint = f"run{root} with: -- {shlex.join(meta.nare_args)}"
+    print(f"{_bench(where)}to match the baseline, {hint}", file=sys.stderr)
     return True
+
+
+def incomparable(
+    baseline: Baseline,
+    config: Config,
+    args: argparse.Namespace,
+    *,
+    where: str | None = None,
+) -> bool:
+    """Whether a model change or a variant change refuses the comparison.
+
+    Both are checked and each prints its refusal, so an operator who needs
+    both overrides learns so at once rather than one at a time. `where`, the
+    baseline's file name, is given for the matrix, where there are several.
+    """
+    model = model_changed(baseline, config, args.allow_model_change, where=where)
+    arguments = args_changed(
+        baseline,
+        config,
+        args.allow_arg_change,
+        where=where,
+        match="run" if where is None else "matrix",
+    )
+    return model or arguments
 
 
 def variant_note(baseline: Baseline, config: Config) -> str | None:
@@ -1252,6 +1307,9 @@ def compare_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) 
     judges: set[str] = set()
     variants: dict[str, str] = {}
     notes: list[str] = []
+    # Every model's refusals, each naming its baseline, before exit 2: the
+    # overrides are global, so stopping at the first would hide the rest.
+    refused = False
     for path in files:
         records = read_results(path)
         if not records:
@@ -1275,10 +1333,9 @@ def compare_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) 
             ),
             records,
         )
-        if model_changed(baseline, config, args.allow_model_change):
-            return 2
-        if args_changed(baseline, config, args.allow_arg_change):
-            return 2
+        if incomparable(baseline, config, args, where=baseline_file.name):
+            refused = True
+            continue
         judges.add(config.judge_model)
         variants[model] = render_variant(
             config.run_args.recorded, config.run_args.files
@@ -1300,6 +1357,8 @@ def compare_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) 
                 ),
             )
         )
+    if refused:
+        return 2
     if not columns:
         print(f"bench: {stamp_of(files[0])} holds no results", file=sys.stderr)
         return 2
@@ -1460,10 +1519,7 @@ def main(argv: list[str] | None = None) -> int:
         baseline = load_baseline(baseline_file) if baseline_file.exists() else None
         # Before the image and the reps: numbers the baseline cannot be
         # compared with would be paid for and then thrown away.
-        if baseline is not None and (
-            model_changed(baseline, config, args.allow_model_change)
-            or args_changed(baseline, config, args.allow_arg_change)
-        ):
+        if baseline is not None and incomparable(baseline, config, args):
             return 2
         try:
             build_image(root)
@@ -1557,33 +1613,29 @@ def main(argv: list[str] | None = None) -> int:
         merged = merge_baseline(old.cases if old else {}, summaries, tier_ids)
         fresh = {s.case for s in summaries if s.pass_rate is not None}
         kept = sorted({s.case for s in merged} - fresh)
-        # Kept cases were measured under the old baseline's provider, judge
-        # and cap, and would be written under these results' labels.
-        if (
-            old is not None
-            and kept
-            and model_changed(old, config, args.allow_model_change)
-        ):
-            print(
-                f"bench: blessing would keep {', '.join(kept)} from "
-                f"{baseline_file.name} under these results' labels; run those "
-                "cases too, or pass --allow-model-change",
-                file=sys.stderr,
-            )
-            return 2
-        # And under these results' run arguments.
-        if (
-            old is not None
-            and kept
-            and args_changed(old, config, args.allow_arg_change)
-        ):
-            print(
-                f"bench: blessing would keep {', '.join(kept)} from "
-                f"{baseline_file.name} under these results' run arguments; run "
-                "those cases too, or pass --allow-arg-change",
-                file=sys.stderr,
-            )
-            return 2
+        # Kept cases were measured under the old baseline's provider, judge,
+        # cap and run arguments, and would be written under these results'.
+        # Both are checked, so both refusals print when both apply.
+        if old is not None and kept:
+            relabel = model_changed(old, config, args.allow_model_change)
+            if relabel:
+                print(
+                    f"bench: blessing would keep {', '.join(kept)} from "
+                    f"{baseline_file.name} under these results' labels; run "
+                    "those cases too, or pass --allow-model-change",
+                    file=sys.stderr,
+                )
+            # No hint to match the old variant: bless says what to do.
+            revariant = args_changed(old, config, args.allow_arg_change, match=None)
+            if revariant:
+                print(
+                    f"bench: blessing would keep {', '.join(kept)} from "
+                    f"{baseline_file.name} under these results' run arguments; "
+                    "run those cases too, or pass --allow-arg-change",
+                    file=sys.stderr,
+                )
+            if relabel or revariant:
+                return 2
         meta = BaselineMeta(
             blessed=datetime.now(UTC).isoformat(timespec="seconds"),
             commit=_commit(),
@@ -1609,9 +1661,7 @@ def main(argv: list[str] | None = None) -> int:
         # Results written before the provider was recorded, and no flag to
         # say: the route they took is unknown, which is not a mismatch.
         config = replace(config, provider="")
-    if model_changed(baseline, config, args.allow_model_change):
-        return 2
-    if args_changed(baseline, config, args.allow_arg_change):
+    if incomparable(baseline, config, args):
         return 2
     comparison = compare(
         summaries,

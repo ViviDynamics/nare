@@ -735,6 +735,40 @@ def test_a_run_file_is_compared_by_digest_not_by_path() -> None:
 
 
 @pytest.mark.parametrize(
+    ("blessed", "files", "hint"),
+    [
+        (("--effort", "low", "--system", "Be terse."), {},
+         "bench: to match the baseline, run with: -- --effort low --system "
+         "'Be terse.'\n"),
+        (("--system-file", "a/p.md"), {"a/p.md": "sha256:aa"},
+         "bench: to match the baseline, run from the checkout's root with: -- "
+         "--system-file a/p.md\n"),
+    ],
+)  # fmt: skip
+def test_a_variant_refusal_says_which_arguments_match_the_baseline(
+    capsys: pytest.CaptureFixture[str],
+    blessed: tuple[str, ...],
+    files: dict[str, str],
+    hint: str,
+) -> None:
+    baseline = Baseline(replace(BASE.meta, nare_args=blessed, nare_files=files), {})
+    assert args_changed(baseline, CONFIG, False)
+    assert capsys.readouterr().err.endswith(hint)
+
+
+def test_against_the_default_variant_the_refusal_says_to_drop_the_arguments(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = replace(CONFIG, run_args=RunArgs(recorded=("--effort", "low")))
+    assert args_changed(BASE, config, False)
+    err = capsys.readouterr().err
+    assert err.endswith(
+        "bench: to match the baseline, drop the -- and the arguments after it\n"
+    )
+    assert "run with:" not in err
+
+
+@pytest.mark.parametrize(
     ("flags", "code"),
     [([], 2), (["--allow-model-change"], 2), (["--allow-arg-change"], 0)],
 )
@@ -792,6 +826,71 @@ def test_results_from_before_compare_as_the_default_variant(
     assert main(["compare", "--model", "m"]) == 0
     # One variant on both sides, so the table carries no note.
     assert "run arguments" not in capsys.readouterr().out
+
+
+MODEL_REFUSAL = "baseline was blessed on provider 'openai'"
+VARIANT_REFUSAL = (
+    "baseline was blessed with run arguments none; this run used --effort low"
+)
+
+
+def test_run_prints_both_refusals_when_the_judge_and_the_variant_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Each refusal names its own override: shown one at a time, the second
+    # appears only after the first override is added.
+    ran = matrix(tmp_path, monkeypatch, NANO)
+    other_judge = [
+        "run", "--case", "edit-docstring", "--model", "gpt-5-nano",
+        "--provider", "openai", "--judge-model", "j",
+    ]  # fmt: skip
+    assert main([*other_judge, "--", "--effort", "low"]) == 2
+    assert ran == []
+    err = capsys.readouterr().err
+    assert MODEL_REFUSAL in err
+    assert VARIANT_REFUSAL in err
+
+
+def test_compare_prints_both_refusals_when_the_judge_and_the_variant_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    blessed_with(tmp_path, monkeypatch)
+    write_results(tmp_path, [ran_with("--effort", "low", judge_model="other")])
+    assert main(["compare", "--model", "m"]) == 2
+    err = capsys.readouterr().err
+    assert MODEL_REFUSAL in err
+    assert VARIANT_REFUSAL in err
+
+
+def test_compare_matrix_prints_every_refusal_of_every_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ran = matrix(tmp_path, monkeypatch, HAIKU, NANO)
+    for meta, change in (
+        (HAIKU, {"nare_args": ["--effort", "low"], "max_tokens": 32000}),
+        (NANO, {"judge_model": "j"}),
+    ):
+        rec = replace(
+            record("edit-docstring", model=meta.model),
+            provider=meta.provider,
+            judge_model=meta.judge_model,
+        )
+        write_results(
+            tmp_path, [replace(rec, **change)], f"{MATRIX_STAMP}.{meta.model}"
+        )
+    assert main(["compare", "--matrix"]) == 2
+    assert ran == []
+    # Each names its baseline, since one model's variant refusal does not.
+    err = capsys.readouterr().err
+    assert "bench: claude-haiku-5-5.smoke.toml: baseline was blessed on " in err
+    assert f"bench: claude-haiku-5-5.smoke.toml: {VARIANT_REFUSAL}" in err
+    assert "bench: gpt-5-nano.smoke.toml: baseline was blessed on " in err
+    assert "gpt-5-nano.smoke.toml: baseline was blessed with run arguments" not in err
+    # The matrix takes no --, so its way to match is to run it again.
+    assert (
+        "bench: claude-haiku-5-5.smoke.toml: to match the baseline, run the matrix "
+        "again, which runs each baseline's own arguments\n"
+    ) in err
 
 
 def test_run_refuses_another_variant_before_building_anything(
@@ -896,6 +995,30 @@ def test_allow_arg_change_does_not_let_bless_relabel_the_cases_it_keeps(
     assert main(["bless", "--model", "gpt-5-nano", *both]) == 0
     meta = load_baseline(blessed).meta
     assert (meta.judge_model, meta.nare_args) == ("j", ("--effort", "low"))
+
+
+def test_bless_prints_both_refusals_for_the_cases_it_keeps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    baselines = results_dir(tmp_path, monkeypatch)
+    baselines.mkdir()
+    blessed = baseline_path(baselines, "gpt-5-nano", "smoke")
+    blessed.write_text(dumps_baseline(NANO, [summary(c, 1.0) for c in KEPT]))
+    before = blessed.read_text()
+    ran = replace(
+        record("edit-docstring", model="gpt-5-nano"),
+        provider="openai",
+        judge_model="j",
+        nare_args=["--effort", "low"],
+    )
+    write_results(tmp_path, [ran])
+    assert main(["bless", "--model", "gpt-5-nano"]) == 2
+    assert blessed.read_text() == before
+    err = capsys.readouterr().err
+    assert "under these results' labels" in err
+    assert "under these results' run arguments" in err
+    # Matching the old variant is not what a bless is after; it says what is.
+    assert "to match the baseline" not in err
 
 
 def test_bless_may_move_a_baseline_to_another_variant_when_it_replaces_every_case(

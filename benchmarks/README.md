@@ -221,11 +221,16 @@ like its prompt, and not part of the variant.
 
 `run` refuses a baseline blessed on another variant before it builds
 anything, and `compare` refuses the same way, with exit 2 and both lists in
-the message. `--allow-arg-change` overrides that, and only that: a model,
+the message. A last line says how to match the baseline: the arguments to
+pass after `--`, or, for a baseline with none, to drop the `--` and what
+follows (for `compare --matrix`, which a `--` cannot change, to run the
+matrix again). `--allow-arg-change` overrides that, and only that: a model,
 provider, judge or cap change still needs `--allow-model-change`, which does
-not cover a variant change. When the override lets two variants meet, both
-lists print above the table. For `compare --matrix` that is each differing
-model's name followed by both lists, indented.
+not cover a variant change. When both apply, both refusals print, and
+`compare --matrix` prints every model's, each naming its baseline file, so
+one try shows every override needed. When the override lets two variants
+meet, both lists print above the table. For `compare --matrix` that is each
+differing model's name followed by both lists, indented.
 
 `bless` writes the results' run arguments and file digests into the
 baseline's `[meta]`. Cases the results do not cover are kept, as always, and
