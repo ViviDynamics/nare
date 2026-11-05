@@ -145,7 +145,10 @@ both lists. A flag must be one `nare run` lists, by its full name
 takes one and inside its choices when it has them (`--effort`). `--tools`
 may name only the tools nare lists, or `none`, and in a case whose args
 also pass `--mcp-config`, an MCP tool as `<alias>__<tool>`, which nare
-resolves from that config when it starts. A value that starts with `-`
+resolves from that config when it starts, or, in a case whose args also
+pass `--command-tools`, a name that file could define (letters, digits, `_`
+or `-`, no `__`), which nare resolves from it and stops the run on when the
+file lacks it. A value that starts with `-`
 is written `--flag=value`. Anything else, a stray word or a bare `--`
 included, exits 2 naming the case or "run arguments" and the token, and so
 does an argument that is not valid UTF-8, since results and baselines record
@@ -160,7 +163,8 @@ nare's stream), `--max-turns` (the case's `max_turns`), `--model`,
 no rep may use. The system prompt flags (`--system`, `--system-file`,
 `--append-system`, `--append-system-file`) are run arguments only, since the
 system prompt is the variant under test. Flags that name a path in the work
-tree (`--schema`, `--mcp-config`, `--require-read`, `--root`) belong to a
+tree (`--schema`, `--mcp-config`, `--command-tools`, `--require-read`,
+`--root`) belong to a
 case. A flag in both a case's args and the run arguments exits 2, since nare
 would silently take the last one.
 

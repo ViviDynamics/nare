@@ -148,7 +148,11 @@ argument list is parsed as `nare run` would parse it:
 - `--tools` names only tools the contract's `tools` lists, or is `none`. An
   MCP tool's `<alias>__<tool>` name is accepted when the same list passes
   `--mcp-config`, since nare resolves MCP tools itself (added after the
-  final review, 2026-11-04).
+  final review, 2026-11-04). When the same list passes `--command-tools`, a
+  name a command tool could have (1 to 64 letters, digits, `_` or `-`, no
+  `__`) is accepted too, since the file is in the work tree and nare resolves
+  its tool names itself, stopping the run at startup on a name no file
+  supplies (added after the rebase onto main, 2026-11-04).
 - A token that is neither a flag nor a flag's value is refused. That covers a
   bare `--` and a positional prompt, since the prompt is the case's.
 - A token that is not valid UTF-8 (argv bytes that do not decode) is refused
@@ -179,7 +183,8 @@ Each refusal exits 2 and names the case, or "run arguments", and the token.
 case that set one would stack silently on every variant.
 
 **Case only.** Flags that name a path in the work tree: `--schema`,
-`--mcp-config`, `--require-read` and `--root`. Their paths are relative to a
+`--mcp-config`, `--command-tools` (added after the rebase onto main,
+2026-11-04), `--require-read` and `--root`. Their paths are relative to a
 fixture, and a run has no fixture of its own.
 
 Everything else may go in either list.

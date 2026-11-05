@@ -47,7 +47,9 @@ RUN_ONLY = frozenset(
     {"--system", "--system-file", "--append-system", "--append-system-file"}
 )
 # Paths in the work tree, relative to a fixture, which a run has none of.
-CASE_ONLY = frozenset({"--schema", "--mcp-config", "--require-read", "--root"})
+CASE_ONLY = frozenset(
+    {"--schema", "--mcp-config", "--command-tools", "--require-read", "--root"}
+)
 # Flags whose value is a path on the host: keyed by digest, staged for nare.
 HOST_FILE_FLAGS = frozenset({"--system-file", "--append-system-file"})
 # Where each rep mounts the staged copies, read-only.
@@ -56,6 +58,9 @@ INPUTS = "/in"
 # letters, digits, _ or -, with no __ (matched against the part of a name
 # before its first __, which holds none). Its tools are `<alias>__<tool>`.
 _MCP_ALIAS = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
+# A command tool's name, as nare's --command-tools allows one: 1 to 64 letters,
+# digits, _ or -, with no __, so it is never an MCP tool's `<alias>__<tool>`.
+_COMMAND_TOOL = re.compile(r"(?!.*__)[A-Za-z0-9_-]{1,64}")
 
 
 class ArgsError(Exception):
@@ -153,27 +158,35 @@ def check_args(
                 f"{where}: {flag} {value!r} is not one of {', '.join(choices)}"
             )
         found.append((flag, value))
-    # After the whole list: nare reads --mcp-config wherever it stands.
+    # After the whole list: nare reads these files wherever they stand.
     mcp = any(flag == "--mcp-config" for flag, _ in found)
+    command = any(flag == "--command-tools" for flag, _ in found)
     for flag, named in found:
         if flag == "--tools" and named is not None:
-            _check_tools(where, named, tools, mcp=mcp)
+            _check_tools(where, named, tools, mcp=mcp, command=command)
     return found
 
 
-def _check_tools(where: str, value: str, tools: Collection[str], *, mcp: bool) -> None:
-    """Each name nare lists, or `none` alone, or an MCP tool beside its config.
+def _check_tools(
+    where: str, value: str, tools: Collection[str], *, mcp: bool, command: bool
+) -> None:
+    """Each name nare lists, or `none` alone, or one beside the file that
+    defines it.
 
     nare takes `<alias>__<tool>` for an alias its --mcp-config holds, and
     resolves the tool when it connects. The config is a file in the work tree,
     which this check never reads, so it takes any name whose part before the
     first __ is an alias the config could hold, and leaves the rest to nare.
+    A --command-tools file is read the same way: it is in the work tree, so
+    any name a command tool could have is left to nare, which stops at startup
+    on a --tools name that no file supplies. A command tool's name has no __,
+    so an `<alias>__<tool>` name still needs its --mcp-config.
     """
     names = [name.strip() for name in value.split(",") if name.strip()]
     if names == ["none"]:
         return
     for name in names:
-        if name in tools:
+        if name in tools or (command and _COMMAND_TOOL.fullmatch(name)):
             continue
         alias, separator, _ = name.partition("__")
         if separator and _MCP_ALIAS.fullmatch(alias):
@@ -187,6 +200,11 @@ def _check_tools(where: str, value: str, tools: Collection[str], *, mcp: bool) -
         raise ArgsError(
             f"{where}: --tools names {name!r}, which nare does not list; "
             f"it lists {', '.join(sorted(tools))}, or none alone"
+            + (
+                ", or a command tool (1 to 64 letters, digits, _ or -, no __)"
+                if command
+                else ""
+            )
             + (", or an MCP tool as <alias>__<tool>" if mcp else "")
         )
 

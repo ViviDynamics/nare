@@ -61,7 +61,9 @@ def test_the_rules_name_the_specs_flags() -> None:
     assert RUN_ONLY == {
         "--system", "--system-file", "--append-system", "--append-system-file"
     }  # fmt: skip
-    assert CASE_ONLY == {"--schema", "--mcp-config", "--require-read", "--root"}
+    assert CASE_ONLY == {
+        "--schema", "--mcp-config", "--command-tools", "--require-read", "--root"
+    }  # fmt: skip
     assert HOST_FILE_FLAGS == {"--system-file", "--append-system-file"}
 
 
@@ -124,6 +126,61 @@ def test_beside_an_mcp_config_a_name_nare_cannot_resolve_is_still_refused(
         ArgsError, match=re.escape(f"case demo: --tools names {name!r}, which nare")
     ):
         as_case("--mcp-config", "s.json", "--tools", f"read,{name}")
+
+
+@pytest.mark.parametrize(
+    "tokens",
+    [
+        ["--command-tools", "tools.json", "--tools", "read,deploy"],
+        # nare reads the whole list before it resolves a tool.
+        ["--tools", "deploy,read", "--command-tools=tools.json"],
+        # Both files in one list: a plain name is a command tool, and an
+        # alias__tool name is an MCP tool.
+        [
+            "--command-tools", "tools.json", "--mcp-config", "s.json",
+            "--tools", "deploy,db__query",
+        ],
+    ],
+)  # fmt: skip
+def test_tools_may_name_a_command_tool_beside_the_file_that_defines_it(
+    tokens: list[str],
+) -> None:
+    """The file is in the work tree, which this check never reads: nare
+    resolves the name when it starts, and a name it lacks stops the run."""
+    found = as_case(*tokens)
+    assert ("--tools", tokens[tokens.index("--tools") + 1]) in found
+
+
+@pytest.mark.parametrize("case_id", [None, "demo"])
+def test_a_tool_nare_does_not_list_without_a_command_tools_file_is_refused(
+    case_id: str | None,
+) -> None:
+    where = "run arguments" if case_id is None else "case demo"
+    with pytest.raises(
+        ArgsError,
+        match=re.escape(f"{where}: --tools names 'deploy', which nare does not list"),
+    ):
+        check_args(["--tools", "read,deploy"], FLAGS, TOOLS, case_id=case_id)
+
+
+def test_beside_a_command_tools_file_an_mcp_name_still_needs_an_mcp_config() -> None:
+    """A command tool's name has no __, so `db__query` is never one."""
+    with pytest.raises(
+        ArgsError,
+        match=re.escape("case demo: --tools names 'db__query', an MCP tool"),
+    ):
+        as_case("--command-tools", "tools.json", "--tools", "db__query")
+
+
+@pytest.mark.parametrize("name", ["__query", "dep.loy", "x" * 65])
+def test_beside_a_command_tools_file_a_name_nare_cannot_have_is_still_refused(
+    name: str,
+) -> None:
+    """Not a name nare's command tools allow: 1 to 64 letters, digits, _ or -."""
+    with pytest.raises(
+        ArgsError, match=re.escape(f"case demo: --tools names {name!r}, which nare")
+    ):
+        as_case("--command-tools", "tools.json", "--tools", f"read,{name}")
 
 
 @pytest.mark.parametrize(
@@ -206,6 +263,22 @@ def test_a_system_prompt_flag_is_a_run_argument_only(flag: str) -> None:
         ArgsError, match=re.escape(f"case demo: {flag} is a run argument")
     ):
         as_case(flag, "x")
+
+
+@pytest.mark.parametrize(
+    "tokens", [["--command-tools", "tools.json"], ["--command-tools=tools.json"]]
+)
+def test_the_command_tools_file_is_a_case_argument_only(tokens: list[str]) -> None:
+    """Both forms: the file is a path in the fixture, as --mcp-config is."""
+    assert as_case(*tokens) == [("--command-tools", "tools.json")]
+    with pytest.raises(
+        ArgsError,
+        match=re.escape(
+            "run arguments: --command-tools names a path in the work tree, "
+            "so it belongs to a case's args"
+        ),
+    ):
+        as_run(*tokens)
 
 
 @pytest.mark.parametrize("flag", sorted(CASE_ONLY))
