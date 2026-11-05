@@ -48,6 +48,21 @@ def sent_back(block: dict[str, Any]) -> bool:
     return True
 
 
+def drop_signed_thinking(s: Session) -> int:
+    """Drop the signed thinking from the live history; returns how many blocks.
+
+    A resume that changes the tool set or the system prompt changes the prefix
+    signed thinking was made against, so the thinking cannot be sent again.
+    Dropping it is valid; the model keeps the visible text of each turn.
+    """
+    dropped = 0
+    for message in s.messages:
+        kept = without_sent_thinking(message.content)
+        dropped += len(message.content) - len(kept)
+        message.content = kept
+    return dropped
+
+
 def without_sent_thinking(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The blocks minus the thinking that goes back to the model.
 

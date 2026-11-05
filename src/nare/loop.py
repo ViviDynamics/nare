@@ -36,7 +36,7 @@ from nare.mcp import Server, connect
 from nare.reads import NO_READS, ReadRequirement, unmet
 from nare.reads import build as build_reads
 from nare.schema import DuplicateKeyError, SchemaError, extract_json, validate
-from nare.session import Message, Session, append_user_text
+from nare.session import Message, Session, append_user_text, drop_signed_thinking
 from nare.tools import (
     Approve,
     Policy,
@@ -324,6 +324,31 @@ def schema_digest(schema: dict[str, Any]) -> str:
     """The schema's identity: key order and whitespace are not a change."""
     canonical = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def prefix_changes(recorded: dict[str, Any], now: dict[str, Any]) -> list[str]:
+    """What about the tool set differs from what the session recorded.
+
+    Empty for a session with no record (a file from before the record existed),
+    which keeps today's behaviour. A digest is compared only when the record has
+    one, so a file saved before MCP digests were kept is not read as changed.
+    """
+    if "tools" not in recorded:
+        return []
+    changed: list[str] = []
+    before, after = set(recorded["tools"]), set(now["tools"])
+    if before != after:
+        parts = []
+        if after - before:
+            parts.append("added " + ", ".join(sorted(after - before)))
+        if before - after:
+            parts.append("removed " + ", ".join(sorted(before - after)))
+        changed.append("tools " + " and ".join(parts))
+    if "external_sha256" in recorded and recorded["external_sha256"] != now.get(
+        "external_sha256"
+    ):
+        changed.append("the definitions of MCP tools")
+    return changed
 
 
 def state_schema(session: Session, schema: dict[str, Any]) -> None:
@@ -1194,7 +1219,27 @@ async def _run(
         state_schema(session, schema)
     # Recorded before the first turn, so a run that dies still says what it was
     # allowed to do.
-    session.policy = policy.recorded()
+    recorded = policy.recorded()
+    changed = prefix_changes(session.policy, recorded)
+    if changed:
+        # Signed thinking is bound to the tools it was made with, and a request
+        # that rebuilds the tool set is rejected. Dropped here, and said.
+        dropped = drop_signed_thinking(session)
+        if dropped:
+            outcome = (
+                f"Signed thinking dropped from {dropped} blocks, since it is "
+                "bound to the tools it was made with"
+            )
+        else:
+            outcome = "No signed thinking to drop"
+        session.events.append(
+            Event(
+                "progress",
+                "tool set changed on resume: " + "; ".join(changed) + ". " + outcome,
+                {"tools": {"changed": changed, "thinking_dropped": dropped}},
+            )
+        )
+    session.policy = recorded
     # What this invocation sent, not what the session first ran with: a
     # resume without the flags sends none.
     session.effort = getattr(transport, "effort", None)
