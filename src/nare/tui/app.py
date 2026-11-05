@@ -55,11 +55,13 @@ from nare.session import (
     SavedSession,
     Session,
     Usage,
+    legacy_sessions_dir,
     loads,
+    nare_home,
     new_session,
     reopen,
+    resumable_in,
     save,
-    saved_in,
     sessions_dir,
     unanswered,
 )
@@ -888,6 +890,23 @@ def logs_as_notices(app: App[None]) -> Iterator[None]:
         root.handlers = saved
 
 
+def _private_folder(folder: Path) -> None:
+    """Create the sessions folder and its NARE_HOME parent, 0700 when new.
+    An existing folder keeps its permissions. A folder that cannot be made is a
+    startup error that names both ways out.
+    """
+    try:
+        home = nare_home()
+        if home is not None:
+            home.mkdir(mode=0o700, parents=True, exist_ok=True)
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ValueError(
+            f"cannot save sessions in {folder}: {exc.strerror or exc}. Set NARE_HOME "
+            "to a writable folder, or pass --session PATH"
+        ) from exc
+
+
 def prepare(args: argparse.Namespace, transport: Transport | None = None) -> TuiApp:
     """Everything that can fail at startup, before Textual takes the screen."""
     prices = validate_run_args(args)
@@ -898,14 +917,19 @@ def prepare(args: argparse.Namespace, transport: Transport | None = None) -> Tui
     if not args.session:
         # Every run is saved, outside the project.
         if sessions is None:
-            raise ValueError("no home directory to save the session in: pass --session")
+            raise ValueError(
+                "no home directory to save the session in: set NARE_HOME "
+                "or pass --session"
+            )
         session_id = uuid.uuid4().hex
-        sessions.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _private_folder(sessions)
         args.session = str(sessions / f"{session_id}.json")
     else:
         path = Path(args.session).resolve()
         root = Path(args.root or ".").resolve()
-        ours = sessions is not None and path.is_relative_to(sessions.resolve())
+        # NARE_HOME is ours, like the folder saved before it, whatever the cwd.
+        kept = [d for d in (nare_home(), legacy_sessions_dir()) if d is not None]
+        ours = any(path.is_relative_to(d.resolve()) for d in kept)
         if not ours and (path.is_relative_to(root) or path.is_relative_to(Path.cwd())):
             # The practice run's `git add -A` committed one.
             warning = (
@@ -977,13 +1001,17 @@ def main(args: argparse.Namespace, transport: Transport | None = None) -> int:
         return attach_app.return_code or 0
     if args.resume == "":
         # --resume with no path: pick one of this directory's sessions first.
-        folder = sessions_dir()
         here = os.getcwd()
-        rows = saved_in(folder, here)
+        try:
+            rows = resumable_in(here)
+        except ValueError as exc:  # a relative NARE_HOME
+            print(f"nare: {exc}", file=sys.stderr)
+            return NEVER_STARTED
         if not rows:
+            folders = [str(d) for d in (sessions_dir(), legacy_sessions_dir()) if d]
             print(
                 f"nare: no saved session started in {here} "
-                f"(looked in {folder or 'no sessions folder'})",
+                f"(looked in {', '.join(folders) or 'no sessions folder'})",
                 file=sys.stderr,
             )
             return NEVER_STARTED

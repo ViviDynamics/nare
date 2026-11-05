@@ -941,31 +941,18 @@ def test_no_warning_for_a_file_in_nares_own_state_dir(
     assert capsys.readouterr().err == ""
 
 
-async def test_without_session_the_run_is_saved_under_xdg_state(
+def test_a_relative_xdg_state_home_does_not_move_the_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "st ate"))
-    args = build_parser().parse_args(["tui", "--model", "fake", "go"])
-    app = prepare(args, FakeProvider([text_reply("all done")]))
-    async with app.run_test() as pilot:
-        await until(pilot, lambda: app.run_state == "done")
-    assert app.session is not None
-    path = tmp_path / "st ate" / "nare" / "sessions" / f"{app.session.id}.json"
-    assert json.loads(path.read_text())["status"] == "done"
-    assert f"resume: nare tui --resume '{path}'" in exit_summary(app)
-
-
-def test_a_relative_xdg_state_home_is_ignored(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # The XDG spec says so, and here it would put the file in the project.
+    # The default is ~/.nare/sessions now (tests/test_nare_home.py). A relative
+    # XDG_STATE_HOME must not put the file in the project, whatever it is.
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("NARE_HOME", raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", "state")
     monkeypatch.chdir(tmp_path)
     args = build_parser().parse_args(["tui", "--model", "fake"])
     prepare(args, FakeProvider([]))
-    sessions = tmp_path / "home" / ".local" / "state" / "nare" / "sessions"
-    assert Path(args.session).parent == sessions
+    assert Path(args.session).parent == tmp_path / "home" / ".nare" / "sessions"
 
 
 def test_no_home_directory_exits_two(
@@ -975,6 +962,7 @@ def test_no_home_directory_exits_two(
         raise RuntimeError("Could not determine home directory.")
 
     monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    monkeypatch.delenv("NARE_HOME", raising=False)
     monkeypatch.setattr(Path, "home", no_home)
     assert main(["tui", "--model", "fake"], transport=FakeProvider([])) == 2
     assert "--session" in capsys.readouterr().err
