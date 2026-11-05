@@ -48,7 +48,9 @@ unless `--allow-model-change`.
 provider, model, judge or output cap, since those numbers are not comparable;
 `run` does so before it builds anything, and `--allow-model-change` overrides.
 Results that never recorded their provider are compared on the others alone,
-unless `--provider` names it.
+unless `--provider` names it. Run arguments are part of what a baseline
+measured too, with their own override, `--allow-arg-change`: see "Arguments
+to nare".
 
 Tokens are `input + output + cache_read + cache_write` from nare's result
 line. A proxy serves most input from cache, so counting only `input` would
@@ -78,13 +80,14 @@ dropping one means deleting its baseline.
     bin/bench compare --matrix                        # the table again, free
     bin/bench compare --matrix --baselines            # the baselines' table
 
-`run --matrix` runs each baseline's model with that baseline's provider, judge
-and output cap, and compares each with its own baseline under the usual
-rules, a drop re-run at seven repetitions included. `--model`, `--provider`
-and `--judge-model` are refused, and `NARE_MODEL`, `NARE_PROVIDER`,
-`NARE_BENCH_JUDGE_MODEL` and `NARE_BENCH_MAX_TOKENS` are not read. It needs
-the key of every provider in the matrix: `ANTHROPIC_API_KEY` and
-`OPENAI_API_KEY` both, for a matrix that mixes them.
+`run --matrix` runs each baseline's model with that baseline's provider, judge,
+output cap and run arguments (see "Arguments to nare"), and compares each
+with its own baseline under the usual rules, a drop re-run at seven
+repetitions included. `--model`, `--provider` and `--judge-model` are
+refused, and `NARE_MODEL`, `NARE_PROVIDER`, `NARE_BENCH_JUDGE_MODEL` and
+`NARE_BENCH_MAX_TOKENS` are not read. It needs the key of every provider in
+the matrix: `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` both, for a matrix that
+mixes them.
 
 It takes one base URL, `--base-url` or `NARE_BASE_URL`, with or without a
 trailing `/v1`. `anthropic` models get the proxy's root and `openai` models
@@ -118,6 +121,120 @@ make it too easy to bless away a regression. After a matrix run,
 A smoke matrix of five models is 90 repetitions plus any confirmations, and
 about an hour of wall clock.
 
+## Arguments to nare
+
+A case can pass flags to `nare run`, and so can a run. A case's flags say
+what its task needs; a run's say what the experiment varies.
+
+    # case.toml
+    args = ["--tools", "read,list,search"]
+
+    bin/bench run --tier full --case context-overflow -- --context-window 16000
+    bin/bench run --tier smoke -- --system-file benchmarks/prompts/terse.md
+    bin/bench run --tier smoke -- --effort low --context-window 20000
+
+Everything after the first `--` on `bin/bench run` goes to nare as run
+arguments, written as on `nare run`, for every selected case. Only `run`
+takes them: `compare` and `bless` read them from the results, and
+`run --matrix` runs each baseline's own, so a `--` anywhere else exits 2.
+
+Both lists are checked against `nare contract` before the image is built,
+so a typo costs nothing: `verify` checks the cases' args, and `run` checks
+both lists. A flag must be one `nare run` lists, by its full name
+(`--context` is refused, though nare would expand it), with a value when it
+takes one and inside its choices when it has them (`--effort`). `--tools`
+may name only the tools nare lists, or `none`. A value that starts with `-`
+is written `--flag=value`. Anything else, a stray word or a bare `--`
+included, exits 2 naming the case or "run arguments" and the token.
+
+Some flags are refused in both lists, because something else owns them:
+`--yes`, `--jsonl`, `--session` and `--contract` (the runner, which reads
+nare's stream), `--max-turns` (the case's `max_turns`), `--model`,
+`--provider` and `--base-url` (the environment), `--max-tokens`
+(`NARE_BENCH_MAX_TOKENS`), `--prompt-file` (the case's prompt), `--stream`
+(`NARE_STREAM`), and `--resume`, `--replay` and `--bash-credentials`, which
+no rep may use. The system prompt flags (`--system`, `--system-file`,
+`--append-system`, `--append-system-file`) are run arguments only, since the
+system prompt is the variant under test. Flags that name a path in the work
+tree (`--schema`, `--mcp-config`, `--require-read`, `--root`) belong to a
+case. A flag in both a case's args and the run arguments exits 2, since nare
+would silently take the last one.
+
+`--system-file` and `--append-system-file` name a file on the host, which a
+relative path looks for in the directory you run `bin/bench` from. The
+runner reads it once when the run starts, copies it to
+`benchmarks/results/<stamp>/inputs/` (`<stamp>.<model>/inputs/` for each
+model of a matrix run), and mounts the copy read-only at `/in` in every
+rep, so editing the file during a run changes nothing, and the file never
+shows in the diff the judge reads. Each results line records the path,
+relative to the checkout when the file is inside it, and the copy's SHA-256.
+
+A rep whose nare never started (its container exited 2 with no result line,
+and did not time out) is nare refusing its invocation, `--context-window abc`
+for example. The run stops there with exit 2, prints that rep's stderr, and
+writes no results file. Why it stopped is kept in two places: the rep's own
+directory (`stdout.jsonl`, `stderr.txt`), as for any rep, and `stopped.txt`
+in the run's evidence directory (`benchmarks/results/<stamp>/`, or
+`<stamp>.<model>/` in a matrix). It names the case, rep, model and provider,
+the exit code, the run and case arguments nare was given (a prompt file as
+its path under `/in`), a `run files` line with each prompt file's host path
+and digest when the run had any, the rep's evidence path, and nare's stderr
+and stdout verbatim. The printed message names the file.
+
+A stopped run may have written results files already, for an earlier model
+of a matrix or for the first pass before a confirmation re-run. Those are
+moved, never deleted, to `results.partial.jsonl` in the evidence directory
+of the same name, and the runner prints each path, so that `compare` and
+`bless` never read half a run as the newest one.
+
+Each results line also records the case's args (`case_args`), the run
+arguments (`nare_args`), each run file's digest (`nare_files`), the context
+window the rep had (`context_window`: its size, and whether it came from the
+flag, the backend or nare's default) and how many times nare compacted
+(`compactions`). A window from the backend is the number that matters for a
+compaction experiment, and only the stream knows it.
+
+### The variant
+
+Results compare with a baseline only when their run arguments are the same
+variant: the same flags and values in any order (repeats of one flag keep
+theirs), `--flag=value` and `--flag value` alike, each run file counted by
+its digest, so the same prompt under two paths is one variant and an edited
+prompt at one path is two. No run arguments is the default variant, which
+every baseline blessed before this is. A case's args are part of the case,
+like its prompt, and not part of the variant.
+
+`run` refuses a baseline blessed on another variant before it builds
+anything, and `compare` refuses the same way, with exit 2 and both lists in
+the message. `--allow-arg-change` overrides that, and only that: a model,
+provider, judge or cap change still needs `--allow-model-change`, which does
+not cover a variant change. When the override lets two variants meet, both
+lists print above the table. For `compare --matrix` that is each differing
+model's name followed by both lists, indented.
+
+`bless` writes the results' run arguments and file digests into the
+baseline's `[meta]`. Cases the results do not cover are kept, as always, and
+it exits 2 rather than keep them from a baseline blessed on another variant,
+unless `--allow-arg-change`. It always exits 2 for a run file outside the
+checkout, since nobody else could reproduce that baseline, and neither
+`--allow-` flag lifts that. A model has one blessed variant at a time.
+
+`run --matrix` takes no `--`. It runs each model with its baseline's run
+arguments, after checking them as `run` does and reading each run file
+again: one that cannot be read, or whose digest no longer matches the
+baseline's, exits 2 before anything is built, and no flag overrides that. An
+edited prompt is a new experiment, which a single `run` with `--` measures.
+The matrix table's note names each model's variant when any has one.
+
+The runner never passes `--effort` unasked, since what a level means varies
+by model. Passed as a run argument, it is part of the variant, so a level is
+only ever compared with the same level on the same model.
+
+    bin/bench run --tier full --case context-overflow -- --context-window 16000
+
+makes `context-overflow` compact on any model, and `compactions` on each
+results line says whether it did.
+
 ## What a run leaves behind
 
     benchmarks/results/<stamp>.jsonl          one line per repetition
@@ -128,6 +245,7 @@ about an hour of wall clock.
       judge.txt                               judged cases: every judge reply
       diff.patch                              the diff, as the judge read it
       closing.txt                             the closing message, as the judge read it
+    benchmarks/results/<stamp>/inputs/        the run's prompt files, as every rep read them
 
 Each results line names its directory in `artifacts`, relative to
 `benchmarks/results/`. A confirmation re-run rewrites the same files, so
@@ -135,6 +253,9 @@ one run leaves one results file; it also replaces the evidence from that
 case's first pass, as it replaces those reps in the results file. Nothing
 is pruned: a repetition is a few kilobytes, and the directory is
 gitignored.
+
+A run that stops because nare never started leaves `stopped.txt` in
+`benchmarks/results/<stamp>/` and no results file: see "Arguments to nare".
 
 `diff.patch` and `closing.txt` are kept for every repetition that produced a
 result line and did not break underneath the agent, judged or not. They are
@@ -249,6 +370,13 @@ was thrown away: `processes` lists everything still running, a server that
 escaped with `setsid` included, and `database_files` lists any PostgreSQL
 server binary or data directory anywhere in it. `verify` gives these checks
 the artifacts of a run in which the agent did nothing.
+
+`args` is an optional list of flags for `nare run`, for example
+`["--tools", "read,list,search"]`. A path in a flag's value is relative to
+the fixture, so a case that passes `--schema answer.schema.json` ships that
+file in `fixture/`. Which flags a case may pass is under "Arguments to
+nare". Adding `args` to an existing case changes what its baselines
+measured, so bless it again.
 
 Run `bin/bench verify` on any case you add. It proves the checks fail on the
 pristine fixture, which is the difference between a case that measures
