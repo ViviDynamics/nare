@@ -186,7 +186,8 @@ Anthropic cannot take is refused at startup. See
 
 Python callers can run the same loop in-process, with `nare.run` and
 `nare.step`, typed answers through `schema=` and `check=`, and caller tools.
-Its budgets default to the command line's, except `max_cutoffs`, and it adds no
+Its budget arguments default to the command line's except `max_cutoffs`, the
+command line reads its defaults from `NARE_*` variables, and the library adds no
 default system prompt.
 See [calling nare from Python](docs/contract.md#calling-nare-from-python).
 

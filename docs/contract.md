@@ -787,8 +787,9 @@ writes or spends should validate what it does.
 
 A Python caller can run the loop in-process instead of as a subprocess. The
 events, the session and the stop reasons are the ones the command line gives.
-Every name below is exported from `nare`, and every example runs as written:
-each one uses `ReplayTransport`, a scripted transport that needs no key and no
+Names come from `nare`, except `nare.reads` and `nare.schema`, which the examples
+import from where they are defined. Every example runs as written: each one uses
+`ReplayTransport`, a scripted transport that needs no key and no
 network. To call a model, build the transport with `make_transport` instead
 ([Choosing a transport](#choosing-a-transport)).
 
@@ -816,9 +817,11 @@ asyncio.run(main())
 
 `step` runs one turn: one model request, and the tool calls that turn makes.
 It returns the session, and the events it produced wait in `session.events`
-for the caller to take. `step` takes the schema, `check` and `tools`, but not
-the turn limit, the budgets or the read requirements. A caller that needs those
-uses `run`, which calls `step` once per turn.
+for the caller to take. `step` takes `schema`, `check`, `tools` and
+`max_corrections`. It has no `max_turns`, `max_tool_calls`, `max_cutoffs`,
+`require_reads` or `require_read`: those are `run`'s, and `run` builds the
+objects `step` takes for them. A caller that needs them uses `run`, which calls
+`step` once per turn.
 
 ```python
 import asyncio
@@ -946,6 +949,12 @@ existed. Pass `max_cutoffs=2` to match the command line. The read requirements
 need the `read` tool in the policy, and a path is relative to the policy's
 `root`.
 
+The command line also takes its provider, model, base URL, context window,
+budgets and request settings from `NARE_*` variables when no flag is given
+(`NARE_MODEL`, `NARE_PROVIDER`, `NARE_CONTEXT_WINDOW`, `NARE_BUDGET_TOKENS` and
+others). The library's arguments read none of them, so a library caller passes
+these values in code.
+
 A call that does not pass `max_cutoffs` ends at the first cut-off reply:
 
 ```python
@@ -1034,7 +1043,8 @@ the same few options on every call:
 1. Tools off: `policy=Policy(tools=frozenset())`. The command line is `--tools none`.
 2. The schema: `schema=`, or `--schema FILE`.
 3. Turns: `max_turns=2` or more, so a failing answer still has its correction turn.
-   With 1, the run ends after the first answer.
+   With 1, a failing answer ends the run with status `error` and `stop_reason`
+   `max_turns`, after one more request.
 4. Constrained decoding: `structured_output="json_schema"`, on a transport that
    declares it. Both `make_transport` rails do. The command line is
    `--structured-output json_schema`. Constrained turns are sent without tools,
@@ -1099,21 +1109,25 @@ asyncio.run(main())
 
 ### What to put in --append-system
 
-`--append-system` (`append_system=` on the library, through `make_transport`'s
-`system=`) adds to the system prompt. Put in it what the model cannot read off
-the repository:
+`--append-system` has no library argument. The library takes one `system=`
+string on `make_transport`, so join the parts yourself. The command line
+builds its prompt the same way, by joining its default and this text with a
+blank line. Put in the text what the model cannot read off the repository:
 
-- Commands to run, exactly. `Test with uv run pytest -q tests/test_x.py`
-  is followed; a general description of the test setup is not.
+- Commands to run, exactly, such as `uv run pytest -q tests/test_x.py`.
 - Conventions that are not standard for the stack, such as "migrations are
   append-only; never edit one that has shipped".
 - A role, when the caller needs one.
 
 Leave out a repository overview, a directory tree, and a generated AGENTS.md.
-Two studies (Gloaguen et al., [arXiv:2602.11988](https://arxiv.org/abs/2602.11988);
-Lulla et al., [arXiv:2601.20404](https://arxiv.org/abs/2601.20404)) found that
-repository instruction files did not raise success on average and added about
-20% to the cost. Concrete commands were followed, and overviews did not help.
+Gloaguen et al. ([arXiv:2602.11988](https://arxiv.org/abs/2602.11988)) found
+that repository context files did not raise task success on average, raised
+inference cost by over 20%, found that the instructions in them are well
+followed, and found that repository overviews are not helpful. Lulla et al.
+([arXiv:2601.20404](https://arxiv.org/abs/2601.20404)) found AGENTS.md files
+associated with a lower median runtime and fewer output tokens, at comparable
+task completion. The second is a correlation across pull requests, not a
+controlled comparison, so the guidance here rests on the first.
 
 Keep the text short and the same on every call. It is part of the request
 prefix, so changing it between calls misses the prompt cache. A resume without

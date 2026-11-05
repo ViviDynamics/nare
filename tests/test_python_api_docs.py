@@ -16,6 +16,7 @@ import pytest
 
 import nare
 from nare.cli import build_parser
+from nare.session import new_session
 from nare.corrections import SCHEMA_CORRECTIONS_DEFAULT
 from nare.loop import (
     CUTOFFS_DEFAULT,
@@ -23,6 +24,12 @@ from nare.loop import (
     check_structured_output,
 )
 from nare.transport.replay import ReplayTransport
+
+SCHEMA = {
+    "type": "object",
+    "properties": {"n": {"type": "integer"}},
+    "required": ["n"],
+}
 
 DOC = Path(__file__).resolve().parent.parent / "docs" / "contract.md"
 HEADING = "## Calling nare from Python"
@@ -83,3 +90,66 @@ def test_replay_transport_refuses_structured_output() -> None:
     transport = ReplayTransport({"replies": [{"text": "{}"}]})
     with pytest.raises(ValueError, match="does not support structured output"):
         check_structured_output(transport, {"type": "object"}, "json_schema")
+
+
+def test_step_has_no_run_only_keywords() -> None:
+    # The section lists what step takes; these belong to run alone.
+    params = inspect.signature(nare.step).parameters
+    for name in (
+        "max_turns",
+        "max_tool_calls",
+        "max_cutoffs",
+        "require_reads",
+        "require_read",
+    ):
+        assert name not in params
+    for name in ("schema", "check", "tools", "max_corrections"):
+        assert name in params
+
+
+def test_run_takes_no_append_system_argument() -> None:
+    # The section says the library joins the prompt parts itself.
+    assert "append_system" not in inspect.signature(nare.run).parameters
+
+
+def test_command_line_reads_nare_model_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The section says the CLI takes its defaults from NARE_* variables.
+    monkeypatch.setenv("NARE_MODEL", "model-from-env")
+    args = build_parser().parse_args(["run", "--yes", "x"])
+    assert args.model == "model-from-env"
+
+
+@pytest.mark.parametrize(
+    ("replies", "status", "stop_reason", "turns"),
+    [
+        # A valid first answer is done within one turn.
+        ([{"text": '{"n": 1}'}], "done", "end_turn", 1),
+        # A failing first answer makes one more request, then ends in error.
+        ([{"text": '{"n": "x"}'}, {"text": '{"n": 1}'}], "error", "max_turns", 2),
+    ],
+)
+def test_max_turns_one_behaves_as_the_recipe_says(
+    replies: list[dict[str, str]], status: str, stop_reason: str, turns: int
+) -> None:
+    import asyncio
+
+    async def go() -> nare.Session:
+        session = new_session("x")
+        async for _ in nare.run(
+            session,
+            transport=ReplayTransport({"replies": replies}),
+            policy=nare.Policy(tools=frozenset()),
+            schema=SCHEMA,
+            max_turns=1,
+        ):
+            pass
+        return session
+
+    session = asyncio.run(go())
+    assert (session.status, session.stop_reason, session.turns) == (
+        status,
+        stop_reason,
+        turns,
+    )
