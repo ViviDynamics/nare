@@ -113,7 +113,7 @@ def test_an_unknown_provider_from_the_environment_fails_at_construction(
     # NARE_PROVIDER reaches the factory and is refused there instead.
     monkeypatch.setenv("NARE_PROVIDER", "gemini")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    with pytest.raises(ValueError, match="anthropic, openai"):
+    with pytest.raises(ValueError, match="anthropic, bedrock, openai"):
         transport_from_args(parse("go"))
 
 

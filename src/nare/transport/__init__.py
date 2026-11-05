@@ -26,7 +26,18 @@ if TYPE_CHECKING:
 # the model writes is not one of nare's own requests. A transport that reads a
 # new credential adds it here; a test fails until it does.
 CREDENTIAL_ENV = frozenset(
-    {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY"}
+    {
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "OPENAI_API_KEY",
+        # Claude on Bedrock. The static keys, the session token, the bearer
+        # token and the container credential the chain can read from env.
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    }
 )
 
 StopReason = Literal[
@@ -247,6 +258,7 @@ def make_transport(
     cache_breakpoints: bool = False,
     replay: str | os.PathLike[str] | None = None,
     request_timeout: float | None = None,
+    region: str | None = None,
 ) -> Transport:
     """Build a transport from configuration.
 
@@ -259,13 +271,42 @@ def make_transport(
     marks its breakpoints, so the option asks it for nothing it lacks.
     `request_timeout` reaches both; None keeps each rail's 600 seconds.
 
+    `bedrock` is the anthropic arm reached through AWS: the same request, signed
+    with the AWS credential chain in place of an API key. `region` applies to it
+    alone, and `base_url`, when given, overrides its runtime endpoint.
+
     `fake` replays the JSON script at `replay` and talks to nothing, which is
     how a caller tests its integration with no key and no network. The
     vendor options mean nothing to it and are ignored.
     """
     if replay is not None and kind != "fake":
         raise ValueError("replay requires the fake provider")
+    if region is not None and kind != "bedrock":
+        raise ValueError(f"--region applies only to --provider bedrock, not {kind}")
     match kind:
+        case "bedrock":
+            if proxy_num_retries is not None:
+                raise ValueError("proxy_num_retries requires the openai provider")
+            if api_key is not None:
+                raise ValueError(
+                    "bedrock takes AWS credentials, not an API key; there is "
+                    "no api_key for this provider"
+                )
+            from nare.transport.bedrock import BedrockTransport
+
+            return BedrockTransport(
+                model=model,
+                region=region,
+                base_url=base_url,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                effort=effort,
+                thinking_budget=thinking_budget,
+                system=system,
+                streaming=streaming,
+                image_input=image_input,
+                request_timeout=request_timeout,
+            )
         case "anthropic":
             if proxy_num_retries is not None:
                 raise ValueError("proxy_num_retries requires the openai provider")
@@ -286,7 +327,9 @@ def make_transport(
             )
         case "openai":
             if thinking_budget is not None:
-                raise ValueError("thinking_budget requires the anthropic provider")
+                raise ValueError(
+                    "thinking_budget requires the anthropic or bedrock provider"
+                )
             from nare.transport.openai import OpenAITransport
 
             return OpenAITransport(
@@ -311,7 +354,8 @@ def make_transport(
             return ReplayTransport.from_file(replay, model=model, streaming=streaming)
         case _:
             raise ValueError(
-                f"unknown provider {kind!r}; nare supports: anthropic, openai, fake"
+                f"unknown provider {kind!r}; nare supports: anthropic, bedrock, "
+                "openai, fake"
             )
 
 

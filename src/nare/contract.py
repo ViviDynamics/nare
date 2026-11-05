@@ -341,6 +341,10 @@ def describe() -> dict[str, Any]:
                     "request": {"output_config": {"effort": "LEVEL"}},
                     "thinking": {"type": "adaptive"},
                 },
+                "bedrock": {
+                    "request": {"output_config": {"effort": "LEVEL"}},
+                    "thinking": {"type": "adaptive"},
+                },
                 "openai": {
                     "request": {"reasoning_effort": "LEVEL"},
                     "meaning": "server",
@@ -348,7 +352,7 @@ def describe() -> dict[str, Any]:
             },
             "thinking_budget": {
                 "flag": "--thinking-budget",
-                "providers": ["anthropic"],
+                "providers": ["anthropic", "bedrock"],
                 "request": {"thinking": {"type": "enabled", "budget_tokens": "N"}},
             },
             "session_fields": ["effort", "thinking_budget"],
@@ -365,7 +369,7 @@ def describe() -> dict[str, Any]:
             },
             "default": {"retries": RETRIES_DEFAULT, "seconds": RETRY_SECONDS_DEFAULT},
             "per": "model_request",
-            "providers": ["anthropic", "openai"],
+            "providers": ["anthropic", "bedrock", "openai"],
             "event": "progress",
             "event_detail": "retry",
             "result_field": "retries",
@@ -375,7 +379,7 @@ def describe() -> dict[str, Any]:
             "flag": "--request-timeout",
             "env": "NARE_REQUEST_TIMEOUT",
             "default": 600.0,
-            "providers": ["anthropic", "openai"],
+            "providers": ["anthropic", "bedrock", "openai"],
         },
         "proxy_num_retries": {
             "flag": "--proxy-num-retries",

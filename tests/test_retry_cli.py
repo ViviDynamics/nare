@@ -184,7 +184,7 @@ def test_the_contract_advertises_retries_and_the_timeout() -> None:
         },
         "default": {"retries": 3, "seconds": 60.0},
         "per": "model_request",
-        "providers": ["anthropic", "openai"],
+        "providers": ["anthropic", "bedrock", "openai"],
         "event": "progress",
         "event_detail": "retry",
         "result_field": "retries",
@@ -194,7 +194,7 @@ def test_the_contract_advertises_retries_and_the_timeout() -> None:
         "flag": "--request-timeout",
         "env": "NARE_REQUEST_TIMEOUT",
         "default": 600.0,
-        "providers": ["anthropic", "openai"],
+        "providers": ["anthropic", "bedrock", "openai"],
     }
 
 
