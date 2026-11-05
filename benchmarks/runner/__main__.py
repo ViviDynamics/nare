@@ -399,8 +399,10 @@ def new_stamp() -> str:
 class NeverStarted(Exception):
     """nare refused its invocation, so no rep of this run can start.
 
-    Exit 2 with no result line and no timeout is nare's own argument parser: a
-    run argument or a case argument it rejects. Every later rep would be
+    Exit 2 with no result line and no timeout is nare refusing to start: its
+    argument parser, its validation of the run arguments, or the construction
+    of its transport (a key it cannot use, say), whether a run argument, a
+    case argument or the environment is to blame. Every later rep would be
     refused the same way, so the run stops instead of recording an error per
     rep. `log` is the file that keeps the reason, when one was written.
     `kept` gains each file of graded records the stopped pass left on its way
@@ -501,7 +503,8 @@ async def run_rep(
         keep_evidence(kept, artifacts, result)
         line = parse_stdout(result.stdout)
         if line is None and not result.timed_out and result.exit_code == NEVER_STARTED:
-            # nare's own parser refused the invocation: every rep would be.
+            # nare refused to start (its parser, its argument checks or its
+            # transport): every rep would be.
             # The log is written first, and is the record of why.
             log = evidence / "stopped.txt"
             log.write_text(

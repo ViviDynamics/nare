@@ -198,6 +198,10 @@ judge verdicts included, in the same line format: in `results.partial.jsonl`
 in its evidence directory, or in `results.confirm.partial.jsonl` when the
 confirmation re-run stopped, beside its first pass. The runner prints each
 path. A stop never leaves a results file in `benchmarks/results/` itself.
+The confirmation re-run reuses the first pass's `<case>-<rep>` evidence
+directories and clears each before its rep, so for a case the stopped
+re-run reached, the first-pass records in `results.partial.jsonl` can point
+at evidence the re-run has overwritten.
 
 Each results line also records the case's args (`case_args`), the run
 arguments (`nare_args`), each run file's digest (`nare_files`), the context

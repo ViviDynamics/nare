@@ -1,7 +1,8 @@
 # nare - Benchmark Arguments: Per-Case Flags and Run Variants
 
 **Date:** 2026-11-04
-**Status:** Draft
+**Status:** Built on branch feat/156-bench-nare-args, 2026-11-04, and
+amended during the build and its reviews where marked.
 **Issue:** #156
 **Scope:** The benchmark runner only. A case can pass `nare run` flags, a run
 can pass a variant (a system prompt file, an effort level, a context window,
@@ -196,10 +197,11 @@ written by one person on purpose, and `--require-read` repeats by design.
 The contract does not describe value types or nare's own startup checks, so
 `--context-window abc` passes section 6.1 and nare refuses it at startup. A
 rep whose container exits 2 with no result line, and did not time out, is
-nare refusing its invocation (`never_started`). That stops the run: the
-runner prints that rep's stderr and exits 2, instead of recording every rep
-as an error. This is also right with no arguments at all (a key nare cannot
-use, for example).
+nare refusing its invocation (`never_started`): its argument parser, its
+validation of the run arguments, or the construction of its transport. That
+stops the run: the runner prints that rep's stderr and exits 2, instead of
+recording every rep as an error. This is also right with no arguments at all
+(a key nare cannot use, for example).
 
 A stopped run writes no results file, so `compare` and `bless` never read a
 half run as the newest one. Why it stopped is still written down, in two
