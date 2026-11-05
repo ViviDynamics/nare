@@ -16,13 +16,13 @@ import pytest
 
 import nare
 from nare.cli import build_parser
-from nare.session import new_session
 from nare.corrections import SCHEMA_CORRECTIONS_DEFAULT
 from nare.loop import (
     CUTOFFS_DEFAULT,
     MAX_TURNS_DEFAULT,
     check_structured_output,
 )
+from nare.session import new_session
 from nare.transport.replay import ReplayTransport
 
 SCHEMA = {
