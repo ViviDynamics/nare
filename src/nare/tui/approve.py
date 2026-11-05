@@ -44,6 +44,19 @@ READ_ONLY = frozenset(
     {"cd", "ls", "cat", "head", "tail", "wc", "find", "grep", "rg", "pwd", "echo"}
     | {"git status", "git diff", "git log", "git show"}
 )
+# git's built-in subcommands. Any other name may be an alias, which `a` cannot
+# scope, so it acts as y.
+_GIT_COMMANDS = frozenset(
+    """add am apply archive bisect blame branch bundle cat-file checkout
+    checkout-index cherry cherry-pick clean clone commit commit-tree config
+    count-objects describe diff difftool fetch filter-branch for-each-ref
+    format-patch fsck gc grep gui hash-object help init log ls-files ls-remote
+    ls-tree merge merge-base mergetool mv name-rev notes pull push range-diff
+    read-tree rebase reflog remote repack replace reset restore revert rev-list
+    rev-parse rm shortlog show show-branch show-ref stash status submodule
+    switch symbolic-ref tag update-index update-ref var verify-pack version
+    whatchanged worktree write-tree""".split()
+)
 # Flags that make a read-only program write or run something.
 _WRITES = frozenset(
     {"-exec", "-execdir", "-ok", "-okdir", "-delete"}
@@ -287,6 +300,10 @@ def _braces(word: str) -> list[str] | None:
     while todo:
         cuts = _brace_list(word := todo.pop(0))
         if cuts is None:
+            # A list opened and never closed, with a comma after its brace,
+            # is one bash expands in part: `{x,{x,}` is `{x,x` and `{x,`.
+            if "{" in word and "," in word[word.index("{") :]:
+                return None
             done.append(word)
             continue
         # Counted before it is built: one wide list of long words is large.
@@ -432,6 +449,18 @@ def _discards(sub: str, args: list[str], dirs: list[Path] | None) -> bool:
 
     if sub == "clean":
         return True
+    if sub in ("merge", "rebase", "cherry-pick", "am"):
+        # --abort resets the tree to where the operation began, which
+        # drops a conflict resolution in progress (merge runs reset --merge).
+        return spelled("--abort")
+    if sub == "reflog":
+        # delete and expire drop entries a stash or a branch may be kept by.
+        return any(arg in ("delete", "expire") for arg in args)
+    if sub == "rm":
+        # git rm refuses a modified file unless forced; a redirection's
+        # target is not an option, as in checkout.
+        given = _option_words(handed, "", frozenset())
+        return "f" in _letters(given) or _spelled(given, "--force")
     if sub == "reset":
         return spelled("--hard", "--merge")
     if sub == "stash":
@@ -655,7 +684,9 @@ def _program(words: list[str]) -> str | None:
     """
     program = words[0]
     if Path(program).name == "git" and len(words) > 1:
-        if words[1].startswith("-"):
+        # git runs an alias (`co = checkout`) as whatever it names, so only a
+        # built-in subcommand can be approved by name.
+        if words[1].startswith("-") or words[1] not in _GIT_COMMANDS:
             return None
         program = f"{program} {words[1]}"
     if words[0] in WRAPPERS or words[0] in _KEYWORDS or program.startswith("-"):

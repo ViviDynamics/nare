@@ -204,6 +204,31 @@ async def test_a_allows_this_tool_from_now_on() -> None:
         ("python3 t.py >/etc/x", ["outside root"]),
         ("pushd >/dev/null - && ls", ["outside root"]),
         ("pushd>/dev/null - && ls", ["outside root"]),
+        # Finishing a merge, rebase, cherry-pick or am with --abort resets work.
+        ("git merge feat", []),
+        ("git merge --abort", ["git discard"]),
+        ("git merge --abo", ["git discard"]),
+        ("git rebase --abort", ["git discard"]),
+        ("git cherry-pick --abort", ["git discard"]),
+        ("git am --abort", ["git discard"]),
+        # reflog delete and expire drop the entries a stash or branch needs.
+        ("git reflog", []),
+        ("git reflog show", []),
+        ("git reflog delete 'refs/stash@{0}'", ["git discard"]),
+        ("git reflog expire --all", ["git discard"]),
+        # git rm refuses a modified file unless forced.
+        ("git rm c.py", []),
+        ("git rm -f b.py", ["git discard"]),
+        # -r is recursive, so the rm badge shows too.
+        ("git rm -rf dir", ["rm -r", "git discard"]),
+        ("git rm --force b.py", ["git discard"]),
+        ("git rm --forc b.py", ["git discard"]),
+        ("git rm --cached a.py", []),
+        ("git rm -- -f", []),
+        # A redirection's target is not an option, as for checkout.
+        ("git rm > -f c.py", []),
+        # A nested brace list is read as bash reads it, or not at all.
+        ("cat {x,{x,}", ["outside root"]),
     ],
 )
 def test_risks(command: str, expected: list[str], tmp_path: Path) -> None:
@@ -564,6 +589,9 @@ async def test_a_approves_the_lines_programs(
         ("./*.sh", None),
         ("ls#;rm x", None),
         ("make; # build it", None),
+        # An alias (`co = checkout`) is not a git command the scan can name.
+        ("git co .", None),
+        ("git ad x", None),
         ('"" python3 t.py', None),
         # `>|` is a redirect, not a pipe into a program named `a.py`.
         ("python3 t.py >| a.py", {"python3"}),
@@ -728,3 +756,42 @@ async def test_a_write_flag_hidden_by_braces_or_a_bad_tilde_asks(
     approver = Approver(keys, Policy(root=tmp_path))
     assert await approver("bash", bash(command)) is False, command
     assert keys.asked == ["bash"]
+
+
+async def test_a_on_git_merge_still_asks_for_merge_abort(tmp_path: Path) -> None:
+    keys = Keys("a", "n")
+    approver = Approver(keys, Policy(root=tmp_path))
+    assert await approver("bash", bash("git merge feat")) is True
+    assert await approver("bash", bash("git merge --abort")) is False
+    assert keys.asked == ["bash", "bash"]
+
+
+async def test_a_on_git_reflog_still_asks_for_delete(tmp_path: Path) -> None:
+    keys = Keys("a", "n")
+    approver = Approver(keys, Policy(root=tmp_path))
+    assert await approver("bash", bash("git reflog show")) is True
+    assert await approver("bash", bash("git reflog delete 'refs/stash@{0}'")) is False
+    # The first call asked too: reflog is not read-only.
+    assert keys.asked == ["bash", "bash"]
+    keys = Keys("a", "n", "n")
+    approver = Approver(keys, Policy(root=tmp_path))
+    assert await approver("bash", bash("git reflog show")) is True
+
+
+async def test_a_on_git_rm_asks_for_force_and_not_for_plain(tmp_path: Path) -> None:
+    keys = Keys("a", "n", "n")
+    approver = Approver(keys, Policy(root=tmp_path))
+    assert await approver("bash", bash("git rm a.py")) is True
+    assert await approver("bash", bash("git rm -f b.py")) is False
+    assert await approver("bash", bash("git rm --force b.py")) is False
+    assert await approver("bash", bash("git rm c.py")) is True
+    assert keys.asked == ["bash", "bash", "bash"]
+
+
+async def test_an_alias_is_never_approved_with_a(tmp_path: Path) -> None:
+    # `co` may be an alias for checkout, which discards work: `a` acts as y.
+    keys = Keys("a", "n")
+    approver = Approver(keys, Policy(root=tmp_path))
+    assert await approver("bash", bash("git co .")) is True
+    assert await approver("bash", bash("git co .")) is False
+    assert keys.asked == ["bash", "bash"]
