@@ -366,7 +366,9 @@ def test_max_turns_is_honoured(capsys: pytest.CaptureFixture[str]) -> None:
     result = lines(capsys.readouterr().out)[-1]
     assert result["stop_reason"] == "max_turns"
     assert result["turns"] == 3
-    assert fake.calls[-1][1] == []
+    # The summary keeps the turn's tools and forbids calls.
+    assert fake.calls[-1][1] == fake.calls[-2][1] != []
+    assert fake.choices[-1] == "none"
     assert "continue" in str(result["error"])
 
 

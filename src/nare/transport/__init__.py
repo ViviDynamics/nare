@@ -190,6 +190,30 @@ class StreamingStructuredTransport(Protocol):
     ) -> AsyncGenerator[Delta | Reply, None]: ...
 
 
+class ToolChoiceTransport(Protocol):
+    """A transport that keeps a turn's tools on the wire and can set a tool
+    choice on it. The loop passes `tool_choice="none"` only on a turn-limit
+    summary, which keeps the request's tool set (and so its prefix) the same
+    as the turns before it while forbidding calls.
+    """
+
+    async def turn(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        tool_choice: str | None = None,
+    ) -> Reply: ...
+
+    def stream_turn(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        tool_choice: str | None = None,
+    ) -> AsyncGenerator[Delta | Reply, None]: ...
+
+
 class Transport(Protocol):
     """A turn and optional backend window discovery. Configuration is bound at
     construction, which keeps the

@@ -596,7 +596,10 @@ async def test_turn_cap_warns_and_gets_one_tools_disabled_summary(
         assert f"{remaining} turns left: wrap up and summarise." in str(
             fake.calls[index][0][-1]
         )
-    assert fake.calls[-1][1] == []
+    # The summary keeps the turn's tools and forbids calls with tool_choice
+    # none (a changed tool set is rejected on signed thinking).
+    assert fake.calls[-1][1] == fake.calls[-2][1] != []
+    assert fake.choices == [None] * 6 + ["none"]
     assert "summar" in str(fake.calls[-1][0][-1]).lower()
     assert session.messages[-1].content[0]["text"].startswith("Read failed")
     assert any(e.type == "output" and "Read failed" in e.text for e in events)

@@ -1383,7 +1383,19 @@ PATH_TOOLS = frozenset({"read", "write", "edit", "list", "search"})
 EVIDENCE_TOOLS = frozenset({"read", *NAVIGATION_TOOLS})
 
 
-@dataclass(frozen=True)
+def external_digest(offered: dict[str, ExternalTool]) -> str:
+    """A digest of the offered MCP tools, in the order they are sent.
+
+    Order is part of it: the tools array is what signed thinking binds to, and
+    a server that reorders its tools changes that array.
+    """
+    canonical = json.dumps(
+        [[name, tool.schema] for name, tool in offered.items()], default=str
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+@dataclass
 class Policy:
     """What a session is allowed to do: which tools, and where they may reach.
 
@@ -1415,7 +1427,15 @@ class Policy:
         ]
 
     def recorded(self) -> dict[str, Any]:
-        """What the session stores, so a run's permissions are readable after it."""
+        """What the session stores, so a run's permissions are readable after it.
+
+        `external_sha256` is present only when the policy offers MCP tools: their
+        names are in `tools`, and the digest of their schemas tells a resume
+        with the same names from a server that now defines them differently.
+        Connected tools the policy does not offer are not digested, since they
+        are not in the request.
+        """
+        offered = {name: t for name, t in self.external.items() if name in self.tools}
         return {
             **(
                 {"image_input": True, "image_model": self.image_model}
@@ -1423,6 +1443,7 @@ class Policy:
                 else {}
             ),
             **({"bash_credentials": True} if self.bash_credentials else {}),
+            **({"external_sha256": external_digest(offered)} if offered else {}),
             "tools": sorted(self.tools),
             "root": None if self.root is None else str(self.root),
         }

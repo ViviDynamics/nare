@@ -52,6 +52,7 @@ from nare.reads import read_record
 from nare.schema import UnsupportedSchema, check_supported
 from nare.session import (
     Session,
+    drop_signed_thinking,
     loads,
     new_session,
     reopen,
@@ -506,6 +507,18 @@ def adopt_system(args: argparse.Namespace, session: Session) -> None:
                 {"system_prompt": {"changed": True}},
             )
         )
+        # The prefix signed thinking was made against has changed: drop it, and
+        # say so when there was any.
+        dropped = drop_signed_thinking(session)
+        if dropped:
+            session.events.append(
+                Event(
+                    "progress",
+                    f"signed thinking dropped from {dropped} blocks, since it is "
+                    "bound to the system prompt it was made with",
+                    {"signed_thinking": {"dropped": dropped, "changed": "system"}},
+                )
+            )
     session.system = sent
 
 

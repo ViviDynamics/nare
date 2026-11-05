@@ -542,7 +542,8 @@ carry a wrap-up warning. A run that offers no tools, built-in or MCP (for
 example `--tools none`), gets the progress event only: every turn of it is an
 answer, so the warning never reaches the model and the request does not
 depend on the turn count. At the cap, one extra accounted request with tools
-disabled asks for a summary, provided no token/USD ceiling has stopped the run.
+disabled asks for a summary, provided no token/USD ceiling has stopped the run. The request keeps the run's tool set and sets `tool_choice` to none, so a
+call the model makes on it is refused and not run.
 The outcome stays `error`/`max_turns` and includes a `continue` hint. The summary
 counts in `turns` and usage; it does not grant another tool turn.
 A completed/blocked crossing result is successful; reopening it with resume

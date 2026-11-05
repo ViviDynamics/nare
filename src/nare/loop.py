@@ -36,7 +36,7 @@ from nare.mcp import Server, connect
 from nare.reads import NO_READS, ReadRequirement, unmet
 from nare.reads import build as build_reads
 from nare.schema import DuplicateKeyError, SchemaError, extract_json, validate
-from nare.session import Message, Session, append_user_text
+from nare.session import Message, Session, append_user_text, drop_signed_thinking
 from nare.tools import (
     Approve,
     Policy,
@@ -52,6 +52,7 @@ from nare.transport import (
     StreamingStructuredTransport,
     StreamingTransport,
     StructuredTransport,
+    ToolChoiceTransport,
     Transient,
     Transport,
     transient,
@@ -273,6 +274,9 @@ ASK_NOT_ALONE = (
     "ask was not recorded: call ask on its own, before making any change. "
     "The other calls in this turn ran."
 )
+SUMMARY_REFUSED = (
+    "Tools are disabled for the turn-limit summary: this call was not run."
+)
 ASK_NOT_DELIVERED = (
     "ask was not recorded: another ask in this turn failed, so nothing was "
     "sent. Call ask again, once, with all your questions."
@@ -320,6 +324,31 @@ def schema_digest(schema: dict[str, Any]) -> str:
     """The schema's identity: key order and whitespace are not a change."""
     canonical = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def prefix_changes(recorded: dict[str, Any], now: dict[str, Any]) -> list[str]:
+    """What about the tool set differs from what the session recorded.
+
+    Empty for a session with no record (a file from before the record existed),
+    which keeps today's behaviour. A digest is compared only when the record has
+    one, so a file saved before MCP digests were kept is not read as changed.
+    """
+    if "tools" not in recorded:
+        return []
+    changed: list[str] = []
+    before, after = set(recorded["tools"]), set(now["tools"])
+    if before != after:
+        parts = []
+        if after - before:
+            parts.append("added " + ", ".join(sorted(after - before)))
+        if before - after:
+            parts.append("removed " + ", ".join(sorted(before - after)))
+        changed.append("tools " + " and ".join(parts))
+    if "external_sha256" in recorded and recorded["external_sha256"] != now.get(
+        "external_sha256"
+    ):
+        changed.append("the definitions of MCP tools")
+    return changed
 
 
 def state_schema(session: Session, schema: dict[str, Any]) -> None:
@@ -629,6 +658,7 @@ async def step(
     reads: ReadRequirement = NO_READS,
     check: Check | None = None,
     tools: Sequence[Tool] = (),
+    summary: bool = False,
 ) -> Session:
     if tools:
         # The allowlist is the policy's, as for built-ins: a registered tool is
@@ -669,7 +699,14 @@ async def step(
         else _without_images(s.messages, policy.image_model)
     )
     offered = policy.schemas()
-    constrained = _constrained(s, schema, structured_output, offered)
+    # A summary keeps this turn's tools on the wire, so the request's prefix
+    # matches the turn before it: signed thinking binds to the tools array, and
+    # a tool set rebuilt mid-run is rejected by the vendor. tool_choice none
+    # keeps the model from calling them, and any call it makes is refused. A
+    # constrained turn withholds tools, so a summary of a run that offers tools
+    # is never constrained.
+    keep_tools = summary and bool(offered)
+    constrained = not keep_tools and _constrained(s, schema, structured_output, offered)
     if constrained:
         s.events.append(
             Event(
@@ -695,6 +732,10 @@ async def step(
                     model_messages, [], response_schema=schema
                 )
                 if constrained
+                else cast(ToolChoiceTransport, transport).stream_turn(
+                    model_messages, offered, tool_choice="none"
+                )
+                if keep_tools
                 else cast(StreamingTransport, transport).stream_turn(
                     model_messages, offered
                 )
@@ -713,6 +754,10 @@ async def step(
                 model_messages, [], response_schema=schema
             )
             if constrained
+            else cast(ToolChoiceTransport, transport).turn(
+                model_messages, offered, tool_choice="none"
+            )
+            if keep_tools
             else transport.turn(model_messages, offered)
         )
 
@@ -818,6 +863,11 @@ async def step(
             s.status = "done"
             s.events.append(Event("output", text))
             return s
+        if summary:
+            # The summary is not an answer: the run ends `max_turns` at the cap
+            # either way, so a free-text summary is not checked against the
+            # schema and does not spend a correction.
+            return s
         errors = _answer_errors(text, schema)
         if not errors and check is not None:
             try:
@@ -904,6 +954,9 @@ async def step(
             # measurably slow because of it, and not before.
             refused = False
             for call in reply.tool_calls:
+                if summary:
+                    results.append(tool_result(call.id, SUMMARY_REFUSED, is_error=True))
+                    continue
                 if call.name == "ask" and not only_asks and "ask" in policy.tools:
                     results.append(tool_result(call.id, ASK_NOT_ALONE, is_error=True))
                     continue
@@ -1000,6 +1053,7 @@ async def _live_step(
     cutoffs: CutoffLimit | None = None,
     reads: ReadRequirement = NO_READS,
     check: Check | None = None,
+    summary: bool = False,
 ) -> AsyncGenerator[Event, None]:
     queue: asyncio.Queue[Event] = asyncio.Queue()
     buffers: dict[Literal["progress", "thinking"], LiveText] = {
@@ -1042,6 +1096,7 @@ async def _live_step(
             cutoffs=cutoffs,
             reads=reads,
             check=check,
+            summary=summary,
         )
     )
     waiter: asyncio.Task[Event] | None = None
@@ -1164,7 +1219,27 @@ async def _run(
         state_schema(session, schema)
     # Recorded before the first turn, so a run that dies still says what it was
     # allowed to do.
-    session.policy = policy.recorded()
+    recorded = policy.recorded()
+    changed = prefix_changes(session.policy, recorded)
+    if changed:
+        # Signed thinking is bound to the tools it was made with, and a request
+        # that rebuilds the tool set is rejected. Dropped here, and said.
+        dropped = drop_signed_thinking(session)
+        if dropped:
+            outcome = (
+                f"Signed thinking dropped from {dropped} blocks, since it is "
+                "bound to the tools it was made with"
+            )
+        else:
+            outcome = "No signed thinking to drop"
+        session.events.append(
+            Event(
+                "progress",
+                "tool set changed on resume: " + "; ".join(changed) + ". " + outcome,
+                {"tools": {"changed": changed, "thinking_dropped": dropped}},
+            )
+        )
+    session.policy = recorded
     # What this invocation sent, not what the session first ran with: a
     # resume without the flags sends none.
     session.effort = getattr(transport, "effort", None)
@@ -1191,14 +1266,12 @@ async def _run(
         else:
             remaining = max_turns - (session.turns - budget_from)
             summary = remaining <= 0
-            turn_policy = policy
             if summary:
                 append_user_text(
                     session,
                     "Turn limit reached. Tools are disabled. Summarise what was done, "
                     "what remains, and any processes left running.",
                 )
-                turn_policy = replace(policy, tools=frozenset(), external={})
             elif remaining <= 5:
                 warning = f"{remaining} turns left: wrap up and summarise."
                 # Only a run with tools, built-in or MCP, has anything to wrap
@@ -1218,7 +1291,7 @@ async def _run(
                             session,
                             transport,
                             approve,
-                            turn_policy,
+                            policy,
                             schema,
                             window,
                             prices,
@@ -1229,6 +1302,7 @@ async def _run(
                             cutoffs,
                             reads,
                             check=check,
+                            summary=summary,
                         )
                     ) as stream:
                         async for event in stream:
@@ -1238,7 +1312,7 @@ async def _run(
                         session,
                         transport,
                         approve,
-                        turn_policy,
+                        policy,
                         schema,
                         window,
                         prices,
@@ -1249,6 +1323,7 @@ async def _run(
                         cutoffs=cutoffs,
                         reads=reads,
                         check=check,
+                        summary=summary,
                     )
                 if session.status not in ("done", "blocked"):
                     check_budget(session)
