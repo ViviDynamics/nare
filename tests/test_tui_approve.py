@@ -305,6 +305,12 @@ def bash(command: str) -> dict[str, Any]:
         "cd src && rg -n 'def (x|y)' | wc -l",
         "git log --oneline -5 && git diff",
         "ls -la  # what is here",
+        # Quoted text is literal: a `$(` or a backslash inside single quotes, or
+        # a backslash before an ordinary letter in double quotes.
+        "grep 'a\\d' a.py",
+        'grep "a\\d" a.py',
+        "ls '$(rm x)'",
+        'echo "\\$(rm x)"',
         # A quoted glob is find's, and one inside a path cannot start an option.
         "find . -name '*.py' | head",
         "ls src/*.py",
@@ -356,6 +362,10 @@ async def test_a_read_only_line_runs_unasked(command: str, tmp_path: Path) -> No
         "ls {*,x}",
         "cd && cat .ssh/id_rsa",
         "cat ~-/x",
+        # Unquoted, `$(` runs; an escaped `$` leaves a `(` bash refuses.
+        'ls "$(rm x)"',
+        "echo \\$(rm x)",
+        "cat a\nrm x",
         # A sequence expression is not read.
         "echo {1..3}",
     ],
@@ -474,7 +484,7 @@ async def test_these_lines_ask(command: str, tmp_path: Path) -> None:
         # rm is approved whole, but a recursive rm always asks.
         (
             "rm a.txt",
-            ["rm b.txt", "rm build/*.o"],
+            ["rm b.txt"],
             [
                 "rm -r build",
                 "rm -R build",
@@ -485,6 +495,8 @@ async def test_these_lines_ask(command: str, tmp_path: Path) -> None:
                 "rm -{f..Q..20} build",
                 # A file named `-r` would make this recursive.
                 "rm *",
+                # An unquoted glob expands to whatever matches: not a plain word.
+                "rm build/*.o",
             ],
         ),
         ("make && python3 t.py", ["make", "python3 t.py", "make | tail"], []),
@@ -555,7 +567,8 @@ async def test_a_approves_the_lines_programs(
         ('"" python3 t.py', None),
         # `>|` is a redirect, not a pipe into a program named `a.py`.
         ("python3 t.py >| a.py", {"python3"}),
-        ("python3 t.py \\>| rm x", None),
+        # `\>` is an argument and `|` a pipe: bash runs rm after python3.
+        ("python3 t.py \\>| rm x", {"python3", "rm"}),
     ],
 )
 def test_scope(command: str, programs: set[str] | None, tmp_path: Path) -> None:
@@ -644,3 +657,74 @@ async def test_a_path_the_check_cannot_resolve_asks(tmp_path: Path) -> None:
     approver = Approver(keys, Policy(root=tmp_path))
     assert await approver("write", {"path": "a\x00b", "content": ""}) is False
     assert keys.asked == ["write"]
+
+
+async def test_a_quoted_operator_or_dollar_is_text_not_an_expansion(
+    tmp_path: Path,
+) -> None:
+    keys = Keys("a", "n", "n")
+    approver = Approver(keys, Policy(root=tmp_path))
+    # bash passes a quoted `\<`, `>` or `$` to grep and sed as text.
+    assert await approver("bash", bash("grep '\\<foo\\>' a.py")) is True
+    assert keys.asked == []
+    assert await approver("bash", bash("sed -n '1,$p' a.py")) is True
+    assert keys.asked == ["bash"]
+    assert await approver("bash", bash("sed -n '1,$p' b.py")) is True
+    assert keys.asked == ["bash"]
+    # Unquoted, the `$` expands, so the same program asks again.
+    assert await approver("bash", bash('sed -n "1,$HOME" a.py')) is False
+    assert keys.asked == ["bash", "bash"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python3 t.py $HOME",
+        'python3 t.py "$(id)"',
+        'python3 t.py "$HOME"',
+        "python3 t.py x{1,2}.py",
+        "python3 t.py a*b",
+        "python3 t.py ~/x",
+        'python3 t.py "`id`"',
+        "python3 t.py <<EOF",
+        "python3 t.py <(id)",
+    ],
+)
+async def test_an_approved_program_asks_about_any_unplain_word(
+    command: str, tmp_path: Path
+) -> None:
+    keys = Keys("a", "n")
+    approver = Approver(keys, Policy(root=tmp_path))
+    assert await approver("bash", bash("python3 t.py")) is True
+    assert await approver("bash", bash(command)) is False, command
+
+
+async def test_quoted_plain_words_of_an_approved_program_run_unasked(
+    tmp_path: Path,
+) -> None:
+    keys = Keys("a")
+    approver = Approver(keys, Policy(root=tmp_path))
+    assert await approver("bash", bash("python3 t.py")) is True
+    assert await approver("bash", bash("python3 'my test.py' \"x y\"")) is True
+    assert await approver("bash", bash("python3 t.py 2>&1 | tail -3")) is True
+    assert keys.asked == ["bash"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # bash expands the braces first, so the write flag is there to run.
+        "find . {-depth,-delete}",
+        "git diff {--output=OUT,}",
+        "find . -fp{rint,x} f",
+        # A NUL in a ~ word is refused, not raised.
+        'cat "~\x00"',
+    ],
+)
+async def test_a_write_flag_hidden_by_braces_or_a_bad_tilde_asks(
+    command: str, tmp_path: Path
+) -> None:
+    keys = Keys("n")
+    approver = Approver(keys, Policy(root=tmp_path))
+    assert await approver("bash", bash(command)) is False, command
+    assert keys.asked == ["bash"]

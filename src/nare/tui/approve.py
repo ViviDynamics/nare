@@ -1,15 +1,16 @@
 """The TUI's approver: y, n, or always for this tool. No Textual here; the app
 passes in how to ask.
 
-The bash policy reads a line with a token scan, not a shell parser: what the
-scan cannot read is asked about.
+The bash policy reads a line with a small lexer that tracks quoting: what
+bash would expand or glob is told apart from what a quote made literal. What
+the lexer cannot read is asked about.
 """
 
 from __future__ import annotations
 
 import os
 import re
-import shlex
+import string
 from collections.abc import Awaitable, Callable
 from itertools import pairwise
 from pathlib import Path
@@ -20,30 +21,24 @@ from nare.tools import Policy
 # These change nothing, so a person is never asked about them.
 EXEMPT = frozenset({"read", "list", "search", "ask"})
 
-# 2>&1, >&2, 2>&-: a copy of a descriptor, not a file, and its & is not
-# backgrounding. A word after >& (`>&out`) is a file, so it stays.
-_DUP = re.compile(r"(?<![^ \t;&|])\d*[<>]&(?:\d+|-)(?=[ \t;&|)]|$)")
 # A word that names the descriptor a redirection after it redirects: `2`, or
 # `{fd}`, for which bash picks one.
 _FD = re.compile(r"[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\}")
-# The redirection a token can start with: `2>/dev/null` names /dev/null.
-_REDIRECT = re.compile(rf"^(?:{_FD.pattern})?(?:>>|<>|>|<)")
+# Brace sequences ({1..3}, {a..z..2}), which are not expanded here at all.
+_SEQUENCE = re.compile(r"\{-?\w+\.\.-?\w+(?:\.\.-?\d+)?\}")
+# Redirections, longest first where one starts another.
+_REDIRECTIONS = ("&>>", "&>", ">>", ">&", ">|", "<&", "<>", ">", "<")
+# The operators a line is split into, longest first.
+_OPERATORS = ("&&", "||", "|&", ";;", ";", "&", "|", "(", ")")
+# The separators a command ends at. `(`, `)` and `;;` are refused.
+_SEPARATORS = frozenset({"|", "|&", "||", "&&", ";", "&"})
+# A word is plain when its unquoted characters are only these: nothing in it
+# expands, globs or splits.
+_PLAIN = frozenset(string.ascii_letters + string.digits + "-_./:=@%+,")
+# A descriptor duplication, `2>&1` or `>&-`: it writes no file.
+_DUPLICATE = re.compile(r"\d+|-")
 # A token whose brace lists make more words than this counts as outside.
 _BRACE_LIMIT = 64
-# What the scan cannot read: a second line, a subshell or substitution, a
-# heredoc. shlex hands back a quoted or escaped `;` as the same token as a
-# real one, so `find . \; python3 -delete` would look like two commands. An
-# escaped `>` is a word to bash, but `\>|` would read as `>|`, hiding the pipe.
-# A quoted `>` reads as a redirection, so `git checkout '>' a.py` would hide
-# a.py. A brace sequence is not expanded, and `--har{d..d}` makes `--hard`.
-_UNREADABLE = re.compile(
-    r"""[\n\r`]|\$\(|<\(|>\(|<<|(['"])[;&|()]+\1|\\[;&|()<>]"""
-    rf"""|['"](?:{_FD.pattern})?[<>]"""
-    r"|\{-?\w+\.\.-?\w+(?:\.\.-?\d+)?\}"
-)
-_OPERATOR = frozenset(";&|()")
-_SEPARATORS = frozenset({"|", "|&", "||", "&&", ";", "&"})
-
 # Run unasked. Widen this only from prompts people answered y.
 READ_ONLY = frozenset(
     {"cd", "ls", "cat", "head", "tail", "wc", "find", "grep", "rg", "pwd", "echo"}
@@ -119,10 +114,12 @@ def _folded(path: Path) -> tuple[str, ...]:
 
 
 def in_git_dir(path: str, policy: Policy) -> bool:
-    """Whether a write to `path` lands in the protected .git directory, or is
-    .git itself, through any `..`, symlink or letter case. git runs what that
-    directory's config and hooks name, so such a write always asks, even
-    after `a`. A path that cannot be resolved counts as inside.
+    """Whether a write or edit to `path` lands in the protected .git directory,
+    or is .git itself, through any `..`, symlink or letter case. git runs what
+    that directory's config and hooks name, so such a write always asks, even
+    after `a`. A path that cannot be resolved counts as inside. Bash is out of
+    scope (#101): an approved program can write anywhere, and a redirection
+    into .git is not asked about.
     """
     # A relative path is relative to the root, or with none to the cwd, as
     # Policy.resolve and bash read it.
@@ -135,58 +132,128 @@ def in_git_dir(path: str, policy: Policy) -> bool:
     return target[: len(git)] == git
 
 
+class _Word(str):
+    """A word as bash reads it after quote removal. `bare` is what the word
+    leaves unquoted, plus any `$` or backtick a double-quoted string expands:
+    the characters an expansion, a glob or a brace can act on.
+    """
+
+    bare: str
+
+    def __new__(cls, text: str, bare: str) -> _Word:
+        word = super().__new__(cls, text)
+        word.bare = bare
+        return word
+
+
+class _Op(str):
+    """An operator a line is split into. `_commands` refuses some of them."""
+
+
+class _Redir(str):
+    """A redirection, with the descriptor before it if any: `>`, `2>&`, `{fd}>`.
+    Its target is the word after it.
+    """
+
+
 def _tokens(command: str) -> list[str]:
-    """The line's words and operators, or none when shlex cannot split it.
-    `&>` and `&>>` are read as `>` and `>>`, so their & is not backgrounding,
-    and `>|` as `>`, so its | is not a pipe. The & ends a word, so a space
-    takes its place: `1&>x` hands `1` on, and a quoted `'&>'` stays a word.
+    """The line's words, separators and redirections, with quotes read as bash
+    reads them. [] when the line cannot be read: an unclosed quote, a
+    substitution, a heredoc, a process substitution, or a newline.
     """
-    line = command.replace("&>", " >").replace(">|", ">")
-    line = _DUP.sub("", _split_redirections(line))
-    try:
-        scan = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
-        scan.whitespace_split = True
-        # shlex drops all from a `#` on, but bash only starts a comment at
-        # the start of a word: `ls#;rm x` runs `ls#`, then `rm x`.
-        scan.commenters = ""
-        return list(scan)
-    except ValueError:
-        return []
+    tokens: list[str] = []
+    text: list[str] = []
+    bare: list[str] = []
+    active = False  # a word is in progress, even an empty quoted one
 
+    def end() -> None:
+        nonlocal active
+        if active:
+            tokens.append(_Word("".join(text), "".join(bare)))
+        text.clear()
+        bare.clear()
+        active = False
 
-def _split_redirections(line: str) -> str:
-    """`line` with a space before each unquoted `<` or `>` that ends a word,
-    since bash ends it there: `git checkout .>/dev/null` hands git `.`, which
-    shlex would keep whole. A word that names a descriptor stays with it:
-    `2>/dev/null`. Words end at spaces and tabs only, as in bash and shlex.
-    """
-    out: list[str] = []
-    word, quote, escaped = "", "", False
-    for char in line:
-        if escaped:
-            escaped = False
-        elif quote:
-            if char == quote:
-                quote = ""
-            elif char == "\\" and quote == '"':
-                escaped = True
+    i, n = 0, len(command)
+    while i < n:
+        char = command[i]
+        if char in " \t":
+            end()
+            i += 1
+        elif char in "\r\n":
+            return []
+        elif char == "'":
+            close = command.find("'", i + 1)
+            if close < 0:
+                return []
+            text.append(command[i + 1 : close])
+            active = True
+            i = close + 1
+        elif char == '"':
+            active = True
+            i += 1
+            while True:
+                if i >= n:
+                    return []
+                inner = command[i]
+                if inner == '"':
+                    i += 1
+                    break
+                if inner == "\\" and i + 1 < n and command[i + 1] in '$`"\\':
+                    text.append(command[i + 1])
+                    i += 2
+                    continue
+                if inner == "\\" and i + 1 < n and command[i + 1] not in "\r\n":
+                    text.append(inner)  # kept, as bash keeps it before other text
+                    i += 1
+                    continue
+                if inner in "\\`" or command.startswith("$(", i):
+                    return []
+                if inner == "$":
+                    bare.append(inner)
+                text.append(inner)
+                i += 1
         elif char == "\\":
-            escaped = True
-        elif char in "'\"":
-            quote = char
-        elif char in " \t;&|()":
-            word = ""
-            out.append(char)
-            continue
-        elif char in "<>":
-            if word and not _FD.fullmatch(word):
-                out.append(" ")
-            word = ""
-            out.append(char)
-            continue
-        word += char
-        out.append(char)
-    return "".join(out)
+            if i + 1 >= n or command[i + 1] in "\r\n":
+                return []
+            text.append(command[i + 1])
+            active = True
+            i += 2
+        elif char == "`" or command.startswith("$(", i):
+            return []
+        elif char == "$":
+            text.append(char)
+            bare.append(char)
+            active = True
+            i += 1
+        elif char in "<>" or command.startswith("&>", i):
+            if command.startswith(("<(", ">(", "<<"), i):
+                return []
+            op = next(o for o in _REDIRECTIONS if command.startswith(o, i))
+            prefix = ""
+            # A descriptor is a word of its own only when unquoted: `2>`.
+            if char in "<>" and active and "".join(text) == "".join(bare):
+                if _FD.fullmatch("".join(text)):
+                    prefix = "".join(text)
+                    text.clear()
+                    bare.clear()
+                    active = False
+            if not prefix:
+                end()
+            tokens.append(_Redir(prefix + op))
+            i += len(op)
+        elif char in "|&;()":
+            end()
+            op = next(o for o in _OPERATORS if command.startswith(o, i))
+            tokens.append(_Op(op))
+            i += len(op)
+        else:
+            text.append(char)
+            bare.append(char)
+            active = True
+            i += 1
+    end()
+    return tokens
 
 
 def _brace_list(word: str) -> list[int] | None:
@@ -232,7 +299,9 @@ def _braces(word: str) -> list[str] | None:
 
 
 def _outside(token: str, policy: Policy) -> bool:
-    paths = _braces(_REDIRECT.sub("", token))
+    if isinstance(token, _Redir):
+        return False  # its target is the next word, which is checked itself
+    paths = _braces(token)
     if paths is None:
         return True
     for path in paths:
@@ -240,8 +309,13 @@ def _outside(token: str, policy: Policy) -> bool:
             continue
         if not (path.startswith(("/", "~")) or ".." in path.split("/")):
             continue
-        if path.startswith("~") and os.path.expanduser(path) == path:
-            return True  # ~- and ~+ are bash's last and current directory
+        if path.startswith("~"):
+            try:
+                expanded = os.path.expanduser(path)
+            except ValueError:  # a NUL in the name: no file can have it
+                return True
+            if expanded == path:
+                return True  # ~- and ~+ are bash's last and current directory
         try:
             policy.resolve(os.path.expanduser(path))
         except (ValueError, OSError):
@@ -314,9 +388,9 @@ def _git(tokens: list[str]) -> list[tuple[str, list[str]]]:
             sub = i + 1
             while sub < len(segment):
                 before = segment[sub]
-                if before in _GIT_GLOBALS or _REDIRECT.fullmatch(before):
+                if before in _GIT_GLOBALS or isinstance(before, _Redir):
                     sub += 2  # and the word it takes
-                elif before[:1] == "-" or _REDIRECT.match(before):
+                elif before[:1] == "-":
                     sub += 1
                 else:
                     break
@@ -334,8 +408,8 @@ def _unredirected(words: list[str]) -> list[str]:
     for word in words:
         if target:
             target = False
-        elif _REDIRECT.match(word):
-            target = bool(_REDIRECT.fullmatch(word))
+        elif isinstance(word, _Redir):
+            target = True
         else:
             kept.append(word)
     return kept
@@ -519,7 +593,7 @@ def _segments(tokens: list[str]) -> list[list[str]]:
     """The tokens between operators: one command each, roughly."""
     segments: list[list[str]] = [[]]
     for token in tokens:
-        if set(token) <= _OPERATOR:
+        if isinstance(token, _Op):
             segments.append([])
         else:
             segments[-1].append(token)
@@ -556,7 +630,7 @@ def _commands(command: str) -> list[list[str]] | None:
     cannot read it.
     """
     tokens = _tokens(command)
-    if not tokens or _UNREADABLE.search(command):
+    if not tokens or _SEQUENCE.search(command):
         return None
     # The scan expands braces bash leaves quoted, so `'{,>}'` would make a
     # `>` that hides the word after it.
@@ -564,7 +638,7 @@ def _commands(command: str) -> list[list[str]] | None:
         return None
     commands: list[list[str]] = [[]]
     for token in tokens:
-        if token and set(token) <= _OPERATOR:
+        if isinstance(token, _Op):
             if token not in _SEPARATORS:  # `(`, `)`, or `;;`
                 return None
             commands.append([])
@@ -591,12 +665,37 @@ def _program(words: list[str]) -> str | None:
     return program
 
 
+def _plain(word: str) -> bool:
+    """Whether a word is plain: its unquoted characters are letters, digits or
+    -_./:=@%+, and none of them expands. Quoted text is literal, so `'1,$p'`
+    is plain.
+    """
+    return isinstance(word, _Word) and set(word.bare) <= _PLAIN
+
+
 def _read_only(words: list[str]) -> bool:
-    return (
-        _program(words) in READ_ONLY
-        and not any(set(word) & set("<>$") for word in words)
-        and not any(word.split("=")[0] in _WRITES for word in words)
-    )
+    """Whether a command only reads: a read-only program, with no redirection
+    but a descriptor copy (`2>&1`), no expansion, and no write flag. A quoted
+    `<`, `>` or `$` is text, not one of those.
+    """
+    if _program(words) not in READ_ONLY:
+        return False
+    for i, word in enumerate(words):
+        if isinstance(word, _Redir):
+            copies = word.endswith((">&", "<&")) and i + 1 < len(words)
+            if not copies or not _DUPLICATE.fullmatch(words[i + 1]):
+                return False
+            continue
+        if isinstance(word, _Word) and "$" in word.bare:
+            return False
+        # bash expands braces before a program sees its words: `{-delete,-x}`
+        # hands find -delete. A list too wide to build is refused.
+        expanded = _braces(word)
+        if expanded is None:
+            return False
+        if any(w.split("=")[0] in _WRITES for w in expanded):
+            return False
+    return True
 
 
 def scope(command: str, policy: Policy) -> frozenset[str] | None:
@@ -659,6 +758,9 @@ class Approver:
         return all(_read_only(words) or self._approved(words) for words in commands)
 
     def _approved(self, words: list[str]) -> bool:
-        # risks() reads words, not what a `$` expands to: `rm ${X:--r}` may be
-        # recursive, and `> $HOME/x` outside the root.
-        return _program(words) in self.programs and not any("$" in w for w in words)
+        # risks() reads the words, not what they expand to: `rm ${X:--r}` may
+        # be recursive, `> $HOME/x` outside the root, and `x{1,2}` or `a*b`
+        # more than one file. Only a plain word is what it looks like.
+        return _program(words) in self.programs and all(
+            _plain(word) for word in words if not isinstance(word, _Redir)
+        )
