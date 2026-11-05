@@ -177,7 +177,11 @@ def _tool(
 @asynccontextmanager
 async def connect(
     servers: Mapping[str, Server],
+    *,
+    startup_timeout: float | None = None,
 ) -> AsyncIterator[dict[str, ExternalTool]]:
+    if startup_timeout is not None and not (0 < startup_timeout < math.inf):
+        raise ValueError("MCP startup timeout must be a positive finite number")
     stack = AsyncExitStack()
     try:
         tools: dict[str, ExternalTool] = {}
@@ -186,6 +190,10 @@ async def connect(
             from mcp.client.stdio import stdio_client
             from mcp.client.streamable_http import streamable_http_client
         for alias, config in servers.items():
+            # Process start and the handshake are bounded by the startup budget.
+            # Each call keeps the server's own timeout: a short call deadline
+            # must not fail a child that is still starting.
+            budget = config.timeout if startup_timeout is None else startup_timeout
             if config.command is not None:
                 # ponytail: a server's stderr goes to fd 2 and can paint
                 # over `nare tui` until it redraws. An errlog parameter
@@ -204,7 +212,7 @@ async def connect(
                 client = await stack.enter_async_context(
                     httpx2.AsyncClient(
                         headers=config.headers,
-                        timeout=httpx2.Timeout(config.timeout),
+                        timeout=httpx2.Timeout(budget),
                         follow_redirects=False,
                     )
                 )
@@ -212,11 +220,9 @@ async def connect(
                     streamable_http_client(config.url, http_client=client)
                 )
             session = await stack.enter_async_context(
-                ClientSession(*streams, read_timeout_seconds=config.timeout)
+                ClientSession(*streams, read_timeout_seconds=budget)
             )
-            await _bounded(
-                _discover(session, alias, config.timeout, tools), config.timeout
-            )
+            await _bounded(_discover(session, alias, config.timeout, tools), budget)
         yield tools
     finally:
         # Close normally: passing GeneratorExit through SDK task groups wraps
