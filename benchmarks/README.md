@@ -176,7 +176,7 @@ exits 2 before anything is built.
 A rep whose nare never started (its container exited 2 with no result line,
 and did not time out) is nare refusing its invocation, `--context-window abc`
 for example. The run stops there with exit 2, prints that rep's stderr, and
-writes no results file. Why it stopped is kept in two places: the rep's own
+leaves no results file. Why it stopped is kept in two places: the rep's own
 directory (`stdout.jsonl`, `stderr.txt`), as for any rep, and `stopped.txt`
 in the run's evidence directory (`benchmarks/results/<stamp>/`, or
 `<stamp>.<model>/` in a matrix). It names the case, rep, model and provider,
@@ -242,8 +242,8 @@ only ever compared with the same level on the same model.
 
     bin/bench run --tier full --case context-overflow -- --context-window 16000
 
-makes `context-overflow` compact on any model, and `compactions` on each
-results line says whether it did.
+should make `context-overflow` compact; `compactions` on each results line
+says whether it did.
 
 ## What a run leaves behind
 

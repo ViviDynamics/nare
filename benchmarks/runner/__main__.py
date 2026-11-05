@@ -343,7 +343,7 @@ def _section(title: str, body: str) -> str:
 def stopped_log(
     case: Case, rep: int, config: Config, result: RunArtifacts, kept_ref: str
 ) -> str:
-    """The text of stopped.txt: why a run stopped before its first rep ran.
+    """The text of stopped.txt: why a run stopped at a rep whose nare never started.
 
     Nothing is redacted or shortened. The arguments carry no credential (the
     key reaches nare in the environment), and a shortened stderr can lose the
