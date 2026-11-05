@@ -15,7 +15,7 @@ import shutil
 import subprocess
 import sys
 from collections import Counter, defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -63,6 +63,7 @@ from benchmarks.runner.nare_args import (
     ArgsError,
     RunArgs,
     check_invocation,
+    file_digest,
     nare_contract,
     stage_inputs,
     variant,
@@ -277,6 +278,86 @@ def _commit() -> str:
         ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True
     )
     return proc.stdout.strip() or "unknown"
+
+
+class GitError(Exception):
+    """git could not say whether it tracks a file: not installed, or no
+    checkout to ask. Neither answer may be assumed."""
+
+
+def git_tracks(root: Path, path: str) -> bool:
+    """Whether git tracks `path`, relative to the checkout at `root`.
+
+    The pathspec is literal, so a name with a `*` in it matches only itself.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", path],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise GitError("git is not on PATH") from exc
+    except OSError as exc:
+        raise GitError(
+            f"git could not run: {exc.strerror or type(exc).__name__}"
+        ) from exc
+    # 1 is a path git does not track; anything else is git failing to answer.
+    if proc.returncode in (0, 1):
+        return proc.returncode == 0
+    raise GitError(proc.stderr.strip() or f"git exited {proc.returncode}")
+
+
+def unblessable(root: Path, files: Mapping[str, str]) -> list[str]:
+    """Why each run file would make a baseline other checkouts cannot run.
+
+    `run --matrix` reads every file a baseline names again, on whatever
+    checkout runs it, and exits 2 for that model when one is missing or has
+    another digest, which stops the whole matrix. So a file must be inside
+    the checkout, still hold the digest the run measured, and be tracked by
+    git. Empty when every file passes, and git is asked only about a file
+    that got that far.
+    """
+    problems: list[str] = []
+    for path, digest in sorted(files.items()):
+        if Path(path).is_absolute():
+            problems.append(
+                f"the run arguments name {path}, which is outside the checkout; "
+                "a baseline must name files anyone with the checkout can read, "
+                "so move it into the checkout and run again"
+            )
+            continue
+        try:
+            now = file_digest((root / path).read_bytes())
+        except OSError:
+            problems.append(
+                f"{path}, which the run measured, cannot be read; restore it, "
+                "or run again"
+            )
+            continue
+        if now != digest:
+            problems.append(
+                f"{path} changed since the run: the run measured {digest[:19]}, "
+                f"and it is now {now[:19]}; restore the file the run measured, "
+                "or run again"
+            )
+            continue
+        try:
+            known = git_tracks(root, path)
+        except GitError as exc:
+            problems.append(
+                f"cannot ask git whether it tracks {path} ({exc}); a baseline "
+                "must name files every checkout has, so bless from a git "
+                "checkout, with git on PATH"
+            )
+            continue
+        if not known:
+            problems.append(
+                f"git does not track {path}, so no other checkout has it; "
+                "commit it first"
+            )
+    return problems
 
 
 def line_text(stdout: str, questions: Sequence[str] = ()) -> str:
@@ -1607,18 +1688,14 @@ def main(argv: list[str] | None = None) -> int:
     baseline_file = baseline_path(baselines, config.model, args.tier)
 
     if args.command == "bless":
-        # Whatever the --allow flags say: nobody else could reproduce such a
-        # baseline, and it would publish a local path.
-        for path in config.run_args.files:
-            if Path(path).is_absolute():
-                print(
-                    f"bench: {results_file.name}: the run arguments name {path}, "
-                    "which is outside the checkout; a baseline must name files "
-                    "anyone with the checkout can read, so move it into the "
-                    "checkout and run again",
-                    file=sys.stderr,
-                )
-                return 2
+        # Whatever the --allow flags say, and before anything is written:
+        # nobody else could run such a baseline, and a file outside the
+        # checkout would publish a local path.
+        problems = unblessable(root, config.run_args.files)
+        for problem in problems:
+            print(f"bench: {results_file.name}: {problem}", file=sys.stderr)
+        if problems:
+            return 2
         baselines.mkdir(parents=True, exist_ok=True)
         old = load_baseline(baseline_file) if baseline_file.exists() else None
         tier_ids = {c.id for c in _select(root, args.tier, None)}

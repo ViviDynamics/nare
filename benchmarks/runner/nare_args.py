@@ -266,6 +266,11 @@ def variant(args: Sequence[str], files: Mapping[str, str]) -> tuple[Pair, ...]:
     return tuple(sorted(keyed, key=lambda pair: pair[0]))
 
 
+def file_digest(data: bytes) -> str:
+    """What a run file is keyed and recorded by: `sha256:` and its hex digest."""
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
 def stage_inputs(
     tokens: Sequence[str], *, base: Path, root: Path, dest: Path
 ) -> RunArgs:
@@ -322,7 +327,7 @@ def stage_inputs(
             shown = source.relative_to(root.resolve()).as_posix()
         except ValueError:
             shown = source.as_posix()
-        files[shown] = "sha256:" + hashlib.sha256(data).hexdigest()
+        files[shown] = file_digest(data)
         for out, text in ((recorded, shown), (passed, f"{INPUTS}/{name}")):
             out.extend([f"{flag}={text}"] if equals else [flag, text])
     return RunArgs(

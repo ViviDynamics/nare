@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
+import subprocess
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -949,20 +952,6 @@ def test_allow_arg_change_does_not_let_run_past_a_judge_change(
     ) in capsys.readouterr().out
 
 
-def test_bless_writes_the_variant_the_results_were_run_with(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    baselines = results_dir(tmp_path, monkeypatch)
-    terse = "benchmarks/prompts/terse.md"
-    write_results(tmp_path, [ran_with("--system-file", terse, files={terse: DIGEST})])
-    assert main(["bless", "--model", "m"]) == 0
-    meta = load_baseline(baseline_path(baselines, "m", "smoke")).meta
-    assert (meta.nare_args, meta.nare_files) == (
-        ("--system-file", terse),
-        {terse: DIGEST},
-    )
-
-
 def test_bless_will_not_keep_cases_measured_on_another_variant(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1082,6 +1071,145 @@ def write_terse(tmp_path: Path, text: str = "Be terse.\n") -> None:
     prompt = tmp_path / TERSE_PATH
     prompt.parent.mkdir(parents=True, exist_ok=True)
     prompt.write_text(text)
+
+
+def git_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make tmp_path a git checkout of its own, which git, for the test and for
+    bless alike, reads with none of the person's config or environment, never
+    searches above, and answers in English."""
+    for var in [name for name in os.environ if name.startswith("GIT_")]:
+        monkeypatch.delenv(var)
+    monkeypatch.setenv("LC_ALL", "C")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+
+
+def git_commit(tmp_path: Path, *paths: str) -> None:
+    subprocess.run(["git", "add", "--", *paths], cwd=tmp_path, check=True)
+    identity = ["-c", "user.email=bench@nare.invalid", "-c", "user.name=nare-bench"]
+    subprocess.run(
+        ["git", *identity, "commit", "-qm", "prompt"], cwd=tmp_path, check=True
+    )
+
+
+def ran_on_terse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Results run with TERSE_PATH as it is on disk now, and no baseline yet:
+    returns where bless would write the baselines."""
+    baselines = results_dir(tmp_path, monkeypatch)
+    write_terse(tmp_path)
+    git_checkout(tmp_path, monkeypatch)
+    files = {TERSE_PATH: TERSE_DIGEST}
+    ran = ran_with("--system-file", TERSE_PATH, files=files)
+    write_results(tmp_path, [ran], STAMP)
+    return baselines
+
+
+ALL_FLAGS = [
+    [],
+    ["--allow-arg-change"],
+    ["--allow-model-change"],
+    ["--allow-arg-change", "--allow-model-change"],
+]
+
+
+def test_bless_writes_the_variant_the_results_were_run_with(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    baselines = ran_on_terse(tmp_path, monkeypatch)
+    git_commit(tmp_path, TERSE_PATH)
+    assert main(["bless", "--model", "m"]) == 0
+    meta = load_baseline(baseline_path(baselines, "m", "smoke")).meta
+    assert (meta.nare_args, meta.nare_files) == (
+        ("--system-file", TERSE_PATH),
+        {TERSE_PATH: TERSE_DIGEST},
+    )
+
+
+@pytest.mark.parametrize("flags", ALL_FLAGS)
+def test_bless_refuses_a_run_file_git_does_not_track(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+) -> None:
+    # run --matrix re-reads it on every checkout, and on one without it, exits
+    # 2 for this model, which stops the whole matrix.
+    baselines = ran_on_terse(tmp_path, monkeypatch)
+    assert main(["bless", "--model", "m", *flags]) == 2
+    assert (
+        f"bench: {STAMP}.jsonl: git does not track {TERSE_PATH}, so no other "
+        "checkout has it; commit it first"
+    ) in capsys.readouterr().err
+    assert not baselines.exists()
+
+
+@pytest.mark.parametrize("flags", ALL_FLAGS)
+@pytest.mark.parametrize(
+    ("edit", "named"),
+    [
+        pytest.param(
+            lambda path: path.write_text("Be verbose.\n"),
+            f"{TERSE_PATH} changed since the run: the run measured "
+            f"{TERSE_DIGEST[:19]}, and it is now "
+            + ("sha256:" + hashlib.sha256(b"Be verbose.\n").hexdigest())[:19]
+            + "; restore the file the run measured, or run again",
+            id="edited",
+        ),
+        pytest.param(
+            lambda path: path.unlink(),
+            f"{TERSE_PATH}, which the run measured, cannot be read; restore it, "
+            "or run again",
+            id="removed",
+        ),
+    ],
+)
+def test_bless_refuses_a_run_file_that_changed_since_the_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+    edit: Callable[[Path], object],
+    named: str,
+) -> None:
+    # The baseline would name a digest the file no longer has, so run --matrix
+    # would refuse this model here too.
+    baselines = ran_on_terse(tmp_path, monkeypatch)
+    git_commit(tmp_path, TERSE_PATH)
+    edit(tmp_path / TERSE_PATH)
+    assert main(["bless", "--model", "m", *flags]) == 2
+    assert f"bench: {STAMP}.jsonl: {named}" in capsys.readouterr().err
+    assert not baselines.exists()
+
+
+@pytest.mark.parametrize("git", ["not a checkout", "not installed"])
+def test_bless_refuses_a_run_file_when_git_cannot_say_whether_it_tracks_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    git: str,
+) -> None:
+    baselines = ran_on_terse(tmp_path, monkeypatch)
+    git_commit(tmp_path, TERSE_PATH)
+    if git == "not a checkout":
+        shutil.rmtree(tmp_path / ".git")
+    else:
+        empty = tmp_path / "no-git"
+        empty.mkdir()
+        monkeypatch.setenv("PATH", str(empty))
+    assert main(["bless", "--model", "m", "--allow-arg-change"]) == 2
+    err = capsys.readouterr().err
+    why = (
+        "fatal: not a git repository"
+        if git == "not a checkout"
+        else "git is not on PATH"
+    )
+    assert (
+        f"bench: {STAMP}.jsonl: cannot ask git whether it tracks {TERSE_PATH} ({why}"
+    ) in err
+    assert "so bless from a git checkout, with git on PATH" in err
+    assert not baselines.exists()
 
 
 def test_the_matrix_runs_each_model_with_its_baselines_arguments(

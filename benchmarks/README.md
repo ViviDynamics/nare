@@ -235,9 +235,15 @@ differing model's name followed by both lists, indented.
 `bless` writes the results' run arguments and file digests into the
 baseline's `[meta]`. Cases the results do not cover are kept, as always, and
 it exits 2 rather than keep them from a baseline blessed on another variant,
-unless `--allow-arg-change`. It always exits 2 for a run file outside the
-checkout, since nobody else could reproduce that baseline, and neither
-`--allow-` flag lifts that. A model has one blessed variant at a time.
+unless `--allow-arg-change`. A baseline must name run files every checkout
+has, unchanged, since `run --matrix` reads each again and refuses that model
+otherwise, which stops the whole matrix. So `bless` always exits 2, naming
+the file, for a run file that is outside the checkout, that cannot be read
+or no longer has the digest the run recorded (restore it, or run again),
+or that git does not track (commit it first). When git is not installed, or
+the benchmark runs outside a git checkout, it exits 2 for every run file,
+since then nobody can say. These come before anything is written, and neither
+`--allow-` flag lifts them. A model has one blessed variant at a time.
 
 `run --matrix` takes no `--`. It runs each model with its baseline's run
 arguments, after checking them as `run` does and reading each run file

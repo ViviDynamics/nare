@@ -326,6 +326,16 @@ non-empty, so every existing baseline file stays byte for byte as it is:
     already refuses keeping cases from another judge
   - a run-level file outside the checkout, since nobody else could reproduce
     that baseline and it would publish a local path
+  - a run-level file that cannot be read or no longer has the digest the
+    results recorded, naming the file and saying to restore it or run again,
+    since `run --matrix` would refuse that baseline on every checkout (added
+    in the pre-PR review, 2026-11-04)
+  - a run-level file git does not track, naming the file and saying to
+    commit it first, since no other checkout has it; and, when git is not
+    installed or the root is not a git checkout, every run-level file, since
+    then nobody can say (added in the pre-PR review, 2026-11-04)
+
+  The file refusals come before anything is written, and no flag lifts them.
 - `--allow-arg-change` overrides the variant refusals in all three, and
   nothing else. `--allow-model-change` does not override a variant change,
   and `--allow-arg-change` does not override a model, provider, judge or cap
