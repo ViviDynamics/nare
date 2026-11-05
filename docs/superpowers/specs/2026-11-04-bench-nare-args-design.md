@@ -150,6 +150,9 @@ argument list is parsed as `nare run` would parse it:
   final review, 2026-11-04).
 - A token that is neither a flag nor a flag's value is refused. That covers a
   bare `--` and a positional prompt, since the prompt is the case's.
+- A token that is not valid UTF-8 (argv bytes that do not decode) is refused
+  before any other rule, since results lines and baselines record every
+  argument as UTF-8 text (added in the pre-PR review, 2026-11-04).
 
 Each refusal exits 2 and names the case, or "run arguments", and the token.
 

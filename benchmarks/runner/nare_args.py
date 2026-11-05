@@ -88,8 +88,19 @@ def check_args(
     `flags` and `tools` are nare's contract. `case_id` None means the run
     arguments. Flags match by exact long name: nare's parser expands an
     abbreviation, so accepting one here would let a reserved flag through.
+    A token that is not valid UTF-8 (argv bytes that did not decode, which
+    Python keeps as lone surrogates) is refused first: a results line and a
+    baseline record every argument as UTF-8 text.
     """
     where = "run arguments" if case_id is None else f"case {case_id}"
+    for token in tokens:
+        try:
+            token.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ArgsError(
+                f"{where}: {token!r} is not valid UTF-8, and results and "
+                "baselines record every argument as UTF-8 text"
+            ) from None
     found: list[Pair] = []
     i = 0
     while i < len(tokens):

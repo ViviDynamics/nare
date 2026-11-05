@@ -147,7 +147,9 @@ may name only the tools nare lists, or `none`, and in a case whose args
 also pass `--mcp-config`, an MCP tool as `<alias>__<tool>`, which nare
 resolves from that config when it starts. A value that starts with `-`
 is written `--flag=value`. Anything else, a stray word or a bare `--`
-included, exits 2 naming the case or "run arguments" and the token.
+included, exits 2 naming the case or "run arguments" and the token, and so
+does an argument that is not valid UTF-8, since results and baselines record
+every argument as text.
 
 Some flags are refused in both lists, because something else owns them:
 `--yes`, `--jsonl`, `--session` and `--contract` (the runner, which reads

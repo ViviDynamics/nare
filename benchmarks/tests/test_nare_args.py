@@ -159,6 +159,22 @@ def test_a_case_refusal_names_the_case() -> None:
         as_case("--nope")
 
 
+@pytest.mark.parametrize(
+    "tokens", [["--system", "a\udcffb"], ["--system=a\udcffb"], ["--a\udcffb"]]
+)
+@pytest.mark.parametrize("case_id", [None, "demo"])
+def test_a_token_that_is_not_utf8_is_refused_before_any_other_rule(
+    tokens: list[str], case_id: str | None
+) -> None:
+    # Bytes in argv that do not decode reach Python as lone surrogates, which a
+    # results line and a baseline cannot hold as UTF-8 text.
+    where = "run arguments" if case_id is None else "case demo"
+    with pytest.raises(
+        ArgsError, match=re.escape(f"{where}: {tokens[-1]!r} is not valid UTF-8")
+    ):
+        check_args(tokens, FLAGS, TOOLS, case_id=case_id)
+
+
 @pytest.mark.parametrize("flag", sorted(RESERVED))
 @pytest.mark.parametrize("case_id", [None, "demo"])
 def test_a_reserved_flag_is_refused_in_either_list_and_either_form(

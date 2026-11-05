@@ -559,6 +559,7 @@ def test_a_double_dash_with_nothing_after_it_is_the_default_variant(
             "--context-window is in the run arguments and in case argued's args",
         ),
         ("", ["--system-file", "absent.md"], "--system-file absent.md: cannot read it"),
+        ("", ["--system", "a\udcffb"], "run arguments: 'a\\udcffb' is not valid UTF-8"),
     ],
 )  # fmt: skip
 def test_run_refuses_arguments_before_building_anything(
