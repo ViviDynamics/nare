@@ -807,10 +807,15 @@ writes or spends should validate what it does.
 
 `bash` runs with nare's environment minus the provider credentials nare reads
 for its own requests: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
-`OPENAI_API_KEY`, and on the bedrock rail `AWS_ACCESS_KEY_ID`,
-`AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_BEARER_TOKEN_BEDROCK` and
-`AWS_CONTAINER_AUTHORIZATION_TOKEN`. The AWS profile and shared credential files
-are not environment variables and are not removed. A command the model writes, `env` included, does not see
+`OPENAI_API_KEY`, and on the bedrock rail the AWS credential variables:
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`,
+`AWS_SECURITY_TOKEN`, `AWS_BEARER_TOKEN_BEDROCK`, `AWS_WEB_IDENTITY_TOKEN_FILE`,
+`AWS_CONTAINER_AUTHORIZATION_TOKEN` and `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`.
+Withholding is by variable only. The files those last two variables name, the
+shared credential and SSO cache files, and the instance metadata endpoint are
+not environment and stay reachable from a command the model writes, so a
+bedrock run in a pod or an instance still exposes its role to bash. Use a
+narrower role for a run whose model should not reach it. A command the model writes, `env` included, does not see
 them, so neither the transcript nor an instruction planted in a file the model
 reads can reach them. This is the same rule as for MCP stdio servers above:
 no child process nare starts inherits the model API keys. Every other variable

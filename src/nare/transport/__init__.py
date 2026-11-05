@@ -30,13 +30,18 @@ CREDENTIAL_ENV = frozenset(
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
         "OPENAI_API_KEY",
-        # Claude on Bedrock. The static keys, the session token, the bearer
-        # token and the container credential the chain can read from env.
+        # Claude on Bedrock: the static keys, the session token (and its legacy
+        # name), the bearer token, and the variables that point the chain at a
+        # token file or a container credential. The files themselves are not
+        # env, so they stay readable; see docs/contract.md.
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN",
+        "AWS_SECURITY_TOKEN",
         "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
         "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+        "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
     }
 )
 

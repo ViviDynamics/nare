@@ -50,8 +50,9 @@ the anthropic rail's. Credentials come from the standard AWS chain: the
 `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` pair, `AWS_PROFILE` (SSO
 profiles included), IRSA web identity in EKS, or an instance role. An
 `AWS_BEARER_TOKEN_BEDROCK` bearer token works too. The region comes from
-`--region`, then `NARE_AWS_REGION`, `AWS_REGION` and `AWS_DEFAULT_REGION`. A
-missing region or credential exits 2 and names both.
+`--region`, then `NARE_AWS_REGION`, `AWS_REGION`, `AWS_DEFAULT_REGION`, and the
+active profile's region in the AWS config file. A missing region or credential
+exits 2 and names both.
 
     nare run --yes --provider bedrock --region us-east-1 \
       --model us.anthropic.claude-sonnet-4-5-20250929-v1:0 "..."

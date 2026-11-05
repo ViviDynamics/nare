@@ -54,23 +54,56 @@ def _cap_keys(model: str) -> tuple[str, ...]:
     return (model, tail, bare, bedrock_base_model(model))
 
 
-def _botocore_session() -> Any:
-    """botocore is required even with a bearer token: the SDK decodes Bedrock's
-    event-stream responses with it, and signs with it when there is no token."""
+def _botocore_error() -> type[Exception]:
+    """botocore's base error. Loaded by name: botocore ships no type stubs, and
+    a static import would fail the strict type check."""
+    error: type[Exception] = importlib.import_module(
+        "botocore.exceptions"
+    ).BotoCoreError
+    return error
+
+
+def _aws_session() -> Any:
+    """A botocore session, which reads the profile, the config file and the
+    credential chain. botocore is required even with a bearer token: the SDK
+    decodes Bedrock's event-stream responses with it, and signs with it when
+    there is no token. A profile or config that cannot be read exits 2 with
+    botocore's own message, not a traceback."""
     try:
-        return importlib.import_module("botocore.session")
+        session_module = importlib.import_module("botocore.session")
     except ImportError as exc:
         raise ValueError(
             "--provider bedrock needs the bedrock extra, which brings boto3: "
             "pip install 'nare[bedrock]'"
         ) from exc
+    BotoCoreError = _botocore_error()
+
+    try:
+        return session_module.get_session()
+    except BotoCoreError as exc:
+        raise ValueError(f"the AWS profile or config could not be read: {exc}") from exc
 
 
-def _credentials_resolve() -> bool:
-    session = _botocore_session()
+def _config_region(session: Any) -> str | None:
+    """The region the active profile or the config file names, if any."""
+    BotoCoreError = _botocore_error()
+
+    try:
+        region: str | None = session.get_config_variable("region")
+    except BotoCoreError as exc:
+        raise ValueError(f"the AWS profile or config could not be read: {exc}") from exc
+    return region
+
+
+def _credentials_resolve(session: Any) -> bool:
     if os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
         return True
-    return session.get_session().get_credentials() is not None
+    BotoCoreError = _botocore_error()
+
+    try:
+        return session.get_credentials() is not None
+    except BotoCoreError as exc:
+        raise ValueError(f"AWS credentials could not be resolved: {exc}") from exc
 
 
 class BedrockTransport(AnthropicTransport):
@@ -95,10 +128,17 @@ class BedrockTransport(AnthropicTransport):
         request_timeout: float | None = None,
     ) -> None:
         # Set before the base class runs: its credential check, output cap and
-        # client construction all read the region.
-        self.region = region or next(
-            (os.environ[name] for name in REGION_SOURCES if os.environ.get(name)),
-            None,
+        # client construction all read the region and the session. The region
+        # order is --region, the nare and AWS variables, then the profile or
+        # config file, which the SDK itself would have read.
+        self._session = _aws_session()
+        self.region = (
+            region
+            or next(
+                (os.environ[name] for name in REGION_SOURCES if os.environ.get(name)),
+                None,
+            )
+            or _config_region(self._session)
         )
         super().__init__(
             model=model,
@@ -120,7 +160,7 @@ class BedrockTransport(AnthropicTransport):
                 "bedrock takes AWS credentials, not an API key. For a bearer token "
                 "set AWS_BEARER_TOKEN_BEDROCK in the environment."
             )
-        credentials = _credentials_resolve()
+        credentials = _credentials_resolve(self._session)
         if self.region and credentials:
             return
         raise ValueError(

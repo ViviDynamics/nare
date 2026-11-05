@@ -8,6 +8,7 @@ live check against Bedrock is a separate step before release.
 
 import base64
 import json
+import os
 import struct
 import sys
 import zlib
@@ -286,8 +287,8 @@ def test_missing_region_names_region_and_credentials() -> None:
     with pytest.raises(ValueError) as caught:
         BedrockTransport(model=MODEL)
     message = str(caught.value)
-    assert "region" in message
-    assert "credentials" in message
+    assert "Region: not set" in message
+    assert "Credentials: found" in message
     assert "--region" in message
 
 
@@ -295,8 +296,43 @@ def test_missing_credentials_names_region_and_credentials() -> None:
     with pytest.raises(ValueError) as caught:
         BedrockTransport(model=MODEL, region="us-east-1")
     message = str(caught.value)
-    assert "credentials" in message
-    assert "region" in message
+    assert "Region: us-east-1" in message
+    assert "Credentials: not found" in message
+
+
+@pytest.mark.usefixtures("aws_keys")
+def test_the_region_comes_from_the_active_profile_in_the_config_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = Path(os.environ["AWS_CONFIG_FILE"])
+    config.write_text("[profile sso1]\nregion = eu-west-1\n", encoding="utf-8")
+    monkeypatch.setenv("AWS_PROFILE", "sso1")
+    assert BedrockTransport(model=MODEL).region == "eu-west-1"
+
+
+@pytest.mark.usefixtures("aws_keys")
+def test_a_default_region_in_the_config_file_is_read_without_a_profile() -> None:
+    config = Path(os.environ["AWS_CONFIG_FILE"])
+    config.write_text("[default]\nregion = ap-southeast-2\n", encoding="utf-8")
+    assert BedrockTransport(model=MODEL).region == "ap-southeast-2"
+
+
+@pytest.mark.usefixtures("aws_keys")
+def test_nare_and_aws_variables_win_over_the_config_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = Path(os.environ["AWS_CONFIG_FILE"])
+    config.write_text("[default]\nregion = ap-southeast-2\n", encoding="utf-8")
+    monkeypatch.setenv("NARE_AWS_REGION", "us-west-2")
+    assert BedrockTransport(model=MODEL).region == "us-west-2"
+
+
+def test_a_profile_that_does_not_exist_exits_as_a_value_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWS_PROFILE", "no-such-profile")
+    with pytest.raises(ValueError, match="no-such-profile"):
+        build(region="us-east-1")
 
 
 def test_a_bearer_token_needs_no_aws_chain(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -624,23 +660,33 @@ async def test_a_streamed_cut_off_is_reported_as_max_tokens() -> None:
 # Credentials and the bash environment.
 
 
-def test_the_bedrock_credentials_are_withheld_from_bash() -> None:
-    assert {
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_SESSION_TOKEN",
-        "AWS_BEARER_TOKEN_BEDROCK",
-    } <= CREDENTIAL_ENV
+# Every variable botocore reads a credential or a credential's location from.
+BOTOCORE_CREDENTIAL_ENV = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_SECURITY_TOKEN",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+)
 
 
-def test_bash_does_not_see_the_aws_keys(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIDOFFLINE")
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "offline-secret")
+@pytest.mark.parametrize("name", BOTOCORE_CREDENTIAL_ENV)
+def test_each_botocore_credential_variable_is_withheld_from_bash(name: str) -> None:
+    assert name in CREDENTIAL_ENV
+
+
+@pytest.mark.parametrize("name", BOTOCORE_CREDENTIAL_ENV)
+def test_bash_does_not_see_an_aws_credential_variable(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    monkeypatch.setenv(name, "offline-value")
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     env = _shell_env(credentials=False)
     assert env is not None
-    assert "AWS_ACCESS_KEY_ID" not in env
-    assert "AWS_SECRET_ACCESS_KEY" not in env
+    assert name not in env
     assert env.get("AWS_REGION") == "us-east-1"
 
 
