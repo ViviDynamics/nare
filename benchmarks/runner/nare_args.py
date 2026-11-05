@@ -9,6 +9,7 @@ This module imports no other runner module, since `config` imports it.
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,6 +52,10 @@ CASE_ONLY = frozenset({"--schema", "--mcp-config", "--require-read", "--root"})
 HOST_FILE_FLAGS = frozenset({"--system-file", "--append-system-file"})
 # Where each rep mounts the staged copies, read-only.
 INPUTS = "/in"
+# An MCP server's alias, as nare's MCP config allows one: a letter, then
+# letters, digits, _ or -, with no __ (matched against the part of a name
+# before its first __, which holds none). Its tools are `<alias>__<tool>`.
+_MCP_ALIAS = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
 
 
 class ArgsError(Exception):
@@ -136,22 +141,43 @@ def check_args(
             raise ArgsError(
                 f"{where}: {flag} {value!r} is not one of {', '.join(choices)}"
             )
-        if flag == "--tools":
-            _check_tools(where, value, tools)
         found.append((flag, value))
+    # After the whole list: nare reads --mcp-config wherever it stands.
+    mcp = any(flag == "--mcp-config" for flag, _ in found)
+    for flag, named in found:
+        if flag == "--tools" and named is not None:
+            _check_tools(where, named, tools, mcp=mcp)
     return found
 
 
-def _check_tools(where: str, value: str, tools: Collection[str]) -> None:
+def _check_tools(where: str, value: str, tools: Collection[str], *, mcp: bool) -> None:
+    """Each name nare lists, or `none` alone, or an MCP tool beside its config.
+
+    nare takes `<alias>__<tool>` for an alias its --mcp-config holds, and
+    resolves the tool when it connects. The config is a file in the work tree,
+    which this check never reads, so it takes any name whose part before the
+    first __ is an alias the config could hold, and leaves the rest to nare.
+    """
     names = [name.strip() for name in value.split(",") if name.strip()]
     if names == ["none"]:
         return
     for name in names:
-        if name not in tools:
+        if name in tools:
+            continue
+        alias, separator, _ = name.partition("__")
+        if separator and _MCP_ALIAS.fullmatch(alias):
+            if mcp:
+                continue
             raise ArgsError(
-                f"{where}: --tools names {name!r}, which nare does not list; "
-                f"it lists {', '.join(sorted(tools))}, or none alone"
+                f"{where}: --tools names {name!r}, an MCP tool, and this list "
+                "passes no --mcp-config; only a case whose args pass one "
+                "may name its tools"
             )
+        raise ArgsError(
+            f"{where}: --tools names {name!r}, which nare does not list; "
+            f"it lists {', '.join(sorted(tools))}, or none alone"
+            + (", or an MCP tool as <alias>__<tool>" if mcp else "")
+        )
 
 
 def check_invocation(

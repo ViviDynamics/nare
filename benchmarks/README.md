@@ -143,7 +143,9 @@ so a typo costs nothing: `verify` checks the cases' args, and `run` checks
 both lists. A flag must be one `nare run` lists, by its full name
 (`--context` is refused, though nare would expand it), with a value when it
 takes one and inside its choices when it has them (`--effort`). `--tools`
-may name only the tools nare lists, or `none`. A value that starts with `-`
+may name only the tools nare lists, or `none`, and in a case whose args
+also pass `--mcp-config`, an MCP tool as `<alias>__<tool>`, which nare
+resolves from that config when it starts. A value that starts with `-`
 is written `--flag=value`. Anything else, a stray word or a bare `--`
 included, exits 2 naming the case or "run arguments" and the token.
 

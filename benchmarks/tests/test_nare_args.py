@@ -88,6 +88,45 @@ def test_tools_may_name_the_tools_nare_lists_or_none(value: str) -> None:
 
 
 @pytest.mark.parametrize(
+    "tokens",
+    [
+        ["--mcp-config", "s.json", "--tools", "read,db__query"],
+        # nare reads the whole list before it resolves a tool.
+        ["--tools", "db__query,read", "--mcp-config=s.json"],
+        # An alias may end in _, as nare's MCP config allows.
+        ["--mcp-config", "s.json", "--tools", "db___query"],
+    ],
+)
+def test_tools_may_name_an_mcp_tool_beside_the_config_that_serves_it(
+    tokens: list[str],
+) -> None:
+    """nare resolves `<alias>__<tool>` from the config when it connects."""
+    found = as_case(*tokens)
+    assert ("--tools", tokens[tokens.index("--tools") + 1]) in found
+
+
+@pytest.mark.parametrize("case_id", [None, "demo"])
+def test_an_mcp_tool_without_an_mcp_config_is_refused(case_id: str | None) -> None:
+    where = "run arguments" if case_id is None else "case demo"
+    with pytest.raises(
+        ArgsError,
+        match=re.escape(f"{where}: --tools names 'db__query', an MCP tool"),
+    ):
+        check_args(["--tools", "read,db__query"], FLAGS, TOOLS, case_id=case_id)
+
+
+@pytest.mark.parametrize("name", ["teleport", "__query", "1db__query", "d.b__query"])
+def test_beside_an_mcp_config_a_name_nare_cannot_resolve_is_still_refused(
+    name: str,
+) -> None:
+    """A plain name nare does not list, or an alias nare's config cannot have."""
+    with pytest.raises(
+        ArgsError, match=re.escape(f"case demo: --tools names {name!r}, which nare")
+    ):
+        as_case("--mcp-config", "s.json", "--tools", f"read,{name}")
+
+
+@pytest.mark.parametrize(
     ("tokens", "message"),
     [
         (["--no-such-flag"], "unknown flag '--no-such-flag'"),
