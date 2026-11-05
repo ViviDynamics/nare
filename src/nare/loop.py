@@ -432,17 +432,6 @@ def _check_errors(parsed: Any, check: Check) -> list[SchemaError]:
         raise CheckRaised(f"check raised {type(exc).__name__}: {exc}") from exc
 
 
-def _check_passes(text: str, check: Check | None) -> bool:
-    """Whether a tool-turn candidate may be kept as the output. Silent: a check
-    that fails here is simply not kept, and the final answer reports it."""
-    if check is None:
-        return True
-    try:
-        return not _check_errors(extract_json(text), check)
-    except CheckRaised:
-        return False
-
-
 def check_structured_output(
     transport: Transport,
     schema: dict[str, Any] | None,
@@ -787,12 +776,12 @@ async def step(
 
     # A tool turn can carry already valid findings alongside its calls. Keep
     # the latest schema-valid document without claiming the task completed.
-    if schema is not None:
+    # With a check, nothing is kept here: the check runs only on a candidate
+    # final answer, and the final-answer branch below decides whether it is
+    # the output. Turn text that is not JSON is never parsed for a check.
+    if schema is not None and check is None:
         candidate = _final_text(reply.content)
-        # On a turn with tool calls only: a plain answer is checked once, by the
-        # final-answer branch below, which decides whether it is the output.
-        kept = _check_passes(candidate, check) if reply.tool_calls else check is None
-        if not _answer_errors(candidate, schema) and kept:
+        if not _answer_errors(candidate, schema):
             s.output = extract_json(candidate)
 
     unfinished = _UNFINISHED.get(reply.stop_reason)

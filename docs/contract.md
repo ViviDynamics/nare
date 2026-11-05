@@ -1359,9 +1359,10 @@ A caller can add checks the schema cannot express, such as ids that exist or
 cross-field rules, with the Python entry point `nare.run(..., check=fn)`. `fn`
 receives the parsed answer and returns its errors: `SchemaError` values from
 `nare.schema`, mappings with `code`, `location`, `message` and `guidance`, or
-plain strings. An empty result passes. A check runs only on an answer that
+plain strings. An empty result passes. A check runs only on a final answer that
 passes the schema, and its errors go into the same correction as schema
-errors, under the same budget. A check that raises ends the run with
+errors, under the same budget. The text of a turn that calls tools is never
+checked, and while a check is set such a turn keeps no output. A check that raises ends the run with
 `status` `error`, `stop_reason` null, and an error event reading
 `check raised <Type>: <message>`; nare does not hand the exception to the
 caller. `check` requires `schema`. The command line takes no check: it needs
