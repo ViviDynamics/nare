@@ -10,6 +10,8 @@ from pathlib import Path
 def main() -> None:
     if len(sys.argv) > 1:
         Path(sys.argv[1]).write_text(str(os.getpid()))
+    if "--slow-start" in sys.argv:
+        time.sleep(0.5)
     for line in sys.stdin:
         request = json.loads(line)
         if "id" not in request:

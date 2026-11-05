@@ -440,7 +440,9 @@ async def test_blocked_stdio_write_obeys_call_deadline(tmp_path: Path) -> None:
     payload = json.loads(path.read_text())
     payload["local"]["args"].append("--stall")
     payload["local"]["timeout"] = 0.1
-    async with connect(parse_servers(payload)) as external:
+    # The 0.1s deadline below is the call deadline under test. Startup gets its
+    # own budget so a slow interpreter start under load cannot fail setup.
+    async with connect(parse_servers(payload), startup_timeout=30) as external:
         policy = Policy(tools=frozenset({"local__echo"}), external=external)
         async with asyncio.timeout(2):
             result = await dispatch(
@@ -448,6 +450,23 @@ async def test_blocked_stdio_write_obeys_call_deadline(tmp_path: Path) -> None:
             )
         assert result["is_error"]
         assert "TimeoutError" in result["content"]
+
+
+@pytest.mark.asyncio
+async def test_slow_startup_is_not_charged_to_the_call_deadline(
+    tmp_path: Path,
+) -> None:
+    # The child starts slower than the 0.1s call deadline on every machine,
+    # so this is deterministic. Process start and the handshake are bounded by
+    # the startup budget, not by the per-call deadline.
+    from nare.mcp import connect, parse_servers
+
+    path, _ = config(tmp_path)
+    payload = json.loads(path.read_text())
+    payload["local"]["args"].append("--slow-start")
+    payload["local"]["timeout"] = 0.1
+    async with connect(parse_servers(payload), startup_timeout=30) as external:
+        assert set(external) == {"local__echo"}
 
 
 def test_endless_discovery_obeys_startup_deadline(tmp_path: Path) -> None:
