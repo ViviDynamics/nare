@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 from benchmarks.runner.case import Check, Judge
 from benchmarks.runner.grade import (
@@ -209,6 +213,57 @@ def test_the_window_and_the_compactions_come_from_the_stream() -> None:
     assert context_use(stream) == ContextUse(
         window={"tokens": 16000, "source": "flag"}, compactions=2
     )
+
+
+def test_the_window_and_the_compactions_come_from_real_nares_stream(
+    tmp_path: Path,
+) -> None:
+    """WINDOW and COMPACTED are written by hand, and nare's contract does not
+    describe progress details: a renamed key would read as no compaction, which
+    looks like a variant that never compacted. So real nare runs here, on the
+    fake provider, with no key and no network. Four reads of a 4000-character
+    file put the estimate past 80% of a 4000-token window before the fifth
+    turn, which is when nare compacts."""
+    (tmp_path / "notes.txt").write_text("note " * 800, encoding="utf-8")
+    read = {"tool_calls": [{"name": "read", "args": {"path": "notes.txt"}}]}
+    script = tmp_path / "script.json"
+    script.write_text(json.dumps({"replies": [read] * 4 + [{"text": "read it"}]}))
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from nare.cli import main; raise SystemExit(main())",
+            "run",
+            "--provider",
+            "fake",
+            "--replay",
+            str(script),
+            "--jsonl",
+            "--yes",
+            "--context-window",
+            "4000",
+            "--tools",
+            "read",
+            "--session",
+            str(tmp_path / "session.json"),
+            "read notes.txt",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={
+            key: value
+            for key, value in os.environ.items()
+            if not key.endswith("_API_KEY") and not key.startswith("NARE_")
+        },
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    line = parse_stdout(proc.stdout)
+    assert line is not None and line.status == "done"
+    use = context_use(proc.stdout)
+    assert use.window == {"tokens": 4000, "source": "flag"}
+    assert use.compactions >= 1
 
 
 def test_a_stream_without_them_has_no_window_and_no_compactions() -> None:
