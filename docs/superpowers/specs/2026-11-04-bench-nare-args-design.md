@@ -144,7 +144,10 @@ argument list is parsed as `nare run` would parse it:
   `--flag value` are both accepted.
 - A flag with `takes_value` is followed by a value, and a value is in the
   flag's `choices` when the contract lists any (`--effort`).
-- `--tools` names only tools the contract's `tools` lists, or is `none`.
+- `--tools` names only tools the contract's `tools` lists, or is `none`. An
+  MCP tool's `<alias>__<tool>` name is accepted when the same list passes
+  `--mcp-config`, since nare resolves MCP tools itself (added after the
+  final review, 2026-11-04).
 - A token that is neither a flag nor a flag's value is refused. That covers a
   bare `--` and a positional prompt, since the prompt is the case's.
 
@@ -209,6 +212,16 @@ places that outlive the terminal:
   verbatim
 
 The message the runner prints names `stopped.txt`.
+
+Results the run had already produced are kept, never deleted, and never left
+where `compare` and `bless` look (added during the build, 2026-11-04):
+
+- a results file already written (an earlier model in a matrix, or the first
+  pass before a confirmation re-run) moves into its evidence directory as
+  `results.partial.jsonl`
+- the graded records of cases the stopped pass had finished are written there
+  too, and a stopped confirmation re-run's records go to
+  `results.confirm.partial.jsonl`, so neither overwrites the other
 
 ## 7. How arguments reach the container
 
