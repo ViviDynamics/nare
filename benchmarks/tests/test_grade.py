@@ -263,12 +263,28 @@ def test_the_window_and_the_compactions_come_from_real_nares_stream(
     assert line is not None and line.status == "done"
     use = context_use(proc.stdout)
     assert use.window == {"tokens": 4000, "source": "flag"}
-    assert use.compactions >= 1
+    assert use.compactions is not None and use.compactions >= 1
 
 
-def test_a_stream_without_them_has_no_window_and_no_compactions() -> None:
-    assert context_use(f"{EVENT}\n{RESULT}\n") == ContextUse(window=None, compactions=0)
-    assert context_use("") == ContextUse(window=None, compactions=0)
+def test_a_stream_with_a_window_and_no_compaction_compacted_zero_times() -> None:
+    assert context_use(f"{WINDOW}\n{EVENT}\n{RESULT}\n") == ContextUse(
+        window={"tokens": 16000, "source": "flag"}, compactions=0
+    )
+
+
+def test_a_stream_without_a_window_has_no_compaction_count() -> None:
+    # nare emits its window before its first turn, so a stream without one
+    # never reached a turn (a Docker fault with empty stdout, or a backend that
+    # failed to say its window). A count of 0 would read as "ran and never
+    # compacted", which misleads a compaction experiment.
+    assert context_use(f"{EVENT}\n{RESULT}\n") == ContextUse(
+        window=None, compactions=None
+    )
+    assert context_use("") == ContextUse(window=None, compactions=None)
+
+
+def test_a_compaction_the_stream_carried_is_counted_even_without_a_window() -> None:
+    assert context_use(COMPACTED) == ContextUse(window=None, compactions=1)
 
 
 def test_a_malformed_window_is_not_recorded() -> None:

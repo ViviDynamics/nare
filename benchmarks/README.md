@@ -204,7 +204,10 @@ arguments (`nare_args`), each run file's digest (`nare_files`), the context
 window the rep had (`context_window`: its size, and whether it came from the
 flag, the backend or nare's default) and how many times nare compacted
 (`compactions`). A window from the backend is the number that matters for a
-compaction experiment, and only the stream knows it.
+compaction experiment, and only the stream knows it. nare reports its
+window before its first turn, so a rep whose stream has no window and no
+compaction (a Docker fault with empty stdout, for example) never reached a
+turn, and records `compactions` as `null`, unknown, rather than 0.
 
 ### The variant
 

@@ -41,7 +41,8 @@ class RepRecord:
     judge_model: str = ""
     # What the rep ran with and saw. Each defaults to what a results line
     # written before #156 means: no arguments, and a window and a compaction
-    # count nobody read.
+    # count nobody read. A rep whose stream never reached nare's first turn
+    # records both as None too: unknown, not a rep that never compacted.
     case_args: list[str] = field(default_factory=list)
     nare_args: list[str] = field(default_factory=list)
     nare_files: dict[str, str] = field(default_factory=dict)

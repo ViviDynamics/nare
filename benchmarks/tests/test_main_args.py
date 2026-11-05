@@ -101,6 +101,21 @@ async def test_an_errored_rep_records_them_too(
     )
 
 
+async def test_a_rep_with_no_stream_records_no_compaction_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A Docker fault: nothing on stdout, so nobody knows whether nare compacted.
+    fault = RunArtifacts("", "docker: Error response from daemon\n", 125, False, 1.0)
+    fake_sandbox(monkeypatch, fault)
+    rec = await run_rep(
+        sandboxed(tmp_path), CONFIG, cast(Transport, None), 0, tmp_path / "r" / "s"
+    )
+    assert rec.outcome == "error"
+    assert (rec.context_window, rec.compactions) == (None, None)
+    path = write_results(tmp_path, [rec])
+    assert json.loads(path.read_text())["compactions"] is None
+
+
 def test_a_results_line_from_before_loads_as_the_default_variant(
     tmp_path: Path,
 ) -> None:

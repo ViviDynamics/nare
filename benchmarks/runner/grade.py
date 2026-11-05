@@ -73,11 +73,14 @@ class ContextUse:
     """What nare reported about its context: the window and the compactions.
 
     Read from progress events, on every rep, error reps included: a rep that
-    died after compacting still compacted.
+    died after compacting still compacted. `compactions` is None, unknown,
+    when the stream carried neither a window nor a compaction: nare emits its
+    window before its first turn, so such a rep never reached one, and a 0
+    would read as a rep that ran and never compacted.
     """
 
     window: dict[str, int | str] | None
-    compactions: int
+    compactions: int | None
 
 
 def _window_from(raw: Any) -> dict[str, int | str] | None:
@@ -114,6 +117,8 @@ def context_use(text: str) -> ContextUse:
             window = seen
         if "compaction" in detail:
             compactions += 1
+    if window is None and compactions == 0:
+        return ContextUse(window=None, compactions=None)
     return ContextUse(window=window, compactions=compactions)
 
 

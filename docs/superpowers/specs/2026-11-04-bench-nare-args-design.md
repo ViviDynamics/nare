@@ -255,13 +255,18 @@ unchanged:
 | `nare_args` | the run arguments, as the operator gave them, with paths as section 5.2 records them | `[]` |
 | `nare_files` | `{path: "sha256:<hex>"}` for each run argument that named a file | `{}` |
 | `context_window` | `{"tokens": N, "source": "flag" \| "backend" \| "default"}`, from nare's `context_window` progress event | `null` |
-| `compactions` | how many `compaction` progress events the rep's stream carried | `null` |
+| `compactions` | how many `compaction` progress events the rep's stream carried; `null` when it carried neither a window nor a compaction (amended in the pre-PR review, 2026-11-04) | `null` |
 
 The last two are read from the event stream nare already emits. They are
 recorded because they are what makes a compaction experiment readable. A
 variant whose reps never compacted did not measure compaction. A run with no
 `--context-window` takes its window from the backend, so the window a rep
 actually had is the number that matters, and only the stream knows it.
+
+nare emits its window before its first turn, so a rep whose stream carries no
+window event never reached a turn: a Docker fault with empty stdout, say. Its
+`compactions` is `null`, unknown, rather than 0, which would read as a rep
+that ran and never compacted (added in the pre-PR review, 2026-11-04).
 
 `context_window` and `compactions` are evidence, not key. They describe what
 nare did, and a change to nare that changes them (#44 changing where the
