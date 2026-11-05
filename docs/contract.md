@@ -71,17 +71,18 @@ keeps the contract version; removing or renaming one bumps it.
 | `--request-retry-seconds` | yes | | Longest wait between one request's retries |
 | `--proxy-num-retries` | yes | | Send `num_retries` to an OpenAI-compatible proxy |
 | `--cache-breakpoints` | no | | Mark prompt-cache breakpoints on the openai rail ([Prompt-cache breakpoints](#prompt-cache-breakpoints)) |
-| `--provider` | yes | `anthropic`, `openai`, `fake` | Model provider |
+| `--provider` | yes | `anthropic`, `bedrock`, `openai`, `fake` | Model provider (`bedrock` is Claude on Amazon Bedrock, signed with AWS credentials) |
 | `--replay` | yes | | JSON script of replies `--provider fake` replays ([Scripted runs](#scripted-runs)) |
 | `--model` | yes | | Model name |
-| `--base-url` | yes | | Override the provider endpoint |
+| `--base-url` | yes | | Override the provider endpoint (on `bedrock`, the Bedrock runtime endpoint) |
+| `--region` | yes | | AWS region for `--provider bedrock`; refused with any other provider |
 | `--temperature` | yes | | Sampling temperature; not accepted by the anthropic provider |
 | `--max-tokens` | yes | | Output token cap per response |
 | `--context-window` | yes | | Context window used for elision |
 | `--budget-tokens` | yes | | Cumulative session token budget ([Budgets and partial results](#budgets-and-partial-results)) |
 | `--budget-usd` | yes | | Cumulative session dollar budget |
 | `--effort` | yes | `low`, `medium`, `high`, `xhigh`, `max` | Reasoning effort ([Reasoning effort](#reasoning-effort)) |
-| `--thinking-budget` | yes | | A fixed thinking budget, anthropic only, for older models |
+| `--thinking-budget` | yes | | A fixed thinking budget, anthropic and bedrock only, for older models |
 | `--system` | yes | | Replace the default system prompt ([System prompt input](#system-prompt-input)) |
 | `--system-file` | yes | | `--system`, read from a UTF-8 file |
 | `--append-system` | yes | | Add text after the system prompt |
@@ -1330,8 +1331,11 @@ at decode time on the anthropic rail.
 ## The bash environment
 
 `bash` runs with nare's environment minus the provider credentials nare reads
-for its own requests: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and
-`OPENAI_API_KEY`. A command the model writes, `env` included, does not see
+for its own requests: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+`OPENAI_API_KEY`, and on the bedrock rail `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_BEARER_TOKEN_BEDROCK` and
+`AWS_CONTAINER_AUTHORIZATION_TOKEN`. The AWS profile and shared credential files
+are not environment variables and are not removed. A command the model writes, `env` included, does not see
 them, so neither the transcript nor an instruction planted in a file the model
 reads can reach them. This is the same rule as for MCP stdio servers above:
 no child process nare starts inherits the model API keys. Every other variable
@@ -1679,8 +1683,8 @@ constrained. Transient means:
 | Connect error, connection reset or closed mid-response | `connection` |
 | A stream that ended before its completion marker | `stream` |
 | HTTP 429, 502, 503, 504, 529 | `status` |
-| anthropic rail: HTTP 500, which is Anthropic's `api_error` | `status` |
-| anthropic rail: an `overloaded_error` sent mid-stream | `overloaded` |
+| anthropic and bedrock rails: HTTP 500, which is Anthropic's `api_error` | `status` |
+| anthropic and bedrock rails: an `overloaded_error` sent mid-stream | `overloaded` |
 
 Everything else is permanent and ends the run on the first attempt: a 400,
 401, 403, 404 or 422, any other status, a stream that finished but lacks its
@@ -1746,6 +1750,7 @@ refusal does (`status=error`, `stop_reason` null, not retried).
 | Rail | `--effort LEVEL` sends | Notes |
 | --- | --- | --- |
 | anthropic | `output_config: {"effort": LEVEL}` and `thinking: {"type": "adaptive"}` | No `budget_tokens`. Adaptive thinking is sent because Opus 4.7 and 4.8 do not think without it; where thinking is always on it is the same as omitting it |
+| bedrock | `output_config: {"effort": LEVEL}` and `thinking: {"type": "adaptive"}` | The same request as the anthropic rail, sent to Bedrock. Bedrock's acceptance of `output_config.effort` is confirmed against a live endpoint before release |
 | openai | `reasoning_effort: LEVEL` | Passed through. What a level means belongs to the server behind `--base-url`: one server may map an unknown level to its most expensive setting |
 
 Current Claude models refuse a fixed thinking budget with a 400. The older

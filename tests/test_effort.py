@@ -174,11 +174,15 @@ def test_the_contract_lists_the_levels_per_rail() -> None:
                 "request": {"output_config": {"effort": "LEVEL"}},
                 "thinking": {"type": "adaptive"},
             },
+            "bedrock": {
+                "request": {"output_config": {"effort": "LEVEL"}},
+                "thinking": {"type": "adaptive"},
+            },
             "openai": {"request": {"reasoning_effort": "LEVEL"}, "meaning": "server"},
         },
         "thinking_budget": {
             "flag": "--thinking-budget",
-            "providers": ["anthropic"],
+            "providers": ["anthropic", "bedrock"],
             "request": {"thinking": {"type": "enabled", "budget_tokens": "N"}},
         },
         "session_fields": ["effort", "thinking_budget"],
