@@ -4,7 +4,7 @@ description: Use when a pull request looks ready to merge, when mergeStateStatus
 license: Elastic-2.0
 compatibility: Requires gh, jq, git and a repo.env (copy repo.env.example). Scripts are bash 3.2 compatible.
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
   requires: ci-safety
 ---
 
@@ -25,14 +25,19 @@ then run every script as `$S/<script>`.
 
 1. Open: `$S/vgh pr view <pr> --json state --jq .state` is `OPEN`. If `MERGED`, run
    `$S/merge-verified <pr>` anyway; it is idempotent and prints the result.
-2. Green for the current head: `$S/ci-runs <pr>` prints `state: green`.
-   `pending` means wait (use the watch-ci skill). `failed` means stop; do not merge.
+2. Green for the current head: `$S/ci-runs <pr>` prints `state: green`, meaning every
+   workflow run on the head concluded success or a documented skip, not only the main
+   PR workflow. `pending` means wait (use the watch-ci skill). `failed` means stop; do
+   not merge. `parked` means runs concluded `action_required` or executed zero jobs:
+   CI never ran, so this is never green; release it per ci-safety §7.
    If `state` is `failed`, read `failed_jobs[].conclusion`. If `all_cancelled` is true
    it is a cancellation cascade (ci-safety §2), not a failure: wait for the run for the
    current head with the watch-ci skill instead of stopping.
-   `none` means no CI ran for this head; stop and report. nare's `ci.yml` runs on
-   every push, so `none` usually means the PR is conflicting (GitHub runs nothing for a
-   conflicting PR) or the push has not registered yet.
+   `none` means no CI ran for this head; stop and report unless the consumer's
+   `repo.env` sets `VIVI_ALLOW_NO_CI=true` because the repo has no CI. nare's `ci.yml`
+   runs on every push, so `none` usually means the PR is conflicting (GitHub runs
+   nothing for a conflicting PR) or the push has not registered yet.
+   `merge-verified` re-checks this itself and refuses anything but green.
 3. Review gate satisfied, checked by either of:
 
        $S/vgh pr view <pr> --json reviewDecision --jq .reviewDecision   # APPROVED satisfies the gate
@@ -94,7 +99,10 @@ becomes empty; report that, but never wait on the parent.
 - exit 1: not merged. The JSON `reason` carries the merge command's output. Report it
   verbatim. Do not retry with different flags; flags are this repo's decision.
 - exit 4: preconditions failed. The JSON `reason` says why (for example the PR is
-  CLOSED). Report it; do not merge.
+  CLOSED, or CI on the head is `parked`, `pending`, `failed` or `none`, with the run
+  ids). Report it; do not merge. `merge-verified` pins the merge to the head it checked
+  with `--match-head-commit`, so a push after the check makes the merge fail rather
+  than merge untested code.
 
 ## Report
 

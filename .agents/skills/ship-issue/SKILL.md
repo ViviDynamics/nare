@@ -4,7 +4,7 @@ description: Use when a GitHub issue should go all the way to a merged PR withou
 license: Elastic-2.0
 compatibility: Requires gh, jq, git and a repo.env (copy repo.env.example to repo.env). Scripts are bash 3.2 compatible.
 metadata:
-  version: "1.1.0"
+  version: "1.2.0"
   requires: ci-safety watch-ci merge-pr rebase-main copilot-review
 ---
 
@@ -229,8 +229,9 @@ stage; read them before writing anything.
 6. Push and open the PR:
    - Body: `Closes #<issue>`, plus a description of what shipped and test counts.
    - Assign the PR to the login that claimed the issue: `$S/claim <issue> --pr <pr>`.
-     It reads the assignment back; `not-assigned` goes in `unresolved`. The issue was
-     assigned at the claim; `assigned` in SHIP_RESULT reports both read-backs.
+     It reads the assignment back and reports `claimed`; `not-assigned` goes in
+     `unresolved`. The issue was assigned at the claim; `assigned` in SHIP_RESULT
+     reports both read-backs.
 
 Stop conditions at this stage:
 - The issue is held by someone else (the claim exited 1).
@@ -251,6 +252,8 @@ Use the watch-ci skill. Watch the PR's CI for the current head SHA. On failure:
   the failing area, rebase first (Stage 2b).
 
 On green: go to Stage 3.
+On parked (ci-watch exit 5): runs on the head never executed. Release them per
+ci-safety §7, then re-enter Stage 2 on the new head. Parked is never green.
 On timed out (60 min): re-check once, then stop and report `merge_state: open` with
 the last known state and elapsed time.
 
@@ -331,7 +334,7 @@ Write the result as JSON to `.agents/state/<issue>-ship.json`, validate it with
   "issue": 123,
   "pr": 456,
   "merge_state": "merged | open | blocked | no-pr",
-  "ci": "green | failed:<job>:<infra|flake|real> (<evidence>) | timed_out (<seconds>s)",
+  "ci": "green | failed:<job>:<infra|flake|real> (<evidence>) | parked (<run ids>) | timed_out (<seconds>s)",
   "review_gate": "harness | copilot | self | unsatisfied",
   "issue_closure": "closed | reopened-and-closed | open | not-applicable",
   "board": "done | moved | added | skipped | failed",
