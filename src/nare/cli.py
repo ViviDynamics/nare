@@ -56,9 +56,8 @@ from nare.session import (
     loads,
     new_session,
     reopen,
+    resumable_in,
     save,
-    saved_in,
-    sessions_dir,
     unanswered,
 )
 from nare.tools import TOOLS, Policy, approve_all, stop_group
@@ -597,7 +596,7 @@ def validate_run_args(args: argparse.Namespace) -> Prices | None:
     if args.resume == "":
         # nare tui picks a session before it gets here. nare run is headless,
         # so it names the candidates and stops.
-        listed = saved_in(sessions_dir(), os.getcwd())
+        listed = resumable_in(os.getcwd())
         names = ", ".join(str(row.path) for row in listed[:10]) or "none"
         raise ValueError(
             "--resume needs a path with nare run. Sessions started in "

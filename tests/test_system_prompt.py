@@ -267,7 +267,7 @@ async def test_the_tui_records_the_system_prompt_of_a_new_session(
     from nare.cli import build_parser
     from nare.tui.app import prepare
 
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("NARE_HOME", str(tmp_path / "state"))
     path = write(tmp_path / "p.txt", PERSONA)
     args = build_parser().parse_args(
         ["tui", "--model", "fake", "--system-file", path, "go"]
@@ -280,5 +280,5 @@ async def test_the_tui_records_the_system_prompt_of_a_new_session(
             await pilot.pause(0.01)
     assert app.session is not None
     assert app.session.system == PERSONA
-    saved = tmp_path / "state" / "nare" / "sessions" / f"{app.session.id}.json"
+    saved = tmp_path / "state" / "sessions" / f"{app.session.id}.json"
     assert json.loads(saved.read_text())["system"] == PERSONA

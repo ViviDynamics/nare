@@ -225,15 +225,41 @@ says so.
 
 `nare tui --resume` with no path lists the saved sessions that started in the
 current directory, newest first, with the first prompt, when each last changed,
-its status and its turns. Enter resumes one and saves back to its file; Esc
-starts nothing. `nare run --resume` needs the path and lists the candidates
+its status and its turns. It lists sessions from `~/.nare/sessions` and from the
+folder used before it (see below). Enter resumes one and saves back to its file;
+Esc starts nothing. `nare run --resume` needs the path and lists the candidates
 when it is missing.
 
-Every run is saved. Without `--session`, the file goes to
-`$XDG_STATE_HOME/nare/sessions/<id>.json` (`~/.local/state/...` when
-`XDG_STATE_HOME` is unset), outside the project. A `--session` path inside
+Every TUI run is saved. Without `--session`, the file goes to
+`$NARE_HOME/sessions/<id>.json`, outside the project. A `--session` path inside
 `--root` or the current directory gets a warning, since `git add -A` would
-commit it.
+commit it, unless the path is inside `NARE_HOME`.
+
+### What lives in ~/.nare
+
+`NARE_HOME` is the folder nare keeps its local files in. It defaults to
+`~/.nare`, and it must be an absolute path. nare creates it with mode 0700 when
+a TUI run first needs it, and session files are 0600. An existing folder keeps
+its permissions. A relative value, or a sessions folder that cannot be written,
+makes a TUI run that saves to the default location exit 2, with a message that
+names `NARE_HOME` and `--session`. An explicit `--session PATH` does not read
+`NARE_HOME` at all, so it still runs.
+
+`NARE_HOME` is exempt from the inside-the-project warning. If you point it at a
+folder you work in, sessions there are not warned about, so keep it outside
+your projects.
+
+- `sessions/` holds the TUI's saved sessions. Nothing removes them: delete the
+  ones you no longer need.
+- Nothing else is written there yet. Model and provider settings stay in
+  environment variables or a project `.env`, and no API key is read from this
+  folder.
+- `nare run` saves a session only with `--session`, so a headless run writes
+  nothing to `~/.nare`.
+- Sessions saved before this change, under `$XDG_STATE_HOME/nare/sessions`
+  (`~/.local/state/nare/sessions` when `XDG_STATE_HOME` is unset), are not
+  moved. `nare tui --resume` lists them beside the new ones, and a resume by
+  path works on either. A resumed session saves back to the file it came from.
 
 `nare tui` takes the same provider, model, budget, tool, root, MCP, session
 and resume flags as `nare run`, and not `--yes`, `--jsonl`, `--contract`,

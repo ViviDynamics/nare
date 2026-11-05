@@ -194,9 +194,35 @@ class Session:
     version: int = SESSION_VERSION
 
 
+def nare_home() -> Path | None:
+    """$NARE_HOME, or ~/.nare: the folder nare keeps its local files in.
+
+    A relative NARE_HOME is refused rather than ignored, because a folder that
+    moves with the working directory would put sessions in the project. None
+    when there is neither NARE_HOME nor a home directory.
+    """
+    raw = os.environ.get("NARE_HOME", "")
+    if raw:
+        if not os.path.isabs(raw):
+            raise ValueError(f"NARE_HOME must be an absolute path, not {raw!r}")
+        return Path(raw)
+    try:
+        return Path.home() / ".nare"
+    except RuntimeError:  # no HOME and no passwd entry
+        return None
+
+
 def sessions_dir() -> Path | None:
-    """$XDG_STATE_HOME/nare/sessions. A relative XDG_STATE_HOME is ignored,
-    as the XDG spec says; None when there is no home directory either.
+    """$NARE_HOME/sessions: where a TUI run without --session is saved."""
+    home = nare_home()
+    return None if home is None else home / "sessions"
+
+
+def legacy_sessions_dir() -> Path | None:
+    """$XDG_STATE_HOME/nare/sessions, where nare saved sessions before
+    NARE_HOME. Read, never written: those files stay where they are and resume
+    by path. A relative XDG_STATE_HOME is ignored, as the XDG spec says; None
+    when there is no home directory either.
     """
     state = os.environ.get("XDG_STATE_HOME", "")
     if not os.path.isabs(state):
@@ -205,6 +231,17 @@ def sessions_dir() -> Path | None:
         except RuntimeError:  # no HOME and no passwd entry
             return None
     return Path(state) / "nare" / "sessions"
+
+
+def resumable_in(cwd: str) -> list[SavedSession]:
+    """The sessions the resume picker offers in `cwd`: those in NARE_HOME and
+    those saved before it, newest first, each file once.
+    """
+    found: dict[str, SavedSession] = {}
+    for folder in (sessions_dir(), legacy_sessions_dir()):
+        for row in saved_in(folder, cwd):
+            found.setdefault(os.path.realpath(row.path), row)
+    return sorted(found.values(), key=lambda row: row.changed, reverse=True)
 
 
 @dataclass(frozen=True)
