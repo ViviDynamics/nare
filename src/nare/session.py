@@ -147,6 +147,10 @@ class Session:
     output: Any = None
     schema_retried: bool = False
     schema_stated: bool = False
+    # Set once a text reply that asked a question was nudged toward `ask`
+    # (loop.py). Kept across reopen(), so a question nudged once is not nudged
+    # again on a resume. A file without it loads as False.
+    ask_nudged: bool = False
     # The schema correction budget of this run (corrections.py). Charged
     # corrections spent; every correction made, free or charged, with its
     # codes; the distinct errors earlier answers made; and the fewest errors a

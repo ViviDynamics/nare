@@ -85,7 +85,9 @@ project root, with how to undo it.
 6. Tool calls in one turn run in order, so batch an edit with the command \
 that checks it.
 7. When the task is done, stop: no summary files, banners or extra \
-documentation unless asked.\
+documentation unless asked.
+8. If the request is ambiguous in a way that changes the work, call ask on its \
+own. A question in a text reply ends the run as finished.\
 """
 
 
@@ -862,6 +864,8 @@ async def _execute(
                 max_cutoffs=args.max_cutoffs,
                 require_reads=args.require_reads or 0,
                 require_read=args.require_read or (),
+                # Headless only: a person reading a TUI reply can answer it.
+                question_nudge=True,
             )
             if transport is not None
             else _pending_events(session)

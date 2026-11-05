@@ -631,6 +631,19 @@ several runs must account for overshoot and for success on crossing turns in
 its own allocation policy. nare does not allocate budgets across runs or
 orchestrate them.
 
+## Questions in a text reply
+
+A headless `nare run` nudges a question in prose toward `ask`. When a turn ends in
+text with no tool calls and the text asks a question (a sentence ending in `?`,
+outside code, a fenced block or a URL), the run is not `done` yet: nare appends one
+user message saying a text reply ends the session, and takes one more turn. The
+nudge happens once per session (`ask_nudged` in the session file), only before a
+`write` or `edit` has succeeded, only when the policy allows `ask`, and never on a
+run with `--schema`. A TUI session never nudges. The nudge is a `progress` event
+with a `question_nudge` detail. If the model then calls `ask` on its own the run is
+`blocked` with the questions; if it replies in text again the run is `done`.
+`done` and `blocked` keep their meanings, so the contract version does not change.
+
 ## MCP tool sources
 
 `nare run --mcp-config servers.json --yes --jsonl "inspect the application"`
