@@ -1047,13 +1047,17 @@ def served_check(matrix: Sequence[tuple[Path, Config]], base_url: str | None) ->
 
 
 def run_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) -> int:
-    """`run --matrix`: each baseline's model in turn, against its own baseline.
+    """`run --matrix`: each baseline's model in turn, against its own baseline,
+    under that baseline's own run arguments.
 
     Everything that can refuse the run does so before the image is built: an
     empty matrix, a baseline file not at its model's name, a second judge, a
-    missing key, a cap above the non-streaming ceiling, a model or judge the
-    endpoint does not list. Sequential, never parallel: every run tags its
-    image nare-bench:local.
+    missing key, a cap above the non-streaming ceiling, run arguments nare
+    would now refuse, a prompt file that cannot be read or no longer has the
+    digest its baseline measured, a model or judge the endpoint does not
+    list. No flag lifts the digest refusal: an edited prompt is a new
+    experiment, which a single run with `--` measures. Sequential, never
+    parallel: every run tags its image nare-bench:local.
     """
     matrix = load_matrix(root, args.tier)
     if not matrix:
@@ -1068,21 +1072,44 @@ def run_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) -> i
         print(f"bench: {why}", file=sys.stderr)
         return 2
     base_url = args.base_url or os.environ.get("NARE_BASE_URL") or None
+    # Taken before staging: each model's prompt copies live under its name.
+    stamp = new_stamp()
     configs: list[tuple[Path, Config]] = []
     for path, baseline in matrix:
+        meta = baseline.meta
+        evidence = root / "benchmarks" / "results" / f"{stamp}.{slugify(meta.model)}"
         try:
             config = baseline_config(
-                model=baseline.meta.model,
-                provider=baseline.meta.provider,
-                judge_model=baseline.meta.judge_model,
-                max_tokens=baseline.meta.max_tokens,
+                model=meta.model,
+                provider=meta.provider,
+                judge_model=meta.judge_model,
+                max_tokens=meta.max_tokens,
                 base_url=base_url,
                 env=os.environ,
             )
-        except ConfigError as exc:
+            # A baseline records its paths relative to the checkout. nare may
+            # have dropped or renamed a flag since the bless, so they are
+            # checked again.
+            staged = check_and_stage(
+                meta.nare_args, cases, base=root, root=root, dest=evidence / "inputs"
+            )
+        except (ConfigError, ArgsError) as exc:
             print(f"bench: {path.name}: {exc}", file=sys.stderr)
             return 2
-        configs.append((path, config))
+        moved = sorted(
+            file
+            for file in set(staged.files) | set(meta.nare_files)
+            if staged.files.get(file) != meta.nare_files.get(file)
+        )
+        for file in moved:
+            print(
+                f"bench: {path.name}: {file} no longer has the digest the baseline "
+                "measured; restore it, or bless that model again on the new file",
+                file=sys.stderr,
+            )
+        if moved:
+            return 2
+        configs.append((path, replace(config, run_args=staged)))
     code = served_check(configs, base_url)
     if code:
         return code
@@ -1092,7 +1119,6 @@ def run_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) -> i
         print(f"bench: {exc}", file=sys.stderr)
         return 2
 
-    stamp = new_stamp()
     columns: list[tuple[str, Comparison]] = []
     for (_, baseline), (_, config) in zip(matrix, configs, strict=True):
         print(f"\n== {config.model} ({config.provider}) ==")
@@ -1113,8 +1139,14 @@ def run_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) -> i
             return stop_run(exc, root, stamp)
         print(render(final))
         columns.append((config.model, final))
+    # Each model ran its baseline's own variant, so the note names one per
+    # model and there is no second side to print.
+    variants = {
+        config.model: render_variant(config.run_args.recorded, config.run_args.files)
+        for _, config in configs
+    }
     print()
-    print(render_matrix(columns, matrix[0][1].meta.judge_model))
+    print(render_matrix(columns, matrix[0][1].meta.judge_model, variants=variants))
     return max(comparison.exit_code for _, comparison in columns)
 
 
@@ -1140,7 +1172,13 @@ def baselines_table(root: Path, tier: str, selected: set[str]) -> int:
         )
         for _, baseline in matrix
     ]
-    print(render_matrix(columns, matrix[0][1].meta.judge_model))
+    variants = {
+        baseline.meta.model: render_variant(
+            baseline.meta.nare_args, baseline.meta.nare_files
+        )
+        for _, baseline in matrix
+    }
+    print(render_matrix(columns, matrix[0][1].meta.judge_model, variants=variants))
     return 0
 
 
@@ -1162,6 +1200,8 @@ def compare_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) 
         return 2
     columns: list[tuple[str, Comparison]] = []
     judges: set[str] = set()
+    variants: dict[str, str] = {}
+    notes: list[str] = []
     for path in files:
         records = read_results(path)
         if not records:
@@ -1187,7 +1227,16 @@ def compare_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) 
         )
         if model_changed(baseline, config, args.allow_model_change):
             return 2
+        if args_changed(baseline, config, args.allow_arg_change):
+            return 2
         judges.add(config.judge_model)
+        variants[model] = render_variant(
+            config.run_args.recorded, config.run_args.files
+        )
+        note = variant_note(baseline, config)
+        if note is not None:
+            indented = "\n".join(f"  {line}" for line in note.splitlines())
+            notes.append(f"{model}:\n{indented}")
         summaries = [s for s in summarize(records) if s.case in selected]
         columns.append(
             (
@@ -1211,7 +1260,11 @@ def compare_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) 
             file=sys.stderr,
         )
         return 2
-    print(render_matrix(columns, ", ".join(sorted(judges))))
+    # Each model whose results ran another variant than its baseline, both
+    # sides, above the table they qualify.
+    for note in notes:
+        print(note)
+    print(render_matrix(columns, ", ".join(sorted(judges)), variants=variants))
     return max(comparison.exit_code for _, comparison in columns)
 
 

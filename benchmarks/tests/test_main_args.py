@@ -50,6 +50,7 @@ from benchmarks.tests.test_main import (
     results_dir,
     sandboxed,
     summary,
+    write_matrix_run,
 )
 from nare.transport import Transport
 
@@ -843,3 +844,138 @@ def test_bless_refuses_a_run_file_outside_the_checkout(
     assert main(["bless", "--model", "m", *flags]) == 2
     assert "outside the checkout" in capsys.readouterr().err
     assert not baseline_path(baselines, "m", "smoke").exists()
+
+
+TERSE_PATH = "benchmarks/prompts/terse.md"
+TERSE_DIGEST = "sha256:" + hashlib.sha256(b"Be terse.\n").hexdigest()
+
+
+def write_terse(tmp_path: Path, text: str = "Be terse.\n") -> None:
+    prompt = tmp_path / TERSE_PATH
+    prompt.parent.mkdir(parents=True, exist_ok=True)
+    prompt.write_text(text)
+
+
+def test_the_matrix_runs_each_model_with_its_baselines_arguments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    nano = replace(
+        NANO,
+        nare_args=("--effort", "low", "--system-file", TERSE_PATH),
+        nare_files={TERSE_PATH: TERSE_DIGEST},
+    )
+    ran = matrix(tmp_path, monkeypatch, HAIKU, nano)
+    write_terse(tmp_path)
+    assert main(["run", "--matrix", "--case", "edit-docstring"]) == 0
+    by_model = {c.model: c.run_args for c in ran[1:]}
+    assert by_model["claude-haiku-5-5"] == RunArgs()
+    staged = by_model["gpt-5-nano"]
+    assert (staged.recorded, staged.files) == (nano.nare_args, nano.nare_files)
+    assert staged.passed == ("--effort", "low", "--system-file", "/in/0-terse.md")
+    results = tmp_path / "benchmarks" / "results"
+    assert staged.inputs == results / f"{MATRIX_STAMP}.gpt-5-nano" / "inputs"
+    note = capsys.readouterr().out.splitlines()[-1]
+    assert note.endswith(
+        "Run arguments: claude-haiku-5-5: none; gpt-5-nano: --effort low "
+        f"--system-file {TERSE_PATH} ({TERSE_PATH} {TERSE_DIGEST[:19]})."
+    )
+
+
+@pytest.mark.parametrize(
+    ("nare_args", "files", "prompt", "named"),
+    [
+        (("--system-file", TERSE_PATH), {TERSE_PATH: TERSE_DIGEST}, "Be verbose.\n",
+         f"{TERSE_PATH} no longer has the digest the baseline measured"),
+        (("--system-file", TERSE_PATH), {TERSE_PATH: TERSE_DIGEST}, None,
+         f"--system-file {TERSE_PATH}: cannot read it"),
+        (("--no-such-flag",), {}, None, "unknown flag '--no-such-flag'"),
+    ],
+)  # fmt: skip
+def test_a_baseline_whose_arguments_cannot_run_stops_the_matrix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    nare_args: tuple[str, ...],
+    files: dict[str, str],
+    prompt: str | None,
+    named: str,
+) -> None:
+    nano = replace(NANO, nare_args=nare_args, nare_files=files)
+    ran = matrix(tmp_path, monkeypatch, HAIKU, nano)
+    if prompt is not None:
+        write_terse(tmp_path, prompt)
+    assert main(["run", "--matrix"]) == 2
+    assert ran == []
+    err = capsys.readouterr().err
+    assert "gpt-5-nano.smoke.toml" in err
+    assert named in err
+
+
+def test_no_flag_runs_the_matrix_on_a_prompt_its_baseline_did_not_measure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # An edited prompt is a new experiment: a single run with -- measures it.
+    nano = replace(
+        NANO,
+        nare_args=("--system-file", TERSE_PATH),
+        nare_files={TERSE_PATH: TERSE_DIGEST},
+    )
+    ran = matrix(tmp_path, monkeypatch, HAIKU, nano)
+    write_terse(tmp_path, "Be verbose.\n")
+    for flags in (
+        ["--allow-arg-change"],
+        ["--allow-arg-change", "--allow-model-change"],
+    ):
+        assert main(["run", "--matrix", *flags]) == 2
+        assert ran == []
+        assert (
+            f"bench: gpt-5-nano.smoke.toml: {TERSE_PATH} no longer has the digest "
+            "the baseline measured; restore it, or bless that model again on the "
+            "new file"
+        ) in capsys.readouterr().err
+
+
+def test_compare_matrix_refuses_results_from_another_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ran = matrix(tmp_path, monkeypatch, HAIKU, NANO)
+    write_matrix_run(tmp_path, HAIKU, NANO, change={"nare_args": ["--effort", "low"]})
+    assert main(["compare", "--matrix"]) == 2
+    assert "--allow-arg-change" in capsys.readouterr().err
+    assert main(["compare", "--matrix", "--allow-arg-change"]) == 0
+    out = capsys.readouterr().out
+    assert out.splitlines()[-1].endswith(
+        "Run arguments: claude-haiku-5-5: --effort low; gpt-5-nano: none."
+    )
+    # Both sides of the model that differs, above the table; none for the other.
+    assert out.startswith(
+        "claude-haiku-5-5:\n"
+        "  baseline run arguments: none\n"
+        "  results run arguments:  --effort low\n"
+        "| case "
+    )
+    assert "gpt-5-nano:\n" not in out
+    assert ran == []
+
+
+def test_allow_model_change_does_not_let_compare_matrix_past_a_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    matrix(tmp_path, monkeypatch, HAIKU, NANO)
+    write_matrix_run(tmp_path, HAIKU, NANO, change={"nare_args": ["--effort", "low"]})
+    assert main(["compare", "--matrix", "--allow-model-change"]) == 2
+    assert (
+        "baseline was blessed with run arguments none; this run used --effort low"
+    ) in capsys.readouterr().err
+
+
+def test_the_baselines_table_names_each_baselines_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    matrix(tmp_path, monkeypatch, HAIKU, replace(NANO, nare_args=("--effort", "low")))
+    assert main(["compare", "--matrix", "--baselines"]) == 0
+    assert (
+        capsys.readouterr()
+        .out.splitlines()[-1]
+        .endswith("Run arguments: claude-haiku-5-5: none; gpt-5-nano: --effort low.")
+    )
