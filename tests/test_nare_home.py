@@ -12,6 +12,7 @@ import json
 import os
 import shlex
 import stat
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -218,3 +219,30 @@ def test_a_relative_nare_home_exits_two_from_the_picker(
     monkeypatch.setenv("NARE_HOME", "rel")
     assert main(["tui", "--resume"]) == 2
     assert "NARE_HOME" in capsys.readouterr().err
+
+
+def test_an_explicit_session_still_runs_with_a_relative_nare_home(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # --session never needed NARE_HOME; a bad value must not break it.
+    monkeypatch.setenv("NARE_HOME", "relative/home")
+    path = tmp_path / "explicit.json"
+    args = build_parser().parse_args(["tui", "--model", "fake", "--session", str(path)])
+    prepare(args, FakeProvider([]))
+    assert args.session == str(path)
+
+
+def test_an_unwritable_sessions_folder_is_refused_at_startup(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The folder exists and mkdir succeeds; only the write probe fails. It must
+    # be caught before the app starts, not at exit, when the transcript is lost.
+    (home / ".nare" / "sessions").mkdir(parents=True, mode=0o700)
+
+    def denied(*args: object, **kwargs: object) -> object:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(tempfile, "TemporaryFile", denied)
+    args = build_parser().parse_args(["tui", "--model", "fake"])
+    with pytest.raises(ValueError, match="NARE_HOME.*--session"):
+        prepare(args, FakeProvider([]))

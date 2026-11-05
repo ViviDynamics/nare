@@ -14,6 +14,7 @@ import logging
 import os
 import shlex
 import sys
+import tempfile
 import time
 import uuid
 from collections.abc import Iterator
@@ -890,16 +891,29 @@ def logs_as_notices(app: App[None]) -> Iterator[None]:
         root.handlers = saved
 
 
+def _home_or_none() -> Path | None:
+    """NARE_HOME for the warning exemption: a relative value there is an error
+    only for the default save location, so an explicit --session still runs.
+    """
+    try:
+        return nare_home()
+    except ValueError:
+        return None
+
+
 def _private_folder(folder: Path) -> None:
     """Create the sessions folder and its NARE_HOME parent, 0700 when new.
-    An existing folder keeps its permissions. A folder that cannot be made is a
-    startup error that names both ways out.
+    An existing folder keeps its permissions. A folder that cannot be written
+    is a startup error that names both ways out, so the probe below is what
+    catches an existing folder that is read-only.
     """
     try:
         home = nare_home()
         if home is not None:
             home.mkdir(mode=0o700, parents=True, exist_ok=True)
         folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.TemporaryFile(dir=folder):
+            pass
     except OSError as exc:
         raise ValueError(
             f"cannot save sessions in {folder}: {exc.strerror or exc}. Set NARE_HOME "
@@ -913,9 +927,9 @@ def prepare(args: argparse.Namespace, transport: Transport | None = None) -> Tui
     policy = policy_from_args(args)
     session_id: str | None = None
     warning: str | None = None
-    sessions = sessions_dir()
     if not args.session:
         # Every run is saved, outside the project.
+        sessions = sessions_dir()
         if sessions is None:
             raise ValueError(
                 "no home directory to save the session in: set NARE_HOME "
@@ -928,7 +942,7 @@ def prepare(args: argparse.Namespace, transport: Transport | None = None) -> Tui
         path = Path(args.session).resolve()
         root = Path(args.root or ".").resolve()
         # NARE_HOME is ours, like the folder saved before it, whatever the cwd.
-        kept = [d for d in (nare_home(), legacy_sessions_dir()) if d is not None]
+        kept = [d for d in (_home_or_none(), legacy_sessions_dir()) if d is not None]
         ours = any(path.is_relative_to(d.resolve()) for d in kept)
         if not ours and (path.is_relative_to(root) or path.is_relative_to(Path.cwd())):
             # The practice run's `git add -A` committed one.

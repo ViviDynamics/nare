@@ -238,10 +238,16 @@ commit it, unless the path is inside `NARE_HOME`.
 ### What lives in ~/.nare
 
 `NARE_HOME` is the folder nare keeps its local files in. It defaults to
-`~/.nare`, and it must be an absolute path: a relative value exits 2. nare
-creates it with mode 0700 when it first saves a session, and session files are
-0600. An existing folder keeps its permissions. If the folder cannot be written,
-`nare tui` exits 2 and names `NARE_HOME` and `--session`.
+`~/.nare`, and it must be an absolute path. nare creates it with mode 0700 when
+a TUI run first needs it, and session files are 0600. An existing folder keeps
+its permissions. A relative value, or a sessions folder that cannot be written,
+makes a TUI run that saves to the default location exit 2, with a message that
+names `NARE_HOME` and `--session`. An explicit `--session PATH` does not read
+`NARE_HOME` at all, so it still runs.
+
+`NARE_HOME` is exempt from the inside-the-project warning. If you point it at a
+folder you work in, sessions there are not warned about, so keep it outside
+your projects.
 
 - `sessions/` holds the TUI's saved sessions. Nothing removes them: delete the
   ones you no longer need.
