@@ -229,6 +229,24 @@ async def test_a_allows_this_tool_from_now_on() -> None:
         ("git rm > -f c.py", []),
         # A nested brace list is read as bash reads it, or not at all.
         ("cat {x,{x,}", ["outside root"]),
+        # A quoted brace is text, not a list.
+        ("grep '{a,' a.py", []),
+        # Other forms that throw work away.
+        ("git rebase --skip", ["git discard"]),
+        ("git revert --abort", ["git discard"]),
+        ("git worktree remove --force wt", ["git discard"]),
+        ("git worktree remove -f wt", ["git discard"]),
+        ("git worktree remove wt", []),
+        ("git worktree list", []),
+        ("git mv -f a.py b.py", ["git discard"]),
+        ("git mv a.py b.py", []),
+        ("git checkout-index -f -a", ["git discard"]),
+        ("git checkout-index -a", []),
+        ("git read-tree --reset -u HEAD", ["git discard"]),
+        ("git update-ref -d refs/stash", ["git discard"]),
+        ("git update-ref refs/x HEAD", []),
+        ("git gc --prune=now", ["git discard"]),
+        ("git gc", []),
     ],
 )
 def test_risks(command: str, expected: list[str], tmp_path: Path) -> None:
@@ -591,6 +609,12 @@ async def test_a_approves_the_lines_programs(
         ("make; # build it", None),
         # An alias (`co = checkout`) is not a git command the scan can name.
         ("git co .", None),
+        # A command given as an argument runs a shell command the scan cannot see.
+        ("git rebase -x 'git reset --hard'", None),
+        ("git rebase --exec 'git clean -fdx'", None),
+        # A line with a risk, such as a discard, is never scoped.
+        ("git rebase --skip", None),
+        ("git submodule foreach 'git reset --hard'", None),
         ("git ad x", None),
         ('"" python3 t.py', None),
         # `>|` is a redirect, not a pipe into a program named `a.py`.
@@ -795,3 +819,13 @@ async def test_an_alias_is_never_approved_with_a(tmp_path: Path) -> None:
     assert await approver("bash", bash("git co .")) is True
     assert await approver("bash", bash("git co .")) is False
     assert keys.asked == ["bash", "bash"]
+
+
+async def test_a_on_another_git_command_still_asks_for_these(tmp_path: Path) -> None:
+    keys = Keys("a", "n", "n", "n", "n")
+    approver = Approver(keys, Policy(root=tmp_path))
+    assert await approver("bash", bash("git rebase x")) is True
+    assert await approver("bash", bash("git rebase -x 'git reset --hard'")) is False
+    assert await approver("bash", bash("git rebase --skip")) is False
+    assert await approver("bash", bash("git rebase --exec 'git clean -fdx'")) is False
+    assert keys.asked == ["bash", "bash", "bash", "bash"]
