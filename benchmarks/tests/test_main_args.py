@@ -346,6 +346,79 @@ def test_a_never_started_rep_stops_the_matrix(
     assert str(moved) in err
 
 
+TWO_CASES = ["--case", "edit-docstring", "--case", "fix-failing-test"]
+
+
+def stopping_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *cases: str) -> Path:
+    """A checkout with the real cases, a judge that meets every assertion, and
+    model m's baseline at a pass rate of 1 on `cases`, when there are any.
+    Returns benchmarks/results."""
+    import benchmarks.runner.__main__ as bench
+
+    baselines = results_dir(tmp_path, monkeypatch)
+    if cases:
+        baselines.mkdir()
+        baseline_path(baselines, "m", "smoke").write_text(
+            dumps_baseline(
+                BaselineMeta("t", "abc1234", "anthropic", "m", "m"),
+                [summary(case, 1.0) for case in cases],
+            )
+        )
+    monkeypatch.setattr(bench, "build_image", lambda root: None)
+    monkeypatch.setattr(bench, "judge_transport", lambda config: FakeJudge(VERDICT))
+    monkeypatch.setattr(bench, "new_stamp", lambda: STAMP)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.delenv("NARE_BASE_URL", raising=False)
+    return tmp_path / "benchmarks" / "results"
+
+
+def test_a_stop_keeps_the_records_of_each_case_its_pass_finished(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The judge verdicts already paid for are kept, out of the newest run."""
+    results = stopping_run(tmp_path, monkeypatch)
+    # edit-docstring's three reps finish; fix-failing-test's first, the fourth
+    # call, is the one nare refuses.
+    calls = refusing(monkeypatch, lambda config, n: n == 4)
+    assert main([*RUN, "--provider", "anthropic", *TWO_CASES]) == 2
+    assert len(calls) == 4
+    err = capsys.readouterr().err
+    assert not list(results.glob("*.jsonl"))
+    kept = results / STAMP / "results.partial.jsonl"
+    records = read_results(kept)
+    assert [(r.case, r.rep) for r in records] == [
+        ("edit-docstring", n) for n in range(3)
+    ]
+    assert [r.judge_met for r in records] == [3, 3, 3]
+    assert str(kept) in err
+    assert err.index("nare refused its invocation") < err.index(str(kept))
+
+
+def test_a_stop_in_the_confirmation_keeps_its_records_beside_the_first_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Both cases drop, so both are re-run. edit-docstring's re-run finishes;
+    fix-failing-test's first re-run rep, the fourteenth call, is refused."""
+    results = stopping_run(tmp_path, monkeypatch, "edit-docstring", "fix-failing-test")
+    calls = refusing(monkeypatch, lambda config, n: n == 14, check_code=1)
+    assert main([*RUN, "--provider", "anthropic", *TWO_CASES]) == 2
+    assert len(calls) == 3 + 3 + 7 + 1
+    err = capsys.readouterr().err
+    assert not list(results.glob("*.jsonl"))
+    first = results / STAMP / "results.partial.jsonl"
+    assert [(r.case, r.rep) for r in read_results(first)] == [
+        (case, n) for case in ("edit-docstring", "fix-failing-test") for n in range(3)
+    ]
+    rerun = results / STAMP / "results.confirm.partial.jsonl"
+    records = read_results(rerun)
+    assert [(r.case, r.rep) for r in records] == [
+        ("edit-docstring", n) for n in range(7)
+    ]
+    assert [r.judge_met for r in records] == [3] * 7
+    assert str(first) in err
+    assert str(rerun) in err
+
+
 ARGUED = """\
 id = "argued"
 tier = "smoke"

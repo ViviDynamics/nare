@@ -191,6 +191,12 @@ moved, never deleted, to `results.partial.jsonl` in the evidence directory
 of the same name, and the runner prints each path, so that `compare` and
 `bless` never read half a run as the newest one.
 
+The pass that stopped keeps the graded records of every case it finished,
+judge verdicts included, in the same line format: in `results.partial.jsonl`
+in its evidence directory, or in `results.confirm.partial.jsonl` when the
+confirmation re-run stopped, beside its first pass. The runner prints each
+path. A stop never leaves a results file in `benchmarks/results/` itself.
+
 Each results line also records the case's args (`case_args`), the run
 arguments (`nare_args`), each run file's digest (`nare_files`), the context
 window the rep had (`context_window`: its size, and whether it came from the
@@ -259,7 +265,8 @@ is pruned: a repetition is a few kilobytes, and the directory is
 gitignored.
 
 A run that stops because nare never started leaves `stopped.txt` in
-`benchmarks/results/<stamp>/` and no results file: see "Arguments to nare".
+`benchmarks/results/<stamp>/`, the records of the cases it finished beside
+it, and no results file: see "Arguments to nare".
 
 `diff.patch` and `closing.txt` are kept for every repetition that produced a
 result line and did not break underneath the agent, judged or not. They are

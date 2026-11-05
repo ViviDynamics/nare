@@ -309,6 +309,8 @@ class NeverStarted(Exception):
     run argument or a case argument it rejects. Every later rep would be
     refused the same way, so the run stops instead of recording an error per
     rep. `log` is the file that keeps the reason, when one was written.
+    `kept` gains each file of graded records the stopped pass left on its way
+    out, which the stop then names.
     """
 
     def __init__(
@@ -318,6 +320,7 @@ class NeverStarted(Exception):
         self.rep = rep
         self.stderr = stderr
         self.log = log
+        self.kept: list[Path] = []
         message = (
             f"{case} rep {rep}: nare refused its invocation and never started "
             f"(exit {NEVER_STARTED}), so the run stopped here. Its stderr:\n"
@@ -509,18 +512,46 @@ async def run_case(
     ]
 
 
+def _write_records(path: Path, records: Sequence[RepRecord]) -> None:
+    """One JSON line per rep: a results file, and what a stop keeps."""
+    with path.open("w", encoding="utf-8") as handle:
+        for rec in records:
+            payload = asdict(rec)
+            payload["checks"] = [asdict(c) for c in rec.checks]
+            handle.write(json.dumps(payload) + "\n")
+
+
 def write_results(
     root: Path, records: Sequence[RepRecord], stamp: str | None = None
 ) -> Path:
     directory = root / "benchmarks" / "results"
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{stamp or new_stamp()}.jsonl"
-    with path.open("w", encoding="utf-8") as handle:
-        for rec in records:
-            payload = asdict(rec)
-            payload["checks"] = [asdict(c) for c in rec.checks]
-            handle.write(json.dumps(payload) + "\n")
+    _write_records(path, records)
     return path
+
+
+# In a stopped run's evidence directory. The first is what the pass that stopped
+# had finished, or a whole results file `set_aside_partial_results` moved;
+# never both, since a pass writes its results file only when it finishes. The
+# second is what a confirmation re-run had finished, beside its first pass.
+PARTIAL = "results.partial.jsonl"
+CONFIRM_PARTIAL = "results.confirm.partial.jsonl"
+
+
+def keep_partial(exc: NeverStarted, path: Path, records: Sequence[RepRecord]) -> None:
+    """On a stop, write the graded records of each case the pass finished.
+
+    Judge verdicts are paid for, and the developer's rule is that a stopped run
+    keeps every log. Written in the evidence directory, never as a results
+    file, which `bless` would read as the newest run. Nothing when no case
+    finished.
+    """
+    if not records:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_records(path, records)
+    exc.kept.append(path)
 
 
 def set_aside_partial_results(root: Path, stamp: str) -> None:
@@ -537,7 +568,7 @@ def set_aside_partial_results(root: Path, stamp: str) -> None:
     ):
         evidence = path.with_suffix("")
         evidence.mkdir(parents=True, exist_ok=True)
-        target = evidence / "results.partial.jsonl"
+        target = evidence / PARTIAL
         path.replace(target)
         print(
             f"bench: the partial results of the stopped run are in {target}",
@@ -548,6 +579,11 @@ def set_aside_partial_results(root: Path, stamp: str) -> None:
 def stop_run(exc: NeverStarted, root: Path, stamp: str) -> int:
     """`run` stopped because nare never started: say why, and exit 2."""
     print(f"bench: {exc}", file=sys.stderr)
+    for path in exc.kept:
+        print(
+            f"bench: the records of each case the stopped pass finished are in {path}",
+            file=sys.stderr,
+        )
     set_aside_partial_results(root, stamp)
     return 2
 
@@ -877,12 +913,19 @@ def run_model(
     root: Path, cases: Sequence[Case], config: Config, name: str
 ) -> tuple[Transport, list[RepRecord]]:
     """Every case at its own reps: results/<name>.jsonl, and each rep's
-    evidence under results/<name>/."""
+    evidence under results/<name>/. A stop writes no results file: the cases
+    it finished are kept in results/<name>/results.partial.jsonl."""
     transport = judge_transport(config)
     evidence = root / "benchmarks" / "results" / name
     records: list[RepRecord] = []
-    for case in cases:
-        records += asyncio.run(run_case(case, config, transport, case.reps, evidence))
+    try:
+        for case in cases:
+            records += asyncio.run(
+                run_case(case, config, transport, case.reps, evidence)
+            )
+    except NeverStarted as exc:
+        keep_partial(exc, evidence / PARTIAL, records)
+        raise
     print(f"results: {write_results(root, records, name)}")
     return transport, records
 
@@ -927,7 +970,8 @@ def confirm(
     """Re-run each case whose pass rate dropped at CONFIRM_REPS, then compare.
 
     The re-run rewrites results/<name>.jsonl and its evidence instead of
-    starting a second of each.
+    starting a second of each. A stop keeps the re-run's finished cases in
+    results/<name>/results.confirm.partial.jsonl, beside the first pass.
     """
     first = compare(
         summarize(records),
@@ -939,11 +983,17 @@ def confirm(
     if suspects:
         print(f"re-confirming {', '.join(suspects)} at {CONFIRM_REPS} reps...")
         evidence = root / "benchmarks" / "results" / name
-        for case in [c for c in cases if c.id in suspects]:
-            extra = asyncio.run(
-                run_case(case, config, transport, CONFIRM_REPS, evidence)
-            )
-            records = [r for r in records if r.case != case.id] + extra
+        rerun: list[RepRecord] = []
+        try:
+            for case in [c for c in cases if c.id in suspects]:
+                extra = asyncio.run(
+                    run_case(case, config, transport, CONFIRM_REPS, evidence)
+                )
+                rerun += extra
+                records = [r for r in records if r.case != case.id] + extra
+        except NeverStarted as exc:
+            keep_partial(exc, evidence / CONFIRM_PARTIAL, rerun)
+            raise
         write_results(root, records, name)
     return compare(
         summarize(records),
