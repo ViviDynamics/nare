@@ -134,7 +134,19 @@ def build_parser() -> argparse.ArgumentParser:
         ("bless", "write the latest results to the baseline"),
         ("verify", "check that each case's checks fail on its pristine fixture"),
     ):
-        child = sub.add_parser(name, help=help_text)
+        if name == "run":
+            # split_run_args takes what follows -- before argparse sees it,
+            # so argparse cannot list it on its own.
+            child = sub.add_parser(
+                name,
+                help=help_text,
+                usage="%(prog)s [options] [-- NARE_ARGS ...]",
+                epilog="Everything after -- goes to nare run as the run "
+                "arguments, for every selected case: for example "
+                "-- --effort low. See 'Arguments to nare' in benchmarks/README.md.",
+            )
+        else:
+            child = sub.add_parser(name, help=help_text)
         child.add_argument(
             "--tier", choices=["smoke", "full"], default="smoke", help="which tier"
         )

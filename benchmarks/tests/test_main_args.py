@@ -653,6 +653,22 @@ def test_only_run_takes_arguments_for_nare(
     assert f"bench: {argv[0]} takes no arguments for nare" in capsys.readouterr().err
 
 
+def test_run_help_shows_where_the_arguments_for_nare_go(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        main(["run", "--help"])
+    assert stopped.value.code == 0
+    out = capsys.readouterr().out
+    assert out.startswith("usage: bench run [options] [-- NARE_ARGS ...]\n")
+    # The options are still all listed below the usage line.
+    assert "--allow-arg-change" in out
+    assert (
+        "Everything after -- goes to nare run as the run arguments, for every "
+        "selected case"
+    ) in " ".join(out.split())
+
+
 def test_the_matrix_takes_no_run_arguments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
