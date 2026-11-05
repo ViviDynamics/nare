@@ -714,32 +714,13 @@ by their hosts; nare terminates its connection, not their server process.
 
 A caller adds tools the model can call beside the built-ins, in one of two ways.
 
-In-process, pass `nare.Tool` values as `tools=` to `nare.run` or `nare.step`:
-
-```python
-from nare import Tool, ToolError
-
-def lookup(args):
-    row = db.get(args["id"])
-    if row is None:
-        raise ToolError(f"no order {args['id']}")
-    return row  # a str is sent as is; anything else as JSON
-
-tool = Tool(
-    name="lookup_order",
-    description="Fetch one order by id.",
-    input_schema={"type": "object", "properties": {"id": {"type": "integer"}},
-                  "required": ["id"]},
-    call=lookup,
-)
-```
-
+In-process, pass `nare.Tool` values as `tools=` to `nare.run` or `nare.step`.
 `call` receives the model's arguments, checked against `input_schema`. It may be
 a plain function or a coroutine function; a plain function runs in a worker
 thread. Raising `ToolError` ends that call with its message as an error result.
 Any other exception ends it with `Type: message` as an error result. Neither
 ends the run. nare cannot stop a function that runs too long, so a caller bounds
-its own.
+its own. A runnable example is in [Calling nare from Python](#calling-nare-from-python).
 
 From the command line, `--command-tools` names a JSON file, an object keyed by
 tool name:
@@ -801,6 +782,363 @@ the same `tool_use_id`, as built-in calls do. The progress text is
 The model chooses the arguments, and a caller tool runs with the caller's
 privileges. The check on arguments is a schema check, not a policy: a tool that
 writes or spends should validate what it does.
+
+## Calling nare from Python
+
+A Python caller can run the loop in-process instead of as a subprocess. The
+events, the session and the stop reasons are the ones the command line gives.
+Names come from `nare`, except `nare.reads` and `nare.schema`, which the examples
+import from where they are defined. Every example runs as written: each one uses
+`ReplayTransport`, a scripted transport that needs no key and no
+network. To call a model, build the transport with `make_transport` instead
+([Choosing a transport](#choosing-a-transport)).
+
+### run and step
+
+`run` is the loop. It is an async generator of `Event` values. It advances the
+session to a terminal status, `done`, `blocked` or `error`, and yields each
+event as it happens:
+
+```python
+import asyncio
+from nare import Policy, ReplayTransport, new_session, run
+
+async def main() -> None:
+    transport = ReplayTransport({"replies": [{"text": "The fix is a missing await on line 12."}]})
+    session = new_session("Why does fetch() return None in bar.py?")
+    async for event in run(session, transport=transport,
+                           policy=Policy(tools=frozenset())):
+        if event.type == "output":
+            print(event.text)
+    assert session.status == "done"
+
+asyncio.run(main())
+```
+
+`step` runs one turn: one model request, and the tool calls that turn makes.
+It returns the session, and the events it produced wait in `session.events`
+for the caller to take. `step` takes `schema`, `check`, `tools` and
+`max_corrections`. It has no `max_turns`, `max_tool_calls`, `max_cutoffs`,
+`require_reads` or `require_read`: those are `run`'s, and `run` builds the
+objects `step` takes for them. A caller that needs them uses `run`, which calls
+`step` once per turn.
+
+```python
+import asyncio
+from nare import Policy, ReplayTransport, approve_all, new_session, step
+
+async def main() -> None:
+    transport = ReplayTransport({"replies": [{"text": "Nothing to change."}]})
+    session = new_session("Is bar.py formatted?")
+    await step(session, transport, approve_all, Policy(tools=frozenset()))
+    assert session.status == "done"
+    outputs = [event.text for event in session.events if event.type == "output"]
+    assert outputs == ["Nothing to change."]
+    session.events.clear()
+
+asyncio.run(main())
+```
+
+**Pass `policy`.** With no policy, `run` offers every built-in tool, `bash`
+included, and `approve` defaults to `approve_all`, so a call that names no
+policy runs shell commands without asking. A call that needs an answer and no
+side effects passes `Policy(tools=frozenset())`, as the examples do. A policy
+that names a caller tool must name it in `tools` and in `pending`, as the
+[caller tools](#caller-tools) section shows.
+
+### Choosing a transport
+
+`make_transport(kind, *, model, ...)` builds a transport for `"anthropic"` or
+`"openai"`. It reads the key from `api_key=` or the environment, and sends no
+request until a run does. `system=` is the system prompt. The library adds no
+prompt of its own, unlike the command line, which adds nare's default prompt
+whenever tools are on.
+
+```python
+from nare import make_transport
+
+INSTRUCTIONS = "Classify support tickets. Reply with the JSON object only."
+transport = make_transport("anthropic", model="claude-sonnet-5",
+                           system=INSTRUCTIONS)
+assert transport.system == INSTRUCTIONS
+assert transport.supports_structured_output is True
+```
+
+`ReplayTransport({"replies": [...]})` replays its replies, one per turn. A reply
+is a dict with any of `text`, `thinking`, `tool_calls` (each `{"id", "name",
+"args"}`), `stop_reason` and `usage` (`input`, `output`, `cache_read`,
+`cache_write`). It does not declare structured output, so `run` refuses
+`structured_output=` with it. The examples here do not pass that option.
+
+### Typed answers: schema and check
+
+`schema` takes the JSON Schema as a dict. The keywords it may use are listed in
+[Answer schemas](#answer-schemas). The command line refuses an unsupported
+schema before the run starts, by calling `nare.schema.check_supported`. `run`
+does not make that call. An unsupported keyword is found on the first answer
+instead, after one model request, and the run ends with status `error`. Make
+the call first, as the worked example below does.
+
+`check` takes a function that receives the parsed answer and returns its
+errors: an empty result passes, and each error is a mapping with `code`,
+`location`, `message` and `guidance`, or a plain string. `check` runs only on
+a final answer that passes the schema, and its errors go into the
+same correction as schema errors. It needs `schema`. A check that raises ends
+the run with `status` `error` and an error event, and the exception does not
+reach the caller. See [Structured errors and checks](#structured-errors-and-checks).
+
+### Caller tools in-process
+
+`tools=` takes `nare.Tool` values. Raising `ToolError` ends that call with its
+message as the error result the model sees, and the run goes on. The policy
+names the tool in `tools` and in `pending`, because the policy is not built
+from the tools. [Caller tools](#caller-tools) has the rules.
+
+```python
+import asyncio
+from nare import Policy, ReplayTransport, Tool, ToolError, new_session, run
+
+ORDERS = {42: {"status": "shipped", "shipped_on": "Tuesday"}}
+
+def lookup_order(args):
+    row = ORDERS.get(args["id"])
+    if row is None:
+        raise ToolError(f"no order {args['id']}")
+    return row  # a str is sent as is; any other value as JSON
+
+lookup = Tool(
+    name="lookup_order",
+    description="Fetch one order by id.",
+    input_schema={"type": "object", "properties": {"id": {"type": "integer"}},
+                  "required": ["id"]},
+    call=lookup_order,
+)
+
+async def main() -> None:
+    transport = ReplayTransport({"replies": [
+        {"tool_calls": [{"id": "c1", "name": "lookup_order", "args": {"id": 7}}]},
+        {"tool_calls": [{"id": "c2", "name": "lookup_order", "args": {"id": 42}}]},
+        {"text": "Order 42 shipped on Tuesday."},
+    ]})
+    session = new_session("When did order 42 ship?")
+    policy = Policy(tools=frozenset({"lookup_order"}),
+                    pending=frozenset({"lookup_order"}))
+    async for _ in run(session, transport=transport, policy=policy, tools=[lookup]):
+        pass
+    assert session.status == "done"
+    results = [block for message in session.messages
+               for block in message.content if block.get("type") == "tool_result"]
+    assert results[0]["is_error"] and "no order 7" in results[0]["content"]
+    assert not results[1]["is_error"]
+
+asyncio.run(main())
+```
+
+### Budgets, and where the library and the command line differ
+
+| Option | Library default | Command line default | What it allows |
+| --- | --- | --- | --- |
+| `max_turns` | 50 | 50 (`--max-turns`) | Turns in this invocation |
+| `max_corrections` | 1 | 1 (`--max-corrections`) | Corrections of a failing answer or an unmet read requirement, per run. A free correction does not count |
+| `max_cutoffs` | `None`: no correction, the run ends at the first cut-off reply | 2 (`--max-cutoffs`) | Corrections of replies cut off at the output cap or by repetition, per invocation |
+| `require_reads` and `require_read` | 0 and `()` | 0 and none (`--require-reads`, `--require-read`) | Hold the final answer until N distinct files, or each named path, has been read |
+
+`max_cutoffs` is the one default that differs in effect. A library call that
+passes nothing ends at the first cut-off reply, as nare did before the option
+existed. Pass `max_cutoffs=2` to match the command line. The read requirements
+need the `read` tool in the policy, and a path is relative to the policy's
+`root`.
+
+The command line also takes its provider, model, base URL, context window,
+budgets and request settings from `NARE_*` variables when no flag is given
+(`NARE_MODEL`, `NARE_PROVIDER`, `NARE_CONTEXT_WINDOW`, `NARE_BUDGET_TOKENS` and
+others). The library's arguments read none of them, so a library caller passes
+these values in code.
+
+A call that does not pass `max_cutoffs` ends at the first cut-off reply:
+
+```python
+import asyncio
+from nare import Policy, ReplayTransport, new_session, run
+
+CUT_OFF = {"text": "The order shipped on", "stop_reason": "max_tokens"}
+COMPLETE = {"text": "The order shipped on Tuesday."}
+
+async def answer(**options):
+    transport = ReplayTransport({"replies": [CUT_OFF, COMPLETE]})
+    session = new_session("When did order 42 ship?")
+    async for _ in run(session, transport=transport,
+                       policy=Policy(tools=frozenset()), **options):
+        pass
+    return session
+
+async def main() -> None:
+    session = await answer()
+    assert session.status == "error" and session.stop_reason == "max_tokens"
+    session = await answer(max_cutoffs=2)
+    assert session.status == "done" and session.cutoffs == 1
+
+asyncio.run(main())
+```
+
+### Read requirements in-process
+
+`require_read` holds the final answer until each named path has been read, and
+each held answer is a correction charged to `max_corrections`. The answer
+here is held once, the model reads the file, and the next answer is accepted.
+
+```python
+import asyncio
+import tempfile
+from pathlib import Path
+from nare import Policy, ReplayTransport, new_session, run
+from nare.reads import read_record
+
+async def main() -> None:
+    with tempfile.TemporaryDirectory() as root:
+        Path(root, "spec.md").write_text("Orders ship within 2 days.\n",
+                                         encoding="utf-8")
+        transport = ReplayTransport({"replies": [
+            {"text": "Orders ship within 2 days."},  # answered before any read
+            {"tool_calls": [{"id": "r1", "name": "read",
+                             "args": {"path": "spec.md"}}]},
+            {"text": "Orders ship within 2 days, per spec.md."},
+        ]})
+        session = new_session("What does the spec say about shipping?")
+        policy = Policy(tools=frozenset({"read"}), root=Path(root))
+        async for _ in run(session, transport=transport, policy=policy,
+                           require_read=["spec.md"]):
+            pass
+    assert session.status == "done"
+    assert [record["path"] for record in read_record(session)] == ["spec.md"]
+    assert session.schema_correction_log[0]["kind"] == "reads"
+
+asyncio.run(main())
+```
+
+### Results
+
+The `result` line of `--jsonl` has a Python counterpart on the session, which
+`run` fills in as it goes:
+
+| `result` line | Python |
+| --- | --- |
+| `status`, `stop_reason`, `error` | `session.status`, `session.stop_reason`, `session.error` |
+| `output` | `session.output`: the parsed value, once a schema answer validates |
+| `text` | the `text` of the `output` event, the answer as the model wrote it |
+| `turns` | `session.turns` |
+| `usage.total` | `session.usage.total_tokens`: cache included, what `--budget-tokens` counts |
+| `corrections` | `session.schema_correction_log`: an empty list when no correction happened |
+| `cutoffs` | `session.cutoffs`: over the session's life, as on the command line |
+| `reads` | `nare.reads.read_record(session)`: present only when a read requirement was set |
+
+The `budget` object of the result line is computed inside the loop and is not
+exported. The session fields above carry the same counts.
+
+### The typed-function recipe
+
+A script that wants one typed answer from a model, with no side effects, sets
+the same few options on every call:
+
+1. Tools off: `policy=Policy(tools=frozenset())`. The command line is `--tools none`.
+2. The schema: `schema=`, or `--schema FILE`.
+3. Turns: `max_turns=2` or more, so a failing answer still has its correction turn.
+   With 1, a failing answer ends the run with status `error` and `stop_reason`
+   `max_turns`, after one more request.
+4. Constrained decoding: `structured_output="json_schema"`, on a transport that
+   declares it. Both `make_transport` rails do. The command line is
+   `--structured-output json_schema`. Constrained turns are sent without tools,
+   which is what this recipe wants.
+5. Constant instructions in the system prompt (`system=`, or `--append-system`
+   on the command line), and the varying item in the prompt. Constant text
+   comes first and the varying item last, so the request prefix stays
+   cacheable across calls.
+6. Rules the schema cannot express go in `check=`.
+
+The worked example classifies a support ticket. It uses the replay transport,
+so the structured-output option is left out, as the previous section explains.
+
+```python
+import asyncio
+from nare import Policy, ReplayTransport, new_session, run
+from nare.schema import check_supported
+
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "label": {"enum": ["bug", "feature", "question"]},
+        "order_id": {"type": "integer"},
+    },
+    "required": ["label", "order_id"],
+    "additionalProperties": False,
+}
+KNOWN_ORDERS = {42, 77}
+
+def check(answer):
+    if answer["order_id"] not in KNOWN_ORDERS:
+        return [{
+            "code": "unknown_order",
+            "location": ["order_id"],
+            "message": f"order {answer['order_id']} does not exist",
+            "guidance": "use an order id that the ticket names",
+        }]
+    return []
+
+async def classify(transport, ticket: str):
+    check_supported(SCHEMA)
+    session = new_session(ticket)
+    async for _ in run(session, transport=transport,
+                       policy=Policy(tools=frozenset()),
+                       schema=SCHEMA, check=check, max_turns=2):
+        pass
+    return session
+
+async def main() -> None:
+    transport = ReplayTransport({"replies": [
+        {"text": '{"label": "bug", "order_id": 9}'},   # fails the check
+        {"text": '{"label": "bug", "order_id": 42}'},  # the correction passes
+    ]})
+    session = await classify(transport,
+                             "Order 42 arrived broken. Please send a new one.")
+    assert session.status == "done"
+    assert session.output == {"label": "bug", "order_id": 42}
+    assert len(session.schema_correction_log) == 1
+
+asyncio.run(main())
+```
+
+### What to put in --append-system
+
+`--append-system` has no library argument. The library takes one `system=`
+string on `make_transport`, so join the parts yourself. The command line
+builds its prompt the same way, by joining its default and this text with a
+blank line. Put in the text what the model cannot read off the repository:
+
+- Commands to run, exactly, such as `uv run pytest -q tests/test_x.py`.
+- Conventions that are not standard for the stack, such as "migrations are
+  append-only; never edit one that has shipped".
+- A role, when the caller needs one.
+
+Leave out a repository overview, a directory tree, and a generated AGENTS.md.
+Gloaguen et al. ([arXiv:2602.11988](https://arxiv.org/abs/2602.11988)) found
+that repository context files did not raise task success on average, raised
+inference cost by over 20%, found that the instructions in them are well
+followed, and found that repository overviews are not helpful. Lulla et al.
+([arXiv:2601.20404](https://arxiv.org/abs/2601.20404)) found AGENTS.md files
+associated with a lower median runtime and fewer output tokens, at comparable
+task completion. The second is a correlation across pull requests, not a
+controlled comparison, so the guidance here rests on the first.
+
+Keep the text short and the same on every call. It is part of the request
+prefix, so changing it between calls misses the prompt cache. A resume without
+a system option sends the prompt the session recorded.
+
+Related fixes: [#142](https://github.com/ViviDynamics/nare/issues/142) imports
+the MCP client only when a run configures MCP servers, which shortens startup.
+[#139](https://github.com/ViviDynamics/nare/issues/139) keeps the wrap-up text
+out of a run with no tools, so a tool-free request does not depend on the turn
+count. [#144](https://github.com/ViviDynamics/nare/issues/144) sends the schema
+at decode time on the anthropic rail.
 
 ## The bash environment
 

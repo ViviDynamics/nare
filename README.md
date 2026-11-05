@@ -184,6 +184,13 @@ lengths, patterns) are checked only by nare after decoding, and a schema
 Anthropic cannot take is refused at startup. See
 [docs/contract.md](docs/contract.md#schema-constrained-answers).
 
+Python callers can run the same loop in-process, with `nare.run` and
+`nare.step`, typed answers through `schema=` and `check=`, and caller tools.
+Its budget arguments default to the command line's except `max_cutoffs`, the
+command line reads its defaults from `NARE_*` variables, and the library adds no
+default system prompt.
+See [calling nare from Python](docs/contract.md#calling-nare-from-python).
+
 ## Terminal UI
 
 `nare tui` is the same loop for a person. Type a task, watch it stream, and
