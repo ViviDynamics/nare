@@ -266,7 +266,8 @@ def stage_inputs(
     `n` counting the run's files from 0, so two files with one basename cannot
     collide; nare is given `/in/<n>-<basename>`. The digest is of the copy, so a
     prompt edited mid-run does not change the reps after it. Each value keeps
-    the operator's form, `--flag value` or `--flag=value`.
+    the operator's form, `--flag value` or `--flag=value`. A file that cannot
+    be read, or is not UTF-8, is an `ArgsError`, raised before it is copied.
     """
     recorded: list[str] = []
     passed: list[str] = []
@@ -289,10 +290,18 @@ def stage_inputs(
         source = (base / value).resolve()
         try:
             data = source.read_bytes()
+            # nare reads it as UTF-8 at startup: refused there, it would cost a
+            # build. The bytes are what is copied and hashed.
+            data.decode("utf-8")
         except OSError as exc:
             raise ArgsError(
                 f"run arguments: {flag} {value}: cannot read it "
                 f"({exc.strerror or type(exc).__name__})"
+            ) from exc
+        except UnicodeDecodeError as exc:
+            raise ArgsError(
+                f"run arguments: {flag} {value}: it is not UTF-8 (byte "
+                f"{exc.start} does not decode), and nare reads it as UTF-8"
             ) from exc
         name = f"{count}-{Path(value).name}"
         count += 1

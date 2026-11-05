@@ -170,6 +170,8 @@ model of a matrix run), and mounts the copy read-only at `/in` in every
 rep, so editing the file during a run changes nothing, and the file never
 shows in the diff the judge reads. Each results line records the path,
 relative to the checkout when the file is inside it, and the copy's SHA-256.
+A file that cannot be read, or is not UTF-8 (nare reads it as UTF-8),
+exits 2 before anything is built.
 
 A rep whose nare never started (its container exited 2 with no result line,
 and did not time out) is nare refusing its invocation, `--context-window abc`

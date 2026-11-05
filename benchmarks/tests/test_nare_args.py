@@ -397,6 +397,22 @@ def test_a_run_file_that_cannot_be_read_is_refused(tmp_path: Path) -> None:
         )
 
 
+def test_a_run_file_that_is_not_utf8_is_refused_before_it_is_staged(
+    tmp_path: Path,
+) -> None:
+    """nare reads a prompt file as UTF-8 at startup, after the image is built."""
+    (tmp_path / "latin1.md").write_bytes("Sé breve.\n".encode("latin-1"))
+    dest = tmp_path / "in"
+    with pytest.raises(
+        ArgsError,
+        match=re.escape("run arguments: --system-file latin1.md: it is not UTF-8"),
+    ):
+        stage_inputs(
+            ["--system-file", "latin1.md"], base=tmp_path, root=tmp_path, dest=dest
+        )
+    assert not dest.exists()
+
+
 def test_a_config_passes_no_run_arguments_by_default() -> None:
     config = Config("m", "anthropic", None, "m", "k", "ANTHROPIC_API_KEY")
     assert config.run_args == RunArgs()
