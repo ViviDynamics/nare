@@ -71,6 +71,7 @@ def test_library_defaults_are_as_documented() -> None:
     # The one default the section says differs: no cut-off budget at all.
     assert params["max_cutoffs"].default is None
     assert params["require_reads"].default == 0
+    assert params["require_cited_reads"].default == ()
 
 
 def test_command_line_defaults_are_as_documented() -> None:
@@ -101,6 +102,7 @@ def test_step_has_no_run_only_keywords() -> None:
         "max_cutoffs",
         "require_reads",
         "require_read",
+        "require_cited_reads",
     ):
         assert name not in params
     for name in ("schema", "check", "tools", "max_corrections"):

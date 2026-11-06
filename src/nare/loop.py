@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import math
 import re
@@ -34,7 +35,7 @@ from nare.corrections import (
 )
 from nare.events import Event, LiveText, redact
 from nare.mcp import Server, connect
-from nare.reads import NO_READS, ReadRequirement, unmet
+from nare.reads import NO_READS, ReadRequirement, cited_unmet, read_record, unmet
 from nare.reads import build as build_reads
 from nare.schema import DuplicateKeyError, SchemaError, extract_json, validate
 from nare.session import Message, Session, append_user_text, drop_signed_thinking
@@ -482,10 +483,11 @@ def _answer_errors(text: str, schema: dict[str, Any]) -> list[SchemaError]:
     return validate(parsed, schema)
 
 
-# A check takes the parsed answer and returns its errors: SchemaError values, or
+# A check takes the parsed answer, and optionally the run's reads as a second
+# argument, and returns its errors: SchemaError values, or
 # a mapping of code, location, message and guidance, or plain strings. An empty
 # result (or None) passes. It runs only on an answer that passes the schema.
-Check = Callable[[Any], Iterable[Any] | None]
+Check = Callable[..., Iterable[Any] | None]
 
 
 class CheckRaised(Exception):
@@ -520,11 +522,31 @@ def _as_error(item: Any) -> SchemaError:
     )
 
 
-def _check_errors(parsed: Any, check: Check) -> list[SchemaError]:
-    """The check's errors for a parsed answer. A check that raises, or returns
-    something other than a list of errors, raises CheckRaised."""
+def _takes_reads(check: Check) -> bool:
+    """Whether a check takes the run's reads as a second positional argument.
+
+    Only a callable with two positional parameters is given them, so a check
+    written for the answer alone (including one that takes `*args`) is called
+    exactly as before.
+    """
     try:
-        found = check(parsed)
+        params = inspect.signature(check).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    positional = [
+        p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+    ]
+    return len(positional) >= 2
+
+
+def _check_errors(
+    parsed: Any, check: Check, reads: list[dict[str, Any]]
+) -> list[SchemaError]:
+    """The check's errors for a parsed answer. A check that raises, or returns
+    something other than a list of errors, raises CheckRaised. `reads` are the
+    run's read records, passed on to a check that takes them."""
+    try:
+        found = check(parsed, reads) if _takes_reads(check) else check(parsed)
         if isinstance(found, (str, Mapping)):
             raise TypeError("a check returns a list of errors, not one value")
         return [_as_error(item) for item in (found or ())]
@@ -674,15 +696,21 @@ async def _with_retries(
             await retry.sleep(wait)
 
 
-def _hold_for_reads(s: Session, reads: ReadRequirement, max_corrections: int) -> bool:
+def _hold_for_reads(
+    s: Session, reads: ReadRequirement, max_corrections: int, answer: Any = None
+) -> bool:
     """Hold a final answer the run has not read enough to rest on.
 
     Returns False when nothing is owed, and the answer is accepted. Otherwise a
     read correction is charged and the model told what is missing (returns True,
     the run continues), or, with the budget spent, the run ends `error` with
-    `reads_required` (returns True, the run is over).
+    `reads_required` (returns True, the run is over). `answer` is the parsed
+    answer, which the cited-path requirement reads; it is set only for a
+    schema answer, the only kind a cited requirement can have.
     """
     gaps = unmet(s, reads)
+    if reads.cited:
+        gaps += cited_unmet(s, reads, answer)
     if not gaps:
         return False
     # The turn after a read hold is an ordinary turn: an earlier schema
@@ -947,7 +975,7 @@ async def step(
         errors = _answer_errors(text, schema)
         if not errors and check is not None:
             try:
-                errors = _check_errors(extract_json(text), check)
+                errors = _check_errors(extract_json(text), check, read_record(s))
             except CheckRaised as exc:
                 s.status = "error"
                 s.stop_reason = None
@@ -955,9 +983,10 @@ async def step(
                 s.events.append(Event("error", s.error))
                 return s
         if not errors:
-            if _hold_for_reads(s, reads, max_corrections):
+            answer = extract_json(text)
+            if _hold_for_reads(s, reads, max_corrections, answer):
                 return s
-            s.output = extract_json(text)
+            s.output = answer
             s.status = "done"
             s.events.append(Event("output", text, {"output": s.output}))
             return s
@@ -1464,6 +1493,7 @@ async def run(
     max_cutoffs: int | None = None,
     require_reads: int = 0,
     require_read: Sequence[str] = (),
+    require_cited_reads: Sequence[str] = (),
     check: Check | None = None,
     inbox: Callable[[], list[str]] | None = None,
     tools: Sequence[Tool] = (),
@@ -1480,9 +1510,14 @@ async def run(
         require_reads,
         list(require_read),
         root=policy.root if policy is not None else None,
+        cited=list(require_cited_reads),
     )
     if reads.active and "read" not in (policy or Policy()).tools:
         raise ValueError("a read requirement needs the read tool")
+    if reads.cited and schema is None:
+        raise ValueError(
+            "require_cited_reads needs a schema: it reads the fields of the answer"
+        )
     check_check(check, schema)
     configure_budgets(session, budget_tokens, budget_usd)
     if context_window is not None and (

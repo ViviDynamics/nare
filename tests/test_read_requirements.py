@@ -397,3 +397,307 @@ def test_max_corrections_is_allowed_with_a_read_requirement_and_no_schema(
     last = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert code == 0
     assert last["budget"]["schema_corrections"] == 2
+
+
+CITES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "checks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        }
+    },
+    "required": ["checks"],
+}
+
+
+def cites(*paths: str) -> str:
+    return json.dumps({"checks": [{"path": path} for path in paths]})
+
+
+async def test_a_cited_path_that_was_never_read_is_held_then_accepted(
+    root: Path,
+) -> None:
+    provider = FakeProvider(
+        [
+            text_reply(cites("b.txt")),
+            tool_reply("read", {"path": "b.txt"}),
+            text_reply(cites("b.txt")),
+        ]
+    )
+    session = new_session("go")
+
+    await drain(
+        session,
+        provider,
+        policy=reads_only(root),
+        schema=CITES_SCHEMA,
+        require_cited_reads=["/checks/*/path"],
+    )
+
+    assert session.status == "done", session.error
+    assert session.output == {"checks": [{"path": "b.txt"}]}
+    assert [e["kind"] for e in session.schema_correction_log] == ["reads"]
+    assert "read b.txt, which the answer cites" in sent_text(provider, 1)
+
+
+async def test_a_cited_path_read_before_the_answer_is_not_held(root: Path) -> None:
+    provider = FakeProvider(
+        [tool_reply("read", {"path": "a.txt"}), text_reply(cites("a.txt"))]
+    )
+    session = new_session("go")
+
+    await drain(
+        session,
+        provider,
+        policy=reads_only(root),
+        schema=CITES_SCHEMA,
+        require_cited_reads=["/checks/*/path"],
+    )
+
+    assert session.status == "done", session.error
+    assert session.schema_correction_log == []
+
+
+async def test_a_partial_read_of_a_cited_file_counts(root: Path) -> None:
+    provider = FakeProvider(
+        [
+            tool_reply("read", {"path": "b.txt", "offset": 1, "limit": 1}),
+            text_reply(cites("b.txt")),
+        ]
+    )
+    session = new_session("go")
+
+    await drain(
+        session,
+        provider,
+        policy=reads_only(root),
+        schema=CITES_SCHEMA,
+        require_cited_reads=["/checks/*/path"],
+    )
+
+    assert session.status == "done", session.error
+    assert session.schema_correction_log == []
+
+
+async def test_the_wildcard_names_only_the_unread_paths(root: Path) -> None:
+    provider = FakeProvider(
+        [
+            tool_reply("read", {"path": "a.txt"}),
+            text_reply(cites("a.txt", "b.txt")),
+            tool_reply("read", {"path": "b.txt"}),
+            text_reply(cites("a.txt", "b.txt")),
+        ]
+    )
+    session = new_session("go")
+
+    await drain(
+        session,
+        provider,
+        policy=reads_only(root),
+        schema=CITES_SCHEMA,
+        require_cited_reads=["/checks/*/path"],
+    )
+
+    assert session.status == "done", session.error
+    sent = sent_text(provider, 2)
+    assert "read b.txt, which the answer cites" in sent
+    assert "read a.txt, which the answer cites" not in sent
+
+
+async def test_a_cited_path_outside_the_root_is_never_satisfied(
+    root: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    outside = tmp_path_factory.mktemp("outside") / "secret.txt"
+    outside.write_text("nope\n", encoding="utf-8")
+    provider = FakeProvider(
+        [
+            text_reply(cites(str(outside))),
+            text_reply(cites(str(outside))),
+        ]
+    )
+    session = new_session("go")
+
+    await drain(
+        session,
+        provider,
+        policy=reads_only(root),
+        schema=CITES_SCHEMA,
+        require_cited_reads=["/checks/*/path"],
+    )
+
+    assert session.status == "error"
+    assert session.stop_reason == "reads_required"
+    assert "remove" in sent_text(provider, 1)
+
+
+async def test_a_spent_budget_ends_a_cited_hold_with_reads_required(
+    root: Path,
+) -> None:
+    provider = FakeProvider([text_reply(cites("b.txt")), text_reply(cites("b.txt"))])
+    session = new_session("go")
+
+    await drain(
+        session,
+        provider,
+        policy=reads_only(root),
+        schema=CITES_SCHEMA,
+        require_cited_reads=["/checks/*/path"],
+    )
+
+    assert session.status == "error"
+    assert session.stop_reason == "reads_required"
+    assert "read b.txt, which the answer cites" in (session.error or "")
+
+
+async def test_a_cited_hold_shares_the_correction_budget(root: Path) -> None:
+    provider = FakeProvider(
+        [
+            text_reply(cites("b.txt")),
+            tool_reply("read", {"path": "b.txt"}),
+            text_reply(cites("b.txt")),
+        ]
+    )
+    session = new_session("go")
+
+    await drain(
+        session,
+        provider,
+        policy=reads_only(root),
+        schema=CITES_SCHEMA,
+        require_cited_reads=["/checks/*/path"],
+        max_corrections=2,
+    )
+
+    assert session.status == "done", session.error
+    assert session.schema_corrections == 1
+    assert session.schema_retried is False
+
+
+async def test_a_check_with_two_positional_parameters_receives_the_reads(
+    root: Path,
+) -> None:
+    seen: list[Any] = []
+
+    def check(answer: Any, reads: list[dict[str, Any]]) -> list[str]:
+        seen.append([record["path"] for record in reads])
+        return []
+
+    provider = FakeProvider(
+        [tool_reply("read", {"path": "a.txt"}), text_reply(cites("a.txt"))]
+    )
+    session = new_session("go")
+
+    await drain(
+        session,
+        provider,
+        policy=reads_only(root),
+        schema=CITES_SCHEMA,
+        check=check,
+    )
+
+    assert session.status == "done", session.error
+    assert seen == [["a.txt"]]
+
+
+async def test_a_one_argument_check_is_called_with_the_answer_alone(root: Path) -> None:
+    seen: list[Any] = []
+
+    def check(answer: Any, *extra: Any) -> list[str]:
+        seen.append(extra)
+        return []
+
+    provider = FakeProvider([text_reply(cites("a.txt"))])
+    session = new_session("go")
+
+    await drain(
+        session, provider, policy=reads_only(root), schema=CITES_SCHEMA, check=check
+    )
+
+    assert session.status == "done", session.error
+    assert seen == [()]
+
+
+@pytest.mark.parametrize(
+    "pointer",
+    ["", "checks", "/checks/", "/a/~2", "/a//b"],
+)
+def test_a_malformed_pointer_never_starts(root: Path, pointer: str) -> None:
+    from nare.reads import build
+
+    with pytest.raises(ValueError, match="pointer"):
+        build(0, [], root=root, cited=[pointer])
+
+
+async def test_cited_reads_need_a_schema(root: Path) -> None:
+    session = new_session("go")
+    provider = FakeProvider([text_reply("x")])
+
+    with pytest.raises(ValueError, match="needs a schema"):
+        await drain(
+            session,
+            provider,
+            policy=reads_only(root),
+            require_cited_reads=["/checks/*/path"],
+        )
+
+
+def test_the_cli_refuses_cited_reads_without_a_schema(root: Path, capsys: Any) -> None:
+    code = main(
+        [
+            "run",
+            "go",
+            "--yes",
+            "--jsonl",
+            "--root",
+            str(root),
+            "--tools",
+            "read",
+            "--require-cited-reads",
+            "/checks/*/path",
+        ],
+        transport=FakeProvider([text_reply("x")]),
+    )
+
+    assert code == 2
+    assert capsys.readouterr().out == ""
+
+
+def test_the_cli_reports_the_reads_for_cited_reads(
+    root: Path, tmp_path: Path, capsys: Any
+) -> None:
+    schema_file = tmp_path / "schema.json"
+    schema_file.write_text(json.dumps(CITES_SCHEMA), encoding="utf-8")
+    code = main(
+        [
+            "run",
+            "go",
+            "--yes",
+            "--jsonl",
+            "--root",
+            str(root),
+            "--tools",
+            "read",
+            "--schema",
+            str(schema_file),
+            "--require-cited-reads",
+            "/checks/*/path",
+        ],
+        transport=FakeProvider(
+            [
+                text_reply(cites("b.txt")),
+                tool_reply("read", {"path": "b.txt"}),
+                text_reply(cites("b.txt")),
+            ]
+        ),
+    )
+
+    last = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert code == 0
+    assert last["status"] == "done"
+    assert [record["path"] for record in last["reads"]] == ["b.txt"]
+    assert last["corrections"][0]["kind"] == "reads"

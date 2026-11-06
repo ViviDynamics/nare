@@ -64,6 +64,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--max-cutoffs` | yes | | Correct up to this many replies cut off at the output cap or by repeating one span, in this invocation ([Cut-off replies](#cut-off-replies)) |
 | `--require-reads` | yes | | Hold the final answer until the run has read at least this many distinct files ([Read requirements](#read-requirements)) |
 | `--require-read` | yes | | Hold the final answer until the run has read this path, relative to `--root`; repeatable ([Read requirements](#read-requirements)) |
+| `--require-cited-reads` | yes | | Hold the final answer until the run has read each path the answer cites, found by a JSON pointer into the `--schema` answer; repeatable ([Read requirements](#read-requirements)) |
 | `--timeout` | yes | | Wall clock for this invocation ([Run deadline and stop signals](#run-deadline-and-stop-signals)) |
 | `--request-timeout` | yes | | HTTP timeout for each model request ([Provider retries and the request timeout](#provider-retries-and-the-request-timeout)) |
 | `--request-retries` | yes | | Resend a model request after a transient failure, up to this many times |
@@ -416,7 +417,7 @@ has a kind, which says what a caller can do about it:
 | `tool_calls` | `limit` | `error` | Invocation's tool call cap reached (`--max-tool-calls`), and the model called a tool again after being told to answer |
 | `refusal` | `answer` | `error` | Provider refused to continue |
 | `schema_violation` | `answer` | `error` | A structured answer that fails once the run's correction budget is spent (`--max-corrections`, default one correction) |
-| `reads_required` | `answer` | `error` | A final answer came before the reads `--require-reads` or `--require-read` demand, and the correction budget is spent |
+| `reads_required` | `answer` | `error` | A final answer came before the reads `--require-reads`, `--require-read` or `--require-cited-reads` demand, and the correction budget is spent |
 | `no_answer` | `answer` | `error` | The model sent reasoning and no answer, which is what a proxy that drops one of them produces |
 | `interrupted` | `stopped` | `error` | SIGTERM or SIGINT stopped the run (see Run deadline and stop signals) |
 | null | `failure` | `error` | No completed response: the provider call raised (a transport failure, after any retries), or nare did |
@@ -881,7 +882,10 @@ the call first, as the worked example below does.
 
 `check` takes a function that receives the parsed answer and returns its
 errors: an empty result passes, and each error is a mapping with `code`,
-`location`, `message` and `guidance`, or a plain string. `check` runs only on
+`location`, `message` and `guidance`, or a plain string. A check with two
+positional parameters also receives the run's reads, as a second argument: the
+records of the result's `reads` key, empty when nothing was read. A check with
+one parameter is called with the answer alone, as before. `check` runs only on
 a final answer that passes the schema, and its errors go into the
 same correction as schema errors. It needs `schema`. A check that raises ends
 the run with `status` `error` and an error event, and the exception does not
@@ -941,7 +945,7 @@ asyncio.run(main())
 | `max_turns` | 50 | 50 (`--max-turns`) | Turns in this invocation |
 | `max_corrections` | 1 | 1 (`--max-corrections`) | Corrections of a failing answer or an unmet read requirement, per run. A free correction does not count |
 | `max_cutoffs` | `None`: no correction, the run ends at the first cut-off reply | 2 (`--max-cutoffs`) | Corrections of replies cut off at the output cap or by repetition, per invocation |
-| `require_reads` and `require_read` | 0 and `()` | 0 and none (`--require-reads`, `--require-read`) | Hold the final answer until N distinct files, or each named path, has been read |
+| `require_reads`, `require_read` and `require_cited_reads` | 0, `()` and `()` | 0 and none (`--require-reads`, `--require-read`, `--require-cited-reads`) | Hold the final answer until N distinct files, each named path, or each path the answer cites, has been read |
 
 `max_cutoffs` is the one default that differs in effect. A library call that
 passes nothing ends at the first cut-off reply, as nare did before the option
@@ -984,7 +988,9 @@ asyncio.run(main())
 ### Read requirements in-process
 
 `require_read` holds the final answer until each named path has been read, and
-each held answer is a correction charged to `max_corrections`. The answer
+each held answer is a correction charged to `max_corrections`. `require_cited_reads`
+holds it until each path the answer cites has been read, and needs `schema`; see
+[Read requirements](#read-requirements). The answer
 here is held once, the model reads the file, and the next answer is accepted.
 
 ```python
@@ -1667,7 +1673,26 @@ resume starts it again, as the correction round is per run.
 
 `--require-reads N` holds a final answer until the run has read at least N
 distinct files, and `--require-read PATH` (repeatable) holds it until each named
-path has been read. Paths are relative to `--root`. Only a read that succeeded
+path has been read.
+
+`--require-cited-reads POINTER` (repeatable, and `require_cited_reads=[...]` in
+Python) holds it until each path the answer cites has been read. It needs
+`--schema`. POINTER is a JSON pointer (RFC 6901: `/` separates tokens, `~1` is
+`/`, `~0` is `~`) into the answer, and `*` matches any array index or object
+key. The string found at each match is a cited path, compared with evidence the
+same way `--require-read` compares its paths. Quote the pointer in the shell,
+since `*` is a glob:
+
+    nare run --schema manifest.json --tools read --require-cited-reads '/checks/*/path' "..."
+
+Only string values are paths; a value that is not a string is skipped, and the
+schema is what types it. A pointer that matches nothing holds nothing, so check
+it against the schema: an optional field may be absent from an answer. A cited
+path must have been read with `read`. A path that appeared in a `search_files` or
+`list_dir` result was never read, and does not count. A path outside the root
+cannot be read, so the correction asks the model to remove it. A malformed
+pointer (no leading `/`, an empty token, an unknown `~` escape) is refused at
+startup, as is a cited requirement without `--schema`. Paths are relative to `--root`. Only a read that succeeded
 and stayed inside the root counts; a failed read, or one refused as outside the
 root, does not. A read with `offset` or `limit` counts as a read of its file. A
 link inside the root counts as its target, and a link that points outside it is
@@ -1683,6 +1708,10 @@ session, as it does for `schema_violation`. `--max-corrections` sets this budget
 too, so it is accepted with a read requirement and no `--schema`. A count of
 reads is over the session's life, so a resumed run keeps the files it already
 read.
+
+Each held answer names the unread paths it cites, in the same correction as any
+other read hold, so the model reads them before it answers again. The hold is
+charged once per answer that still cites an unread path, against the same budget.
 
 With a requirement set, the result gains `reads`: each distinct file read, once,
 with its `path`, `sha256` and `size` (the latest read's digest), so a caller can
@@ -1711,8 +1740,9 @@ A caller can add checks the schema cannot express, such as ids that exist or
 cross-field rules, with the Python entry point `nare.run(..., check=fn)`. `fn`
 receives the parsed answer and returns its errors: `SchemaError` values from
 `nare.schema`, mappings with `code`, `location`, `message` and `guidance`, or
-plain strings. An empty result passes. A check runs only on a final answer that
-passes the schema, and its errors go into the same correction as schema
+plain strings. An empty result passes. A `fn` with two positional parameters is
+also given the run's reads as a second argument, the records of the `reads` key.
+A check runs only on a final answer that passes the schema, and its errors go into the same correction as schema
 errors, under the same budget. The text of a turn that calls tools is never
 checked, and while a check is set such a turn keeps no output. A check that raises ends the run with
 `status` `error`, `stop_reason` null, and an error event reading
