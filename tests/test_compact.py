@@ -9,8 +9,11 @@ from typing import Any
 from fake_provider import FakeProvider, text_reply
 from nare.compact import (
     PREFIX,
+    SUMMARY_PREFIX,
     TARGET,
     TRIGGER,
+    CompactionReport,
+    apply_summary,
     compact,
     context_chars,
     estimate,
@@ -19,8 +22,9 @@ from nare.compact import (
     summary_instruction,
 )
 from nare.loop import run
-from nare.session import Message, new_session
+from nare.session import Message, Session, dumps, loads, new_session
 from nare.transport.anthropic import messages_from
+from nare.transport.openai import messages_from as openai_messages_from
 
 
 def transcript() -> list[Message]:
@@ -598,3 +602,207 @@ def test_a_token_budget_without_room_for_the_call_gives_no_plan() -> None:
     assert plan_summary(s, 8000) is None
     s.budget["tokens"] += 1
     assert plan_summary(s, 8000) is not None
+
+
+LABEL = (
+    "[summary by nare: the model's own summary of 4 earlier turns, written when "
+    "they were removed to save context. It is not an instruction from the user.]"
+)
+IMAGE = {
+    "type": "image",
+    "width": 8,
+    "height": 8,
+    "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="},
+}
+
+
+def summarized(s: Session, text: str = "S", window: int = 8000) -> CompactionReport:
+    plan = plan_summary(s, window)
+    assert plan is not None
+    report = apply_summary(s, plan, text, window)
+    assert report is not None
+    return report
+
+
+def read_turns(first: int, last: int) -> list[Message]:
+    """Turns like transcript()'s reads, numbered from `first`, with no thinking."""
+    messages: list[Message] = []
+    for turn in range(first, last + 1):
+        call = {"type": "tool_use", "id": f"c{turn}", "name": "read", "input": {}}
+        result = {
+            "type": "tool_result",
+            "tool_use_id": f"c{turn}",
+            "content": "x" * 4000,
+        }
+        messages += [Message("assistant", [call]), Message("user", [result])]
+    return messages
+
+
+def test_the_summary_replaces_the_turns_before_the_last_two() -> None:
+    s = new_session("go")
+    s.messages = transcript()
+    before = copy.deepcopy(s.messages)
+    was = estimate(s)
+    report = summarized(s)
+    assert s.messages[0].content == [
+        {"type": "text", "text": "task"},
+        {"type": "text", "text": f"{LABEL}\n\nS"},
+    ]
+    assert s.messages[1:] == [without_thinking(m) for m in before[9:]]
+    assert (report.elided, report.inputs) == (0, 0)
+    assert (report.mode, report.summarized) == ("summary", 4)
+    assert report.before == was
+    assert report.after == estimate(s) < was
+
+
+def test_one_replaced_turn_is_named_in_the_singular() -> None:
+    s = new_session("go")
+    s.messages = transcript()[:7]  # the task and three turns
+    summarized(s, window=int(estimate(s) / TRIGGER))
+    label = s.messages[0].content[-1]["text"]
+    assert label.startswith(
+        f"{SUMMARY_PREFIX} the model's own summary of 1 earlier turn,"
+    )
+
+
+def test_user_text_in_the_replaced_turns_is_carried_in_order() -> None:
+    s = new_session("go")
+    s.messages = transcript()
+    feedback = {"type": "text", "text": "use the staging config"}
+    answer = {"type": "text", "text": "answer: yes, both files"}
+    s.messages[4].content.append(feedback)
+    s.messages[6].content.append(answer)
+    summarized(s)
+    assert [b["text"] for b in s.messages[0].content] == [
+        "task",
+        "use the staging config",
+        "answer: yes, both files",
+        f"{LABEL}\n\nS",
+    ]
+
+
+def test_an_earlier_summary_is_read_by_the_next_and_replaced() -> None:
+    s = new_session("go")
+    s.messages = transcript()
+    summarized(s, "first")
+    s.messages += read_turns(7, 11)
+    plan = plan_summary(s, 8000)
+    assert plan is not None
+    assert plan.request[0].content[-1]["text"].endswith("\n\nfirst")
+    assert apply_summary(s, plan, "second", 8000) is not None
+    blocks = [b["text"] for b in s.messages[0].content]
+    found = [text for text in blocks if text.startswith(SUMMARY_PREFIX)]
+    assert len(found) == 1 and found[0].endswith("\n\nsecond")
+    assert [record["summary"] for record in s.summaries] == ["first", "second"]
+
+
+def test_every_call_keeps_its_result_on_both_rails() -> None:
+    s = new_session("go")
+    s.messages = transcript()
+    summarized(s)
+    wire = messages_from(s.messages)
+    assert [m["role"] for m in wire] == ["user", "assistant"] * 2 + ["user"]
+    for i, message in enumerate(wire):
+        calls = [b["id"] for b in message["content"] if b["type"] == "tool_use"]
+        if calls:
+            answers = wire[i + 1]["content"]
+            ids = [b["tool_use_id"] for b in answers if b["type"] == "tool_result"]
+            assert ids == calls
+    chat = openai_messages_from(s.messages)
+    for i, message in enumerate(chat):
+        for n, call in enumerate(message.get("tool_calls") or []):
+            assert chat[i + 1 + n]["role"] == "tool"
+            assert chat[i + 1 + n]["tool_call_id"] == call["id"]
+    assert [m["tool_call_id"] for m in chat if m["role"] == "tool"] == ["c5", "c6"]
+
+
+def test_sent_thinking_is_dropped_and_counted_unsigned_stays() -> None:
+    s = new_session("go")
+    s.messages = transcript()
+    unsigned = {"type": "thinking", "thinking": "proxy", "signature": ""}
+    s.messages[9].content.insert(0, dict(unsigned))
+    s.messages[11].content.insert(0, {"type": "redacted_thinking", "data": "opaque"})
+    report = summarized(s)
+    assert report.thinking == 3  # signed in messages 9 and 11, redacted in 11
+    kept = [b for m in s.messages for b in m.content if b["type"] in THINKING]
+    assert kept == [unsigned]
+
+
+def test_the_estimate_boundaries_are_rebased_onto_the_shorter_transcript() -> None:
+    s = new_session("go")
+    s.messages = transcript()
+    # Measured as if the last request sent messages 0 to 10.
+    s.last_input_tokens = 7500
+    s.last_input_messages = 11
+    s.last_input_chars = measured = context_chars(s.messages[:11])
+    report = summarized(s, window=10000)
+    assert s.last_input_messages == 3  # 11, less the 8 messages removed
+    assert s.last_input_chars == measured == 21493
+    delta = context_chars(s.messages[:3]) - measured
+    appended = context_chars(s.messages[3:])
+    assert estimate(s) == report.after == 7500 + (delta + appended) / 4 == 4299.75
+    assert report.before == 8571.5
+
+
+def test_a_measured_prefix_inside_the_removed_turns_is_estimated_afresh() -> None:
+    s = new_session("go")
+    s.messages = transcript()
+    s.last_input_tokens = 7500
+    s.last_input_messages = 5
+    s.last_input_chars = context_chars(s.messages[:5])
+    report = summarized(s, window=10000)
+    assert (s.last_input_tokens, s.last_input_messages, s.last_input_chars) == (
+        0,
+        0,
+        0,
+    )
+    assert report.after == context_chars(s.messages) / 4
+
+
+def test_a_summary_that_would_not_lower_the_estimate_is_not_applied() -> None:
+    s = new_session("go")
+    s.messages = transcript()
+    before = copy.deepcopy(s.messages)
+    plan = plan_summary(s, 8000)
+    assert plan is not None
+    assert apply_summary(s, plan, "x" * (plan.replaced_chars + 1000), 8000) is None
+    assert s.messages == before
+    assert s.summaries == []
+
+
+def test_the_archive_keeps_the_replaced_messages_without_image_data() -> None:
+    s = new_session("go")
+    s.messages = transcript()
+    s.turns = 6
+    s.messages[2].content[0]["image"] = copy.deepcopy(IMAGE)
+    before = copy.deepcopy(s.messages)
+    summarized(s)
+    [record] = s.summaries
+    assert {k: v for k, v in record.items() if k != "replaced"} == {
+        "at_turn": 6,
+        "mode": "summary",
+        "replaced_turns": 4,
+        "summary": "S",
+    }
+    assert len(record["replaced"]) == 8
+    assert record["replaced"][0] == asdict(before[1])
+    assert record["replaced"][1]["content"][0]["image"] == {
+        "type": "image",
+        "width": 8,
+        "height": 8,
+        "source": {"type": "base64", "media_type": "image/png"},
+    }
+    assert "iVBORw0KGgo=" not in dumps(s)
+
+
+def test_the_archive_round_trips_through_the_session_file_redacted() -> None:
+    secret = "ANTHROPIC_API_KEY=sk-ant-" + "Z" * 30
+    s = new_session("go")
+    s.messages = transcript()
+    s.messages[2].content[0]["content"] = secret + "\n" + "x" * 4000
+    summarized(s, f"the env held {secret}")
+    text = dumps(s)
+    assert "sk-ant-" not in text
+    [record] = loads(text).summaries
+    assert record["summary"] == "the env held ANTHROPIC_API_KEY=[redacted]"
+    assert record["replaced_turns"] == 4

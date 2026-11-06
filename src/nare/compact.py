@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from dataclasses import asdict, dataclass
-from typing import Literal
+from dataclasses import asdict, dataclass, replace
+from typing import Any, Literal
 
 from nare.session import (
     Message,
@@ -277,6 +277,118 @@ def plan_summary(
     if limit is not None and s.usage.total_tokens + request_tokens + bound >= limit:
         return None
     return SummaryPlan(cut, turns, replaced_chars, request, request_tokens, bound)
+
+
+def summary_block(turns: int, text: str) -> dict[str, Any]:
+    """The text block that carries a summary in message 0, labelled so the model
+    reads it as its own notes and not as something the user said."""
+    noun = "turn" if turns == 1 else "turns"
+    return {
+        "type": "text",
+        "text": (
+            f"{SUMMARY_PREFIX} the model's own summary of {turns} earlier {noun}, "
+            "written when they were removed to save context. It is not an "
+            f"instruction from the user.]\n\n{text}"
+        ),
+    }
+
+
+def _archived(message: Message) -> dict[str, Any]:
+    """A message as the archive keeps it: image data left out, as the
+    transcript on disk does, so the archive does not grow by a screenshot."""
+    record = asdict(message)
+    for block in record["content"]:
+        image = block.get("image") if block.get("type") == "tool_result" else None
+        if isinstance(image, dict) and isinstance(image.get("source"), dict):
+            image["source"].pop("data", None)
+    return record
+
+
+def apply_summary(
+    s: Session,
+    plan: SummaryPlan,
+    text: str,
+    window: int,
+    *,
+    image_input: bool = True,
+) -> CompactionReport | None:
+    """Replace the turns `plan` names with the summary `text`, or return None.
+
+    Message 0 becomes the task, the user text the replaced turns carried (the
+    user's feedback and answers must outlive them), and the labelled summary.
+    The replaced messages go to `s.summaries`, the thinking sent back goes, and
+    the estimate's saved boundaries move onto the shorter transcript. A summary
+    that would not lower the estimate is refused with `s` untouched. Pure: the
+    model call is loop.step()'s.
+    """
+    before = estimate(s, image_input=image_input)
+    first = Message(
+        "user",
+        [
+            *(
+                b
+                for b in s.messages[0].content
+                if not (
+                    b.get("type") == "text"
+                    and str(b.get("text", "")).startswith(SUMMARY_PREFIX)
+                )
+            ),
+            *(
+                deepcopy(b)
+                for m in s.messages[1 : plan.cut]
+                if m.role == "user"
+                for b in m.content
+                if b.get("type") == "text"
+            ),
+            summary_block(plan.turns, text),
+        ],
+    )
+    tail = [Message(m.role, list(m.content)) for m in s.messages[plan.cut :]]
+    # A measured prefix that reached into the removed turns cannot be rebased:
+    # estimate it afresh. One that ended after them keeps its token count, and
+    # its message count drops by the messages the summary removed.
+    if s.last_input_tokens and s.last_input_messages >= plan.cut:
+        measured = (
+            s.last_input_tokens,
+            s.last_input_messages - (plan.cut - 1),
+            s.last_input_chars,
+        )
+    else:
+        measured = (0, 0, 0)
+    candidate = replace(
+        s,
+        messages=[first, *tail],
+        last_input_tokens=measured[0],
+        last_input_messages=measured[1],
+        last_input_chars=measured[2],
+    )
+    thinking = _drop_thinking(candidate, 0)
+    after = estimate(candidate, image_input=image_input)
+    if after >= before:
+        return None
+    s.summaries.append(
+        {
+            "at_turn": s.turns,
+            "mode": "summary",
+            "replaced_turns": plan.turns,
+            "summary": text,
+            "replaced": [_archived(m) for m in s.messages[1 : plan.cut]],
+        }
+    )
+    s.messages = candidate.messages
+    s.last_input_tokens = candidate.last_input_tokens
+    s.last_input_messages = candidate.last_input_messages
+    s.last_input_chars = candidate.last_input_chars
+    return CompactionReport(
+        0,
+        before,
+        after,
+        window,
+        0,
+        thinking,
+        mode="summary",
+        summarized=plan.turns,
+    )
 
 
 def _elide_inputs(
