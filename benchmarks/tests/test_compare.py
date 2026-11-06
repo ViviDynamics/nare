@@ -40,6 +40,14 @@ from benchmarks.tests.test_judge import CASE, FakeJudge
 from nare.session import Message, Usage
 from nare.transport import Reply
 
+
+@pytest.fixture(autouse=True)
+def judge_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A run with judged cases needs a judge (config.require_judge). These tests
+    # are about other things; a test about the judge itself clears this.
+    monkeypatch.setenv("NARE_BENCH_JUDGE_MODEL", "judge-stub")
+
+
 PASSED = CheckResult("bash: pytest -q", True, "")
 FAILED = CheckResult("bash: pytest -q", False, "exit 1\n1 failed")
 EVIDENCE = Evidence("diff --git a/bar.py", "Fixed it.", [])
@@ -79,8 +87,8 @@ _check: Jev = FakeJev()
 
 def judges(
     jev: FakeJev | None = None,
-    llm: str = '{"met": [true, false], "why": "x"}',
-    reference: str = '{"met": [true, true], "why": "x"}',
+    llm: str = '{"met": [true, false], "reasons": ["x", "y"]}',
+    reference: str = '{"met": [true, true], "reasons": ["x", "y"]}',
     triage: str = '{"cause": "wrong_change"}',
 ) -> Judges:
     return Judges(
@@ -368,7 +376,6 @@ async def test_rows_are_written_one_json_line_each(tmp_path: Path) -> None:
 ENV_VARS = (
     "NARE_PROVIDER",
     "NARE_MODEL",
-    "NARE_BENCH_JUDGE_MODEL",
     "NARE_BENCH_JEV_MODEL",
     "NARE_BENCH_REFERENCE_MODEL",
     "NARE_BASE_URL",
@@ -400,10 +407,12 @@ def bench_root(
 
     def judge(config: Config) -> FakeJudge:
         verdicts = "[true, false, true]" if config.judge_model == "opus" else "[true]"
-        built.transports[config.judge_model] = FakeJudge(
-            f'{{"met": {verdicts}, "why": "x"}}'
+        reasons = ", ".join('"x"' for _ in verdicts.strip("[]").split(","))
+        key = config.judge_model or ""
+        built.transports[key] = FakeJudge(
+            f'{{"met": {verdicts}, "reasons": [{reasons}]}}'
         )
-        return built.transports[config.judge_model]
+        return built.transports[key]
 
     def triage(config: Config, model: str) -> FakeJudge:
         built.transports[f"triage:{model}"] = FakeJudge('{"cause": "wrong_change"}')

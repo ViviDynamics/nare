@@ -48,6 +48,18 @@ class RepRecord:
     nare_files: dict[str, str] = field(default_factory=dict)
     context_window: dict[str, int | str] | None = None
     compactions: int | None = None
+    # The judge could not settle this rep (no answer, a refused reply, or an
+    # "unknown" verdict that decides nothing). Such a rep is an error, and it
+    # counts against the pass rate; an infrastructure error does not.
+    judge_failed: bool = False
+    # One verdict per claim (None for "unknown") and one reason per claim,
+    # or None when the rep was not judged.
+    judge_claims: list[bool | None] | None = None
+    judge_reasons: list[str] = field(default_factory=list)
+    # The judge and cap this rep was judged with, and the digest of the diff it
+    # read: what calibration matches a human label against.
+    judge_max_tokens: int | None = None
+    diff_sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -61,6 +73,10 @@ class CaseSummary:
     tokens_median: int | None
     turns_median: int | None
     judge_met_median: int | None
+    # Reps the judge could not settle. They are inside the pass rate's
+    # denominator, so a judge that fails on the reps the agent did worst
+    # cannot make the rate look better.
+    judge_errors: int = 0
 
 
 def median_int(values: Sequence[int]) -> int | None:
@@ -72,10 +88,12 @@ def median_int(values: Sequence[int]) -> int | None:
 def summarize(records: Sequence[RepRecord]) -> list[CaseSummary]:
     """Collapse repetitions into one summary per case.
 
-    Errors are excluded from the pass rate rather than counted against it: a
-    dead container says nothing about whether the task is achievable. When
-    errors take the majority the case is inconclusive and has no pass rate at
-    all, so it can never be silently scored.
+    Infrastructure errors are excluded from the pass rate: a dead container
+    says nothing about whether the task is achievable. Judge failures are not
+    excluded: a rep the judge could not settle is a rep we could not verify as
+    passing, and dropping those would make the rate depend on what the agent
+    wrote. When errors take the majority the case is inconclusive and has no
+    pass rate at all, so it can never be silently scored.
     """
     grouped: dict[str, list[RepRecord]] = defaultdict(list)
     for rec in records:
@@ -87,7 +105,9 @@ def summarize(records: Sequence[RepRecord]) -> list[CaseSummary]:
         passes = sum(1 for r in reps if r.outcome == "pass")
         fails = sum(1 for r in reps if r.outcome == "fail")
         errors = sum(1 for r in reps if r.outcome == "error")
+        judge_errors = sum(1 for r in reps if r.judge_failed)
         judged = [r for r in reps if r.outcome != "error"]
+        decided = passes + fails + judge_errors
         inconclusive = errors > len(reps) / 2
         summaries.append(
             CaseSummary(
@@ -95,11 +115,7 @@ def summarize(records: Sequence[RepRecord]) -> list[CaseSummary]:
                 passes=passes,
                 fails=fails,
                 errors=errors,
-                pass_rate=(
-                    None
-                    if inconclusive or not (passes + fails)
-                    else passes / (passes + fails)
-                ),
+                pass_rate=(None if inconclusive or not decided else passes / decided),
                 inconclusive=inconclusive,
                 # Cached input included: a proxy serves most input from cache.
                 tokens_median=median_int(
@@ -111,6 +127,7 @@ def summarize(records: Sequence[RepRecord]) -> list[CaseSummary]:
                 judge_met_median=median_int(
                     [r.judge_met for r in judged if r.judge_met is not None]
                 ),
+                judge_errors=judge_errors,
             )
         )
     return summaries
@@ -384,6 +401,11 @@ def render(comparison: Comparison) -> str:
             f"{delta.case:<24} {_rate(delta.summary):>7} {tokens:>10} "
             f"{judge:>6}  {delta.verdict}"
         )
+        if delta.summary is not None and delta.summary.judge_errors:
+            lines.append(
+                f"{'':<24} the judge could not settle {delta.summary.judge_errors} "
+                "rep(s); counted as not passing"
+            )
         for note in delta.notes:
             lines.append(f"{'':<24} {note}")
     lines.append("-" * 70)

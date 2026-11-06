@@ -176,15 +176,21 @@ def grade_bash_check(check: Check, exit_code: int, output: str) -> CheckResult:
 def rep_outcome(
     checks: Sequence[CheckResult],
     judge: Judge | None,
-    met: list[bool] | None,
+    met: Sequence[bool | None] | None,
 ) -> Outcome:
     """Decide one repetition.
 
-    `error` means the repetition could not be judged at all, and is counted in
-    neither the numerator nor the denominator. It is returned here only when a
-    gating judge produced no answer; every other `error` -- a dead container, a
-    missing result line, an `infra_error` -- is decided by the caller before
-    grading starts.
+    `met` holds one verdict per claim, None where the judge said "unknown".
+    An unknown is never a false: it can only settle the rep as a pass when
+    the true claims already reach `min_met`, and as a fail when even counting
+    every unknown as true would not reach it. Between those, the rep is an
+    `error`, because the judge did not settle it.
+
+    `error` means the repetition could not be judged at all, and is counted
+    against the pass rate, never silently dropped. It is returned here only when a
+    gating judge produced no answer or could not settle the rep; every other
+    `error` -- a dead container, a missing result line, an `infra_error` -- is
+    decided by the caller before grading starts.
     """
     if judge is not None and judge.min_met is not None and met is None:
         return "error"
@@ -192,6 +198,11 @@ def rep_outcome(
         return "fail"
     if judge is not None and judge.min_met is not None:
         assert met is not None  # narrowed by the guard above
-        if sum(met) < judge.min_met:
+        true_count = sum(1 for value in met if value is True)
+        open_count = sum(1 for value in met if value is None)
+        if true_count >= judge.min_met:
+            return "pass"
+        if true_count + open_count < judge.min_met:
             return "fail"
+        return "error"
     return "pass"

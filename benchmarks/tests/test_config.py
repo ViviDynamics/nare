@@ -1,14 +1,33 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from benchmarks.runner.case import Case, Check, Judge
 from benchmarks.runner.config import (
+    DEFAULT_JUDGE_MAX_TOKENS,
     Config,
     ConfigError,
     baseline_config,
+    require_judge,
     resolve_config,
     route,
 )
+
+
+def _case(judge: bool) -> Case:
+    return Case(
+        id="c",
+        tier="smoke",
+        prompt="p",
+        directory=Path("/nowhere"),
+        max_turns=1,
+        reps=1,
+        timeout=1,
+        checks=(Check(kind="bash", cmd="true"),),
+        judge=Judge(assertions=("a",), min_met=1) if judge else None,
+    )
 
 
 def test_flags_win_over_environment() -> None:
@@ -41,7 +60,7 @@ def test_environment_supplies_what_flags_omit() -> None:
     assert config.base_url == "https://proxy.example/v1"
 
 
-def test_judge_model_defaults_to_the_model_under_test() -> None:
+def test_judge_model_has_no_default_so_it_is_never_the_model_under_test() -> None:
     config = resolve_config(
         model="claude-haiku",
         provider=None,
@@ -49,7 +68,58 @@ def test_judge_model_defaults_to_the_model_under_test() -> None:
         judge_model=None,
         env={"ANTHROPIC_API_KEY": "k"},
     )
-    assert config.judge_model == "claude-haiku"
+    assert config.judge_model is None
+    assert require_judge(config, [_case(judge=True)]) is not None
+
+
+def test_a_run_with_no_judged_case_needs_no_judge() -> None:
+    config = resolve_config(
+        model="claude-haiku",
+        provider=None,
+        base_url=None,
+        judge_model=None,
+        env={"ANTHROPIC_API_KEY": "k"},
+    )
+    assert require_judge(config, [_case(judge=False)]) is None
+
+
+def test_a_named_judge_satisfies_the_requirement() -> None:
+    config = resolve_config(
+        model="claude-haiku",
+        provider=None,
+        base_url=None,
+        judge_model="gpt-5-nano",
+        env={"ANTHROPIC_API_KEY": "k"},
+    )
+    assert require_judge(config, [_case(judge=True)]) is None
+
+
+def test_the_judge_output_cap_defaults_and_can_be_set_by_environment() -> None:
+    base = {"ANTHROPIC_API_KEY": "k"}
+    default = resolve_config(
+        model="m", provider=None, base_url=None, judge_model="j", env=base
+    )
+    assert default.judge_max_tokens == DEFAULT_JUDGE_MAX_TOKENS
+    raised = resolve_config(
+        model="m",
+        provider=None,
+        base_url=None,
+        judge_model="j",
+        env={**base, "NARE_BENCH_JUDGE_MAX_TOKENS": "2048"},
+    )
+    assert raised.judge_max_tokens == 2048
+
+
+@pytest.mark.parametrize("raw", ["0", "-5", "lots"])
+def test_a_judge_output_cap_must_be_a_positive_integer(raw: str) -> None:
+    with pytest.raises(ConfigError, match="NARE_BENCH_JUDGE_MAX_TOKENS"):
+        resolve_config(
+            model="m",
+            provider=None,
+            base_url=None,
+            judge_model="j",
+            env={"ANTHROPIC_API_KEY": "k", "NARE_BENCH_JUDGE_MAX_TOKENS": raw},
+        )
 
 
 def test_judge_model_can_be_set_by_environment() -> None:

@@ -29,16 +29,17 @@ You are given a task, the diff that an agent produced for it, and a numbered
 list of claims. For each claim, decide whether it is true of the diff.
 
 Reply with JSON only, in exactly this shape:
-{"met": [true, false, ...], "why": "one short sentence"}
+{"met": [true, false, "unknown", ...], "reasons": ["one short sentence", ...]}
 
-The "met" array must have exactly one boolean per claim, in the same order.
+"met" has exactly one entry per claim, in the same order: true when the claim
+is true of the diff, false when it is false, and "unknown" when the diff and
+the closing message do not settle it. Use "unknown" rather than guessing.
+"reasons" has exactly one short sentence per claim, in the same order, saying
+what decided that claim.
 Judge only what the diff shows. Do not reward effort or intent.
 The closing message is context: use it for claims about what the agent said \
 or asked, but a claim about a file's contents is true only if the diff shows it.\
 """
-
-# Judging is a short answer; this bounds a runaway reply rather than the task.
-JUDGE_MAX_TOKENS = 1024
 
 
 @dataclass(frozen=True)
@@ -72,12 +73,15 @@ def render_attempts(attempts: Sequence[JudgeAttempt]) -> str:
 
 
 def judge_transport(config: Config) -> Transport:
+    if config.judge_model is None:
+        # require_judge refuses this before any rep; reaching it is a bug.
+        raise JudgeError("no judge model is configured")
     return make_transport(
         config.provider,
         model=config.judge_model,
         base_url=config.base_url,
         api_key=config.api_key,
-        max_tokens=JUDGE_MAX_TOKENS,
+        max_tokens=config.judge_max_tokens,
         system=JUDGE_SYSTEM,
         streaming=config.stream,
     )
@@ -114,7 +118,12 @@ def _extract_json(text: str) -> dict[str, Any]:
     raise JudgeError(f"no JSON object in the judge's reply: {text[:200]!r}")
 
 
-def parse_reply(text: str, expected: int) -> list[bool]:
+def parse_reply(text: str, expected: int) -> tuple[list[bool | None], list[str]]:
+    """The verdicts (None where the judge said "unknown") and one reason each.
+
+    A reply missing a reason for a claim is refused like one missing a
+    verdict: the reasons are what a human reads when a verdict is wrong.
+    """
     payload = _extract_json(text)
     met = payload.get("met")
     if not isinstance(met, list) or len(met) != expected:
@@ -122,14 +131,33 @@ def parse_reply(text: str, expected: int) -> list[bool]:
             f"judge returned {len(met) if isinstance(met, list) else 'no'} "
             f"verdicts, expected {expected}"
         )
-    if not all(isinstance(value, bool) for value in met):
-        raise JudgeError(f"judge returned non-boolean verdicts: {met!r}")
-    return [bool(value) for value in met]
+    verdicts: list[bool | None] = []
+    for value in met:
+        if isinstance(value, bool):
+            verdicts.append(value)
+        elif isinstance(value, str) and value.strip().lower() == "unknown":
+            verdicts.append(None)
+        else:
+            raise JudgeError(
+                "judge returned a verdict that is neither boolean nor 'unknown': "
+                f"{value!r}"
+            )
+    reasons = payload.get("reasons")
+    if (
+        not isinstance(reasons, list)
+        or len(reasons) != expected
+        or not all(isinstance(r, str) for r in reasons)
+    ):
+        raise JudgeError(
+            f"judge returned {len(reasons) if isinstance(reasons, list) else 'no'} "
+            f"reasons, expected one string per claim ({expected})"
+        )
+    return verdicts, [r.strip() for r in reasons]
 
 
 async def _ask(
     prompt: str, expected: int, transport: Transport
-) -> tuple[list[bool], str, JudgeAttempt]:
+) -> tuple[list[bool | None], list[str], JudgeAttempt]:
     """One attempt. Every failure raises JudgeError carrying this attempt."""
     try:
         reply = await transport.turn(
@@ -147,27 +175,27 @@ async def _ask(
     )
     attempt = JudgeAttempt(reply.stop_reason, text)
     try:
-        met = parse_reply(text, expected)
+        met, reasons = parse_reply(text, expected)
     except JudgeError as exc:
         raise JudgeError(str(exc), [attempt]) from exc
-    return met, str(_extract_json(text).get("why", "")), attempt
+    return met, reasons, attempt
 
 
 async def score(
     case: Case, diff: str, final_text: str, *, transport: Transport
-) -> tuple[list[bool], str, tuple[JudgeAttempt, ...]]:
+) -> tuple[list[bool | None], list[str], tuple[JudgeAttempt, ...]]:
     assert case.judge is not None, "score is only called for judged cases"
     prompt = build_prompt(case, diff, final_text)
     attempts: list[JudgeAttempt] = []
     last: JudgeError | None = None
     for _ in range(JUDGE_ATTEMPTS):
         try:
-            met, why, attempt = await _ask(
+            met, reasons, attempt = await _ask(
                 prompt, len(case.judge.assertions), transport
             )
         except JudgeError as exc:
             attempts += exc.attempts
             last = exc
             continue
-        return met, why, (*attempts, attempt)
+        return met, reasons, (*attempts, attempt)
     raise JudgeError(str(last), attempts) from last

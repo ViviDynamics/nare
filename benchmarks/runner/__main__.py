@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import shlex
@@ -22,6 +23,15 @@ from pathlib import Path
 from typing import Literal
 
 from benchmarks.runner.agreement import Header, Skip, render_summary
+from benchmarks.runner.calibration import (
+    LABELS_FILE,
+    CalibrationError,
+    calibrate,
+    export_candidates,
+    load_labels,
+    problems,
+    render_calibration,
+)
 from benchmarks.runner.case import Case, CaseError, load_cases
 from benchmarks.runner.compare import (
     Judges,
@@ -34,6 +44,7 @@ from benchmarks.runner.config import (
     Config,
     ConfigError,
     baseline_config,
+    require_judge,
     resolve_config,
 )
 from benchmarks.runner.grade import (
@@ -206,6 +217,22 @@ def build_parser() -> argparse.ArgumentParser:
     judges.add_argument(
         "--reference-model", help="reference (env: NARE_BENCH_REFERENCE_MODEL)"
     )
+    calibration = sub.add_parser(
+        "calibrate",
+        help="a human-labelled set that measures the llm judge's error rates",
+    )
+    calibration.add_argument(
+        "action",
+        choices=["export", "check", "score"],
+        help="export blind rows to label; check the labels file; score the judge",
+    )
+    calibration.add_argument("--results", help="results file (default: the newest)")
+    calibration.add_argument("--labels", help=f"labels file (default: {LABELS_FILE})")
+    calibration.add_argument("--out", help="export: where to write the rows")
+    calibration.add_argument(
+        "--sample", type=int, help="export: at most this many rows, chosen at random"
+    )
+    calibration.add_argument("--seed", type=int, default=0, help="export: sample seed")
     models = sub.add_parser(
         "models", help="list what the endpoint serves, with window, price, baselines"
     )
@@ -536,7 +563,7 @@ async def run_rep(
                 artifacts=kept_ref,
                 max_tokens=config.max_tokens,
                 provider=config.provider,
-                judge_model=config.judge_model,
+                judge_model=config.judge_model or "",
                 case_args=list(case.args),
                 nare_args=list(config.run_args.recorded),
                 nare_files=dict(config.run_args.files),
@@ -561,25 +588,31 @@ async def run_rep(
             code, output = run_check(workdir, check.cmd or "", 120, artifacts=artifacts)
             graded.append(grade_bash_check(check, code, output))
 
-        met: list[bool] | None = None
+        met: list[bool | None] | None = None
+        reasons: list[str] = []
         why = ""
         if case.judge is not None:
             attempts: tuple[JudgeAttempt, ...]
             try:
-                met, why, attempts = await score(
+                met, reasons, attempts = await score(
                     case, diff, closing, transport=transport
+                )
+                why = " ".join(
+                    f"{n}. {reason}" for n, reason in enumerate(reasons, start=1)
                 )
             except JudgeError as exc:
                 why = f"judge failed: {exc}"
                 attempts = exc.attempts
             (kept / "judge.txt").write_text(render_attempts(attempts), encoding="utf-8")
 
+    outcome = rep_outcome(graded, case.judge, met)
+    gating = case.judge is not None and case.judge.min_met is not None
     return RepRecord(
         case=case.id,
         rep=rep,
-        outcome=rep_outcome(graded, case.judge, met),
+        outcome=outcome,
         checks=tuple(graded),
-        judge_met=None if met is None else sum(met),
+        judge_met=None if met is None else sum(1 for v in met if v is True),
         judge_why=why,
         status=line.status,
         stop_reason=line.stop_reason,
@@ -590,12 +623,17 @@ async def run_rep(
         artifacts=kept_ref,
         max_tokens=config.max_tokens,
         provider=config.provider,
-        judge_model=config.judge_model,
+        judge_model=config.judge_model or "",
         case_args=list(case.args),
         nare_args=list(config.run_args.recorded),
         nare_files=dict(config.run_args.files),
         context_window=use.window,
         compactions=use.compactions,
+        judge_failed=gating and outcome == "error",
+        judge_claims=met,
+        judge_reasons=reasons,
+        judge_max_tokens=config.judge_max_tokens if case.judge is not None else None,
+        diff_sha256=hashlib.sha256(diff.encode("utf-8")).hexdigest(),
     )
 
 
@@ -912,6 +950,65 @@ def nothing_to_compare(
     )
 
 
+def calibration_text(root: Path, records: Sequence[RepRecord]) -> str:
+    """The judge's error rates against the labelled set, for this run's reps."""
+    source = root / LABELS_FILE
+    try:
+        labels = load_labels(source)
+    except CalibrationError as exc:
+        return f"calibration: {source} is not readable: {exc}"
+    return render_calibration(calibrate(labels, records), LABELS_FILE)
+
+
+def calibrate_command(args: argparse.Namespace, root: Path) -> int:
+    """`calibrate export|check|score`. Reads the labelled set and results, and
+    never calls a model: labelling is a person's job, and so is the scoring's
+    input."""
+    labels_path = Path(args.labels) if args.labels else root / LABELS_FILE
+    try:
+        cases = {c.id: c for c in load_cases(root / "benchmarks" / "cases")}
+    except CaseError as exc:
+        print(f"bench: {exc}", file=sys.stderr)
+        return 2
+    if args.action == "check":
+        try:
+            labels = load_labels(labels_path)
+        except CalibrationError as exc:
+            print(f"bench: {labels_path}: {exc}", file=sys.stderr)
+            return 2
+        found = problems(labels, cases)
+        for text in found:
+            print(f"bench: {labels_path}: {text}", file=sys.stderr)
+        if found:
+            return 1
+        print(f"calibration: {len(labels)} labelled claim instance(s) check out")
+        return 0
+    results_file = Path(args.results) if args.results else latest_results(root)
+    if results_file is None or not results_file.is_file():
+        print("bench: no results to read; run `bin/bench run` first", file=sys.stderr)
+        return 2
+    records = read_results(results_file)
+    if args.action == "export":
+        if not args.out:
+            print(
+                "bench: export needs --out, where the rows are written", file=sys.stderr
+            )
+            return 2
+        rows = export_candidates(records, cases, sample=args.sample, seed=args.seed)
+        Path(args.out).write_text(
+            "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+        )
+        print(f"calibration: {len(rows)} claim instance(s) to label -> {args.out}")
+        return 0
+    try:
+        labels = load_labels(labels_path)
+    except CalibrationError as exc:
+        print(f"bench: {labels_path}: {exc}", file=sys.stderr)
+        return 2
+    print(render_calibration(calibrate(labels, records), labels_path))
+    return 0
+
+
 def compare_judges(args: argparse.Namespace, root: Path) -> int:
     """Run Jev, the llm judge and the reference over one run's kept evidence.
 
@@ -962,6 +1059,8 @@ def compare_judges(args: argparse.Namespace, root: Path) -> int:
             file=sys.stderr,
         )
         return 2
+    # The judge the run used is the default, not the model under test.
+    recorded_judge = next((r.judge_model for r in records if r.judge_model), None)
     try:
         config = resolve_config(
             # The model under test comes from the records, so NARE_MODEL is
@@ -969,12 +1068,20 @@ def compare_judges(args: argparse.Namespace, root: Path) -> int:
             model=models[0],
             provider=args.provider,
             base_url=base_url,
-            judge_model=args.judge_model,
+            judge_model=args.judge_model
+            or env.get("NARE_BENCH_JUDGE_MODEL")
+            or recorded_judge,
             env=env,
         )
         cases = {c.id: c for c in load_cases(root / "benchmarks" / "cases")}
     except (ConfigError, CaseError) as exc:
         print(f"bench: {exc}", file=sys.stderr)
+        return 2
+    if config.judge_model is None:
+        print(
+            "bench: no judge model: pass --judge-model or set NARE_BENCH_JUDGE_MODEL",
+            file=sys.stderr,
+        )
         return 2
     assert config.api_key is not None, "resolve_config demands a key by default"
 
@@ -1272,6 +1379,15 @@ def run_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) -> i
     if why is not None:
         print(f"bench: {why}", file=sys.stderr)
         return 2
+    judge = matrix[0][1].meta.judge_model
+    graded = sorted(b.meta.model for _, b in matrix if b.meta.model == judge)
+    if graded:
+        print(
+            f"bench: warning: the matrix's judge, {judge!r}, is also a matrix model, "
+            "so it grades its own reps; a judge from outside the matrix needs every "
+            "baseline blessed again",
+            file=sys.stderr,
+        )
     base_url = args.base_url or os.environ.get("NARE_BASE_URL") or None
     # Taken before staging: each model's prompt copies live under its name.
     stamp = new_stamp()
@@ -1432,7 +1548,7 @@ def compare_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) 
         if incomparable(baseline, config, args, where=baseline_file.name):
             refused = True
             continue
-        judges.add(config.judge_model)
+        judges.add(config.judge_model or "")
         variants[model] = render_variant(
             config.run_args.recorded, config.run_args.files
         )
@@ -1538,6 +1654,8 @@ def main(argv: list[str] | None = None) -> int:
         return compare_judges(args, root)
     if args.command == "models":
         return show_models(args, root)
+    if args.command == "calibrate":
+        return calibrate_command(args, root)
     try:
         cases = _select(root, args.tier, args.case)
     except CaseError as exc:
@@ -1608,6 +1726,16 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.command == "run":
+        why = require_judge(config, cases)
+        if why is not None:
+            print(f"bench: {why}", file=sys.stderr)
+            return 2
+        if config.judge_model == config.model:
+            print(
+                f"bench: warning: the judge is the model under test "
+                f"({config.model!r}), so its reps grade themselves",
+                file=sys.stderr,
+            )
         config = replace(config, run_args=run_args)
         baseline_file = baseline_path(
             root / "benchmarks" / "baselines", config.model, args.tier
@@ -1647,6 +1775,7 @@ def main(argv: list[str] | None = None) -> int:
         if note is not None:
             print(note)
         print(render(final))
+        print(calibration_text(root, records))
         return final.exit_code
 
     run_files = latest_run(root)
@@ -1733,7 +1862,7 @@ def main(argv: list[str] | None = None) -> int:
             commit=_commit(),
             provider=config.provider,
             model=config.model,
-            judge_model=config.judge_model,
+            judge_model=config.judge_model or "",
             max_tokens=config.max_tokens,
             nare_args=config.run_args.recorded,
             nare_files=dict(config.run_args.files),

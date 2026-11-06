@@ -295,3 +295,28 @@ def test_a_malformed_window_is_not_recorded() -> None:
         }
     )
     assert context_use(bad).window is None
+
+
+def test_an_unknown_cannot_turn_a_rep_into_a_fail() -> None:
+    """Counting every unknown as true still misses the threshold: a fail."""
+    judge = Judge(assertions=("a", "b", "c"), min_met=2)
+    passed = [CheckResult("x", True, "")]
+    assert rep_outcome(passed, judge, [False, False, None]) == "fail"
+
+
+def test_an_unknown_that_could_still_reach_the_threshold_is_an_error() -> None:
+    """Not settled either way by the judge: the rep is unjudged, not a fail."""
+    judge = Judge(assertions=("a", "b", "c"), min_met=2)
+    passed = [CheckResult("x", True, "")]
+    assert rep_outcome(passed, judge, [True, None, False]) == "error"
+
+
+def test_unknowns_do_not_block_a_pass_the_true_claims_already_earn() -> None:
+    judge = Judge(assertions=("a", "b", "c"), min_met=2)
+    passed = [CheckResult("x", True, "")]
+    assert rep_outcome(passed, judge, [True, True, None]) == "pass"
+
+
+def test_a_failed_check_still_fails_the_rep_whatever_the_unknowns() -> None:
+    judge = Judge(assertions=("a", "b"), min_met=1)
+    assert rep_outcome([CheckResult("x", False, "")], judge, [None, None]) == "fail"
