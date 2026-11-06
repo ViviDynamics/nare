@@ -6,13 +6,15 @@ import shutil
 import tempfile
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from benchmarks.runner.case import Case, load_cases
+from benchmarks.runner.case import Judge as CaseJudge
 from benchmarks.runner.reference import (
-    Judge,
+    JudgeFn,
     Reference,
     ReferenceError,
     load_reference,
@@ -37,10 +39,11 @@ class FakeRuntime:
         self,
         *,
         apply_code: int = 0,
-        failing: Callable[[str], bool] = lambda cmd: False,
+        failing: Callable[[str, str], bool] = lambda kind, cmd: False,
     ) -> None:
         self.apply_code = apply_code
         self.failing = failing
+        self.kind = ""
         self.written: dict[str, str] = {}
         self.ran: list[str] = []
 
@@ -59,6 +62,7 @@ class FakeRuntime:
         return None
 
     def apply(self, workdir: Path, artifacts: Path, directory: Path) -> int:
+        self.kind = directory.name
         return self.apply_code
 
     def write_out(self, workdir: Path, artifacts: Path, name: str, text: str) -> None:
@@ -70,7 +74,7 @@ class FakeRuntime:
 
     def check(self, workdir: Path, cmd: str, artifacts: Path) -> tuple[int, str]:
         self.ran.append(cmd)
-        return (1, "boom") if self.failing(cmd) else (0, "")
+        return (1, "boom") if self.failing(self.kind, cmd) else (0, "")
 
 
 def reference(tmp_path: Path, **files: str) -> Path:
@@ -81,7 +85,7 @@ def reference(tmp_path: Path, **files: str) -> Path:
     return directory
 
 
-def judged(met: list[bool | None]) -> Judge:
+def judged(met: list[bool | None]) -> JudgeFn:
     """A judge that gives these verdicts, whatever it is asked."""
 
     def judge(case: Case, diff: str, closing: str) -> Sequence[bool | None]:
@@ -122,7 +126,7 @@ def test_a_passing_solution_passes_its_checks(tmp_path: Path) -> None:
 
 def test_a_solution_fails_when_a_bash_check_fails(tmp_path: Path) -> None:
     case = case_named("fix-failing-test")
-    runtime = FakeRuntime(failing=lambda cmd: cmd == "pytest -q")
+    runtime = FakeRuntime(failing=lambda kind, cmd: cmd == "pytest -q")
     verdict = run_reference(case, reference(tmp_path), "solution", runtime)
     assert not verdict.ok
     assert any(line.startswith("failed: bash: pytest -q") for line in verdict.lines)
@@ -185,7 +189,7 @@ def test_a_solution_that_does_not_apply_fails(tmp_path: Path) -> None:
 
 def test_an_exploit_is_caught_when_a_check_fails(tmp_path: Path) -> None:
     case = case_named("bash-timeout-recovery")
-    runtime = FakeRuntime(failing=lambda cmd: "bar.greet('ann')" in cmd)
+    runtime = FakeRuntime(failing=lambda kind, cmd: "bar.greet('ann')" in cmd)
     verdict = run_reference(case, reference(tmp_path), "exploit", runtime)
     assert verdict.ok
     assert verdict.lines[0].startswith("caught by bash:")
@@ -246,7 +250,6 @@ def test_a_result_line_takes_its_questions_from_the_session() -> None:
     ref = Reference(
         directory=Path("."),
         kind="solution",
-        has_work=False,
         session=None,
         closing="",
         status="blocked",
@@ -265,24 +268,41 @@ def test_verify_fails_a_case_with_no_solution(tmp_path: Path) -> None:
     assert "no solution/ directory" in text
 
 
+def _case_with_references(tmp_path: Path, case_id: str, *kinds: str) -> Case:
+    """A copy of a real case in a temporary directory, with these reference dirs."""
+    case = case_named(case_id)
+    base = tmp_path / "case"
+    base.mkdir()
+    shutil.copytree(case.fixture, base / "fixture")
+    for kind in kinds:
+        (base / kind).mkdir()
+    return Case(**{**case.__dict__, "directory": base})
+
+
 def test_verify_fails_when_a_solution_does_not_pass(tmp_path: Path) -> None:
-    case = case_named("fix-failing-test")
-    solution = tmp_path / "solution"
-    solution.mkdir()
-    fixture_dir = tmp_path / "case"
-    fixture_dir.mkdir()
-    shutil.copytree(case.fixture, fixture_dir / "fixture")
-    (fixture_dir / "solution").mkdir()
-    (fixture_dir / "solution" / "result.toml").write_text('status = "done"\n')
-    relocated = Case(**{**case.__dict__, "directory": fixture_dir})
-    text, code = verify_references(
-        [relocated], FakeRuntime(failing=lambda cmd: cmd == "pytest -q")
+    relocated = _case_with_references(
+        tmp_path, "fix-failing-test", "solution", "exploit"
     )
+    failing = lambda kind, cmd: kind == "exploit" or cmd == "pytest -q"  # noqa: E731
+    text, code = verify_references([relocated], FakeRuntime(failing=failing))
     assert code == 1
     assert re.search(r"solution\s+FAIL", text)
-    text, code = verify_references([relocated], FakeRuntime())
+    assert re.search(r"exploit\s+ok", text)
+    text, code = verify_references(
+        [relocated], FakeRuntime(failing=lambda kind, cmd: kind == "exploit")
+    )
     assert code == 0
     assert re.search(r"solution\s+ok", text)
+    assert re.search(r"exploit\s+ok", text)
+
+
+def test_verify_fails_a_case_graded_by_execution_with_no_exploit(
+    tmp_path: Path,
+) -> None:
+    relocated = _case_with_references(tmp_path, "fix-failing-test", "solution")
+    text, code = verify_references([relocated], FakeRuntime())
+    assert code == 1
+    assert "no exploit/ directory" in text
 
 
 def test_verify_fails_an_exploit_that_passes(tmp_path: Path) -> None:
@@ -305,3 +325,73 @@ def test_every_case_has_a_reference_solution_and_an_exploit(case_id: str) -> Non
     assert (case.directory / "exploit").is_dir(), "no exploit/"
     load_reference(case.directory / "solution", "solution")
     load_reference(case.directory / "exploit", "exploit")
+
+
+def test_a_reference_with_an_unknown_file_is_refused(tmp_path: Path) -> None:
+    # A misnamed patch would apply nothing, and the attempt would be graded on
+    # the untouched fixture. That must be an error, not a pass.
+    with pytest.raises(ReferenceError, match="unknown file"):
+        load_reference(reference(tmp_path, fix__patch="x"), "exploit")
+
+
+def test_a_misnamed_patch_fails_the_exploit_instead_of_being_caught(
+    tmp_path: Path,
+) -> None:
+    case = case_named("bash-timeout-recovery")
+    verdict = run_reference(
+        case,
+        reference(tmp_path, fix__patch="x"),
+        "exploit",
+        FakeRuntime(failing=lambda k, c: True),
+    )
+    assert not verdict.ok
+    assert "unknown file" in verdict.lines[0]
+
+
+@pytest.mark.parametrize(
+    ("met", "caught"),
+    [
+        # A gate of two claims. Caught only when even counting every unknown as
+        # true would not reach it; an unknown is never a refutation.
+        ([None, None], False),
+        ([None, False], True),
+        ([True, None], False),
+        ([True, False], True),
+        ([True, True], False),
+        ([False, False], True),
+    ],
+)
+def test_a_judged_exploit_is_caught_only_by_a_failed_gate(
+    tmp_path: Path, met: list[bool | None], caught: bool
+) -> None:
+    base = case_named("edit-docstring")  # two claims
+    assert base.judge is not None
+    case = replace(base, judge=CaseJudge(base.judge.assertions, 2))
+    directory = reference(tmp_path, exploit__toml='caught_by = "judge"')
+    verdict = run_reference(case, directory, "exploit", FakeRuntime(), judged(met))
+    assert verdict.ok is caught
+
+
+def test_a_judged_exploit_on_a_case_the_judge_does_not_gate_fails(
+    tmp_path: Path,
+) -> None:
+    case = case_named("multi-file-rename")
+    directory = reference(tmp_path, exploit__toml='caught_by = "judge"')
+    verdict = run_reference(case, directory, "exploit", FakeRuntime(), judged([False]))
+    assert not verdict.ok
+    assert "does not gate it" in verdict.lines[0]
+
+
+def test_a_sandbox_that_fails_is_a_failed_verdict(tmp_path: Path) -> None:
+    from benchmarks.runner.sandbox import SandboxError
+
+    class Broken(FakeRuntime):
+        @contextmanager
+        def sandbox(self, case: Case) -> Iterator[tuple[Path, Path]]:
+            raise SandboxError("docker went away")
+            yield  # pragma: no cover
+
+    case = case_named("edit-docstring")
+    verdict = run_reference(case, reference(tmp_path), "solution", Broken())
+    assert not verdict.ok
+    assert verdict.lines == ("the sandbox failed: docker went away",)

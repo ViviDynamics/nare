@@ -246,8 +246,12 @@ def run_check(
 
 
 def git_checkpoint(workdir: Path) -> None:
-    """Used by `verify`, which needs a checkpoint without running the agent."""
-    _docker_run(
+    """Used by `verify`, which needs a checkpoint without running the agent.
+
+    A checkpoint that fails leaves no fixture commit, and a diff against no
+    commit reads as no change, so the failure is raised, not ignored.
+    """
+    code, _, err, _ = _docker_run(
         workdir,
         [
             "sh",
@@ -258,6 +262,8 @@ def git_checkpoint(workdir: Path) -> None:
         ],
         60,
     )
+    if code != 0:
+        raise SandboxError(f"could not checkpoint the fixture:\n{err.strip()}")
 
 
 # The closing message, written by the container from stdin rather than by the

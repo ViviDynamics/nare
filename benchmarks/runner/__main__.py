@@ -170,7 +170,11 @@ def build_parser() -> argparse.ArgumentParser:
         else:
             child = sub.add_parser(name, help=help_text)
         child.add_argument(
-            "--tier", choices=["smoke", "full"], default="smoke", help="which tier"
+            "--tier",
+            choices=["smoke", "full"],
+            # verify is free, so it checks every case unless asked otherwise.
+            default="full" if name == "verify" else "smoke",
+            help="which tier",
         )
         child.add_argument("--case", action="append", help="limit to this case id")
         if name == "verify":
@@ -1752,6 +1756,13 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         judge = None
         if args.judge:
+            if not (args.judge_model or os.environ.get("NARE_BENCH_JUDGE_MODEL")):
+                print(
+                    "bench: verify --judge needs a judge model: pass --judge-model "
+                    "or set NARE_BENCH_JUDGE_MODEL",
+                    file=sys.stderr,
+                )
+                return 2
             try:
                 # verify runs no agent, so the judge stands in for the model.
                 config = resolve_config(

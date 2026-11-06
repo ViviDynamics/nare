@@ -35,11 +35,22 @@ from benchmarks.runner.grade import (
     grade_bash_check,
     grade_result_check,
 )
+from benchmarks.runner.sandbox import SandboxError
 from nare.session import dumps, new_session
 
 Kind = Literal["solution", "exploit"]
 CaughtBy = Literal["checks", "judge"]
 _CAUGHT_BY: tuple[str, ...] = ("checks", "judge")
+_FILES = frozenset(
+    {
+        "patch.diff",
+        "solve.sh",
+        "session.json",
+        "closing.txt",
+        "result.toml",
+        "exploit.toml",
+    }
+)
 
 
 class ReferenceError(Exception):
@@ -50,7 +61,6 @@ class ReferenceError(Exception):
 class Reference:
     directory: Path
     kind: Kind
-    has_work: bool
     session: dict[str, Any] | None
     closing: str
     status: str
@@ -60,6 +70,12 @@ class Reference:
 
 def load_reference(directory: Path, kind: Kind) -> Reference:
     """Read one reference directory. Malformed files raise ReferenceError."""
+    unknown = sorted(p.name for p in directory.iterdir() if p.name not in _FILES)
+    if unknown:
+        raise ReferenceError(
+            f"{directory}: unknown file(s) {', '.join(unknown)}; a patch is "
+            "patch.diff and a script is solve.sh"
+        )
     session_path = directory / "session.json"
     session: dict[str, Any] | None = None
     if session_path.is_file():
@@ -88,8 +104,6 @@ def load_reference(directory: Path, kind: Kind) -> Reference:
     return Reference(
         directory=directory,
         kind=kind,
-        has_work=(directory / "patch.diff").is_file()
-        or (directory / "solve.sh").is_file(),
         session=session,
         closing=closing,
         status=status,
@@ -146,7 +160,7 @@ class Runtime(Protocol):
 
 # Judge: the claims' verdicts, in order, None where the judge said unknown.
 # Raises on a judge that could not answer.
-Judge = Callable[[Case, str, str], Sequence[bool | None]]
+JudgeFn = Callable[[Case, str, str], Sequence[bool | None]]
 
 
 @dataclass(frozen=True)
@@ -162,13 +176,27 @@ def run_reference(
     directory: Path,
     kind: Kind,
     runtime: Runtime,
-    judge: Judge | None = None,
+    judge: JudgeFn | None = None,
 ) -> Verdict:
     """Apply one reference to a fresh sandbox and grade it against the case."""
     try:
         ref = load_reference(directory, kind)
     except ReferenceError as exc:
         return Verdict(case.id, kind, False, (str(exc),))
+    try:
+        return _graded(case, ref, directory, kind, runtime, judge)
+    except SandboxError as exc:
+        return Verdict(case.id, kind, False, (f"the sandbox failed: {exc}",))
+
+
+def _graded(
+    case: Case,
+    ref: Reference,
+    directory: Path,
+    kind: Kind,
+    runtime: Runtime,
+    judge: JudgeFn | None,
+) -> Verdict:
     with runtime.sandbox(case) as (workdir, artifacts):
         runtime.checkpoint(workdir)
         code = runtime.apply(workdir, artifacts, directory)
@@ -203,7 +231,7 @@ def _judged_solution(
     graded: list[CheckResult],
     failed: list[CheckResult],
     diff: str,
-    judge: Judge | None,
+    judge: JudgeFn | None,
 ) -> Verdict:
     lines = [f"{len(graded) - len(failed)}/{len(graded)} checks pass"]
     for c in failed:
@@ -236,7 +264,7 @@ def _judged_exploit(
     graded: list[CheckResult],
     failed: list[CheckResult],
     diff: str,
-    judge: Judge | None,
+    judge: JudgeFn | None,
 ) -> Verdict:
     if ref.caught_by == "checks":
         if failed:
@@ -249,7 +277,14 @@ def _judged_exploit(
             False,
             ("the exploit passes every check; the case does not measure this cheat",),
         )
-    if judge is None or case.judge is None:
+    if case.judge is None or case.judge.min_met is None:
+        return Verdict(
+            case.id,
+            "exploit",
+            False,
+            ("this case's judge does not gate it, so it cannot catch an exploit",),
+        )
+    if judge is None:
         return Verdict(
             case.id,
             "exploit",
@@ -259,16 +294,43 @@ def _judged_exploit(
     verdicts = _claims(case, diff, ref.closing, judge)
     if isinstance(verdicts, str):
         return Verdict(case.id, "exploit", False, (verdicts,))
-    unmet = [
-        a for a, v in zip(case.judge.assertions, verdicts, strict=True) if v is not True
-    ]
-    if unmet:
-        return Verdict(case.id, "exploit", True, (f"caught by the judge: {unmet[0]}",))
+    met = sum(v is True for v in verdicts)
+    unknown = sum(v is None for v in verdicts)
+    gate = case.judge.min_met
+    if met >= gate:
+        return Verdict(
+            case.id,
+            "exploit",
+            False,
+            (
+                f"the exploit meets the judge gate: {met} of {len(verdicts)} "
+                f"claims, gate {gate}",
+            ),
+        )
+    if met + unknown < gate:
+        # Even counting every unknown as true, the gate is not reached.
+        unmet = [
+            a
+            for a, v in zip(case.judge.assertions, verdicts, strict=True)
+            if v is not True
+        ]
+        return Verdict(
+            case.id,
+            "exploit",
+            True,
+            (
+                f"caught by the judge: {met} of {len(verdicts)} claims met, "
+                f"gate {gate}; {unmet[0]}",
+            ),
+        )
     return Verdict(
         case.id,
         "exploit",
         False,
-        ("the exploit passes every check and every judge claim",),
+        (
+            f"the judge could not settle the gate: {met} met and {unknown} unknown, "
+            f"gate {gate}",
+        ),
     )
 
 
@@ -279,7 +341,7 @@ def _short(label: str) -> str:
 
 
 def _claims(
-    case: Case, diff: str, closing: str, judge: Judge
+    case: Case, diff: str, closing: str, judge: JudgeFn
 ) -> list[bool | None] | str:
     """One verdict per claim, or the reason the judge did not give them."""
     assert case.judge is not None
@@ -330,12 +392,13 @@ class DockerRuntime:
 def verify_references(
     cases: Sequence[Case],
     runtime: Runtime,
-    judge: Judge | None = None,
+    judge: JudgeFn | None = None,
 ) -> tuple[str, int]:
     """Every case's solution must pass, and its exploit must be caught.
 
-    A case with no solution fails: every case needs one. An exploit is
-    optional here; the test suite requires one for each case.
+    A case with no solution fails, and so does a case graded by execution
+    with no exploit: each needs one. A case graded only by its result is not
+    required to have an exploit.
     """
     lines: list[str] = []
     failed = False
@@ -349,6 +412,9 @@ def verify_references(
         exploit = case.directory / "exploit"
         if exploit.is_dir():
             verdicts.append(run_reference(case, exploit, "exploit", runtime, judge))
+        elif case.bash_checks:
+            failed = True
+            lines.append(f"{case.id:<26} FAIL: no exploit/ directory")
         for verdict in verdicts:
             failed = failed or not verdict.ok
             status = "ok" if verdict.ok else "FAIL"
@@ -358,7 +424,7 @@ def verify_references(
     return "\n".join(lines), 1 if failed else 0
 
 
-def judge_from(transport_factory: Callable[[], Any]) -> Judge:
+def judge_from(transport_factory: Callable[[], Any]) -> JudgeFn:
     """A synchronous judge over the benchmark's own judge transport."""
     from benchmarks.runner.judge import score
 
