@@ -6,6 +6,7 @@ Issue #42. The spec is docs/superpowers/specs/2026-11-05-summary-compaction-desi
 from __future__ import annotations
 
 import copy
+import json
 import math
 from dataclasses import replace
 from pathlib import Path
@@ -30,7 +31,7 @@ from nare.compact import (
 )
 from nare.events import Event
 from nare.loop import RetryPolicy, SummaryTier, run, step
-from nare.session import Message, Session, Usage, new_session, reopen
+from nare.session import Message, Session, Usage, dumps, loads, new_session, reopen
 from nare.tools import Policy, approve_all
 from nare.transport import ProviderStatusError, Reply, StopReason
 from test_compact import THINKING, transcript, without_thinking
@@ -633,3 +634,51 @@ async def test_a_budget_stop_is_reported_before_the_context_stop() -> None:
     # One error, the budget's: the context stop did not come first.
     [error] = [e for e in events if e.type == "error"]
     assert "budget" in error.detail
+
+
+def wrote_first() -> Session:
+    """at_trigger() whose first turn wrote a file and succeeded. A summary
+    replaces that turn, and the write leaves the transcript for the archive."""
+    s = new_session("go", session_id="w")
+    s.messages = transcript()
+    s.messages[1].content[0].update(
+        name="write", input={"path": "out.py", "content": "print(1)\n"}
+    )
+    s.last_input_tokens = 7500
+    s.last_input_messages = 11
+    s.last_input_chars = context_chars(s.messages[:11])
+    return s
+
+
+QUESTION = "Done: the helper is in out.py. Should I also update the docs?"
+
+
+async def test_a_write_a_summary_replaced_still_stops_the_question_nudge() -> None:
+    s = wrote_first()
+    fake = FakeProvider([summary_reply("S"), text_reply(QUESTION)])
+    events = await drain(s, fake, compaction="summary", question_nudge=True)
+    assert len(s.summaries) == 1
+    assert not [b for m in s.messages for b in m.content if b.get("name") == "write"]
+    assert (s.status, s.ask_nudged) == ("done", False)
+    assert not [e for e in events if "question_nudge" in e.detail]
+    # The archive is what remembers the write, so it must outlive a resume.
+    resumed = loads(dumps(s))
+    reopen(resumed, "and the tests?")
+    again = FakeProvider([text_reply(QUESTION)])
+    await drain(resumed, again, question_nudge=True)
+    assert (resumed.status, resumed.ask_nudged) == ("done", False)
+    assert len(again.calls) == 1
+
+
+async def test_an_archive_in_another_shape_adds_no_write() -> None:
+    raw = json.loads(dumps(new_session("go")))
+    raw["summaries"] = [
+        "junk",
+        {"replaced": "junk"},
+        {"replaced": [None, {"role": "user", "content": "junk"}]},
+        {"replaced": [{"role": "assistant", "content": ["junk", None]}]},
+    ]
+    resumed = loads(json.dumps(raw))
+    fake = FakeProvider([text_reply(QUESTION), text_reply("Done.")])
+    await drain(resumed, fake, question_nudge=True)
+    assert (resumed.status, resumed.ask_nudged) == ("done", True)

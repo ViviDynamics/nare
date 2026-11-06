@@ -337,22 +337,41 @@ def asks_in_prose(text: str) -> bool:
     return _SENTENCE_QUESTION.search(prose) is not None
 
 
+def _history(s: Session) -> Iterable[tuple[Any, list[Any]]]:
+    """Every message the session has held, as (role, blocks): the turns a
+    summary replaced, from its archive, then the transcript. A record a file
+    holds in another shape adds nothing."""
+    for archived in s.summaries:
+        replaced = archived.get("replaced") if isinstance(archived, dict) else None
+        for message in replaced if isinstance(replaced, list) else ():
+            if isinstance(message, dict) and isinstance(message.get("content"), list):
+                yield message.get("role"), message["content"]
+    for message in s.messages:
+        yield message.role, message.content
+
+
 def _wrote_a_file(s: Session) -> bool:
-    """Whether a write or edit has succeeded in this session."""
+    """Whether a write or edit has succeeded in this session, including in the
+    turns a summary has since replaced."""
+    blocks = [
+        (role, block)
+        for role, content in _history(s)
+        for block in content
+        if isinstance(block, dict)
+    ]
     writes = {
         block.get("id")
-        for message in s.messages
-        if message.role == "assistant"
-        for block in message.content
-        if block.get("type") == "tool_use" and block.get("name") in ("write", "edit")
+        for role, block in blocks
+        if role == "assistant"
+        and block.get("type") == "tool_use"
+        and block.get("name") in ("write", "edit")
     }
     return any(
-        block.get("type") == "tool_result"
+        role == "user"
+        and block.get("type") == "tool_result"
         and block.get("tool_use_id") in writes
         and not block.get("is_error")
-        for message in s.messages
-        if message.role == "user"
-        for block in message.content
+        for role, block in blocks
     )
 
 
