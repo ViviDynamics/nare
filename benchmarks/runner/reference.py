@@ -14,17 +14,17 @@ A reference directory holds any of these, all optional:
     exploit.toml  caught_by = "checks" (default) or "judge"
 
 Nothing here runs a container itself. A runtime does, so the grading policy
-is testable with a fake one.
+is testable with a fake one. The judge's gate is the benchmark's own
+(grade.rep_outcome), so a reference is graded the way a run is.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import tomllib
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -34,8 +34,18 @@ from benchmarks.runner.grade import (
     ResultLine,
     grade_bash_check,
     grade_result_check,
+    rep_outcome,
 )
-from benchmarks.runner.sandbox import SandboxError
+from benchmarks.runner.sandbox import (
+    DID_NOT_RUN,
+    SandboxError,
+    apply_reference,
+    git_checkpoint,
+    git_diff,
+    run_check,
+    write_out,
+)
+from benchmarks.runner.sandbox import sandbox as sandbox_context
 from nare.session import dumps, new_session
 
 Kind = Literal["solution", "exploit"]
@@ -158,8 +168,8 @@ class Runtime(Protocol):
     def check(self, workdir: Path, cmd: str, artifacts: Path) -> tuple[int, str]: ...
 
 
-# Judge: the claims' verdicts, in order, None where the judge said unknown.
-# Raises on a judge that could not answer.
+# The judge: one verdict per claim, in order, None where it said unknown. It
+# raises when it could not answer.
 JudgeFn = Callable[[Case, str, str], Sequence[bool | None]]
 
 
@@ -169,6 +179,9 @@ class Verdict:
     kind: str
     ok: bool
     lines: tuple[str, ...] = field(default=())
+    # Judged items this run did not judge (without --judge), so verify can say
+    # what it did not verify.
+    not_run: int = 0
 
 
 def run_reference(
@@ -184,7 +197,7 @@ def run_reference(
     except ReferenceError as exc:
         return Verdict(case.id, kind, False, (str(exc),))
     try:
-        return _graded(case, ref, directory, kind, runtime, judge)
+        return _graded(case, ref, directory, runtime, judge)
     except SandboxError as exc:
         return Verdict(case.id, kind, False, (f"the sandbox failed: {exc}",))
 
@@ -193,10 +206,10 @@ def _graded(
     case: Case,
     ref: Reference,
     directory: Path,
-    kind: Kind,
     runtime: Runtime,
     judge: JudgeFn | None,
 ) -> Verdict:
+    kind = ref.kind
     with runtime.sandbox(case) as (workdir, artifacts):
         runtime.checkpoint(workdir)
         code = runtime.apply(workdir, artifacts, directory)
@@ -204,6 +217,8 @@ def _graded(
             return Verdict(
                 case.id, kind, False, (f"the {kind} did not apply (exit {code})",)
             )
+        if not (artifacts / "after.json").is_file():
+            raise SandboxError("the leftovers snapshot was not written")
         session_text = _session_text(case, ref)
         runtime.write_out(workdir, artifacts, "session.json", session_text)
         runtime.write_out(workdir, artifacts, "closing.txt", ref.closing)
@@ -217,60 +232,61 @@ def _graded(
         ]
         for check in case.bash_checks:
             exit_code, output = runtime.check(workdir, check.cmd or "", artifacts)
+            if exit_code in DID_NOT_RUN:
+                raise SandboxError(
+                    f"a check did not run (exit {exit_code}): "
+                    f"{_short(f'bash: {check.cmd}')}"
+                )
             graded.append(grade_bash_check(check, exit_code, output))
-
-    failed = [c for c in graded if not c.passed]
     if kind == "solution":
-        return _judged_solution(case, ref, graded, failed, diff, judge)
-    return _judged_exploit(case, ref, graded, failed, diff, judge)
+        return _solution_verdict(case, ref, graded, diff, judge)
+    return _exploit_verdict(case, ref, graded, diff, judge)
 
 
-def _judged_solution(
+def _solution_verdict(
     case: Case,
     ref: Reference,
     graded: list[CheckResult],
-    failed: list[CheckResult],
     diff: str,
     judge: JudgeFn | None,
 ) -> Verdict:
+    failed = [c for c in graded if not c.passed]
     lines = [f"{len(graded) - len(failed)}/{len(graded)} checks pass"]
-    for c in failed:
-        detail = c.detail.splitlines()[0] if c.detail else ""
-        lines.append(f"failed: {_short(c.label)} {detail}".rstrip())
-    ok = not failed
-    if case.judge is not None and judge is not None:
-        verdicts = _claims(case, diff, ref.closing, judge)
-        if isinstance(verdicts, str):
-            lines.append(verdicts)
-            ok = False
-        else:
-            met = sum(v is True for v in verdicts)
-            lines.append(f"judge: {met}/{len(verdicts)} claims met")
-            unmet = [
-                a
-                for a, v in zip(case.judge.assertions, verdicts, strict=True)
-                if v is not True
-            ]
-            lines += [f"unmet: {a}" for a in unmet]
-            ok = ok and not unmet
-    elif case.judge is not None:
-        lines.append("judge: not run (pass --judge)")
-    return Verdict(case.id, "solution", ok, tuple(lines))
+    lines += _failures(failed)
+    if case.judge is None or judge is None:
+        if case.judge is not None:
+            lines.append("judge: not run (pass --judge)")
+        outcome = rep_outcome(graded, None, None)
+        not_run = 1 if case.judge is not None else 0
+        return Verdict(case.id, "solution", outcome == "pass", tuple(lines), not_run)
+    verdicts = _claims(case, diff, ref.closing, judge)
+    if isinstance(verdicts, str):
+        return Verdict(case.id, "solution", False, (*lines, verdicts))
+    # A solution must meet every claim, so the gate is all of them.
+    everything = replace(case.judge, min_met=len(case.judge.assertions))
+    outcome = rep_outcome(graded, everything, verdicts)
+    met = sum(v is True for v in verdicts)
+    lines.append(f"judge: {met}/{len(verdicts)} claims met")
+    lines += [
+        f"unmet: {a}"
+        for a, v in zip(case.judge.assertions, verdicts, strict=True)
+        if v is not True
+    ]
+    return Verdict(case.id, "solution", outcome == "pass", tuple(lines))
 
 
-def _judged_exploit(
+def _exploit_verdict(
     case: Case,
     ref: Reference,
     graded: list[CheckResult],
-    failed: list[CheckResult],
     diff: str,
     judge: JudgeFn | None,
 ) -> Verdict:
+    failed = [c for c in graded if not c.passed]
     if ref.caught_by == "checks":
         if failed:
-            return Verdict(
-                case.id, "exploit", True, (f"caught by {_short(failed[0].label)}",)
-            )
+            labels = "; ".join(_short(c.label) for c in failed)
+            return Verdict(case.id, "exploit", True, (f"caught by {labels}",))
         return Verdict(
             case.id,
             "exploit",
@@ -290,14 +306,31 @@ def _judged_exploit(
             "exploit",
             True,
             ("caught by the judge: not run (pass --judge to check it)",),
+            not_run=1,
         )
     verdicts = _claims(case, diff, ref.closing, judge)
     if isinstance(verdicts, str):
         return Verdict(case.id, "exploit", False, (verdicts,))
+    # The benchmark's own gate: a fail here is the judge catching the exploit.
+    outcome = rep_outcome([], case.judge, verdicts)
     met = sum(v is True for v in verdicts)
-    unknown = sum(v is None for v in verdicts)
     gate = case.judge.min_met
-    if met >= gate:
+    if outcome == "fail":
+        unmet = next(
+            a
+            for a, v in zip(case.judge.assertions, verdicts, strict=True)
+            if v is not True
+        )
+        return Verdict(
+            case.id,
+            "exploit",
+            True,
+            (
+                f"caught by the judge: {met} of {len(verdicts)} claims met, "
+                f"gate {gate}; {unmet}",
+            ),
+        )
+    if outcome == "pass":
         return Verdict(
             case.id,
             "exploit",
@@ -307,31 +340,20 @@ def _judged_exploit(
                 f"claims, gate {gate}",
             ),
         )
-    if met + unknown < gate:
-        # Even counting every unknown as true, the gate is not reached.
-        unmet = [
-            a
-            for a, v in zip(case.judge.assertions, verdicts, strict=True)
-            if v is not True
-        ]
-        return Verdict(
-            case.id,
-            "exploit",
-            True,
-            (
-                f"caught by the judge: {met} of {len(verdicts)} claims met, "
-                f"gate {gate}; {unmet[0]}",
-            ),
-        )
     return Verdict(
         case.id,
         "exploit",
         False,
-        (
-            f"the judge could not settle the gate: {met} met and {unknown} unknown, "
-            f"gate {gate}",
-        ),
+        (f"the judge could not settle the gate: {met} met, gate {gate}",),
     )
+
+
+def _failures(failed: Sequence[CheckResult]) -> list[str]:
+    lines = []
+    for c in failed:
+        detail = c.detail.splitlines()[0] if c.detail else ""
+        lines.append(f"failed: {_short(c.label)} {detail}".rstrip())
+    return lines
 
 
 def _short(label: str) -> str:
@@ -349,8 +371,8 @@ def _claims(
         verdicts = list(judge(case, diff, closing))
     except Exception as exc:
         return f"judge failed: {type(exc).__name__}: {exc}"
-    if len(verdicts) != len(case.judge.assertions):
-        wanted = len(case.judge.assertions)
+    wanted = len(case.judge.assertions)
+    if len(verdicts) != wanted:
         return f"judge gave {len(verdicts)} verdicts for {wanted} claims"
     return verdicts
 
@@ -359,33 +381,21 @@ class DockerRuntime:
     """The real runtime: each step is a container, as an agent's would be."""
 
     def sandbox(self, case: Case) -> AbstractContextManager[tuple[Path, Path]]:
-        from benchmarks.runner.sandbox import sandbox
-
-        return sandbox(case)
+        return sandbox_context(case)
 
     def checkpoint(self, workdir: Path) -> None:
-        from benchmarks.runner.sandbox import git_checkpoint
-
         git_checkpoint(workdir)
 
     def apply(self, workdir: Path, artifacts: Path, directory: Path) -> int:
-        from benchmarks.runner.sandbox import apply_reference
-
         return apply_reference(workdir, artifacts, directory)
 
     def write_out(self, workdir: Path, artifacts: Path, name: str, text: str) -> None:
-        from benchmarks.runner.sandbox import write_out
-
         write_out(workdir, artifacts, name, text)
 
     def diff(self, workdir: Path) -> str:
-        from benchmarks.runner.sandbox import git_diff
-
         return git_diff(workdir)
 
     def check(self, workdir: Path, cmd: str, artifacts: Path) -> tuple[int, str]:
-        from benchmarks.runner.sandbox import run_check
-
         return run_check(workdir, cmd, 120, artifacts=artifacts)
 
 
@@ -396,12 +406,14 @@ def verify_references(
 ) -> tuple[str, int]:
     """Every case's solution must pass, and its exploit must be caught.
 
-    A case with no solution fails, and so does a case graded by execution
-    with no exploit: each needs one. A case graded only by its result is not
-    required to have an exploit.
+    A case with no solution fails, and so does a case graded by execution with
+    no exploit: each needs one. A case graded only by its result is not
+    required to have an exploit. Without a judge, the judged items are reported
+    as not run, and the exit status says only what was run.
     """
     lines: list[str] = []
     failed = False
+    not_run = 0
     for case in cases:
         solution = case.directory / "solution"
         if not solution.is_dir():
@@ -417,15 +429,22 @@ def verify_references(
             lines.append(f"{case.id:<26} FAIL: no exploit/ directory")
         for verdict in verdicts:
             failed = failed or not verdict.ok
+            not_run += verdict.not_run
             status = "ok" if verdict.ok else "FAIL"
-            head = f"{case.id:<26} {verdict.kind:<9} {status}"
-            lines.append(head)
+            lines.append(f"{case.id:<26} {verdict.kind:<9} {status}")
             lines += [f"    {line}" for line in verdict.lines]
+    if not_run:
+        lines.append(
+            f"{not_run} judged item(s) not run: pass --judge to verify the claims "
+            "and the judge-caught exploits"
+        )
     return "\n".join(lines), 1 if failed else 0
 
 
 def judge_from(transport_factory: Callable[[], Any]) -> JudgeFn:
     """A synchronous judge over the benchmark's own judge transport."""
+    import asyncio
+
     from benchmarks.runner.judge import score
 
     transport = transport_factory()

@@ -26,7 +26,7 @@ change without notice. See "Which models the endpoint serves" below.
 
     bin/bench models                    # free: what can I run?
     bin/bench verify                    # free: do the checks measure, and do the references pass?
-    bin/bench verify --judge            # also the judge's claims, one call per case
+    bin/bench verify --judge            # also the judge's claims: one call per judged solution
     bin/bench run --tier smoke          # measure
     bin/bench bless --tier smoke        # promote the numbers to a baseline
 
@@ -524,8 +524,9 @@ Each directory holds any of these, all optional:
 
 Nothing is run against a model. `verify` applies each attempt in a fresh
 container, the way an agent's work arrives, and then runs the case's checks on
-the result. `--judge` sends the diff and the closing message to the judge, one
-call per judged case, so it needs a key and a judge model. Without it,
+the result. `--judge` sends the diff and the closing message to the judge: one call
+per judged solution, and one per exploit the judge decides. So it needs a key
+and a judge model. Without it,
 `verify` makes no model call.
 
 A reference that fails is a case that does not measure what it says: fix the

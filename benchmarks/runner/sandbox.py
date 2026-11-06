@@ -26,6 +26,11 @@ from nare.session import new_session, save
 IMAGE = "nare-bench:local"
 
 
+# Exit statuses that mean a container never ran the command: timeout (124),
+# cannot run it (126), not found (127), docker itself failed (125).
+DID_NOT_RUN = range(124, 128)
+
+
 class SandboxError(Exception):
     """The sandbox could not be prepared or run. Always exit 2."""
 

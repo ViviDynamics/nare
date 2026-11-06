@@ -100,6 +100,7 @@ from benchmarks.runner.report import (
     summarize,
 )
 from benchmarks.runner.sandbox import (
+    DID_NOT_RUN,
     RunArtifacts,
     SandboxError,
     build_image,
@@ -127,7 +128,6 @@ CONFIRM_REPS = 7
 # 124 is the sandbox timeout; 125-127 are docker's own (daemon, permissions,
 # command not found). A check that exits one of these never ran, so it proves
 # nothing about the fixture and must not read as a failing check.
-DID_NOT_RUN = range(124, 128)
 TOKEN_BAND = 0.10
 
 
@@ -182,7 +182,8 @@ def build_parser() -> argparse.ArgumentParser:
                 "--judge",
                 action="store_true",
                 help="also judge each solution's claims, and each exploit a judge "
-                "catches (one judge call per case; needs a key)",
+                "catches (one judge call per judged solution, and one per exploit "
+                "the judge decides; needs a key)",
             )
             child.add_argument(
                 "--provider", help="judge's provider (env: NARE_PROVIDER)"

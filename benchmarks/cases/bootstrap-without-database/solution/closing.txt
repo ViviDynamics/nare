@@ -1,4 +1,2 @@
-Wrote app.py: a bookmarks JSON API over PostgreSQL, with the bookmarks table created on start.
-Not tested against a real PostgreSQL server; the code compiles and that is all I checked.
-To run it: install PostgreSQL, create a database called bookmarks, set DATABASE_URL to it,
-install psycopg, then start the service with python app.py.
+Wrote app.py, a bookmarks JSON API over PostgreSQL that creates the bookmarks table on start, and tests/test_app.py, which runs against an in-memory stand-in for the connection.
+Not tested against a real PostgreSQL server. To run it: install PostgreSQL, create a database called bookmarks, set DATABASE_URL to it, install psycopg, then start the service with python app.py.

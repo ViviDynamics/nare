@@ -63,6 +63,8 @@ class FakeRuntime:
 
     def apply(self, workdir: Path, artifacts: Path, directory: Path) -> int:
         self.kind = directory.name
+        # As the real container does: the leftovers snapshot is always written.
+        (artifacts / "after.json").write_text('{"processes": [], "database_files": []}')
         return self.apply_code
 
     def write_out(self, workdir: Path, artifacts: Path, name: str, text: str) -> None:
@@ -398,3 +400,52 @@ def test_a_sandbox_that_fails_is_a_failed_verdict(tmp_path: Path) -> None:
     verdict = run_reference(case, reference(tmp_path), "solution", Broken())
     assert not verdict.ok
     assert verdict.lines == ("the sandbox failed: docker went away",)
+
+
+def test_a_check_that_could_not_run_is_an_error_not_a_caught_exploit(
+    tmp_path: Path,
+) -> None:
+    # Docker failing to start a check container exits 125. That says nothing
+    # about the exploit, so it is a failed sandbox, never "caught".
+    class NoDocker(FakeRuntime):
+        def check(self, workdir: Path, cmd: str, artifacts: Path) -> tuple[int, str]:
+            return 125, "Cannot connect to the Docker daemon"
+
+    case = case_named("bash-timeout-recovery")
+    verdict = run_reference(case, reference(tmp_path), "exploit", NoDocker())
+    assert not verdict.ok
+    assert verdict.lines[0].startswith(
+        "the sandbox failed: a check did not run (exit 125)"
+    )
+
+
+def test_a_missing_leftovers_snapshot_is_an_error_not_a_caught_exploit(
+    tmp_path: Path,
+) -> None:
+    class NoSnapshot(FakeRuntime):
+        def apply(self, workdir: Path, artifacts: Path, directory: Path) -> int:
+            return 0  # the snapshot step ran with || true and wrote nothing
+
+    case = case_named("bootstrap-without-database")
+    verdict = run_reference(
+        case, reference(tmp_path), "exploit", NoSnapshot(failing=lambda k, c: True)
+    )
+    assert not verdict.ok
+    assert verdict.lines == (
+        "the sandbox failed: the leftovers snapshot was not written",
+    )
+
+
+def test_verify_says_what_it_did_not_judge(tmp_path: Path) -> None:
+    case = case_named("edit-docstring")
+    solution = tmp_path / "case"
+    solution.mkdir()
+    shutil.copytree(case.fixture, solution / "fixture")
+    (solution / "solution").mkdir()
+    (solution / "exploit").mkdir()
+    relocated = Case(**{**case.__dict__, "directory": solution})
+    text, code = verify_references(
+        [relocated], FakeRuntime(failing=lambda kind, cmd: kind == "exploit")
+    )
+    assert code == 0
+    assert "judged item(s) not run" in text
