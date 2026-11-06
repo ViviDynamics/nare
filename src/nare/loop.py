@@ -40,6 +40,7 @@ from nare.reads import build as build_reads
 from nare.schema import DuplicateKeyError, SchemaError, extract_json, validate
 from nare.session import Message, Session, append_user_text, drop_signed_thinking
 from nare.tools import (
+    READ_ONLY_TOOLS,
     Approve,
     Policy,
     approve_all,
@@ -1476,7 +1477,7 @@ async def run(
     session: Session,
     *,
     transport: Transport,
-    approve: Approve = approve_all,
+    approve: Approve | None = None,
     policy: Policy | None = None,
     schema: dict[str, Any] | None = None,
     max_turns: int = MAX_TURNS_DEFAULT,
@@ -1506,13 +1507,21 @@ async def run(
     check_max_tool_calls(max_tool_calls)
     check_max_corrections(max_corrections)
     check_max_cutoffs(max_cutoffs)
+    # No policy and no approver: read-only tools. An approver is the caller
+    # opting in to the built-in set, each call still gated by it. A policy
+    # names exactly what the session offers, so it always wins.
+    if policy is None:
+        base = Policy() if approve is not None else Policy(tools=READ_ONLY_TOOLS)
+    else:
+        base = policy
+    approver = approve_all if approve is None else approve
     reads = build_reads(
         require_reads,
         list(require_read),
         root=policy.root if policy is not None else None,
         cited=list(require_cited_reads),
     )
-    if reads.active and "read" not in (policy or Policy()).tools:
+    if reads.active and "read" not in base.tools:
         raise ValueError("a read requirement needs the read tool")
     if reads.cited and schema is None:
         raise ValueError(
@@ -1533,7 +1542,6 @@ async def run(
     try:
         async with connect(mcp_servers or {}) as mcp:
             external = {**mcp, **caller}
-            base = policy or Policy()
             names = (
                 base.tools | external.keys()
                 if policy is None or mcp_allow_all
@@ -1546,7 +1554,7 @@ async def run(
                 _run(
                     session,
                     transport=transport,
-                    approve=approve,
+                    approve=approver,
                     policy=active,
                     schema=schema,
                     max_turns=max_turns,

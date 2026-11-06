@@ -300,7 +300,10 @@ async def drain(
     session: Session, transport: Transport, *, max_turns: int = MAX_TURNS_DEFAULT
 ) -> list[str]:
     return [
-        e.type async for e in run(session, transport=transport, max_turns=max_turns)
+        e.type
+        async for e in run(
+            session, transport=transport, max_turns=max_turns, policy=Policy()
+        )
     ]
 
 

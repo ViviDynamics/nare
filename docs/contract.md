@@ -763,9 +763,11 @@ result, and nobody is asked to approve it. A call that passes goes through the
 approval seam: `--yes` on the command line, or the `approve` callable in the
 library. A denial is an error result, as for built-ins.
 
-Caller tools follow the same allowlist as built-ins. With no `--tools` and no
-policy, every registered tool is offered. An explicit allowlist offers only the
-tools it names, and `--tools none` offers none. A name that is allowlisted but
+Caller tools follow the same allowlist as built-ins. With no `--tools` on the
+command line, every registered tool is offered, with every built-in tool. In the
+library, a call with no policy offers the registered tools and the read-only
+built-ins, as [run and step](#run-and-step) says. An explicit allowlist offers
+only the tools it names, and `--tools none` offers none. A name that is allowlisted but
 not registered is declared in the policy's `pending` set, as with MCP names:
 
 ```python
@@ -840,12 +842,25 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-**Pass `policy`.** With no policy, `run` offers every built-in tool, `bash`
-included, and `approve` defaults to `approve_all`, so a call that names no
-policy runs shell commands without asking. A call that needs an answer and no
-side effects passes `Policy(tools=frozenset())`, as the examples do. A policy
-that names a caller tool must name it in `tools` and in `pending`, as the
-[caller tools](#caller-tools) section shows.
+**Pass `policy`.** With neither a policy nor an `approve` callable, `run` offers
+only `read`, `list` and `search`. It cannot write, edit or run `bash`. To offer
+the built-in tools, pass a policy that names them, as `Policy()` does, or pass
+an `approve` callable, which gates each call and offers the whole built-in set.
+A call that needs an answer and no side effects passes
+`Policy(tools=frozenset())`, as the examples do. A policy that names a caller
+tool must name it in `tools` and in `pending`, as the
+[caller tools](#caller-tools) section shows. MCP servers and caller tools are
+offered when the call registers them, whichever default applies.
+
+**Changed for library callers.** Before this change, `run` with no policy
+offered every built-in tool, `bash` included, and approved every call. A caller
+that relied on that passes `policy=Policy()` to keep it, or names the tools it
+needs. This is a change to the Python API only. The command line still passes
+its policy explicitly, so `nare run`, its stream, its session file and its exit
+codes are unchanged, and the contract version does not move.
+
+With no `root`, the read tools reach any path the process can read. A caller
+that gives the model a tree passes `Policy(root=...)`.
 
 ### Choosing a transport
 
