@@ -184,6 +184,11 @@ class Session:
     # (nare.mcp_defer). Kept by reopen() and fork(). Written only when non-empty,
     # so a run without deferral writes the file it always has.
     mcp_loaded: dict[str, str] = field(default_factory=dict)
+    # One record per model-written summary that replaced old turns
+    # (`compact.apply_summary`): the summary and the messages it removed,
+    # image data left out. Never sent to the model. A record, so reopen()
+    # keeps it.
+    summaries: list[dict[str, Any]] = field(default_factory=list)
     # The system prompt the run sent, so a resume sends it again and a reader
     # can see what the model was told: "" when none was sent, None in a file
     # saved before nare recorded it. Redacted on save, like the transcript.
@@ -396,6 +401,7 @@ def dumps(s: Session) -> str:
     raw["messages"] = redacted
     raw["system"] = redact_value(raw["system"])
     raw["forked_from"] = redact_value(raw["forked_from"])
+    raw["summaries"] = redact_value(raw["summaries"])
     return json.dumps(raw)
 
 
@@ -462,6 +468,8 @@ def loads(text: str) -> Session:
             raw["evidence"] = []
         if not isinstance(raw.get("bash_rules", []), list):
             raw["bash_rules"] = []
+        if not isinstance(raw.get("summaries", []), list):
+            raw["summaries"] = []
         # Refused, not reset: a resume that quietly fell back to the default
         # prompt is what the record exists to prevent.
         if not isinstance(raw.get("system"), (str, type(None))):

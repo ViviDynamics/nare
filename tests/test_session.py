@@ -370,3 +370,45 @@ def test_process_groups_survive_a_save_and_a_reopen() -> None:
     s = loads(dumps(s))
     reopen(s, "next")
     assert s.process_groups == [{"pgid": 4242, "command": "npm run dev"}]
+
+
+def test_a_file_from_before_summaries_still_loads() -> None:
+    raw = json.loads(dumps(new_session("go")))
+    del raw["summaries"]
+    assert loads(json.dumps(raw)).summaries == []
+
+
+@pytest.mark.parametrize(
+    "junk", [None, {"summary": "x"}, "x", 1], ids=["null", "object", "str", "int"]
+)
+def test_summaries_that_are_not_a_list_load_as_empty(junk: object) -> None:
+    raw = json.loads(dumps(new_session("go")))
+    raw["summaries"] = junk
+    assert loads(json.dumps(raw)).summaries == []
+
+
+def test_summaries_are_redacted_on_save_and_kept_by_reopen() -> None:
+    secret = "ANTHROPIC_API_KEY=sk-ant-" + "Z" * 30
+    s = new_session("go")
+    result = {"type": "tool_result", "tool_use_id": "c1", "content": secret}
+    s.summaries.append(
+        {
+            "at_turn": 3,
+            "mode": "summary",
+            "replaced_turns": 1,
+            "summary": f"ran env: {secret}",
+            "replaced": [{"role": "user", "content": [result]}],
+        }
+    )
+    text = dumps(s)
+    assert "sk-ant-" not in text
+    loaded = loads(text)
+    [record] = loaded.summaries
+    assert record["summary"] == "ran env: ANTHROPIC_API_KEY=[redacted]"
+    assert record["replaced"][0]["content"][0]["content"] == (
+        "ANTHROPIC_API_KEY=[redacted]"
+    )
+    reopen(loaded, "next")
+    assert loaded.summaries == [record]
+    # The running session keeps what it had; only the file is redacted.
+    assert s.summaries[0]["summary"].endswith("Z" * 30)
