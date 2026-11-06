@@ -418,9 +418,10 @@ counted as one, asks the model for a summary of its turns before the last two,
 with the run's tools offered and `tool_choice` none. The summary replaces those
 turns in the first message, labelled as the model's own, after the task and
 every user message from them, which are kept word for word. When the summary
-is skipped or fails, nare elides as above, and does not ask again in that run.
-The session file keeps the replaced turns in `summaries`. The mode is not
-saved: a resume without the flag elides. See
+request fails or its reply is discarded, nare elides as above and does not ask
+again in that run. When no summary is worth asking for, nare elides and may ask
+at a later step. The session file keeps the replaced turns in `summaries`. The
+mode is not saved: a resume without the flag elides. See
 [the contract](docs/contract.md#compaction-modes).
 
 nare validates the subset of JSON Schema that generators emit (types,
