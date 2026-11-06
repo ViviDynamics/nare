@@ -6,12 +6,13 @@ greet("sam") returns exactly "HELLO SAM", and write what happened with \
 slow.sh to notes.txt."""
 max_turns = 12
 
-# The behaviour the task asks for. "HELLO " + name.upper() passes it, as does
-# uppercasing the whole greeting: for this fixture they are the same function,
-# so no behaviour test can tell them apart and no claim about the body is made.
+# The behaviour the task asks for. "HELLO " + name.upper() and uppercasing the
+# whole greeting are the same function for this fixture, so no check tells them
+# apart, and no claim is made about the body. A second name stops a special
+# case for "sam" from passing, which the dropped claim used to catch.
 [[check]]
 kind = "bash"
-cmd = "python -c \"import bar; assert bar.greet('sam') == 'HELLO SAM'\" && test -s notes.txt"
+cmd = "python -c \"import bar; assert bar.greet('sam') == 'HELLO SAM'; assert bar.greet('ann') == 'HELLO ANN'\" && test -s notes.txt"
 
 [[check]]
 kind = "result"

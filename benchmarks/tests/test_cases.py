@@ -580,3 +580,82 @@ def test_the_context_case_fails_an_idle_run(tmp_path: Path) -> None:
     # verify's pristine run: the session nare starts with asks and reads nothing.
     save(new_session(cases()["context-overflow"].prompt), tmp_path / "session.json")
     assert context_reads_check(tmp_path, (tmp_path / "session.json").read_text()) != 0
+
+
+def test_the_context_case_counts_a_read_that_was_run_again(tmp_path: Path) -> None:
+    # The first call for log 3 ran from the wrong directory and proved nothing.
+    # Running it again is still one read of log 3, and it counts.
+    reads = eight_reads()
+    failed = bash_call(2, "python log.py 3", "")
+    rerun = bash_call(8, "python log.py 3", log_output(3))
+    session = context_session(*reads[:2], failed, *reads[3:], rerun, write_findings(9))
+    assert context_reads_check(tmp_path, session) == 0
+
+
+def test_the_context_case_fails_a_read_run_through_a_pipe(tmp_path: Path) -> None:
+    # The prompt forbids redirecting a log's output, and a pipe is a redirect.
+    reads = eight_reads()
+    reads[2] = bash_call(2, "python log.py 3 | tail -n 2", log_output(3))
+    assert (
+        context_reads_check(tmp_path, context_session(*reads, write_findings(8))) != 0
+    )
+
+
+def test_the_context_case_does_not_count_a_look_at_findings_as_a_write(
+    tmp_path: Path,
+) -> None:
+    looked = bash_call(20, "cat findings.json", "no such file")
+    session = context_session(looked, *eight_reads(), write_findings(8))
+    assert context_reads_check(tmp_path, session) == 0
+
+
+@pytest.mark.parametrize(
+    "closing",
+    [
+        "parse_duration returns a timedelta of 90.0 seconds.",
+        "A timedelta of 90 sec.",
+        "A timedelta of 1 minute and 30 seconds.",
+    ],
+)
+def test_the_read_only_case_accepts_the_same_value_written_other_ways(
+    tmp_path: Path, closing: str
+) -> None:
+    cmd = check_with("read-only-question", "closing.txt")
+    (tmp_path / "closing.txt").write_text(closing)
+    assert run_here(cmd, tmp_path, tmp_path) == 0
+
+
+@pytest.mark.parametrize(
+    ("body", "passes"),
+    [
+        ('def greet(name):\n    return "HELLO " + name.upper()\n', True),
+        ('def greet(name):\n    return ("hello " + name).upper()\n', True),
+        (
+            'def greet(name):\n    return "HELLO SAM" if name == "sam" else "hi"\n',
+            False,
+        ),
+    ],
+)
+def test_the_timeout_case_fails_a_greeting_special_cased_for_sam(
+    tmp_path: Path, body: str, passes: bool
+) -> None:
+    cmd = check_with("bash-timeout-recovery", "bar.greet")
+    (tmp_path / "bar.py").write_text(body)
+    (tmp_path / "notes.txt").write_text("slow.sh hung\n")
+    assert (run_here(cmd, tmp_path) == 0) is passes
+
+
+def test_the_fix_case_fails_when_git_cannot_say_what_changed(tmp_path: Path) -> None:
+    # Outside a repository git exits 128. That must fail the check, not pass it.
+    bar = check_with("fix-failing-test", "-- bar.py")
+    (tmp_path / "bar.py").write_text("def parse(text):\n    return []\n")
+    assert run_here(bar, tmp_path) != 0
+
+
+def test_the_rename_case_fails_a_test_replaced_by_another_name(tmp_path: Path) -> None:
+    cmd = check_with("multi-file-rename", "--diff-filter=D")
+    fixture_checkout("multi-file-rename", tmp_path)
+    (tmp_path / "test_report.py").write_text(
+        "from report import summary\n\n\ndef test_other():\n    assert summary(2, 3)\n"
+    )
+    assert run_here(cmd, tmp_path) != 0

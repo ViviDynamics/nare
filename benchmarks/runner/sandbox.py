@@ -159,7 +159,7 @@ def _docker_run(
             command += ["-e", key]
     if stdin is not None:
         # Kept open so the container can read it; without -i, docker sends none.
-        command.insert(2, "-i")
+        command.insert(command.index("run") + 1, "-i")
     command += [IMAGE, *argv]
 
     try:
@@ -264,17 +264,25 @@ def git_checkpoint(workdir: Path) -> None:
 # host through the bind mount: Docker Desktop can serve a file's text from before
 # a host write to the first container that reads it, so the first check could
 # judge the message the run before it, or none. A container's own write is seen.
-_WRITE_CLOSING = (
-    "import sys; open('/out/closing.txt', 'w', encoding='utf-8')"
-    ".write(sys.stdin.read())"
-)
+_WRITE_CLOSING = """\
+import os, sys
+path = sys.argv[1]
+# The agent's container can leave anything at this path, a symlink included,
+# and this write must land at the path, not wherever a link points. Remove
+# what is there, then create the file exclusively.
+if os.path.lexists(path):
+    os.unlink(path)
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+with os.fdopen(fd, "w", encoding="utf-8") as out:
+    out.write(sys.stdin.read())
+"""
 
 
 def write_closing(workdir: Path, artifacts: Path, text: str) -> None:
     """Put the closing message at /out/closing.txt, where the checks read it."""
     code, _, err, _ = _docker_run(
         workdir,
-        ["python3", "-I", "-c", _WRITE_CLOSING],
+        ["python3", "-I", "-c", _WRITE_CLOSING, "/out/closing.txt"],
         60,
         artifacts=artifacts,
         stdin=text,

@@ -49,6 +49,8 @@ from benchmarks.runner.config import (
 )
 from benchmarks.runner.grade import (
     CheckResult,
+    ContextUse,
+    ResultLine,
     context_use,
     grade_bash_check,
     grade_result_check,
@@ -526,6 +528,45 @@ def keep_evidence(dest: Path, artifacts: Path, result: RunArtifacts) -> None:
     (dest / "stderr.txt").write_text(result.stderr, encoding="utf-8")
 
 
+def _errored_rep(
+    case: Case,
+    rep: int,
+    config: Config,
+    result: RunArtifacts,
+    line: ResultLine | None,
+    use: ContextUse,
+    kept_ref: str,
+    why: str,
+    health: dict[str, int] | None,
+) -> RepRecord:
+    """A repetition that could not be graded. It is counted in neither rate."""
+    empty = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    return RepRecord(
+        case=case.id,
+        rep=rep,
+        outcome="error",
+        checks=(),
+        judge_met=None,
+        judge_why=why,
+        status=None if line is None else line.status,
+        stop_reason=None,
+        turns=None if line is None else line.turns,
+        usage=empty if line is None else line.usage,
+        duration_s=result.duration_s,
+        model=config.model,
+        artifacts=kept_ref,
+        max_tokens=config.max_tokens,
+        provider=config.provider,
+        judge_model=config.judge_model or "",
+        case_args=list(case.args),
+        nare_args=list(config.run_args.recorded),
+        nare_files=dict(config.run_args.files),
+        context_window=use.window,
+        compactions=use.compactions,
+        tool_health=health,
+    )
+
+
 async def run_rep(
     case: Case, config: Config, transport: Transport, rep: int, evidence: Path
 ) -> RepRecord:
@@ -534,7 +575,6 @@ async def run_rep(
     `evidence` is this run's directory under benchmarks/results/; the rep's
     session, output and judge replies are kept in a subdirectory of it.
     """
-    empty = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
     kept = evidence / f"{case.id}-{rep}"
     kept_ref = kept.relative_to(evidence.parent).as_posix()
     with sandbox(case) as (workdir, artifacts):
@@ -561,29 +601,8 @@ async def run_rep(
                 why = "timed out" if result.timed_out else "no result line"
             else:
                 why = line.error or "run errored"
-            return RepRecord(
-                case=case.id,
-                rep=rep,
-                outcome="error",
-                checks=(),
-                judge_met=None,
-                judge_why=why,
-                status=None if line is None else line.status,
-                stop_reason=None,
-                turns=None if line is None else line.turns,
-                usage=empty if line is None else line.usage,
-                duration_s=result.duration_s,
-                model=config.model,
-                artifacts=kept_ref,
-                max_tokens=config.max_tokens,
-                provider=config.provider,
-                judge_model=config.judge_model or "",
-                case_args=list(case.args),
-                nare_args=list(config.run_args.recorded),
-                nare_files=dict(config.run_args.files),
-                context_window=use.window,
-                compactions=use.compactions,
-                tool_health=health,
+            return _errored_rep(
+                case, rep, config, result, line, use, kept_ref, why, health
             )
 
         # Before the bash checks, so nothing a check writes reaches the judge.
@@ -595,7 +614,15 @@ async def run_rep(
         (kept / "closing.txt").write_text(closing, encoding="utf-8")
         # Under the name the checks read, at /out/closing.txt. Written by the
         # host after the agent exits, so nothing the agent wrote there is seen.
-        write_closing(workdir, artifacts, closing)
+        try:
+            write_closing(workdir, artifacts, closing)
+        except SandboxError as exc:
+            # The agent has finished and its work is in the tree. A rep that
+            # cannot be graded is an error, as a dead container is, so the
+            # run's other repetitions are kept.
+            return _errored_rep(
+                case, rep, config, result, line, use, kept_ref, str(exc), health
+            )
 
         graded = [
             grade_result_check(check, line)

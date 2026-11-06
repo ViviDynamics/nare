@@ -23,7 +23,13 @@ cmd = '''
 python3 -I - <<'EOF'
 import re, sys
 text = open("/out/closing.txt").read()
-said = "timedelta" in text.lower() and re.search(r"seconds\s*=\s*90\b|\b90\s*(seconds?|s)\b", text)
+said = "timedelta" in text.lower() and re.search(
+    r"seconds\s*=\s*90(\.0+)?\b"
+    r"|\b90(\.0+)?\s*(s|sec|secs|seconds?)\b"
+    r"|\b1\s*min(ute)?s?\b.{0,20}\b30\s*(s|sec|secs|seconds?)\b",
+    text,
+    re.I,
+)
 sys.exit(0 if said else "the closing message does not say timedelta of 90 seconds")
 EOF
 '''

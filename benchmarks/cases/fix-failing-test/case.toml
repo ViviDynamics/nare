@@ -12,7 +12,7 @@ cmd = "pytest -q"
 # fixture commit.
 [[check]]
 kind = "bash"
-cmd = '''! git diff --quiet "$(git rev-list --max-parents=0 HEAD)" -- bar.py'''
+cmd = '''base=$(git rev-list --max-parents=0 HEAD) && git diff --quiet "$base" -- bar.py; test $? -eq 1'''
 
 [[check]]
 kind = "bash"
