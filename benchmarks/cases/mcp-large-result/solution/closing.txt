@@ -1,0 +1,1 @@
+The ANSWER line of the q3 report is 4217; I wrote it to answer.txt.

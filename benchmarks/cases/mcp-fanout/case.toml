@@ -1,0 +1,30 @@
+id = "mcp-fanout"
+tier = "full"
+# One answer that needs forty small MCP calls: the sum of forty lookups. A run that
+# gets the sum without making the calls, from the server's source or a guess, has
+# the right number for the wrong reason, and the transcript shows it.
+prompt = """Look up the value of every key in keys.txt with the fanout lookup tool, one call per key, and write the sum of all the values to total.txt."""
+args = ["--mcp-config", "mcp.json", "--tools", "read,list,write,fanout__lookup"]
+max_turns = 60
+
+[[check]]
+kind = "bash"
+cmd = '''test "$(tr -d '[:space:]' < total.txt)" = "1804"'''
+
+# Forty different keys looked up through the server: the fan-out happened.
+[[check]]
+kind = "bash"
+cmd = '''
+python3 -I - <<'EOF'
+import json, sys
+s = json.load(open("/out/session.json"))
+calls = [b for m in s.get("messages", []) for b in m.get("content", [])
+         if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "fanout__lookup"]
+keys = {str(b.get("input", {}).get("key")) for b in calls}
+sys.exit(0 if len(keys) == 40 else f"looked up {len(keys)} of 40 keys")
+EOF
+'''
+
+[[check]]
+kind = "result"
+status = "done"

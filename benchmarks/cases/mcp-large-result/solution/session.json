@@ -1,0 +1,29 @@
+{
+  "messages": [
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "call-0",
+          "name": "fanout__report",
+          "input": {
+            "name": "q3"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call-0",
+          "content": "[elided by nare: 60101 chars of output from turn 1. Rerun the tool if you need it.]",
+          "is_error": false
+        }
+      ]
+    }
+  ],
+  "status": "done"
+}

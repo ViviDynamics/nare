@@ -24,6 +24,13 @@ SEEDS = {
     "multi-file-rename",
     "context-overflow",
     "read-only-question",
+    "context-overflow-small-window",
+    "impossible-test",
+    "long-test-output",
+    "mcp-fanout",
+    "mcp-large-result",
+    "stale-backup-cleanup",
+    "typed-classify",
 }
 
 

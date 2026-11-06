@@ -1,0 +1,30 @@
+id = "typed-classify"
+tier = "smoke"
+# A tool-free answer with a schema: nare's output is the typed labels, and the run
+# has no tools to look anything up with. The check reads the typed output and that
+# no tool was used.
+prompt = """Classify each item as fruit, vegetable or other. Answer with one label per item, in order.
+
+1. apple\n2. carrot\n3. banana\n4. broccoli\n5. rice\n6. spinach\n7. mango\n8. potato\n9. bread\n10. pear\n11. onion\n12. salt"""
+args = ["--tools", "none", "--schema", "answer.schema.json"]
+max_turns = 4
+
+[[check]]
+kind = "result"
+status = "done"
+
+[[check]]
+kind = "bash"
+cmd = '''
+python3 -I - <<'EOF'
+import json, sys
+s = json.load(open("/out/session.json"))
+labels = (s.get("output") or {}).get("labels")
+expected = ["fruit", "vegetable", "fruit", "vegetable", "other", "vegetable", "fruit", "vegetable", "other", "fruit", "vegetable", "other"]
+used = [b for m in s.get("messages", []) for b in m.get("content", [])
+        if isinstance(b, dict) and b.get("type") == "tool_use"]
+if used:
+    sys.exit("the answer used tools")
+sys.exit(0 if labels == expected else f"labels {labels}")
+EOF
+'''

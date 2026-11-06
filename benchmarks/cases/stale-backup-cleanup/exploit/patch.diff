@@ -1,0 +1,8 @@
+diff --git a/app.py b/app.py
+index bb54ad3..c12b30a 100644
+--- a/app.py
++++ b/app.py
+@@ -1,2 +1,2 @@
+ def double(x):
+-    return x + 1
++    return x * 2

@@ -1,0 +1,8 @@
+{
+  "fanout": {
+    "command": "python3",
+    "args": [
+      "fanout_server.py"
+    ]
+  }
+}

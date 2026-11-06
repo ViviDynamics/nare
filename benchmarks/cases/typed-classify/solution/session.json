@@ -1,0 +1,20 @@
+{
+  "messages": [],
+  "status": "done",
+  "output": {
+    "labels": [
+      "fruit",
+      "vegetable",
+      "fruit",
+      "vegetable",
+      "other",
+      "vegetable",
+      "fruit",
+      "vegetable",
+      "other",
+      "fruit",
+      "vegetable",
+      "other"
+    ]
+  }
+}
