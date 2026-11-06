@@ -1,0 +1,1 @@
+parse_duration('90s') returns timedelta(seconds=90), which is 90 seconds.

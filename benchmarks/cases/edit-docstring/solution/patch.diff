@@ -1,0 +1,10 @@
+diff --git a/bar.py b/bar.py
+index 7b2aeea..d7473a4 100644
+--- a/bar.py
++++ b/bar.py
+@@ -1,4 +1,5 @@
+ def foo(values):
++    """Sum the positive values, skipping zero and negatives."""
+     total = 0
+     for value in values:
+         if value > 0:

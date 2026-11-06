@@ -1,0 +1,1 @@
+greet() now uppercases the whole greeting. slow.sh hung: timeout 5 cut it off, and notes.txt says so.

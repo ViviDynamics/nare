@@ -1,0 +1,8 @@
+diff --git a/bar.py b/bar.py
+index fba2171..ae44e36 100644
+--- a/bar.py
++++ b/bar.py
+@@ -1,2 +1,2 @@
+ def parse(text):
+-    return [int(part) for part in text.split(",")]
++    return [int(part) for part in text.split(",") if part.strip()]

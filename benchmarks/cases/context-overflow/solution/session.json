@@ -1,0 +1,222 @@
+{
+  "messages": [
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "call-1",
+          "name": "bash",
+          "input": {
+            "command": "python log.py 1"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call-1",
+          "content": "[elided by nare: 29028 chars of output from turn 1. Rerun the tool if you need it.]",
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "call-2",
+          "name": "bash",
+          "input": {
+            "command": "python log.py 2"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call-2",
+          "content": "[elided by nare: 29028 chars of output from turn 2. Rerun the tool if you need it.]",
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "call-3",
+          "name": "bash",
+          "input": {
+            "command": "python log.py 3"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call-3",
+          "content": "[elided by nare: 29028 chars of output from turn 3. Rerun the tool if you need it.]",
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "call-4",
+          "name": "bash",
+          "input": {
+            "command": "python log.py 4"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call-4",
+          "content": "[elided by nare: 29028 chars of output from turn 4. Rerun the tool if you need it.]",
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "call-5",
+          "name": "bash",
+          "input": {
+            "command": "python log.py 5"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call-5",
+          "content": "[elided by nare: 29028 chars of output from turn 5. Rerun the tool if you need it.]",
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "call-6",
+          "name": "bash",
+          "input": {
+            "command": "python log.py 6"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call-6",
+          "content": "[elided by nare: 29028 chars of output from turn 6. Rerun the tool if you need it.]",
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "call-7",
+          "name": "bash",
+          "input": {
+            "command": "python log.py 7"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call-7",
+          "content": "[elided by nare: 29028 chars of output from turn 7. Rerun the tool if you need it.]",
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "call-8",
+          "name": "bash",
+          "input": {
+            "command": "python log.py 8"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call-8",
+          "content": "[elided by nare: 29028 chars of output from turn 8. Rerun the tool if you need it.]",
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "call-9",
+          "name": "write",
+          "input": {
+            "path": "findings.json",
+            "content": "[\"SENTINEL_1=confirmed\", \"SENTINEL_2=confirmed\", \"SENTINEL_3=confirmed\", \"SENTINEL_4=confirmed\", \"SENTINEL_5=confirmed\", \"SENTINEL_6=confirmed\", \"SENTINEL_7=confirmed\", \"SENTINEL_8=confirmed\"]"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call-9",
+          "content": "wrote findings.json",
+          "is_error": false
+        }
+      ]
+    }
+  ],
+  "status": "done"
+}

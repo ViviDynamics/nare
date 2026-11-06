@@ -1,0 +1,1 @@
+Renamed calc_area to rectangle_area in shape.py, report.py and test_report.py.

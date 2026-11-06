@@ -1,0 +1,1 @@
+Both format_bytes and slugify are unused in this repository. Which one should I delete?

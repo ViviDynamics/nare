@@ -26,6 +26,11 @@ from nare.session import new_session, save
 IMAGE = "nare-bench:local"
 
 
+# Exit statuses that mean a container never ran the command: timeout (124),
+# cannot run it (126), not found (127), docker itself failed (125).
+DID_NOT_RUN = range(124, 128)
+
+
 class SandboxError(Exception):
     """The sandbox could not be prepared or run. Always exit 2."""
 
@@ -246,8 +251,12 @@ def run_check(
 
 
 def git_checkpoint(workdir: Path) -> None:
-    """Used by `verify`, which needs a checkpoint without running the agent."""
-    _docker_run(
+    """Used by `verify`, which needs a checkpoint without running the agent.
+
+    A checkpoint that fails leaves no fixture commit, and a diff against no
+    commit reads as no change, so the failure is raised, not ignored.
+    """
+    code, _, err, _ = _docker_run(
         workdir,
         [
             "sh",
@@ -258,6 +267,8 @@ def git_checkpoint(workdir: Path) -> None:
         ],
         60,
     )
+    if code != 0:
+        raise SandboxError(f"could not checkpoint the fixture:\n{err.strip()}")
 
 
 # The closing message, written by the container from stdin rather than by the
@@ -278,17 +289,48 @@ with os.fdopen(fd, "w", encoding="utf-8") as out:
 """
 
 
-def write_closing(workdir: Path, artifacts: Path, text: str) -> None:
-    """Put the closing message at /out/closing.txt, where the checks read it."""
+def write_out(workdir: Path, artifacts: Path, name: str, text: str) -> None:
+    """Write one file under /out from a container, where the checks read it."""
     code, _, err, _ = _docker_run(
         workdir,
-        ["python3", "-I", "-c", _WRITE_CLOSING, "/out/closing.txt"],
+        ["python3", "-I", "-c", _WRITE_CLOSING, f"/out/{name}"],
         60,
         artifacts=artifacts,
         stdin=text,
     )
     if code != 0:
-        raise SandboxError(f"could not write the closing message:\n{err.strip()}")
+        raise SandboxError(f"could not write /out/{name}:\n{err.strip()}")
+
+
+def write_closing(workdir: Path, artifacts: Path, text: str) -> None:
+    """Put the closing message at /out/closing.txt, where the checks read it."""
+    write_out(workdir, artifacts, "closing.txt", text)
+
+
+# A reference attempt, applied the way an agent's work arrives: in one container,
+# which then leaves its leftovers in /out/after.json, as nare's container does.
+# The reference's files are mounted read-only at /in: patch.diff, then solve.sh.
+_APPLY_REFERENCE = """\
+cd /work || exit 2
+status=0
+if [ -f /in/patch.diff ]; then git apply /in/patch.diff || status=$?; fi
+if [ "$status" -eq 0 ] && [ -f /in/solve.sh ]; then sh /in/solve.sh || status=$?; fi
+python3 -I -c "$BENCH_LEFTOVERS" /out/after.json || true
+exit "$status"
+"""
+
+
+def apply_reference(workdir: Path, artifacts: Path, directory: Path) -> int:
+    """Apply a reference solution or exploit to the sandbox; its exit status."""
+    code, _, _, _ = _docker_run(
+        workdir,
+        ["sh", "-c", _APPLY_REFERENCE],
+        600,
+        artifacts=artifacts,
+        inputs=directory,
+        env={"BENCH_LEFTOVERS": _LEFTOVERS},
+    )
+    return code
 
 
 def idle_artifacts(case: Case, workdir: Path, artifacts: Path) -> None:

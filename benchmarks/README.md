@@ -25,7 +25,8 @@ change without notice. See "Which models the endpoint serves" below.
                                         # (anthropic needs NARE_STREAM above 21333)
 
     bin/bench models                    # free: what can I run?
-    bin/bench verify                    # free: are the cases well-formed?
+    bin/bench verify                    # free: do the checks measure, and do the references pass?
+    bin/bench verify --judge            # also the judge's claims: one call per judged solution
     bin/bench run --tier smoke          # measure
     bin/bench bless --tier smoke        # promote the numbers to a baseline
 
@@ -498,6 +499,44 @@ measured, so bless it again.
 Run `bin/bench verify` on any case you add. It proves the checks fail on the
 pristine fixture, which is the difference between a case that measures
 something and a case that is green no matter what the agent does.
+
+### Reference solutions and exploits
+
+A case has two more directories, and `verify` checks both. Neither is a
+model's output; both are hand-written, and both are in git.
+
+- `solution/` is a correct attempt. It must pass every check, and with
+  `--judge`, every judge claim. A case with no `solution/` fails `verify`.
+- `exploit/` is a cheap wrong attempt: a test deleted, a special case for the
+  one input the check names, a fake result, a fake database. It must be
+  caught. By default that means a bash or result check fails. With
+  `caught_by = "judge"` in `exploit/exploit.toml`, it must be caught by the
+  judge, and without `--judge` it is reported as not run. Use that only when
+  no command can see the cheat; the expense-tracker case is one.
+
+Each directory holds any of these, all optional:
+
+    patch.diff     applied to the fixture with git apply
+    solve.sh       run with sh in the working directory, after the patch
+    session.json   the transcript a blocked or transcript-reading case reads
+    closing.txt    the closing message the judge and the checks read
+    result.toml    status and turns, for the result checks (default done, 1)
+
+A reference's `session.json` is scripted, not recorded from a model: it is the
+transcript a correct run would leave, written to the shape nare writes. The
+checks read it as they read a real one, and the reference's `solve.sh` does the
+work it describes.
+
+Nothing is run against a model. `verify` applies each attempt in a fresh
+container, the way an agent's work arrives, and then runs the case's checks on
+the result. `--judge` sends the diff and the closing message to the judge: one call
+per judged solution, and one per exploit the judge decides. So it needs a key
+and a judge model. Without it,
+`verify` makes no model call.
+
+A reference that fails is a case that does not measure what it says: fix the
+case, or the reference if the reference is wrong, and say which in the pull
+request.
 
 ## Containment
 

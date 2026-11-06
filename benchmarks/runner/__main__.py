@@ -81,6 +81,7 @@ from benchmarks.runner.nare_args import (
     stage_inputs,
     variant,
 )
+from benchmarks.runner.reference import DockerRuntime, judge_from, verify_references
 from benchmarks.runner.report import (
     Baseline,
     BaselineMeta,
@@ -99,6 +100,7 @@ from benchmarks.runner.report import (
     summarize,
 )
 from benchmarks.runner.sandbox import (
+    DID_NOT_RUN,
     RunArtifacts,
     SandboxError,
     build_image,
@@ -126,7 +128,6 @@ CONFIRM_REPS = 7
 # 124 is the sandbox timeout; 125-127 are docker's own (daemon, permissions,
 # command not found). A check that exits one of these never ran, so it proves
 # nothing about the fixture and must not read as a failing check.
-DID_NOT_RUN = range(124, 128)
 TOKEN_BAND = 0.10
 
 
@@ -169,10 +170,28 @@ def build_parser() -> argparse.ArgumentParser:
         else:
             child = sub.add_parser(name, help=help_text)
         child.add_argument(
-            "--tier", choices=["smoke", "full"], default="smoke", help="which tier"
+            "--tier",
+            choices=["smoke", "full"],
+            # verify is free, so it checks every case unless asked otherwise.
+            default="full" if name == "verify" else "smoke",
+            help="which tier",
         )
         child.add_argument("--case", action="append", help="limit to this case id")
         if name == "verify":
+            child.add_argument(
+                "--judge",
+                action="store_true",
+                help="also judge each solution's claims, and each exploit a judge "
+                "catches (one judge call per judged solution, and one per exploit "
+                "the judge decides; needs a key)",
+            )
+            child.add_argument(
+                "--provider", help="judge's provider (env: NARE_PROVIDER)"
+            )
+            child.add_argument("--base-url", help="endpoint (env: NARE_BASE_URL)")
+            child.add_argument(
+                "--judge-model", help="judge (env: NARE_BENCH_JUDGE_MODEL)"
+            )
             continue
         child.add_argument("--model", help="model under test (env: NARE_MODEL)")
         child.add_argument("--provider", help="provider (env: NARE_PROVIDER)")
@@ -1736,9 +1755,33 @@ def main(argv: list[str] | None = None) -> int:
         except SandboxError as exc:
             print(f"bench: {exc}", file=sys.stderr)
             return 2
+        judge = None
+        if args.judge:
+            if not (args.judge_model or os.environ.get("NARE_BENCH_JUDGE_MODEL")):
+                print(
+                    "bench: verify --judge needs a judge model: pass --judge-model "
+                    "or set NARE_BENCH_JUDGE_MODEL",
+                    file=sys.stderr,
+                )
+                return 2
+            try:
+                # verify runs no agent, so the judge stands in for the model.
+                config = resolve_config(
+                    model=args.judge_model or os.environ.get("NARE_BENCH_JUDGE_MODEL"),
+                    provider=args.provider,
+                    base_url=args.base_url,
+                    judge_model=args.judge_model,
+                    env=os.environ,
+                )
+            except ConfigError as exc:
+                print(f"bench: {exc}", file=sys.stderr)
+                return 2
+            judge = judge_from(lambda: judge_transport(config))
         text, code = verify(cases)
+        references, reference_code = verify_references(cases, DockerRuntime(), judge)
         print(text)
-        return code
+        print(references)
+        return max(code, reference_code)
 
     if getattr(args, "baselines", False) and not args.matrix:
         print("bench: --baselines goes with --matrix", file=sys.stderr)

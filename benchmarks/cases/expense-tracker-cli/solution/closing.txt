@@ -1,0 +1,1 @@
+Added expense_tracker.py with add, list and total commands; expenses are stored in expenses.json. Unit tests are in tests/test_expense_tracker.py.
