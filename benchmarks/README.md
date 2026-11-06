@@ -452,9 +452,12 @@ the environment, which is what lets the same case run against a proxy alias
 and a first-party model unchanged. `case.py` rejects them.
 
 Checks are `bash` (must exit 0) or `result` (asserts on nare's result line).
-The optional `[judge]` block lists binary, objectively checkable claims about
-the diff; `min_met` turns it into a gate. A judge can only ever fail a
-repetition that passed its checks - it can never rescue one that failed.
+A claim that a command can decide belongs in a `bash` check, not the judge:
+whether a file was changed is a `git diff`, and whether the answer names a
+value is a pattern on the closing message. The optional `[judge]` block keeps
+the prose and semantic claims about the diff, as binary checkable statements;
+`min_met` turns it into a gate. A judge can only ever fail a repetition that
+passed its checks - it can never rescue one that failed.
 
 The judge answers each claim `true`, `false` or `"unknown"`, with one short
 reason per claim. An `unknown` is never a `false`: it cannot turn a rep into a
@@ -473,7 +476,13 @@ Each judged rep's per-claim verdicts and reasons are in its results line
 A bash check runs in a fresh container over the agent's working directory,
 with the run's artifacts mounted read-only at `/out`, so a check can see what
 the agent did outside the tree it left. `/out/session.json` is nare's
-session. `/out/after.json` is the agent's container as nare exited, before it
+session, and `/out/closing.txt` is the closing message, as the judge reads it.
+A container writes that file after the agent exits, from the closing message
+the host holds, so the agent cannot change what a check reads. A check that reads the transcript should accept a result
+nare has elided for context (`[elided by nare: N chars ...]`), since a long
+run compacts. Changes are measured from the fixture commit, which is the root
+of the repository: `git diff --quiet "$(git rev-list --max-parents=0 HEAD)" -- path`.
+`/out/after.json` is the agent's container as nare exited, before it
 was thrown away: `processes` lists everything still running, a server that
 escaped with `setsid` included, and `database_files` lists any PostgreSQL
 server binary or data directory anywhere in it. `verify` gives these checks

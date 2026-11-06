@@ -9,9 +9,27 @@ max_turns = 6
 kind = "result"
 status = "done"
 
-[judge]
-assertions = [
-  "No file was changed.",
-  "The answer says parse_duration returns a timedelta of 90 seconds.",
-]
-min_met = 2
+# Nothing changed: no tracked file differs from the fixture commit, and no
+# new file is left behind (ignored caches excepted).
+[[check]]
+kind = "bash"
+cmd = '''git diff --quiet "$(git rev-list --max-parents=0 HEAD)" && test -z "$(git status --porcelain)"'''
+
+# The answer, from the closing message in /out/closing.txt.
+# It names the type and the value: timedelta, and 90 seconds.
+[[check]]
+kind = "bash"
+cmd = '''
+python3 -I - <<'EOF'
+import re, sys
+text = open("/out/closing.txt").read()
+said = "timedelta" in text.lower() and re.search(
+    r"seconds\s*=\s*90(?:\.0+)?(?![\d.])"
+    r"|(?<![\d.])90(?:\.0+)?\s*(?:s|sec|secs|seconds?)\b"
+    r"|(?<![\d.])1\s*(?:m|min|mins|minutes?)\b[\s,]*(?:and\s*)?30\s*(?:s|sec|secs|seconds?)\b",
+    text,
+    re.I,
+)
+sys.exit(0 if said else "the closing message does not say timedelta of 90 seconds")
+EOF
+'''

@@ -22,9 +22,13 @@ sys.exit(0 if named else "the questions name neither TIMEOUT nor its value, 30")
 EOF
 '''
 
+# The file the answer must leave alone: a question is not a change to config.py.
+[[check]]
+kind = "bash"
+cmd = '''git diff --quiet "$(git rev-list --max-parents=0 HEAD)" -- config.py'''
+
 [judge]
 assertions = [
-  "config.py was not changed.",
   "A question names the current timeout value or offers concrete values to choose from.",
 ]
-min_met = 2
+min_met = 1

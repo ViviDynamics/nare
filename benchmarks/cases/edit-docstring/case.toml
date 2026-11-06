@@ -3,6 +3,7 @@ tier = "smoke"
 prompt = "Add a docstring to foo() in bar.py."
 max_turns = 6
 
+# Whether foo() gained a docstring is decided here, not by the judge.
 [[check]]
 kind = "bash"
 cmd = "python -c \"import bar; assert bar.foo.__doc__, 'no docstring'\""
@@ -13,8 +14,7 @@ status = "done"
 
 [judge]
 assertions = [
-  "bar.py gained a docstring on foo().",
   "The docstring describes what foo does, rather than only restating its name.",
   "The behaviour of foo() is unchanged.",
 ]
-min_met = 2
+min_met = 1

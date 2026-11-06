@@ -7,14 +7,29 @@ max_turns = 12
 kind = "bash"
 cmd = "pytest -q"
 
+# The fix is in bar.py, and the tests are not touched, deleted or skipped: a
+# changed test_bar.py at all, including a skip, fails the diff against the
+# fixture commit.
+[[check]]
+kind = "bash"
+cmd = '''base=$(git rev-list --max-parents=0 HEAD) && git diff --quiet "$base" -- bar.py; test $? -eq 1'''
+
+[[check]]
+kind = "bash"
+cmd = '''git diff --quiet "$(git rev-list --max-parents=0 HEAD)" -- test_bar.py'''
+
+# Tests ran and none was skipped. A skip from a conftest.py leaves test_bar.py
+# unchanged and pytest exits 0, so the exit status alone is not enough.
+[[check]]
+kind = "bash"
+cmd = '''out=$(pytest -q 2>&1) && printf '%s\n' "$out" | grep -qE '[0-9]+ passed' && ! printf '%s\n' "$out" | grep -qE 'skipped|xfail|deselected''''
+
 [[check]]
 kind = "result"
 status = "done"
 
 [judge]
 assertions = [
-  "The fix is in bar.py.",
-  "test_bar.py was not modified, deleted, or skipped.",
   "parse() still returns a list of integers for well-formed input.",
 ]
-min_met = 3
+min_met = 1

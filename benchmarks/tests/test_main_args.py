@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -55,7 +56,8 @@ from benchmarks.tests.test_main import (
     summary,
     write_matrix_run,
 )
-from nare.transport import Transport
+from nare.session import Message
+from nare.transport import Reply, Transport
 
 FILE_ARGS = RunArgs(
     recorded=("--system-file", "p.md"),
@@ -158,7 +160,21 @@ def judge_configured(monkeypatch: pytest.MonkeyPatch) -> None:
 
 REFUSED = "nare: error: argument --context-window: invalid int value: 'abc'\n"
 STAMP = "2026-11-04T00-00-00Z"
-VERDICT = '{"met": [true, true, true], "reasons": ["ok", "ok", "ok"]}'
+
+
+class AllTrue(FakeJudge):
+    """Answers each claim the prompt lists as true, one verdict per claim.
+
+    The cases' claim counts change as their checks move to bash, so a fixed
+    reply goes out of step with one of them.
+    """
+
+    async def turn(self, messages: list[Message], tools: list[dict[str, Any]]) -> Reply:
+        listed = messages[-1].content[0]["text"].split("## Claims to check", 1)[1]
+        count = len(re.findall(r"^\d+\. ", listed, flags=re.MULTILINE))
+        reply = {"met": [True] * count, "reasons": ["ok"] * count}
+        self.script = (json.dumps(reply),)
+        return await super().turn(messages, tools)
 
 
 @pytest.mark.parametrize(
@@ -320,7 +336,7 @@ def test_a_stop_in_the_confirmation_sets_the_first_results_aside(
     # rep, the fourth call, is the one nare refuses.
     calls = refusing(monkeypatch, lambda config, n: n == 4, check_code=1)
     monkeypatch.setattr(bench, "build_image", lambda root: None)
-    monkeypatch.setattr(bench, "judge_transport", lambda config: FakeJudge(VERDICT))
+    monkeypatch.setattr(bench, "judge_transport", lambda config: AllTrue())
     monkeypatch.setattr(bench, "new_stamp", lambda: STAMP)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     monkeypatch.delenv("NARE_BASE_URL", raising=False)
@@ -353,7 +369,7 @@ def test_a_never_started_rep_stops_the_matrix(
     # The matrix helper fakes run_case; the real one runs the reps, so the log
     # that is written is the one run_rep writes.
     monkeypatch.setattr(bench, "run_case", run_case)
-    monkeypatch.setattr(bench, "judge_transport", lambda config: FakeJudge(VERDICT))
+    monkeypatch.setattr(bench, "judge_transport", lambda config: AllTrue())
     calls = refusing(monkeypatch, lambda config, n: config.model == NANO.model)
     assert main(["run", "--matrix", "--case", "edit-docstring"]) == 2
     # Three reps of the first model, then the second model's first rep.
@@ -390,7 +406,7 @@ def stopping_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *cases: str) -
             )
         )
     monkeypatch.setattr(bench, "build_image", lambda root: None)
-    monkeypatch.setattr(bench, "judge_transport", lambda config: FakeJudge(VERDICT))
+    monkeypatch.setattr(bench, "judge_transport", lambda config: AllTrue())
     monkeypatch.setattr(bench, "new_stamp", lambda: STAMP)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     monkeypatch.delenv("NARE_BASE_URL", raising=False)
@@ -414,7 +430,7 @@ def test_a_stop_keeps_the_records_of_each_case_its_pass_finished(
     assert [(r.case, r.rep) for r in records] == [
         ("edit-docstring", n) for n in range(3)
     ]
-    assert [r.judge_met for r in records] == [3, 3, 3]
+    assert [r.judge_met for r in records] == [2, 2, 2]
     assert str(kept) in err
     assert err.index("nare refused its invocation") < err.index(str(kept))
 
@@ -439,7 +455,7 @@ def test_a_stop_in_the_confirmation_keeps_its_records_beside_the_first_pass(
     assert [(r.case, r.rep) for r in records] == [
         ("edit-docstring", n) for n in range(7)
     ]
-    assert [r.judge_met for r in records] == [3] * 7
+    assert [r.judge_met for r in records] == [2] * 7
     assert str(first) in err
     assert str(rerun) in err
 

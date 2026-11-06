@@ -8,13 +8,14 @@ max_turns = 15
 kind = "bash"
 cmd = "! rg -q 'calc_area' . && rg -q 'rectangle_area' shape.py && pytest -q"
 
+# No file deleted and no test removed, by name: the fixture's test_area and
+# test_summary must still be defined, at the start of a line, somewhere in the
+# tree. A test moved to another file counts, as long as no file is deleted; a
+# test commented out, or replaced by a differently named one, does not.
+[[check]]
+kind = "bash"
+cmd = '''git rev-parse HEAD >/dev/null && test -z "$(git diff --name-only --diff-filter=D "$(git rev-list --max-parents=0 HEAD)")" && grep -rqE '^\s*def test_area\(' --include='*.py' . && grep -rqE '^\s*def test_summary\(' --include='*.py' .'''
+
 [[check]]
 kind = "result"
 status = "done"
-
-[judge]
-assertions = [
-  "Every occurrence of calc_area was renamed, across all three files.",
-  "No file was deleted and no test was removed.",
-]
-min_met = 2

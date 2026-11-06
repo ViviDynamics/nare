@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, cast
@@ -28,7 +29,7 @@ from benchmarks.runner.report import (
     dumps_baseline,
     summarize,
 )
-from benchmarks.runner.sandbox import RunArtifacts
+from benchmarks.runner.sandbox import RunArtifacts, SandboxError
 from benchmarks.tests.test_judge import FakeJudge
 from nare.transport import Transport
 
@@ -360,6 +361,12 @@ def sandboxed(tmp_path: Path, judge: Judge | None = None) -> Case:
 def fake_sandbox(monkeypatch: pytest.MonkeyPatch, result: RunArtifacts) -> None:
     import benchmarks.runner.__main__ as bench
 
+    def closing(workdir: Path, artifacts: Path, text: str) -> None:
+        # The real one runs a container; here the host writes the same file.
+        (artifacts / "closing.txt").write_text(text, encoding="utf-8")
+
+    monkeypatch.setattr(bench, "write_closing", closing)
+
     def agent(
         case: Case, workdir: Path, artifacts: Path, config: Config
     ) -> RunArtifacts:
@@ -482,6 +489,134 @@ async def test_a_rep_keeps_what_its_container_left(
     evidence = tmp_path / "results" / "stamp"
     await run_rep(sandboxed(tmp_path), CONFIG, cast(Transport, None), 0, evidence)
     assert (evidence / "demo-0" / "after.json").read_text() == '{"processes": []}'
+
+
+async def test_a_check_reads_the_closing_message_at_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The read-only case's check reads /out/closing.txt. The closing message is
+    # written there after the agent exits, so the agent cannot change it.
+    import benchmarks.runner.__main__ as bench
+
+    output = json.dumps({"type": "output", "text": "It returns 90 seconds."})
+    fake_sandbox(
+        monkeypatch, RunArtifacts(output + "\n" + DONE_LINE, "", 0, False, 1.0)
+    )
+    seen: list[str] = []
+
+    def check(
+        workdir: Path, cmd: str, timeout: int, artifacts: Path | None = None
+    ) -> tuple[int, str]:
+        assert artifacts is not None
+        seen.append((artifacts / "closing.txt").read_text())
+        return 0, ""
+
+    monkeypatch.setattr(bench, "run_check", check)
+    evidence = tmp_path / "results" / "stamp"
+    await run_rep(sandboxed(tmp_path), CONFIG, cast(Transport, None), 0, evidence)
+    assert seen == ["It returns 90 seconds."]
+
+
+def test_an_idle_run_leaves_an_empty_closing_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import benchmarks.runner.sandbox as sandbox_module
+    from benchmarks.runner.sandbox import idle_artifacts
+
+    written: list[str] = []
+    monkeypatch.setattr(
+        sandbox_module, "_docker_run", lambda *args, **kwargs: (0, "", "", False)
+    )
+    monkeypatch.setattr(
+        sandbox_module,
+        "write_closing",
+        lambda workdir, artifacts, text: written.append(text),
+    )
+    artifacts = tmp_path / "out"
+    artifacts.mkdir()
+    idle_artifacts(case_with(), tmp_path, artifacts)
+    assert written == [""]
+    assert (artifacts / "session.json").is_file()
+
+
+def test_the_closing_writer_replaces_a_link_instead_of_following_it(
+    tmp_path: Path,
+) -> None:
+    # The agent's container can leave a link at /out/closing.txt pointing into
+    # the graded tree. The write must replace the link, never write through it.
+    from benchmarks.runner.sandbox import _WRITE_CLOSING
+
+    target = tmp_path / "bar.py"
+    target.write_text("original\n")
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "closing.txt").symlink_to(target)
+    proc = subprocess.run(
+        ["python3", "-I", "-c", _WRITE_CLOSING, str(out / "closing.txt")],
+        input="the message",
+        text=True,
+        capture_output=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert target.read_text() == "original\n"
+    assert not (out / "closing.txt").is_symlink()
+    assert (out / "closing.txt").read_text() == "the message"
+
+
+def test_the_closing_writer_refuses_a_directory_at_its_path(tmp_path: Path) -> None:
+    from benchmarks.runner.sandbox import _WRITE_CLOSING
+
+    (tmp_path / "closing.txt").mkdir()
+    proc = subprocess.run(
+        ["python3", "-I", "-c", _WRITE_CLOSING, str(tmp_path / "closing.txt")],
+        input="the message",
+        text=True,
+        capture_output=True,
+    )
+    assert proc.returncode != 0
+
+
+def test_docker_run_passes_stdin_and_keeps_the_container_input_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import benchmarks.runner.sandbox as sandbox_module
+
+    seen: dict[str, Any] = {}
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen["command"] = command
+        seen["input"] = kwargs.get("input")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    sandbox_module._docker_run(tmp_path, ["true"], 5, stdin="hello")
+    assert seen["input"] == "hello"
+    assert seen["command"][:3] == ["docker", "run", "-i"]
+
+
+async def test_a_closing_message_that_cannot_be_written_is_an_error_rep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The agent has finished. A rep whose checks cannot run is an error, and
+    # the run carries on with its other repetitions.
+    import benchmarks.runner.__main__ as bench
+
+    fake_sandbox(monkeypatch, RunArtifacts(DONE_LINE, "", 0, False, 1.0))
+
+    def refuse(workdir: Path, artifacts: Path, text: str) -> None:
+        raise SandboxError("could not write the closing message")
+
+    monkeypatch.setattr(bench, "write_closing", refuse)
+    rec = await run_rep(
+        sandboxed(tmp_path),
+        CONFIG,
+        cast(Transport, None),
+        0,
+        tmp_path / "results" / "stamp",
+    )
+    assert rec.outcome == "error"
+    assert rec.judge_why == "could not write the closing message"
+    assert rec.checks == ()
 
 
 @pytest.mark.docker
