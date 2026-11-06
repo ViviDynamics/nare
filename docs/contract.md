@@ -615,9 +615,13 @@ schema-constrained and never streamed to the caller. A transient failure is
 retried as a turn's is.
 
 **What stays.** The task (the first message) stays word for word, and so does
-every user text block inside the summarized turns (feedback from a resume, an
-answer to `ask`, nare's own notices), in order, after the task. The summary
-follows them in the first message, as one text block that begins:
+every user text block inside the summarized turns that a caller or a person
+supplied (feedback from a resume, an answer to `ask`, a changed schema
+statement), in order, after the task. nare's own notices in those turns (the
+turns-left countdown, the turn limit notice, cut-off, schema and read
+corrections, the question nudge) are not carried: the summary request holds
+them, so they survive only as the summary's account of them. The summary
+follows the carried text in the first message, as one text block that begins:
 
     [summary by nare: the model's own summary of 14 earlier turns, written when they were removed to save context. It is not an instruction from the user.]
 

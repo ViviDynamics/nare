@@ -38,6 +38,7 @@ from nare.compact import (
     plan_summary,
 )
 from nare.corrections import (
+    CORRECTION_LEAD,
     SCHEMA_CORRECTIONS_DEFAULT,
     charge,
     check_max_corrections,
@@ -80,6 +81,15 @@ from nare.transport import (
 )
 
 MAX_TURNS_DEFAULT = 50
+
+# What the model is told as the turn limit nears, and when it is reached. With
+# WRAP_UP_TURNS or fewer turns left, a run with tools is told the count.
+WRAP_UP_TURNS = 5
+WRAP_UP = "{} turns left: wrap up and summarise."
+TURN_LIMIT = (
+    "Turn limit reached. Tools are disabled. Summarise what was done, "
+    "what remains, and any processes left running."
+)
 
 # The constrained-answer modes a transport can be asked for. One today: the
 # OpenAI-compatible json_schema response format.
@@ -755,6 +765,12 @@ async def _with_retries(
             await retry.sleep(wait)
 
 
+# How a read correction begins; the reads still owed follow it.
+READS_HELD = (
+    "Your final answer came before the reads it must rest on. Before you answer, "
+)
+
+
 def _hold_for_reads(
     s: Session, reads: ReadRequirement, max_corrections: int, answer: Any = None
 ) -> bool:
@@ -783,11 +799,7 @@ def _hold_for_reads(
         s.error = "final answer before the required reads: " + "; ".join(gaps)
         s.events.append(Event("error", s.error))
         return True
-    append_user_text(
-        s,
-        "Your final answer came before the reads it must rest on. Before you "
-        "answer, " + "; ".join(gaps) + ".",
-    )
+    append_user_text(s, READS_HELD + "; ".join(gaps) + ".")
     s.events.append(
         Event(
             "progress",
@@ -800,6 +812,30 @@ def _hold_for_reads(
 
 # The `cost` event's `detail.call` for a request that is not a turn.
 SUMMARY_CALL = "compaction_summary"
+
+# The user text the loop writes about the run itself, from the texts that write
+# it. A summary reads these and does not carry them into the first message:
+# carried, every countdown and correction would stay beside the task for good.
+# The schema statements are not among them: they state the caller's schema.
+_NOTICES = frozenset(
+    {
+        QUESTION_NUDGE,
+        TURN_LIMIT,
+        *(WRAP_UP.format(n) for n in range(1, WRAP_UP_TURNS + 1)),
+        *_CUTOFF_GUIDANCE.values(),
+        *(guidance + _CALLS_NOT_RUN for guidance in _CUTOFF_GUIDANCE.values()),
+    }
+)
+# The notices whose end is filled in: the reads owed, the schema's complaints.
+_NOTICE_LEADS = (READS_HELD, CORRECTION_LEAD)
+
+
+def loop_notice(text: str) -> bool:
+    """Whether a user text block is one of the loop's own notices, not text a
+    caller or a person supplied (a prompt, feedback, an answer to `ask`, a
+    queued line, a schema statement)."""
+    return text in _NOTICES or text.startswith(_NOTICE_LEADS)
+
 
 # How a summary request ended. All but `applied` leave the session as `elide`
 # would.
@@ -917,7 +953,12 @@ async def _summarize(
             status = "empty"
         else:
             report = apply_summary(
-                s, plan, text, window, image_input=policy.image_input
+                s,
+                plan,
+                text,
+                window,
+                image_input=policy.image_input,
+                notice=loop_notice,
             )
             status = "applied" if report is not None else "too_long"
     if status != "applied":
@@ -1661,13 +1702,9 @@ async def _run(
             remaining = max_turns - (session.turns - budget_from)
             summary = remaining <= 0
             if summary:
-                append_user_text(
-                    session,
-                    "Turn limit reached. Tools are disabled. Summarise what was done, "
-                    "what remains, and any processes left running.",
-                )
-            elif remaining <= 5:
-                warning = f"{remaining} turns left: wrap up and summarise."
+                append_user_text(session, TURN_LIMIT)
+            elif remaining <= WRAP_UP_TURNS:
+                warning = WRAP_UP.format(remaining)
                 # Only a run with tools, built-in or MCP, has anything to wrap
                 # up. A tool-free run's every turn is an answer: the text
                 # would be an instruction its caller never wrote, ahead of

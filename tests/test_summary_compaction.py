@@ -34,7 +34,7 @@ from nare.loop import RetryPolicy, SummaryTier, run, step
 from nare.session import Message, Session, Usage, dumps, loads, new_session, reopen
 from nare.tools import Policy, approve_all
 from nare.transport import ProviderStatusError, Reply, StopReason
-from test_compact import THINKING, transcript, without_thinking
+from test_compact import THINKING, read_turns, transcript, without_thinking
 
 WINDOW = 10000
 IMAGE = {
@@ -682,3 +682,153 @@ async def test_an_archive_in_another_shape_adds_no_write() -> None:
     fake = FakeProvider([text_reply(QUESTION), text_reply("Done.")])
     await drain(resumed, fake, question_nudge=True)
     assert (resumed.status, resumed.ask_nudged) == ("done", True)
+
+
+async def turn_limit(tmp_path: Path) -> Session:
+    """Six turns under --max-turns 6: the countdown, a queued line, the turn
+    limit, then `continue`."""
+    s = new_session("task")
+    queued: list[list[str]] = [[], ["steer: list it twice"]]
+    replies = [tool_reply("list", {}, call_id=f"l{n}") for n in range(6)]
+    await drain(
+        s,
+        FakeProvider([*replies, text_reply("what was done")]),
+        policy=Policy(tools=frozenset({"list"}), root=tmp_path),
+        max_turns=6,
+        inbox=lambda: queued.pop(0) if queued else [],
+    )
+    assert s.stop_reason == "max_turns"
+    reopen(s, "continue")
+    return s
+
+
+async def cut_off(tmp_path: Path) -> Session:
+    """A cut-off turn with calls, then a cut-off text reply, both corrected."""
+    s = new_session("task")
+    replies = [
+        tool_reply("list", {}, call_id="k1", stop_reason="max_tokens"),
+        text_reply("half", stop_reason="max_tokens"),
+        text_reply("done"),
+    ]
+    await drain(
+        s,
+        FakeProvider(replies),
+        policy=Policy(tools=frozenset({"list"}), root=tmp_path),
+        max_cutoffs=2,
+    )
+    assert s.cutoffs == 2 and s.status == "done"
+    reopen(s, "now the tests")
+    return s
+
+
+FIRST_SCHEMA = {"type": "object"}
+SECOND_SCHEMA = {"type": "object", "required": ["b"]}
+
+
+async def schema_correction(tmp_path: Path) -> Session:
+    """A resume with a changed schema, whose first answer is corrected."""
+    s = new_session("task")
+    await drain(s, FakeProvider([text_reply('{"a": 1}')]), schema=FIRST_SCHEMA)
+    reopen(s, "add b")
+    replies = [text_reply('{"a": 1}'), text_reply('{"b": 2}')]
+    await drain(s, FakeProvider(replies), schema=SECOND_SCHEMA)
+    assert s.schema_corrections == 1 and s.status == "done"
+    reopen(s, "thanks")
+    return s
+
+
+async def read_correction(tmp_path: Path) -> Session:
+    """An answer held for the reads it must rest on."""
+    (tmp_path / "a.txt").write_text("alpha", encoding="utf-8")
+    s = new_session("task")
+    replies = [
+        text_reply("answer"),
+        tool_reply("read", {"path": "a.txt"}, call_id="r1"),
+        text_reply("answer"),
+    ]
+    await drain(
+        s,
+        FakeProvider(replies),
+        policy=Policy(tools=frozenset({"read"}), root=tmp_path),
+        require_reads=1,
+    )
+    assert s.status == "done"
+    reopen(s, "more detail")
+    return s
+
+
+async def question_nudge(tmp_path: Path) -> Session:
+    """A question in prose, nudged toward ask, then asked and answered."""
+    s = new_session("task")
+    ask = {"questions": ["Which file?"]}
+    replies = [text_reply("Which file?"), tool_reply("ask", ask, call_id="q1")]
+    await drain(
+        s,
+        FakeProvider(replies),
+        policy=Policy(tools=frozenset({"ask", "list"}), root=tmp_path),
+        question_nudge=True,
+    )
+    assert s.status == "blocked" and s.ask_nudged
+    reopen(s, "answer: b.txt")
+    return s
+
+
+@pytest.mark.parametrize(
+    ("make", "carried", "notices"),
+    [
+        (
+            turn_limit,
+            ["task", "steer: list it twice", "continue"],
+            [loop.WRAP_UP.format(n) for n in range(5, 0, -1)] + [loop.TURN_LIMIT],
+        ),
+        (
+            cut_off,
+            ["task", "now the tests"],
+            [
+                loop._CUTOFF_GUIDANCE["max_tokens"] + loop._CALLS_NOT_RUN,
+                loop._CUTOFF_GUIDANCE["max_tokens"],
+            ],
+        ),
+        (
+            schema_correction,
+            [
+                "task",
+                loop.schema_instruction(FIRST_SCHEMA),
+                "add b",
+                "The required JSON Schema has changed. "
+                + loop.schema_instruction(SECOND_SCHEMA),
+                "thanks",
+            ],
+            ["Your answer did not satisfy the required JSON Schema: "],
+        ),
+        (
+            read_correction,
+            ["task", "more detail"],
+            ["Your final answer came before the reads it must rest on. "],
+        ),
+        (question_nudge, ["task", "answer: b.txt"], [loop.QUESTION_NUDGE]),
+    ],
+    ids=["turn_limit", "cut_off", "schema_correction", "read_correction", "nudge"],
+)
+async def test_a_summary_carries_what_people_wrote_and_not_nares_notices(
+    tmp_path: Path, make: Any, carried: list[str], notices: list[str]
+) -> None:
+    s = await make(tmp_path)
+    # Four long turns after the notices, so a summary replaces everything up
+    # to them. Estimated from its characters: the fake measured nothing.
+    s.messages += read_turns(101, 104)
+    s.last_input_tokens = 0
+    window = int(estimate(s) / 0.85)
+    fake = FakeProvider([summary_reply("S"), text_reply("done")])
+    await drain(s, fake, compaction="summary", context_window=window)
+    assert len(s.summaries) == 1 and s.status == "done"
+    asked = [b["text"] for m in fake.calls[0][0] for b in m.content if "text" in b]
+    first = [b["text"] for b in s.messages[0].content]
+    for notice in notices:
+        # The summary read it, and the first message does not hold it.
+        assert [t for t in asked if t.startswith(notice)]
+        assert not [t for t in first if t.startswith(notice)]
+    assert first[:-1] == carried
+    assert first[-1].startswith(SUMMARY_PREFIX)
+    # The next request is what the model reads from here on.
+    assert fake.calls[1][0][0].content == s.messages[0].content

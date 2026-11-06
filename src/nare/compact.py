@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 from typing import Any, Literal
@@ -304,6 +305,14 @@ def _archived(message: Message) -> dict[str, Any]:
     return record
 
 
+def _carried(block: dict[str, Any], notice: Callable[[str], bool] | None) -> bool:
+    """Whether a user block in a replaced turn moves into message 0: text a
+    caller or a person wrote does, text `notice` accepts does not."""
+    if block.get("type") != "text":
+        return False
+    return notice is None or not notice(str(block.get("text", "")))
+
+
 def apply_summary(
     s: Session,
     plan: SummaryPlan,
@@ -311,13 +320,18 @@ def apply_summary(
     window: int,
     *,
     image_input: bool = True,
+    notice: Callable[[str], bool] | None = None,
 ) -> CompactionReport | None:
     """Replace the turns `plan` names with the summary `text`, or return None.
 
     Message 0 becomes the task, the user text the replaced turns carried (the
     user's feedback and answers must outlive them), and the labelled summary.
-    The replaced messages go to `s.summaries`, the thinking sent back goes, and
-    the estimate's saved boundaries move onto the shorter transcript. A summary
+    `notice` picks out the notices the loop wrote (a countdown, a correction)
+    from what a caller or a person wrote: a text block it accepts is not
+    carried, as the summary has read it. Without one, every user text block is
+    carried, since dropping what a person said is the worse mistake. The replaced
+    messages go to `s.summaries`, the thinking sent back goes, and the
+    estimate's saved boundaries move onto the shorter transcript. A summary
     that would not lower the estimate is refused with `s` untouched. Pure: the
     model call is loop.step()'s.
     """
@@ -338,7 +352,7 @@ def apply_summary(
                 for m in s.messages[1 : plan.cut]
                 if m.role == "user"
                 for b in m.content
-                if b.get("type") == "text"
+                if _carried(b, notice)
             ),
             summary_block(plan.turns, text),
         ],

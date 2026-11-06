@@ -32,6 +32,9 @@ if TYPE_CHECKING:
 
 SCHEMA_CORRECTIONS_DEFAULT = 1
 
+# How a schema correction begins; the validator's complaints follow it.
+CORRECTION_LEAD = "Your answer did not satisfy the required JSON Schema: "
+
 
 def check_max_corrections(value: object) -> None:
     """Refuse a budget that is not a positive integer, before any turn."""
@@ -138,10 +141,7 @@ def correction_text(
 ) -> str:
     """The message the model reads for a correction. The complaint is the
     validator's own list, duplicates and all, with the guidance an error carries."""
-    text = (
-        "Your answer did not satisfy the required JSON Schema: "
-        f"{'; '.join(_complaint(error) for error in errors)}.\n"
-    )
+    text = CORRECTION_LEAD + f"{'; '.join(_complaint(error) for error in errors)}.\n"
     if correction.earlier:
         text += (
             "Earlier answers broke these checks, and this answer does not. Keep "

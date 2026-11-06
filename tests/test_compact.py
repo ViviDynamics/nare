@@ -681,6 +681,49 @@ def test_user_text_in_the_replaced_turns_is_carried_in_order() -> None:
     ]
 
 
+def test_text_the_notice_test_accepts_is_not_carried() -> None:
+    s = new_session("go")
+    s.messages = transcript()
+    s.messages[2].content.append({"type": "text", "text": "notice: 5 left"})
+    s.messages[4].content.append({"type": "text", "text": "use the staging config"})
+    s.messages[6].content.append({"type": "text", "text": "notice: 4 left"})
+    s.messages[6].content.append({"type": "text", "text": "answer: yes, both files"})
+    s.messages[8].content.append({"type": "text", "text": "notice: 3 left"})
+    plan = plan_summary(s, 8000)
+    assert plan is not None
+    # The summary reads every one of them.
+    asked = [b["text"] for m in plan.request for b in m.content if b["type"] == "text"]
+    assert [t for t in asked if t.startswith("notice:")] == [
+        "notice: 5 left",
+        "notice: 4 left",
+        "notice: 3 left",
+    ]
+    report = apply_summary(
+        s, plan, "S", 8000, notice=lambda text: text.startswith("notice:")
+    )
+    assert report is not None
+    assert [b["text"] for b in s.messages[0].content] == [
+        "task",
+        "use the staging config",
+        "answer: yes, both files",
+        f"{LABEL}\n\nS",
+    ]
+    # The archive keeps them as they were.
+    archived = [
+        b["text"]
+        for m in s.summaries[0]["replaced"]
+        for b in m["content"]
+        if b["type"] == "text"
+    ]
+    assert archived == [
+        "notice: 5 left",
+        "use the staging config",
+        "notice: 4 left",
+        "answer: yes, both files",
+        "notice: 3 left",
+    ]
+
+
 def test_an_earlier_summary_is_read_by_the_next_and_replaced() -> None:
     s = new_session("go")
     s.messages = transcript()
