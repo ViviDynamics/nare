@@ -283,7 +283,10 @@ def test_verify_fails_when_a_solution_does_not_pass(tmp_path: Path) -> None:
     relocated = _case_with_references(
         tmp_path, "fix-failing-test", "solution", "exploit"
     )
-    failing = lambda kind, cmd: kind == "exploit" or cmd == "pytest -q"  # noqa: E731
+
+    def failing(kind: str, cmd: str) -> bool:
+        return kind == "exploit" or cmd == "pytest -q"
+
     text, code = verify_references([relocated], FakeRuntime(failing=failing))
     assert code == 1
     assert re.search(r"solution\s+FAIL", text)
@@ -389,7 +392,7 @@ def test_a_sandbox_that_fails_is_a_failed_verdict(tmp_path: Path) -> None:
         @contextmanager
         def sandbox(self, case: Case) -> Iterator[tuple[Path, Path]]:
             raise SandboxError("docker went away")
-            yield  # pragma: no cover
+            yield  # never reached: the raise above comes first
 
     case = case_named("edit-docstring")
     verdict = run_reference(case, reference(tmp_path), "solution", Broken())
