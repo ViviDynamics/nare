@@ -72,6 +72,7 @@ def test_library_defaults_are_as_documented() -> None:
     assert params["max_cutoffs"].default is None
     assert params["require_reads"].default == 0
     assert params["require_cited_reads"].default == ()
+    assert params["compaction"].default == "elide"
 
 
 def test_command_line_defaults_are_as_documented() -> None:
@@ -105,7 +106,7 @@ def test_step_has_no_run_only_keywords() -> None:
         "require_cited_reads",
     ):
         assert name not in params
-    for name in ("schema", "check", "tools", "max_corrections"):
+    for name in ("schema", "check", "tools", "max_corrections", "compaction"):
         assert name in params
 
 
@@ -155,3 +156,11 @@ def test_max_turns_one_behaves_as_the_recipe_says(
         stop_reason,
         turns,
     )
+
+
+def test_command_line_compaction_defaults_to_elide(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NARE_COMPACTION", raising=False)
+    args = build_parser().parse_args(["run", "--yes", "x"])
+    assert args.compaction == "elide"

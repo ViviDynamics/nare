@@ -118,8 +118,15 @@ at four characters per token. Persisted message-count and character boundaries
 allow the estimate to account for merged feedback and prefix elision across
 resumes. A fresh/legacy session estimates the whole transcript. The estimate is
 a heuristic; protected context can still cause a `context` stop, and provider
-rejection still maps to `max_tokens`. Model-written summaries remain a future
-extension after elision.
+rejection still maps to `max_tokens`.
+
+With `--compaction summary` (library `compaction="summary"`) a model-written
+summary comes first: at the same 80% point the model summarizes its turns
+before the last two, and the summary replaces them in the first message, after
+the task and the user's own words. `compact.py` plans the request and applies
+the reply, and stays pure; `loop.step()` makes the call through the run's
+transport and accounts for it. When no summary is applied, elision runs as in
+the default mode, `elide`.
 
 Transports report normalized token categories and raw reported cost. Backend
 window discovery stays below the transport boundary. `accounting.py` prices
