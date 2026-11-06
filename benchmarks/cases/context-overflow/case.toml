@@ -36,10 +36,20 @@ def proves(n, text):
 def writes(call):
     if "findings.json" not in json.dumps(call.get("input", {})):
         return False
-    if call.get("name") != "bash":
+    if call.get("name") in ("write", "edit"):
         return True
+    if call.get("name") != "bash":
+        return False
     command = str(call.get("input", {}).get("command", ""))
-    return re.search(r">|tee|dump|open\(|write", command) is not None
+    return re.search(
+        r"(?<![\d&])>{1,2}\s*['\"]?[^\s;|&]*findings\.json"
+        r"|\btee\b[^;|&]*findings\.json"
+        r"|\b(?:cp|mv|install)\b[^;|&]*findings\.json"
+        r"|\bof=\S*findings\.json"
+        r"|open\([^)]*findings\.json[^)]*['\"]w"
+        r"|json\.dump\(|write_text\(",
+        command,
+    ) is not None
 
 problems, reads = [], {}
 for index, call in enumerate(calls):

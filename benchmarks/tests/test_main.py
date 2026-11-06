@@ -494,8 +494,8 @@ async def test_a_rep_keeps_what_its_container_left(
 async def test_a_check_reads_the_closing_message_at_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The read-only case's check reads /out/closing.txt. The host writes the
-    # closing message there after the agent exits, so the agent cannot.
+    # The read-only case's check reads /out/closing.txt. The closing message is
+    # written there after the agent exits, so the agent cannot change it.
     import benchmarks.runner.__main__ as bench
 
     output = json.dumps({"type": "output", "text": "It returns 90 seconds."})

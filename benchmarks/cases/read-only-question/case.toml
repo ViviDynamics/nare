@@ -15,7 +15,7 @@ status = "done"
 kind = "bash"
 cmd = '''git diff --quiet "$(git rev-list --max-parents=0 HEAD)" && test -z "$(git status --porcelain)"'''
 
-# The answer, from the closing message the host writes to /out/closing.txt.
+# The answer, from the closing message in /out/closing.txt.
 # It names the type and the value: timedelta, and 90 seconds.
 [[check]]
 kind = "bash"
@@ -24,9 +24,9 @@ python3 -I - <<'EOF'
 import re, sys
 text = open("/out/closing.txt").read()
 said = "timedelta" in text.lower() and re.search(
-    r"seconds\s*=\s*90(\.0+)?\b"
-    r"|\b90(\.0+)?\s*(s|sec|secs|seconds?)\b"
-    r"|\b1\s*min(ute)?s?\b.{0,20}\b30\s*(s|sec|secs|seconds?)\b",
+    r"seconds\s*=\s*90(?:\.0+)?(?![\d.])"
+    r"|(?<![\d.])90(?:\.0+)?\s*(?:s|sec|secs|seconds?)\b"
+    r"|(?<![\d.])1\s*(?:m|min|mins|minutes?)\b[\s,]*(?:and\s*)?30\s*(?:s|sec|secs|seconds?)\b",
     text,
     re.I,
 )

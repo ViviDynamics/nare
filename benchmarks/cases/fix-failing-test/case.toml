@@ -18,6 +18,12 @@ cmd = '''base=$(git rev-list --max-parents=0 HEAD) && git diff --quiet "$base" -
 kind = "bash"
 cmd = '''git diff --quiet "$(git rev-list --max-parents=0 HEAD)" -- test_bar.py'''
 
+# Tests ran and none was skipped. A skip from a conftest.py leaves test_bar.py
+# unchanged and pytest exits 0, so the exit status alone is not enough.
+[[check]]
+kind = "bash"
+cmd = '''out=$(pytest -q 2>&1) && printf '%s\n' "$out" | grep -qE '[0-9]+ passed' && ! printf '%s\n' "$out" | grep -qE 'skipped|xfail|deselected''''
+
 [[check]]
 kind = "result"
 status = "done"

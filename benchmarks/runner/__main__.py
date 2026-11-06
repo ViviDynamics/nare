@@ -613,7 +613,7 @@ async def run_rep(
         (kept / "diff.patch").write_text(diff, encoding="utf-8")
         (kept / "closing.txt").write_text(closing, encoding="utf-8")
         # Under the name the checks read, at /out/closing.txt. Written by the
-        # host after the agent exits, so nothing the agent wrote there is seen.
+        # container after the agent exits, so nothing the agent wrote there is seen.
         try:
             write_closing(workdir, artifacts, closing)
         except SandboxError as exc:

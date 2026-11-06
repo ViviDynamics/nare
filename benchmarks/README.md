@@ -477,8 +477,8 @@ A bash check runs in a fresh container over the agent's working directory,
 with the run's artifacts mounted read-only at `/out`, so a check can see what
 the agent did outside the tree it left. `/out/session.json` is nare's
 session, and `/out/closing.txt` is the closing message, as the judge reads it.
-The host writes that file after the agent exits, so the agent cannot change
-what a check reads. A check that reads the transcript should accept a result
+A container writes that file after the agent exits, from the closing message
+the host holds, so the agent cannot change what a check reads. A check that reads the transcript should accept a result
 nare has elided for context (`[elided by nare: N chars ...]`), since a long
 run compacts. Changes are measured from the fixture commit, which is the root
 of the repository: `git diff --quiet "$(git rev-list --max-parents=0 HEAD)" -- path`.
