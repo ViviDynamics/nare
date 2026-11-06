@@ -18,8 +18,9 @@ import pytest
 
 from fake_provider import FakeProvider
 from nare.cli import main
-from nare.session import Usage
+from nare.session import Usage, dumps
 from nare.transport import Reply, ToolCall
+from test_summary_compaction import WINDOW, at_trigger
 
 FIXTURES = Path(__file__).resolve().parent.parent / "docs" / "replay"
 
@@ -281,3 +282,35 @@ def test_a_replayed_run_matches_one_with_the_transport_injected(
     assert replayed_result == {**direct[-1], "session_id": None}
     injected_session = json.loads(session.read_text(encoding="utf-8"))
     assert {**replayed_session, "id": None} == {**injected_session, "id": None}
+
+
+def test_a_replayed_run_in_summary_mode(tmp_path: Path) -> None:
+    root = project(tmp_path)
+    session = tmp_path / "session.json"
+    script = tmp_path / "script.json"
+
+    def summary_run(*replies: dict[str, str]) -> tuple[int, list[dict[str, Any]]]:
+        session.write_text(dumps(at_trigger()), encoding="utf-8")
+        script.write_text(json.dumps({"replies": list(replies)}), encoding="utf-8")
+        proc, lines = nare(
+            "run", "--yes", "--jsonl", "--provider", "fake", "--replay", str(script),
+            "--root", str(root), "--resume", str(session), "--compaction", "summary",
+            "--context-window", str(WINDOW), cwd=root,
+        )  # fmt: skip
+        return proc.returncode, lines
+
+    code, lines = summary_run({"text": "S"}, {"text": "done"})
+    assert code == 0
+    statuses = [
+        line["detail"]["compaction_summary"]["status"]
+        for line in lines
+        if "compaction_summary" in line.get("detail", {})
+    ]
+    assert statuses == ["applied"]
+    saved = json.loads(session.read_text(encoding="utf-8"))
+    assert saved["summaries"][0]["summary"] == "S"
+    # One reply short: the summary takes the only one, and the turn names
+    # the request it lacks.
+    code, lines = summary_run({"text": "S"})
+    assert code == 1
+    assert "no reply for turn 2: it holds 1" in lines[-1]["error"]

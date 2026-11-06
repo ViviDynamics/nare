@@ -44,6 +44,10 @@ def test_contract_flags_cover_the_options_callers_ask_about() -> None:
         "takes_value": True,
         "choices": ["low", "medium", "high", "xhigh", "max"],
     }
+    assert flags["--compaction"] == {
+        "takes_value": True,
+        "choices": ["elide", "summary"],
+    }
     assert "--help" not in flags and "prompt" not in flags
 
 

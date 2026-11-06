@@ -66,6 +66,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--require-read` | yes | | Hold the final answer until the run has read this path, relative to `--root`; repeatable ([Read requirements](#read-requirements)) |
 | `--require-cited-reads` | yes | | Hold the final answer until the run has read each path the answer cites, found by a JSON pointer into the `--schema` answer; repeatable ([Read requirements](#read-requirements)) |
 | `--timeout` | yes | | Wall clock for this invocation ([Run deadline and stop signals](#run-deadline-and-stop-signals)) |
+| `--compaction` | yes | `elide`, `summary` | What nare does first at the compaction point: elide old tool output, or have the model summarize its oldest turns ([Budgets and partial results](#budgets-and-partial-results)) |
 | `--request-timeout` | yes | | HTTP timeout for each model request ([Provider retries and the request timeout](#provider-retries-and-the-request-timeout)) |
 | `--request-retries` | yes | | Resend a model request after a transient failure, up to this many times |
 | `--request-retry-seconds` | yes | | Longest wait between one request's retries |
