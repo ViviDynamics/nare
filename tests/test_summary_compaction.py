@@ -5,6 +5,7 @@ Issue #42. The spec is docs/superpowers/specs/2026-11-05-summary-compaction-desi
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import math
@@ -22,6 +23,7 @@ from fake_provider import (
     tool_reply,
 )
 from nare import loop
+from nare.cli import main
 from nare.compact import (
     SUMMARY_PREFIX,
     context_chars,
@@ -832,3 +834,87 @@ async def test_a_summary_carries_what_people_wrote_and_not_nares_notices(
     assert first[-1].startswith(SUMMARY_PREFIX)
     # The next request is what the model reads from here on.
     assert fake.calls[1][0][0].content == s.messages[0].content
+
+
+class Hangs(FakeProvider):
+    """Holds the summary request until it is cancelled, as a slow backend does."""
+
+    def __init__(self, replies: list[Reply]) -> None:
+        super().__init__(replies)
+        self.asked = asyncio.Event()
+        self.cancelled = False
+
+    async def turn(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        tool_choice: str | None = None,
+    ) -> Reply:
+        if tool_choice == "none":
+            self.asked.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+        return await super().turn(messages, tools, tool_choice=tool_choice)
+
+
+class StreamingHangs(Hangs, StreamingProvider):
+    pass
+
+
+@pytest.mark.parametrize("transport", [Hangs, StreamingHangs])
+async def test_a_cancel_during_the_summary_request_applies_nothing(
+    transport: type[Hangs],
+) -> None:
+    s = at_trigger()
+    before = copy.deepcopy(s.messages)
+    fake = transport([text_reply("never sent")])
+    seen: list[Event] = []
+
+    async def consume() -> None:
+        async for event in run(
+            s, transport=fake, context_window=WINDOW, compaction="summary"
+        ):
+            seen.append(event)
+
+    task = asyncio.create_task(consume())
+    await fake.asked.wait()
+    # What --timeout, SIGTERM and SIGINT do to the task running the run.
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert fake.cancelled
+    assert len(fake.calls) == 0  # the turn was never sent
+    assert s.messages == before
+    assert s.summaries == []
+    assert (s.turns, s.usage) == (0, Usage())
+    events = [*seen, *s.events]
+    assert not [e for e in events if "compaction_summary" in e.detail]
+    assert not [e for e in events if "compaction" in e.detail]
+
+
+def test_a_deadline_during_the_summary_request_saves_the_last_turn(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "s.json"
+    path.write_text(dumps(at_trigger()), encoding="utf-8")
+    fake = Hangs([text_reply("never sent")])
+    argv = ["run", "--yes", "--jsonl", "--compaction", "summary", "--timeout", "0.2"]
+    argv += ["--context-window", str(WINDOW), "--resume", str(path)]
+    assert main(argv, transport=fake) == 1
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert (lines[-1]["status"], lines[-1]["stop_reason"]) == ("error", "timeout")
+    assert fake.cancelled and fake.calls == []
+    assert not [
+        line for line in lines if "compaction_summary" in line.get("detail", {})
+    ]
+    saved = loads(path.read_text(encoding="utf-8"))
+    assert saved.summaries == []
+    assert saved.turns == 0
+    assert saved.messages == at_trigger().messages
