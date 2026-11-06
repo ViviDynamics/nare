@@ -1013,6 +1013,9 @@ async def step(
     compaction: CompactionMode = "elide",
     summary_tier: SummaryTier | None = None,
 ) -> Session:
+    # As run() does: a caller that drives step() itself with a typo is told,
+    # rather than getting elide.
+    check_compaction(compaction)
     if tools:
         # The allowlist is the policy's, as for built-ins: a registered tool is
         # offered only when `policy.tools` names it. `pending` is kept, so a name

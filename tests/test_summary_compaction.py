@@ -918,3 +918,31 @@ def test_a_deadline_during_the_summary_request_saves_the_last_turn(
     assert saved.summaries == []
     assert saved.turns == 0
     assert saved.messages == at_trigger().messages
+
+
+async def test_step_refuses_an_unknown_mode_before_any_call() -> None:
+    s = at_trigger()
+    before = copy.deepcopy(s.messages)
+    fake = FakeProvider([text_reply("done")])
+    mode: Any = "hybrid"
+    with pytest.raises(
+        ValueError, match="compaction must be one of elide, summary, not 'hybrid'"
+    ):
+        await step(
+            s, fake, approve_all, Policy(), context_window=WINDOW, compaction=mode
+        )
+    assert fake.calls == []
+    assert s.messages == before  # not even elided
+    # elide, named or not, sends the request it always has.
+    default = FakeProvider([text_reply("done")])
+    named = FakeProvider([text_reply("done")])
+    await step(at_trigger(), default, approve_all, Policy(), context_window=WINDOW)
+    await step(
+        at_trigger(),
+        named,
+        approve_all,
+        Policy(),
+        context_window=WINDOW,
+        compaction="elide",
+    )
+    assert named.calls == default.calls and named.choices == default.choices
