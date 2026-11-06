@@ -1,7 +1,8 @@
 # Feature gap: nare against OpenCode v2 and Claude Code
 
-Issue #113. Status: Proposed (2026-11-05). The decision is Jason's; nothing
-in this document is filed, closed or merged on its strength.
+Issue #113. Status: Accepted (2026-11-06). Jason accepted the target, cut
+and ordering below as proposed. The undecided items (section 3) stay open for
+Jason, and the proposed issues (section 5) are not filed yet.
 
 Research date: 2026-11-05. nare baseline: origin/main 91e75a8, `nare contract`
 version 3, build 2026.11.44. Source tags like [C3] and [O4] point at the
