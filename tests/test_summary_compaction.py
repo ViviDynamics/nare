@@ -6,6 +6,7 @@ Issue #42. The spec is docs/superpowers/specs/2026-11-05-summary-compaction-desi
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -568,3 +569,67 @@ async def test_the_context_stop_after_a_discarded_summary_is_todays() -> None:
     assert summarized.error == elided.error
     assert elided.error == "context estimate 10727 reaches window 10000"
     assert len(fake.calls) == 1
+
+
+async def test_a_token_budget_without_room_skips_the_summary() -> None:
+    plan = plan_summary(at_trigger(), WINDOW)
+    assert plan is not None
+    fake = FakeProvider([text_reply("done")])
+    limit = math.floor(plan.request_tokens + plan.bound)
+    events = await drain(at_trigger(), fake, compaction="summary", budget_tokens=limit)
+    assert fake.choices == [None]
+    assert summary_events(events) == []
+
+
+async def test_a_summary_that_crosses_the_budget_is_kept_and_ends_the_step() -> None:
+    plan = plan_summary(at_trigger(), WINDOW)
+    assert plan is not None
+    limit = math.floor(plan.request_tokens + plan.bound) + 1
+    crossing = Reply(
+        content=[{"type": "text", "text": "S"}],
+        tool_calls=[],
+        usage=Usage(input=limit),
+        stop_reason="end_turn",
+    )
+    s = at_trigger()
+    measured = (s.last_input_tokens, s.last_input_chars)
+    fake = FakeProvider([crossing, text_reply("never sent")])
+    events = await drain(s, fake, compaction="summary", budget_tokens=limit)
+    assert len(fake.calls) == 1 and s.turns == 0
+    assert (s.status, s.stop_reason) == ("error", "budget")
+    assert len(s.summaries) == 1
+    # The summary reply measured no turn's request. (The message count is
+    # rebased onto the shorter transcript by the summary, not by the reply.)
+    assert (s.last_input_tokens, s.last_input_chars) == measured
+    errors = [e for e in events if e.type == "error"]
+    assert len(errors) == 1 and "budget" in errors[0].detail
+    compacted = next(i for i, e in enumerate(events) if "compaction" in e.detail)
+    assert compacted < events.index(errors[0])
+    # A resume with a larger budget continues from the summary.
+    reopen(s)
+    resumed = FakeProvider([text_reply("done")])
+    await drain(s, resumed, compaction="summary", budget_tokens=limit * 10)
+    assert s.status == "done"
+    assert resumed.calls[0][0][0].content[-1]["text"].endswith("\n\nS")
+
+
+async def test_a_summary_of_unknown_cost_stops_a_dollar_budget() -> None:
+    s = at_trigger()
+    fake = FakeProvider([summary_reply("S"), text_reply("never sent")])
+    await drain(s, fake, compaction="summary", budget_usd=1.0)
+    assert len(fake.calls) == 1
+    assert (s.status, s.stop_reason) == ("error", "budget")
+    assert s.error is not None and "cannot be enforced" in s.error
+
+
+async def test_a_budget_stop_is_reported_before_the_context_stop() -> None:
+    s = chat()
+    fake = FakeProvider([summary_reply("no", stop_reason="refusal")])
+    events = await drain(
+        s, fake, compaction="summary", policy=Policy(tools=frozenset()), budget_usd=1.0
+    )
+    assert len(fake.calls) == 1
+    assert (s.status, s.stop_reason) == ("error", "budget")
+    # One error, the budget's: the context stop did not come first.
+    [error] = [e for e in events if e.type == "error"]
+    assert "budget" in error.detail

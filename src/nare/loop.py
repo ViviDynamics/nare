@@ -966,6 +966,7 @@ async def step(
     # Not on the turn-limit summary: the run ends after that call, and a
     # resume compacts on its first step anyway. Not once a summary has not
     # been applied in this invocation.
+    spent = False
     if compaction == "summary" and not summary and not tier.failed:
         cap = getattr(transport, "max_tokens", None)
         plan = plan_summary(
@@ -979,7 +980,7 @@ async def step(
             ),
         )
         if plan is not None:
-            report, _ = await _summarize(
+            report, spent = await _summarize(
                 s,
                 transport,
                 policy,
@@ -997,6 +998,11 @@ async def step(
         s.events.append(
             Event("progress", _compaction_text(report), {"compaction": asdict(report)})
         )
+    # A summary request that crossed a limit has still been kept when it passed
+    # its checks, and the turn is not sent. Checked before the context size, so
+    # the run ends `budget` even when the estimate still reaches the window.
+    if spent and check_budget(s):
+        return s
     size = estimate(s, image_input=policy.image_input)
     if size >= context_window:
         s.status = "error"
@@ -1700,7 +1706,12 @@ async def _run(
                         compaction=compaction,
                         summary_tier=summary_tier,
                     )
-                if session.status not in ("done", "blocked"):
+                # A summary request that crossed a limit already ended the
+                # step with `budget`; checking again would report it twice.
+                if (
+                    session.status not in ("done", "blocked")
+                    and session.stop_reason != "budget"
+                ):
                     check_budget(session)
                 if (
                     session.status == "working"
