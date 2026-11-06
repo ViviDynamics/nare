@@ -233,6 +233,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_parser.add_argument(
+        "--require-cited-reads",
+        action="append",
+        metavar="POINTER",
+        help=(
+            "hold the final answer until the run has read each path the answer "
+            "cites: POINTER is a JSON pointer into the --schema answer, and * "
+            "matches any array index or object key, e.g. /checks/*/path "
+            "(repeatable; quote it in the shell). Needs --schema and the read "
+            "tool. Same budget and result as --require-reads"
+        ),
+    )
+    run_parser.add_argument(
         "--timeout",
         type=float,
         metavar="SECONDS",
@@ -832,7 +844,9 @@ async def _execute(
         if args.max_corrections is None
         else args.max_corrections
     )
-    reads_required = bool(args.require_reads or args.require_read)
+    reads_required = bool(
+        args.require_reads or args.require_read or args.require_cited_reads
+    )
     # Reported for a schema run, or a run with reads required: each spends it.
     corrections_budget = (
         corrections_limit if schema is not None or reads_required else None
@@ -863,6 +877,7 @@ async def _execute(
                 max_cutoffs=args.max_cutoffs,
                 require_reads=args.require_reads or 0,
                 require_read=args.require_read or (),
+                require_cited_reads=args.require_cited_reads or (),
                 # Headless only: a person reading a TUI reply can answer it.
                 question_nudge=True,
             )
@@ -1013,23 +1028,30 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         schema = schema_from_args(args)
         if args.structured_output is not None and schema is None:
             raise ValueError("--structured-output requires --schema")
-        reads_required = bool(args.require_reads or args.require_read)
+        reads_required = bool(
+            args.require_reads or args.require_read or args.require_cited_reads
+        )
         if args.max_corrections is not None and schema is None and not reads_required:
             raise ValueError(
                 "--max-corrections requires --schema or a read requirement"
             )
         if args.require_reads is not None and args.require_reads <= 0:
             raise ValueError("--require-reads must be a positive integer")
-        if args.require_reads or args.require_read:
-            # Refused here, before any turn, as a bad path or a missing tool is.
+        if args.require_cited_reads and schema is None:
+            raise ValueError("--require-cited-reads requires --schema")
+        if reads_required:
+            # Refused here, before any turn, as a bad path, pointer or missing
+            # tool is.
             build_reads(
                 args.require_reads or 0,
                 args.require_read or [],
                 root=Path(args.root).resolve() if args.root else None,
+                cited=args.require_cited_reads or [],
             )
             if "read" not in tools_from_args(args):
                 raise ValueError(
-                    "--require-reads and --require-read need the read tool"
+                    "--require-reads, --require-read and --require-cited-reads "
+                    "need the read tool"
                 )
         session = _load_or_new(args)
         adopt_system(args, session)

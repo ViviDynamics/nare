@@ -233,6 +233,19 @@ def describe() -> dict[str, Any]:
             "stop_reason": "reads_required",
             "result": "reads",
         },
+        # Additive: paths a typed answer cites must have been read. POINTER is a
+        # JSON pointer into the answer; `*` matches any index or key.
+        "cited_reads": {
+            "flag": "--require-cited-reads",
+            "requires": ["--schema", "read"],
+            "pointer": "RFC 6901 with * as a wildcard token",
+            "matches": "string values only; other values are not paths",
+            "counts": "successful reads inside the root, as the read requirements",
+            "check_argument": "read records, for a check with two positional arguments",
+            "correction": {"kind": "reads", "budget": "shared with schema corrections"},
+            "stop_reason": "reads_required",
+            "result": "reads",
+        },
         "deadline": {
             "flag": "--timeout",
             "signals": list(STOP_SIGNALS),
