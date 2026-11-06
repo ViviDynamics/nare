@@ -315,6 +315,28 @@ After a matrix run, `compare --model M` and `bless --model M` read M's file
 from it. `compare-judges` reads one model's run, so pass it that file with
 `--results`; without it, a matrix run as the newest run exits 2.
 
+## Tool-call health
+
+Every run counts, per model, how often the serving stack or the model made a
+call nare could not use. The counts come from each rep's kept `session.json`
+and event stream, so a model that mangles its calls reads differently from a
+harness that does:
+
+- **argument errors**: a call refused before it ran, because its arguments were
+  not a JSON object or failed the tool's argument checks;
+- **unknown tool names**: a name no tool in nare has;
+- **empty arguments**: `{}` to a tool whose required parameters were then
+  missing (a subset of the argument errors);
+- **reasoning with no answer and no call**: a turn that reasoned and then did
+  neither;
+- **markup in reply text**: `<tool_call>` tags, or JSON shaped like a call, in
+  the text instead of a call nare could run.
+
+`run` prints them under the table, one block per model. `bin/bench tool-health`
+counts the same from an existing results file's evidence, with no model
+called, which is how older runs are scored. A rep whose evidence is missing is
+counted as unread, not as clean.
+
 ## Comparing judges
 
 `compare-judges` measures how TypeSafe's Jev and the benchmark's own LLM judge
