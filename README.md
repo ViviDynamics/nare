@@ -356,7 +356,7 @@ and [offline CLI evidence](docs/evidence/41/README.md).
 | `--budget-tokens N` | `NARE_BUDGET_TOKENS` | Positive integer cumulative token limit |
 | `--budget-usd X` | `NARE_BUDGET_USD` | Finite positive cumulative dollar limit |
 | `--context-window N` | `NARE_CONTEXT_WINDOW` | Positive integer context window; otherwise backend, otherwise 32000 |
-| `--compaction MODE` | `NARE_COMPACTION` | `elide` (default) or `summary`: what happens first at the compaction point (below) |
+| `--compaction MODE` | `NARE_COMPACTION` | `nare run` only: `elide` (default) or `summary`, what happens first at the compaction point (below). `nare tui` has no such flag and ignores the variable: it always elides |
 | Input/output prices | `NARE_PRICE_IN`, `NARE_PRICE_OUT` | Both needed, dollars per million tokens |
 | Cache prices | `NARE_PRICE_CACHE_READ`, `NARE_PRICE_CACHE_WRITE` | Optional dollars per million tokens |
 
