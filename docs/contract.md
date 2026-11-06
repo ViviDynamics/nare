@@ -163,7 +163,10 @@ or is `{"error": "..."}` and nothing else, which fails that turn as a
 transport error does: the run ends `error` with `stop_reason: null` and
 `error: "RuntimeError: ..."`, exit 1. A run that makes more requests than the
 script holds fails the same way. The error names the request as `turn N`, and N
-counts every request, summary requests included.
+counts every request, summary requests included. At a summary request's
+position neither ends the run there: the summary request ends with status
+`failed` and nare elides, and the turn that follows takes the next reply or, in
+an exhausted script, fails as above, naming the same N.
 
 The whole script is checked at startup. An unreadable file, a key the table
 does not name, or a value of the wrong type exits 2 before anything runs,
@@ -498,8 +501,11 @@ calculated from prices rather than reported by the backend). **`usage.total` is
 the token count to use**: the sum of the four token fields, equal to
 `budget.used_tokens` on every result, and what `--budget-tokens` counts. Adding
 `input` and `output` alone undercounts any run that used the prompt cache. Each
-`cost` event's `detail` has the same fields for its one turn, `total` included;
-the session file keeps the four counters without `total`. Streamed cost headers are
+`cost` event's `detail` has the same fields for its one model request, `total`
+included; the session file keeps the four counters without `total`. A summary
+request under `--compaction summary` is a model request but not a turn, and its
+`cost` event carries `detail.call` = `"compaction_summary"`, so a caller must
+not count `cost` events as turns. Streamed cost headers are
 ignored; configured prices override discovered model-info prices. With neither,
 cost is unknown. Token categories are disjoint. For OpenAI,
 `input=prompt_tokens-cached_tokens`, `cache_read=cached_tokens`, and cache_write
@@ -649,10 +655,11 @@ correction.
 
 **Accounting.** The request counts in `usage`, in both budgets and in
 `retries`, and is followed by a `cost` event whose `detail.call` is
-`"compaction_summary"`. It is not a turn: `turns` and `--max-turns` do not
-count it. When it crosses a token or USD limit, the summary is still applied
-if it passes, and the run ends `error`/`budget` before the turn, with one
-budget error; a resume with a larger budget continues from the summary.
+`"compaction_summary"`. A `failed` request got no reply, so it emits no `cost`
+event and adds nothing to `usage`. It is not a turn: `turns` and `--max-turns`
+do not count it. When it crosses a token or USD limit, the summary is still
+applied if it passes, and the run ends `error`/`budget` before the turn, with
+one budget error; a resume with a larger budget continues from the summary.
 
 **Events.** One `progress` event per summary request, applied or not, with
 `detail.compaction_summary`:
@@ -672,11 +679,11 @@ The `compaction` event is emitted, as before, only when the transcript
 changed, and gains `mode` (`elide` or `summary`, the invocation's mode) and
 `summarized` (the turns a summary replaced, 0 for an elision). A summary and
 an elision never share one `compaction` event. Within a step the order is the
-request's retry events, its `cost` event, `compaction_summary`, `compaction`,
-then a `budget` error if the request crossed a limit, or else a `context` error
-if the estimate still reaches the window, then the turn's events. With
-`--stream` the turn's text arrives as it is written, before the step's other
-events, as it always has.
+request's retry events, its `cost` event (none when it `failed`),
+`compaction_summary`, `compaction`, then a `budget` error if the request
+crossed a limit, or else a `context` error if the estimate still reaches the
+window, then the turn's events. With `--stream` the turn's text arrives as it
+is written, before the step's other events, as it always has.
 
 **The session file.** `summaries` holds one record per applied summary:
 `at_turn` (the session's `turns` when it was applied), `mode`,
