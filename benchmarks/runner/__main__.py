@@ -81,6 +81,7 @@ from benchmarks.runner.nare_args import (
     stage_inputs,
     variant,
 )
+from benchmarks.runner.reference import DockerRuntime, judge_from, verify_references
 from benchmarks.runner.report import (
     Baseline,
     BaselineMeta,
@@ -173,6 +174,19 @@ def build_parser() -> argparse.ArgumentParser:
         )
         child.add_argument("--case", action="append", help="limit to this case id")
         if name == "verify":
+            child.add_argument(
+                "--judge",
+                action="store_true",
+                help="also judge each solution's claims, and each exploit a judge "
+                "catches (one judge call per case; needs a key)",
+            )
+            child.add_argument(
+                "--provider", help="judge's provider (env: NARE_PROVIDER)"
+            )
+            child.add_argument("--base-url", help="endpoint (env: NARE_BASE_URL)")
+            child.add_argument(
+                "--judge-model", help="judge (env: NARE_BENCH_JUDGE_MODEL)"
+            )
             continue
         child.add_argument("--model", help="model under test (env: NARE_MODEL)")
         child.add_argument("--provider", help="provider (env: NARE_PROVIDER)")
@@ -1736,9 +1750,26 @@ def main(argv: list[str] | None = None) -> int:
         except SandboxError as exc:
             print(f"bench: {exc}", file=sys.stderr)
             return 2
+        judge = None
+        if args.judge:
+            try:
+                # verify runs no agent, so the judge stands in for the model.
+                config = resolve_config(
+                    model=args.judge_model or os.environ.get("NARE_BENCH_JUDGE_MODEL"),
+                    provider=args.provider,
+                    base_url=args.base_url,
+                    judge_model=args.judge_model,
+                    env=os.environ,
+                )
+            except ConfigError as exc:
+                print(f"bench: {exc}", file=sys.stderr)
+                return 2
+            judge = judge_from(lambda: judge_transport(config))
         text, code = verify(cases)
+        references, reference_code = verify_references(cases, DockerRuntime(), judge)
         print(text)
-        return code
+        print(references)
+        return max(code, reference_code)
 
     if getattr(args, "baselines", False) and not args.matrix:
         print("bench: --baselines goes with --matrix", file=sys.stderr)

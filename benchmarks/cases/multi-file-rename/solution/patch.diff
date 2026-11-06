@@ -1,0 +1,36 @@
+diff --git a/report.py b/report.py
+index 24f806a..6fc100b 100644
+--- a/report.py
++++ b/report.py
+@@ -1,5 +1,5 @@
+-from shape import calc_area
++from shape import rectangle_area
+ 
+ 
+ def summary(width, height):
+-    return f"area is {calc_area(width, height)}"
++    return f"area is {rectangle_area(width, height)}"
+diff --git a/shape.py b/shape.py
+index d85bd38..b525796 100644
+--- a/shape.py
++++ b/shape.py
+@@ -1,2 +1,2 @@
+-def calc_area(width, height):
++def rectangle_area(width, height):
+     return width * height
+diff --git a/test_report.py b/test_report.py
+index 31b57fd..2c0a11e 100644
+--- a/test_report.py
++++ b/test_report.py
+@@ -1,9 +1,9 @@
+ from report import summary
+-from shape import calc_area
++from shape import rectangle_area
+ 
+ 
+ def test_area():
+-    assert calc_area(2, 3) == 6
++    assert rectangle_area(2, 3) == 6
+ 
+ 
+ def test_summary():

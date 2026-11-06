@@ -1696,3 +1696,11 @@ def test_compare_matrix_needs_a_selected_case_some_model_ran(
     assert main(["compare", "--matrix", "--case", case]) == code
     if code == 2:
         assert "holds none of the selected cases" in capsys.readouterr().err
+
+
+def test_verify_takes_the_judge_option() -> None:
+    from benchmarks.runner.__main__ import build_parser
+
+    args = build_parser().parse_args(["verify", "--judge"])
+    assert args.judge is True
+    assert build_parser().parse_args(["verify"]).judge is False

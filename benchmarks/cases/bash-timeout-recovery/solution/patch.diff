@@ -1,0 +1,8 @@
+diff --git a/bar.py b/bar.py
+index 748e188..ea09076 100644
+--- a/bar.py
++++ b/bar.py
+@@ -1,2 +1,2 @@
+ def greet(name):
+-    return "hello " + name
++    return "HELLO " + name.upper()

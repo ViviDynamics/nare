@@ -1,0 +1,1 @@
+parse() skips blank parts, so an empty string gives [] and the suite passes.
