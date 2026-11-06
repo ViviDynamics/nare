@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from dataclasses import replace
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from benchmarks.runner.report import (
     render_variant,
     slugify,
     summarize,
+    wilson_interval,
 )
 
 
@@ -234,12 +236,13 @@ def summary(
     judge: int | None = 3,
     inconclusive: bool = False,
 ) -> CaseSummary:
+    passes = 3 if pass_rate is None else round(pass_rate * 3)
     return CaseSummary(
         case=case,
-        passes=3,
-        fails=0,
+        passes=passes,
+        fails=3 - passes,
         errors=0,
-        pass_rate=pass_rate,
+        pass_rate=None if pass_rate is None else passes / 3,
         inconclusive=inconclusive,
         tokens_median=tokens,
         turns_median=4,
@@ -257,24 +260,124 @@ def test_matching_numbers_are_ok_and_exit_zero() -> None:
     assert comparison.exit_code == 0
 
 
-def test_a_pass_rate_drop_is_suspect_before_confirmation() -> None:
-    comparison = compare([summary(pass_rate=0.67)], baseline_of(summary()))
+def test_a_guard_failure_is_suspect_before_confirmation() -> None:
+    comparison = compare([rated("c", 2, 1)], baseline_of(rated("c", 3, 0)))
     assert comparison.deltas[0].verdict == "suspect"
     assert comparison.exit_code == 0
 
 
-def test_a_confirmed_pass_rate_drop_is_a_regression() -> None:
+def test_two_failures_in_ten_confirmation_reps_are_a_regression() -> None:
     comparison = compare(
-        [summary(pass_rate=0.67)], baseline_of(summary()), confirmed=True
+        [rated("c", 8, 2)], baseline_of(rated("c", 3, 0)), confirmed=True
     )
     assert comparison.deltas[0].verdict == "regression"
     assert comparison.exit_code == 1
 
 
-def test_a_higher_pass_rate_is_an_improvement_not_a_failure() -> None:
-    comparison = compare([summary(pass_rate=1.0)], baseline_of(summary(pass_rate=0.5)))
+def test_one_failure_in_ten_confirmation_reps_is_not_a_regression() -> None:
+    comparison = compare(
+        [rated("c", 9, 1)], baseline_of(rated("c", 3, 0)), confirmed=True
+    )
+    assert comparison.deltas[0].verdict == "ok"
+    assert comparison.exit_code == 0
+    assert any("below" in note for note in comparison.deltas[0].notes)
+
+
+def test_a_capability_cell_never_fails_on_its_rate() -> None:
+    # Blessed at 0.5: no per-cell gate, however far the rate falls.
+    comparison = compare(
+        [rated("c", 0, 3)], baseline_of(rated("c", 3, 3)), confirmed=True
+    )
+    assert comparison.deltas[0].verdict == "ok"
+    assert comparison.exit_code == 0
+    assert any("not a gated cell" in note for note in comparison.deltas[0].notes)
+
+
+def test_a_floor_cell_never_fails_on_its_rate() -> None:
+    comparison = compare(
+        [rated("c", 0, 10)], baseline_of(rated("c", 0, 3)), confirmed=True
+    )
+    assert comparison.deltas[0].verdict == "ok"
+    assert comparison.exit_code == 0
+
+
+def test_the_guard_floor_is_inclusive_at_nine_in_ten() -> None:
+    # 9/10 is a guard cell, 8/10 a capability cell.
+    assert (
+        compare([rated("c", 8, 2)], baseline_of(rated("c", 9, 1))).deltas[0].verdict
+        == "suspect"
+    )
+    assert (
+        compare([rated("c", 8, 2)], baseline_of(rated("c", 8, 2))).deltas[0].verdict
+        == "ok"
+    )
+
+
+def test_a_higher_pass_rate_is_an_improvement_when_the_intervals_separate() -> None:
+    comparison = compare([rated("c", 40, 0)], baseline_of(rated("c", 4, 36)))
     assert comparison.deltas[0].verdict == "improved"
     assert comparison.exit_code == 0
+
+
+def test_overlapping_intervals_are_not_an_improvement() -> None:
+    comparison = compare([rated("c", 3, 0)], baseline_of(rated("c", 2, 1)))
+    assert comparison.deltas[0].verdict == "ok"
+
+
+def test_render_names_the_regression() -> None:
+    comparison = compare(
+        [rated("c", 8, 2)], baseline_of(rated("c", 3, 0)), confirmed=True
+    )
+    text = render(comparison)
+    assert "REGRESSION" in text
+    assert "c" in text
+
+
+def test_the_wilson_interval_matches_the_documented_examples() -> None:
+    def rounded(passes: int, n: int) -> tuple[float, float]:
+        interval = wilson_interval(passes, n)
+        assert interval is not None
+        return round(interval[0], 2), round(interval[1], 2)
+
+    assert rounded(2, 3) == (0.21, 0.94)
+    assert rounded(3, 3) == (0.44, 1.0)
+    assert rounded(0, 3) == (0.0, 0.56)
+    assert wilson_interval(0, 0) is None
+
+
+def test_every_cell_renders_its_count_and_interval() -> None:
+    comparison = compare([rated("c", 2, 1)], baseline_of(rated("c", 2, 1)))
+    assert "2/3 [0.21, 0.94]" in render(comparison)
+
+
+def test_a_baseline_stores_counts_not_a_rate(tmp_path: Path) -> None:
+    text = dumps_baseline(META, [rated("c", 2, 1)])
+    assert "passes           = 2\n" in text
+    assert "reps             = 3\n" in text
+    assert "pass_rate" not in text
+    path = tmp_path / "b.toml"
+    path.write_text(text)
+    loaded = load_baseline(path).cases["c"]
+    assert (loaded.passes, loaded.fails) == (2, 1)
+
+
+def test_a_baseline_with_a_rate_still_reads_as_before(tmp_path: Path) -> None:
+    path = tmp_path / "b.toml"
+    path.write_text(
+        '[meta]\nblessed = "t"\ncommit = "c"\nprovider = "p"\n'
+        'model = "m"\njudge_model = "j"\n\n'
+        "[case.c]\npass_rate = 0.6666666666666666\nreps = 3\n"
+    )
+    loaded = load_baseline(path).cases["c"]
+    assert (loaded.passes, loaded.fails) == (2, 1)
+    assert loaded.pass_rate == pytest.approx(2 / 3)
+
+
+def test_a_baseline_with_more_passes_than_reps_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "b.toml"
+    path.write_text("[case.c]\npasses = 4\nreps = 3\n")
+    with pytest.raises(ValueError):
+        load_baseline(path)
 
 
 def test_tokens_inside_the_band_do_not_register() -> None:
@@ -330,15 +433,6 @@ def test_a_case_absent_from_the_run_is_missing_and_never_fails() -> None:
     assert comparison.exit_code == 0
 
 
-def test_render_names_the_regression() -> None:
-    comparison = compare(
-        [summary(pass_rate=0.67)], baseline_of(summary()), confirmed=True
-    )
-    text = render(comparison)
-    assert "REGRESSION" in text
-    assert "c" in text
-
-
 def test_a_baseline_keeps_the_agents_output_cap(tmp_path: Path) -> None:
     # A cap changes what a run measures: a reasoning model cut off at 8192
     # fails reps it passes at 32000.
@@ -374,21 +468,21 @@ def rated(case: str, passes: int, fails: int, errors: int = 0) -> CaseSummary:
 
 def test_the_matrix_table_puts_cases_down_and_models_across() -> None:
     haiku = compare(
-        [rated("ask", 0, 7), rated("edit", 3, 0)],
-        baseline_of(rated("ask", 2, 1), rated("edit", 3, 0)),
+        [rated("ask", 0, 10), rated("edit", 3, 0)],
+        baseline_of(rated("ask", 3, 0), rated("edit", 3, 0)),
         confirmed=True,
     )
     nano = compare(
         [rated("ask", 3, 0), rated("edit", 0, 0, errors=3)],
-        baseline_of(rated("ask", 1, 2), rated("edit", 3, 0)),
+        baseline_of(rated("ask", 3, 0), rated("edit", 3, 0)),
         confirmed=True,
     )
     text = render_matrix([("haiku", haiku), ("nano", nano)], "sonnet")
     assert text.splitlines() == [
-        "| case | haiku          | nano         |",
-        "| ---- | -------------- | ------------ |",
-        "| ask  | 0/7 regression | 3/3          |",
-        "| edit | 3/3            | inconclusive |",
+        "| case | haiku                        | nano             |",
+        "| ---- | ---------------------------- | ---------------- |",
+        "| ask  | 0/10 [0.00, 0.28] regression | 3/3 [0.44, 1.00] |",
+        "| edit | 3/3 [0.44, 1.00]             | inconclusive     |",
         "",
         "Judge: sonnet, for every model.",
     ]
@@ -399,7 +493,7 @@ def test_a_case_a_model_did_not_run_is_a_dash() -> None:
     ran = compare([rated("ask", 1, 2)], baseline_of(rated("ask", 1, 2)))
     skipped = compare([], baseline_of(rated("ask", 1, 2), rated("edit", 3, 0)))
     text = render_matrix([("a", ran), ("b", skipped)], "j")
-    assert "| ask  | 1/3 | -   |" in text.splitlines()
+    assert "| ask  | 1/3 [0.06, 0.79] | -   |" in text.splitlines()
     assert "edit" not in text
 
 
@@ -490,3 +584,38 @@ def test_a_model_name_with_non_ascii_text_round_trips(tmp_path: Path) -> None:
     path = tmp_path / "b.toml"
     path.write_text(dumps_baseline(meta, []), encoding="utf-8")
     assert load_baseline(path).meta == meta
+
+
+def test_a_no_change_matrix_false_alarm_rate_is_the_documented_one() -> None:
+    """28 guard cells that really pass 95% of the time, and no harness change.
+
+    Each cell runs the rule as the runner does: a first pass of 3 reps, then 10
+    more when it failed. The per-cell rate is 1 - 0.95**3 for a first failure
+    times P(2 or more of 10 fail), about 1.2%. A run reports a regression when
+    any of its 28 cells does, which the README documents as the per-run rate.
+    """
+    rng = random.Random(154)
+    p, cells, runs = 0.95, 28, 1000
+    baseline = baseline_of(rated("c", 3, 0))
+
+    def passes_of(n: int) -> int:
+        return sum(rng.random() < p for _ in range(n))
+
+    def cell_regresses() -> bool:
+        first = passes_of(3)
+        verdict = compare([rated("c", first, 3 - first)], baseline).deltas[0].verdict
+        if verdict != "suspect":
+            return False
+        second = passes_of(10)
+        return (
+            compare(
+                [rated("c", second, 10 - second)], baseline, confirmed=True
+            ).exit_code
+            == 1
+        )
+
+    flagged = sum(any(cell_regresses() for _ in range(cells)) for _ in range(runs))
+    per_cell = (1 - p**3) * (1 - p**10 - 10 * (1 - p) * p**9)
+    per_run = 1 - (1 - per_cell) ** cells
+    assert per_cell == pytest.approx(0.0122, abs=0.0002)
+    assert abs(flagged / runs - per_run) < 0.05

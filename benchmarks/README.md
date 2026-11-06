@@ -31,9 +31,13 @@ change without notice. See "Which models the endpoint serves" below.
     bin/bench bless --tier smoke        # promote the numbers to a baseline
 
 `run` compares against `baselines/<model>.<tier>.toml` and exits 1 on a
-confirmed regression. A case whose pass rate drops is re-run at seven
-repetitions before it is called one, because sampling cannot be pinned and
-three repetitions are not conclusive on their own.
+confirmed regression. Only a guard cell can regress: one blessed at 0.9 or
+more, which the model should pass. Its first pass runs at the case's
+repetitions, and any failure there re-runs the case at ten more; two or more
+failures among those ten are a regression. Every other cell is reported with
+its interval and never fails on its rate, because a handful of repetitions
+cannot tell a drop from sampling. See "How the run decides" below for the
+error rates this rule is built for.
 
 `bless` writes the provider, judge and output cap the results were run with,
 which each results line records, and not the ones in your shell. Results
@@ -86,7 +90,7 @@ dropping one means deleting its baseline.
 
 `run --matrix` runs each baseline's model with that baseline's provider, judge,
 output cap and run arguments (see "Arguments to nare"), and compares each
-with its own baseline under the usual rules, a drop re-run at seven
+with its own baseline under the usual rules, a guard failure re-run at ten
 repetitions included. `--model`, `--provider` and `--judge-model` are
 refused, and `NARE_MODEL`, `NARE_PROVIDER`, `NARE_BENCH_JUDGE_MODEL` and
 `NARE_BENCH_MAX_TOKENS` are not read. It needs the key of every provider in
@@ -112,8 +116,8 @@ warns and checks nothing; either way it runs.
 The models run one after another, never in parallel: every run tags its image
 `nare-bench:local`, so two runs at once replace each other's image. After the
 per-model reports it prints the table a pull request pastes: cases down the
-side, models across, each cell a pass rate with its n, marked `regression` or
-`inconclusive`. It exits 1 if any model's comparison would exit 1 on its own,
+side, models across, each cell a pass count with its n and its 95% Wilson
+interval, marked `regression` or `inconclusive`. It exits 1 if any model's comparison would exit 1 on its own,
 and 2 for a configuration error. `compare --matrix` prints the last matrix
 run's table again without running anything, and `--baselines` prints the
 tier's baselines as the same table.
@@ -124,6 +128,39 @@ make it too easy to bless away a regression. After a matrix run,
 
 A smoke matrix of five models is 90 repetitions plus any confirmations, and
 about an hour of wall clock.
+
+## How the run decides
+
+Every cell shows its pass count, n and a 95% Wilson score interval, so
+`2/3 [0.21, 0.94]` reads as "two of three, and the true rate is plausibly
+anywhere from 0.21 to 0.94". A baseline stores the count and n, not a rate.
+
+The gate is deliberately narrow:
+
+- **Guard cells** (blessed at 0.9 or more) are gated. A first pass with a
+  failure re-runs the case at 10 repetitions, and 2 or more failures in those
+  10 are a regression.
+- **Capability cells** (blessed between 0.1 and 0.9) and **floor cells**
+  (below 0.1) are never gated on their rate. A drop there is a note.
+- **Inconclusive** cells (most repetitions errored) still fail the run.
+
+The rule's error rates, from the binomial distribution, for one guard cell
+whose true rate is 0.95:
+
+| first pass | P(re-run) | P(2+ of 10 fail) | false alarm per cell | per 28-cell run |
+| --- | --- | --- | --- | --- |
+| 3 reps (smoke) | 14.3% | 8.6% | 1.2% | 29% |
+| 5 reps (full) | 22.6% | 8.6% | 1.9% | 42% |
+
+The per-run column is the chance that at least one of 28 guard cells, all
+truly at 0.95, reports a regression with no change at all. It is the figure
+to weigh before adding guard cells: a matrix of many cells blessed near 0.95
+will fail on noise about a third of the time. Cells blessed at 0.99 or more
+are far quieter (0.1% per cell at 0.98). The no-change simulation in
+`benchmarks/tests/test_report.py` reproduces the 3-rep row. A real drop is
+caught only sometimes: a guard cell falling from 0.95 to 0.80 is confirmed
+about 30% of the time, so pooled comparisons (`bin/bench ab`, #153) are the
+tool for effects that size.
 
 ## Arguments to nare
 

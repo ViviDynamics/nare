@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import shlex
 import statistics
@@ -13,6 +14,31 @@ from pathlib import Path
 from typing import Any, Literal
 
 from benchmarks.runner.grade import USAGE_FIELDS, CheckResult, Outcome
+
+# A cell blessed at or above this rate is a guard: the model should pass it, so
+# a failure is a signal to look, and only a confirmed run of failures gates.
+GUARD_FLOOR = 0.9
+# Failures among the confirmation reps that make a guard regression. With the
+# first pass at 3 reps and a true rate of 0.95, 2 of 10 is a 1.2% false alarm.
+CONFIRM_FAILURES = 2
+_Z95 = 1.959963984540054
+
+
+def wilson_interval(passes: int, n: int) -> tuple[float, float] | None:
+    """The 95% Wilson score interval for a pass count out of n, or None."""
+    if n <= 0:
+        return None
+    z2 = _Z95 * _Z95
+    p = passes / n
+    denom = 1 + z2 / n
+    centre = (p + z2 / (2 * n)) / denom
+    half = _Z95 * math.sqrt(p * (1 - p) / n + z2 / (4 * n * n)) / denom
+    return max(0.0, centre - half), min(1.0, centre + half)
+
+
+def is_guard(blessed_rate: float | None) -> bool:
+    """Whether a blessed rate is gated per cell. Every other cell is reported only."""
+    return blessed_rate is not None and blessed_rate >= GUARD_FLOOR
 
 
 @dataclass(frozen=True)
@@ -235,7 +261,7 @@ def dumps_baseline(meta: BaselineMeta, summaries: Sequence[CaseSummary]) -> str:
         lines += [
             "",
             f"[case.{summary.case}]",
-            f"pass_rate        = {summary.pass_rate}",
+            f"passes           = {summary.passes}",
             f"reps             = {summary.passes + summary.fails}",
         ]
         for key, value in (
@@ -264,8 +290,15 @@ def load_baseline(path: Path) -> Baseline:
     cases: dict[str, CaseSummary] = {}
     for name, body in raw.get("case", {}).items():
         reps = int(body.get("reps", 0))
-        rate = float(body["pass_rate"])
-        passes = int(round(rate * reps))
+        if "passes" in body:
+            passes = int(body["passes"])
+            if not 0 <= passes <= reps:
+                raise ValueError(f"{name}: passes {passes} is not within {reps} reps")
+            rate: float | None = passes / reps if reps else None
+        else:
+            # Baselines blessed before counts were stored hold a rate.
+            rate = float(body["pass_rate"])
+            passes = int(round(rate * reps))
         cases[name] = CaseSummary(
             case=name,
             passes=passes,
@@ -311,10 +344,13 @@ def compare(
 ) -> Comparison:
     """Diff a run against a baseline.
 
-    `confirmed` is the difference between "this looks wrong" and "this is
-    wrong". A pass-rate drop is `suspect` on the first pass and becomes a
-    `regression` only after the caller has re-run the case at higher reps, so
-    ordinary sampling noise never turns the build red on its own.
+    Only guard cells (blessed at GUARD_FLOOR or more) are gated on pass rate.
+    On the first pass, a guard cell with any failure is `suspect`, and the
+    caller re-runs it. Its confirmation reps are then judged alone: at
+    CONFIRM_FAILURES or more failures it is a `regression`. Every other cell
+    is reported with its interval and never fails on rate, since a rate
+    measured in a handful of reps cannot separate a drop from noise.
+    `confirmed` says the caller has re-run whatever was `suspect`.
     """
     by_case = {s.case: s for s in summaries}
     deltas: list[CaseDelta] = []
@@ -349,11 +385,27 @@ def compare(
 
         verdict: Verdict = "ok"
         if current.pass_rate is not None and before.pass_rate is not None:
-            if current.pass_rate < before.pass_rate:
-                verdict = "regression" if confirmed else "suspect"
-                if confirmed:
+            if is_guard(before.pass_rate) and current.fails > 0:
+                if not confirmed:
+                    verdict = "suspect"
+                    notes.append(
+                        f"{current.fails} of {current.passes + current.fails} "
+                        "failed; re-running to confirm"
+                    )
+                elif current.fails >= CONFIRM_FAILURES:
+                    verdict = "regression"
                     failed = True
-            elif current.pass_rate > before.pass_rate:
+                else:
+                    notes.append(
+                        f"{current.fails} failure(s) in "
+                        f"{current.passes + current.fails} reps, below the "
+                        f"{CONFIRM_FAILURES} that confirm a regression"
+                    )
+            elif (
+                not is_guard(before.pass_rate) and current.pass_rate < before.pass_rate
+            ):
+                notes.append(f"below the blessed {_rate(before)}; not a gated cell")
+            if verdict == "ok" and _beats(current, before):
                 verdict = "improved"
 
         if current.tokens_median and before.tokens_median:
@@ -381,17 +433,28 @@ def compare(
     return Comparison(deltas=tuple(deltas), exit_code=1 if failed else 0)
 
 
-def _rate(summary: CaseSummary | None) -> str:
+def _beats(current: CaseSummary, before: CaseSummary) -> bool:
+    """Whether current's interval lies wholly above the baseline's."""
+    now = wilson_interval(current.passes, current.passes + current.fails)
+    then = wilson_interval(before.passes, before.passes + before.fails)
+    return now is not None and then is not None and now[0] > then[1]
+
+
+def _rate(summary: CaseSummary | None, *, interval: bool = False) -> str:
+    """`passes/n`, and with `interval` the 95% Wilson interval beside it."""
     if summary is None or summary.pass_rate is None:
         return "-"
-    return f"{summary.passes}/{summary.passes + summary.fails}"
+    n = summary.passes + summary.fails
+    text = f"{summary.passes}/{n}"
+    if interval:
+        lo, hi = wilson_interval(summary.passes, n) or (0.0, 1.0)
+        text += f" [{lo:.2f}, {hi:.2f}]"
+    return text
 
 
 def render(comparison: Comparison) -> str:
-    lines = [
-        f"{'case':<24} {'pass':>7} {'tokens':>10} {'judge':>6}  verdict",
-        "-" * 70,
-    ]
+    header = f"{'case':<24} {'pass [95% interval]':>21} {'tokens':>10} {'judge':>6}"
+    lines = [f"{header}  verdict", "-" * 84]
     for delta in comparison.deltas:
         tokens = "-"
         if delta.summary and delta.summary.tokens_median is not None:
@@ -402,7 +465,7 @@ def render(comparison: Comparison) -> str:
         if delta.summary and delta.summary.judge_met_median is not None:
             judge = str(delta.summary.judge_met_median)
         lines.append(
-            f"{delta.case:<24} {_rate(delta.summary):>7} {tokens:>10} "
+            f"{delta.case:<24} {_rate(delta.summary, interval=True):>21} {tokens:>10} "
             f"{judge:>6}  {delta.verdict}"
         )
         if delta.summary is not None and delta.summary.judge_errors:
@@ -412,13 +475,14 @@ def render(comparison: Comparison) -> str:
             )
         for note in delta.notes:
             lines.append(f"{'':<24} {note}")
-    lines.append("-" * 70)
+    lines.append("-" * 84)
 
     bad = [d for d in comparison.deltas if d.verdict in ("regression", "inconclusive")]
     for delta in bad:
         lines.append(
             f"{delta.verdict.upper()}: {delta.case} "
-            f"{_rate(delta.baseline)} -> {_rate(delta.summary)}"
+            f"{_rate(delta.baseline, interval=True)} -> "
+            f"{_rate(delta.summary, interval=True)}"
         )
     if not bad:
         lines.append("no regressions")
@@ -462,9 +526,9 @@ def render_matrix(
             if delta.verdict == "inconclusive":
                 cell = "inconclusive"
             elif delta.verdict == "regression":
-                cell = f"{_rate(delta.summary)} regression"
+                cell = f"{_rate(delta.summary, interval=True)} regression"
             else:
-                cell = _rate(delta.summary)
+                cell = _rate(delta.summary, interval=True)
             cells[delta.case][model] = cell
     models = [model for model, _ in columns]
     rows = [["case", *models]]
