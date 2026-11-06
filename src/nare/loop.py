@@ -288,6 +288,15 @@ def check_max_cutoffs(value: int | None) -> None:
         raise ValueError("max_cutoffs must be a nonnegative integer")
 
 
+@dataclass
+class SummaryTier:
+    """--compaction summary for one invocation: on until a summary is not
+    applied, then off, so a model that cannot summarize is asked once. Not
+    saved: a resume tries again."""
+
+    failed: bool = False
+
+
 def check_compaction(value: object) -> None:
     if value not in COMPACTION_MODES:
         raise ValueError(
@@ -773,6 +782,21 @@ def _hold_for_reads(
 # The `cost` event's `detail.call` for a request that is not a turn.
 SUMMARY_CALL = "compaction_summary"
 
+# How a summary request ended. All but `applied` leave the session as `elide`
+# would.
+SummaryStatus = Literal[
+    "applied", "failed", "empty", "tool_call", "refused", "cut_off", "too_long"
+]
+SUMMARY_STATUSES: tuple[SummaryStatus, ...] = (
+    "applied",
+    "failed",
+    "empty",
+    "tool_call",
+    "refused",
+    "cut_off",
+    "too_long",
+)
+
 
 def _cost_event(usage: Usage, call: str | None = None) -> Event:
     """One request's cost. `call` names a request that is not a turn."""
@@ -788,11 +812,15 @@ def _cost_event(usage: Usage, call: str | None = None) -> Event:
     )
 
 
+def _turns(n: int) -> str:
+    return f"{n} turn" if n == 1 else f"{n} turns"
+
+
 def _compaction_text(report: CompactionReport) -> str:
     """The compaction event's text. A summary that was not applied leaves an
     elision, whose text is the one `elide` mode writes."""
     if report.summarized:
-        done = f"summarized {report.summarized} turns"
+        done = f"summarized {_turns(report.summarized)}"
     else:
         done = f"elided {report.elided} tool results" + (
             f" and {report.inputs} tool inputs" if report.inputs else ""
@@ -809,6 +837,7 @@ async def _summarize(
     transport: Transport,
     policy: Policy,
     plan: SummaryPlan,
+    tier: SummaryTier,
     *,
     window: int,
     prices: Prices | None,
@@ -820,7 +849,10 @@ async def _summarize(
     Returns the report when the summary was applied, and whether a reply was
     accounted. The request is not a turn: it counts in `usage` and `retries`,
     and the transcript changes only through `apply_summary`. It is never
-    streamed, so no delta of it reaches the caller.
+    streamed, so no delta of it reaches the caller. A summary that is not
+    applied turns `tier` off and leaves the session as `elide` would. A request
+    that raises is one of those, but cancellation is not an `Exception`, so a
+    deadline or a stop signal still ends the run.
     """
     request = (
         plan.request
@@ -840,15 +872,62 @@ async def _summarize(
             )
         return await transport.turn(request, offered)
 
-    reply = await _with_retries(s, transport, attempt, retry, on_event)
-    usage = turn_usage(reply, prices)
-    s.usage += usage
-    s.events.append(_cost_event(usage, SUMMARY_CALL))
-    text = _final_text(reply.content).strip()
+    status: SummaryStatus
+    error: str | None = None
+    usage: Usage | None = None
+    text = ""
     report = None
-    if not reply.tool_calls and reply.stop_reason not in CUTOFF_REASONS and text:
-        report = apply_summary(s, plan, text, window, image_input=policy.image_input)
-    return report, True
+    try:
+        reply = await _with_retries(s, transport, attempt, retry, on_event)
+    except Exception as exc:
+        status = "failed"
+        error = f"{type(exc).__name__}: {exc}"
+    else:
+        usage = turn_usage(reply, prices)
+        s.usage += usage
+        s.events.append(_cost_event(usage, SUMMARY_CALL))
+        text = _final_text(reply.content).strip()
+        if reply.tool_calls:
+            status = "tool_call"
+        elif reply.stop_reason == "refusal":
+            # Its text says no, and would stand in for the turns it replaces.
+            status = "refused"
+        elif reply.stop_reason in CUTOFF_REASONS:
+            status = "cut_off"
+        elif not text:
+            status = "empty"
+        else:
+            report = apply_summary(
+                s, plan, text, window, image_input=policy.image_input
+            )
+            status = "applied" if report is not None else "too_long"
+    if status != "applied":
+        tier.failed = True
+    if status == "applied":
+        notice = (
+            f"compaction summary: {_turns(plan.turns)} into ~{len(text) / 4:.0f} tokens"
+        )
+    else:
+        notice = f"compaction summary discarded ({status}); eliding instead"
+    s.events.append(
+        Event(
+            "progress",
+            notice,
+            {
+                "compaction_summary": {
+                    "status": status,
+                    "error": error,
+                    "turns": plan.turns,
+                    "messages": plan.messages,
+                    "replaced_chars": plan.replaced_chars,
+                    "chars": len(text),
+                    "usage": usage.wire() if usage is not None else None,
+                    "text": text or None,
+                }
+            },
+        )
+    )
+    return report, status != "failed"
 
 
 async def step(
@@ -872,6 +951,7 @@ async def step(
     summary: bool = False,
     question_nudge: bool = False,
     compaction: CompactionMode = "elide",
+    summary_tier: SummaryTier | None = None,
 ) -> Session:
     if tools:
         # The allowlist is the policy's, as for built-ins: a registered tool is
@@ -882,9 +962,11 @@ async def step(
             external={**policy.external, **external_tools(tools)},
         )
     report: CompactionReport | None = None
+    tier = summary_tier if summary_tier is not None else SummaryTier()
     # Not on the turn-limit summary: the run ends after that call, and a
-    # resume compacts on its first step anyway.
-    if compaction == "summary" and not summary:
+    # resume compacts on its first step anyway. Not once a summary has not
+    # been applied in this invocation.
+    if compaction == "summary" and not summary and not tier.failed:
         cap = getattr(transport, "max_tokens", None)
         plan = plan_summary(
             s,
@@ -902,6 +984,7 @@ async def step(
                 transport,
                 policy,
                 plan,
+                tier,
                 window=context_window,
                 prices=prices,
                 retry=retry,
@@ -1319,6 +1402,7 @@ async def _live_step(
     summary: bool = False,
     question_nudge: bool = False,
     compaction: CompactionMode = "elide",
+    summary_tier: SummaryTier | None = None,
 ) -> AsyncGenerator[Event, None]:
     queue: asyncio.Queue[Event] = asyncio.Queue()
     buffers: dict[Literal["progress", "thinking"], LiveText] = {
@@ -1364,6 +1448,7 @@ async def _live_step(
             summary=summary,
             question_nudge=question_nudge,
             compaction=compaction,
+            summary_tier=summary_tier,
         )
     )
     waiter: asyncio.Task[Event] | None = None
@@ -1535,6 +1620,7 @@ async def _run(
     # Per invocation too, for the same reason.
     tool_calls = ToolCallLimit(max_tool_calls) if max_tool_calls is not None else None
     cutoffs = CutoffLimit(max_cutoffs) if max_cutoffs is not None else None
+    summary_tier = SummaryTier() if compaction == "summary" else None
     while session.status == "working":
         if inbox is not None:
             # What a person typed while the last step ran. It follows that
@@ -1588,6 +1674,7 @@ async def _run(
                             summary=summary,
                             question_nudge=question_nudge,
                             compaction=compaction,
+                            summary_tier=summary_tier,
                         )
                     ) as stream:
                         async for event in stream:
@@ -1611,6 +1698,7 @@ async def _run(
                         summary=summary,
                         question_nudge=question_nudge,
                         compaction=compaction,
+                        summary_tier=summary_tier,
                     )
                 if session.status not in ("done", "blocked"):
                     check_budget(session)
