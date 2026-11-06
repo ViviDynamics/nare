@@ -305,9 +305,10 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--provider",
-        choices=["anthropic", "openai", "fake"],
+        choices=["anthropic", "bedrock", "openai", "fake"],
         default=os.environ.get("NARE_PROVIDER", "anthropic"),
-        help="model provider: anthropic, or openai for anything speaking Chat "
+        help="model provider: anthropic, bedrock for Claude on Amazon Bedrock "
+        "(AWS credentials, --region), or openai for anything speaking Chat "
         "Completions, including a proxy or a local server via --base-url, or "
         "fake to replay a --replay script with no key or network "
         "(env: NARE_PROVIDER)",
@@ -325,7 +326,14 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--base-url",
         default=os.environ.get("NARE_BASE_URL"),
-        help="override the vendor endpoint (env: NARE_BASE_URL)",
+        help="override the vendor endpoint (env: NARE_BASE_URL); on bedrock, "
+        "the runtime endpoint, for a VPC interface endpoint",
+    )
+    parser.add_argument(
+        "--region",
+        help="AWS region for --provider bedrock. Without it: NARE_AWS_REGION, "
+        "then AWS_REGION, then AWS_DEFAULT_REGION, then the active profile's "
+        "region in the AWS config file",
     )
     parser.add_argument(
         "--temperature",
@@ -540,6 +548,7 @@ def transport_from_args(args: argparse.Namespace) -> Transport:
         cache_breakpoints=args.cache_breakpoints,
         replay=args.replay,
         request_timeout=args.request_timeout,
+        region=args.region,
     )
 
 
@@ -605,8 +614,10 @@ def validate_run_args(args: argparse.Namespace) -> Prices | None:
     if args.thinking_budget is not None:
         if args.thinking_budget <= 0:
             raise ValueError("--thinking-budget must be a positive integer")
-        if args.provider != "anthropic":
-            raise ValueError("--thinking-budget requires the anthropic provider")
+        if args.provider not in ("anthropic", "bedrock"):
+            raise ValueError(
+                "--thinking-budget requires the anthropic or bedrock provider"
+            )
     if args.proxy_num_retries is not None:
         if args.proxy_num_retries < 0:
             raise ValueError("--proxy-num-retries must be a nonnegative integer")
