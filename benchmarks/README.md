@@ -522,6 +522,11 @@ Each directory holds any of these, all optional:
     closing.txt    the closing message the judge and the checks read
     result.toml    status and turns, for the result checks (default done, 1)
 
+A reference's `session.json` is scripted, not recorded from a model: it is the
+transcript a correct run would leave, written to the shape nare writes. The
+checks read it as they read a real one, and the reference's `solve.sh` does the
+work it describes.
+
 Nothing is run against a model. `verify` applies each attempt in a fresh
 container, the way an agent's work arrives, and then runs the case's checks on
 the result. `--judge` sends the diff and the closing message to the judge: one call
