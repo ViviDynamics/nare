@@ -108,6 +108,12 @@ from benchmarks.runner.sandbox import (
     run_check,
     sandbox,
 )
+from benchmarks.runner.toolhealth import (
+    model_health,
+    read_evidence,
+    render_health,
+    rep_health,
+)
 from benchmarks.runner.triage import triage_transport
 from nare.contract import NEVER_STARTED
 from nare.transport import Transport
@@ -217,6 +223,11 @@ def build_parser() -> argparse.ArgumentParser:
     judges.add_argument(
         "--reference-model", help="reference (env: NARE_BENCH_REFERENCE_MODEL)"
     )
+    health = sub.add_parser(
+        "tool-health",
+        help="count tool-call health per model from a results file's kept evidence",
+    )
+    health.add_argument("--results", help="results file (default: the newest)")
     calibration = sub.add_parser(
         "calibrate",
         help="a human-labelled set that measures the llm judge's error rates",
@@ -528,6 +539,8 @@ async def run_rep(
     with sandbox(case) as (workdir, artifacts):
         result = run_agent(case, workdir, artifacts, config)
         keep_evidence(kept, artifacts, result)
+        # Read from the kept copies, so every rep is counted, stopped or not.
+        health = rep_health(kept)
         line = parse_stdout(result.stdout)
         if line is None and not result.timed_out and result.exit_code == NEVER_STARTED:
             # nare refused to start (its parser, its argument checks or its
@@ -569,6 +582,7 @@ async def run_rep(
                 nare_files=dict(config.run_args.files),
                 context_window=use.window,
                 compactions=use.compactions,
+                tool_health=health,
             )
 
         # Before the bash checks, so nothing a check writes reaches the judge.
@@ -634,6 +648,7 @@ async def run_rep(
         judge_reasons=reasons,
         judge_max_tokens=config.judge_max_tokens if case.judge is not None else None,
         diff_sha256=hashlib.sha256(diff.encode("utf-8")).hexdigest(),
+        tool_health=health,
     )
 
 
@@ -948,6 +963,18 @@ def nothing_to_compare(
         f"bench: {name} has no judged repetition and no failure, "
         "so there is nothing to compare"
     )
+
+
+def tool_health_command(args: argparse.Namespace, root: Path) -> int:
+    """Tool-call health from the kept evidence of an existing results file. Reads
+    files only: no model is called, and no run is started."""
+    results_file = Path(args.results) if args.results else latest_results(root)
+    if results_file is None or not results_file.is_file():
+        print("bench: no results to read; run `bin/bench run` first", file=sys.stderr)
+        return 2
+    records = read_evidence(root / "benchmarks" / "results", read_results(results_file))
+    print(render_health(model_health(records)))
+    return 0
 
 
 def calibration_text(root: Path, records: Sequence[RepRecord]) -> str:
@@ -1656,6 +1683,8 @@ def main(argv: list[str] | None = None) -> int:
         return show_models(args, root)
     if args.command == "calibrate":
         return calibrate_command(args, root)
+    if args.command == "tool-health":
+        return tool_health_command(args, root)
     try:
         cases = _select(root, args.tier, args.case)
     except CaseError as exc:
@@ -1775,6 +1804,7 @@ def main(argv: list[str] | None = None) -> int:
         if note is not None:
             print(note)
         print(render(final))
+        print(render_health(model_health(records)))
         print(calibration_text(root, records))
         return final.exit_code
 

@@ -389,6 +389,59 @@ async def test_a_rep_keeps_its_session_output_and_judge_replies(
     assert "stop_reason=end_turn" in (kept / "judge.txt").read_text()
 
 
+async def test_a_rep_records_its_tool_call_health_from_its_kept_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import benchmarks.runner.__main__ as bench
+
+    session = {
+        "messages": [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "1", "name": "edit", "input": {}}
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "1",
+                        "is_error": True,
+                        "content": "edit: missing required parameter path",
+                    }
+                ],
+            },
+        ]
+    }
+    stream = (
+        DONE_LINE
+        + "\n"
+        + json.dumps({"type": "cost", "text": "", "detail": {}, "timestamp": "t"})
+    )
+
+    def agent(
+        case: Case, workdir: Path, artifacts: Path, config: Config
+    ) -> RunArtifacts:
+        (artifacts / "session.json").write_text(json.dumps(session))
+        return RunArtifacts(stream, "", 0, False, 1.0)
+
+    monkeypatch.setattr(bench, "run_agent", agent)
+    monkeypatch.setattr(bench, "run_check", lambda w, c, t, artifacts=None: (0, ""))
+    monkeypatch.setattr(bench, "git_diff", lambda w: "a diff")
+    case = sandboxed(tmp_path, Judge(("x",), 1))
+    evidence = tmp_path / "results" / "stamp"
+    rec = await run_rep(
+        case, CONFIG, FakeJudge('{"met": [true], "reasons": ["ok"]}'), 0, evidence
+    )
+    assert rec.tool_health is not None
+    assert rec.tool_health["argument_errors"] == 1
+    assert rec.tool_health["empty_arguments"] == 1
+    assert rec.tool_health["turns"] == 1
+    assert rec.tool_health["session"] == 1 and rec.tool_health["events"] == 1
+
+
 async def test_a_reps_checks_can_read_its_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

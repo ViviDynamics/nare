@@ -60,6 +60,10 @@ class RepRecord:
     # read: what calibration matches a human label against.
     judge_max_tokens: int | None = None
     diff_sha256: str = ""
+    # Tool-call health from the rep's kept evidence (toolhealth.py): counts per
+    # kind, with `session` and `events` saying which files were read. None when
+    # neither was there, or the results predate the counts.
+    tool_health: dict[str, int] | None = None
 
 
 @dataclass(frozen=True)
