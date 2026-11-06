@@ -2,7 +2,9 @@
 
 **Date:** 2026-11-05
 **Status:** Reviewed by the maintainer 2026-11-05: approved with one change
-and one addition (the decisions below). Nothing here is built.
+and one addition (the decisions below). Built on branch
+feat/42-summary-compaction, 2026-11-05, and amended during the build where
+marked. The benchmark (section 15) has not been run.
 **Issue:** #42
 **Scope:** One opt-in compaction mode, `--compaction summary`, in which the
 model writes a summary of the oldest turns and that summary replaces them,
@@ -49,6 +51,7 @@ outcome, and argued in the section named.
    block in the first message, after those user texts. Every signed and
    redacted thinking block left in the session is dropped, as #92 requires
    (sections 5 and 7).
+   *Narrowed in the build (2026-11-05):* nare's own loop notices are not carried; see section 5.
 5. **When a call is worth making.** *Approved 2026-11-05.* Only when the
    turns it would replace hold at least the gap between the trigger and the
    target (20% of the window), only when a token budget has room for it, and
@@ -258,6 +261,13 @@ the session: a resume without it uses `elide`, as a resume without
 `--context-window` uses the backend's window. Either mode can follow the other
 on the same session, since both leave a valid transcript.
 
+*Amended in the build:* the flag is on `nare run` only. `nare tui` shares the
+other run flags but takes neither this one nor the variable: the TUI always
+elides (it is out of scope, section 18). nare checks `NARE_COMPACTION` itself,
+since argparse does not check a default against `choices`: an unknown value
+from the variable exits 2 as the flag's does, and an empty variable counts as
+unset.
+
 **`summary` on its own.** It changes one thing: what happens first at the
 trigger. Below the trigger it does nothing, as `elide` does. At the trigger it
 tries the summary tier; when that tier is skipped (the gate below) or
@@ -303,6 +313,14 @@ it. It is deferred, with its reasoning, to section 21.
 When any fails, the tier is skipped without a call and elision runs as in
 `elide` mode.
 
+*Amended in the build:* the summary request's size, "the estimate of messages 0
+to `p - 1`, plus the instruction", is `context_chars(request) / 4`, the rule
+`estimate()` applies to a transcript no reply has measured. Like that rule it
+leaves out the system prompt and the tool schemas (about 1350 tokens with the
+defaults, section 19). The same number feeds the window fit (`request + L <
+window`) and the token-budget check (no call when `usage.total_tokens +
+request + L` reaches the limit).
+
 ## 5. What is summarized and what stays
 
 Message indexes as in `compact()`: message 0 is the task; `p` is the index of
@@ -317,10 +335,26 @@ the second-to-last assistant message (`src/nare/compact.py:103`).
 | Images inside the replaced results | Dropped from the transcript (and from the archive) |
 | Messages `p` onward: the last two assistant turns and their results | Kept, minus signed and redacted thinking |
 
+*Amended in the build:* the table says images are dropped from the archive and
+section 11 says their data is removed; the build follows section 11. The
+archive keeps each image's `type`, `width`, `height`, `source.type` and
+`source.media_type`, and drops `source.data`.
+
 **Why user text is carried.** It is what the caller or a person said, and
 today's elision never touches it either, so carrying it keeps the summary from
 being worse than elision on the one input nare cannot regenerate. It costs what
 it costs today. Source 7 keeps user messages for the same reason.
+
+*Amended in the build:* this narrows decision 4, and the table row above that
+lists "nare's own notices" among the carried text no longer holds. Only text a
+caller or a person supplied is carried word for word into message 0: the task,
+resume feedback or prompts, answers to `ask`, queued inbox lines, and schema
+statements. nare's own loop notices are not carried: the turn countdown, the
+turn limit, cut-off guidance, schema and read corrections, and the question
+nudge. The summary still reads them in its request. The reason is this
+section's own rationale, "what the caller or a person said": carrying the
+notices left "Turn limit reached. Tools are disabled" beside the task after a
+`continue` resume.
 
 **Pairing stays valid on both rails.** Compaction runs at the start of a step,
 when every call in the transcript has its result: a turn's calls are answered
@@ -378,6 +412,9 @@ its effect.
 
 The request fits when the estimate of messages 0 to `p - 1`, plus the
 instruction, plus `L`, is below the window. Otherwise the tier is skipped.
+
+*Amended in the build:* that estimate is the one section 4's note gives,
+`context_chars(request) / 4`, without the system prompt and the tool schemas.
 
 ### Prompt
 
@@ -454,6 +491,19 @@ and appends), so it is valid under preserved thinking without the
 5. **Elision does not run after an applied summary.** Nothing is left outside
    the protected set but message 0, which elision never touches.
 
+*Amended in the build:* in step 1's label a single replaced turn reads `1
+earlier turn`; otherwise the label is the text above.
+
+*Amended in the build:* which user text step 1 carries is the narrowed rule of
+section 5. `apply_summary` takes the notice test as `notice=`, which `loop.py`
+supplies as `loop_notice`; called with none, it carries every user text block.
+
+*Amended in the build:* step 4's rule (`last_input_messages` drops by the
+messages removed) needs the measured prefix to reach the cut. When it ends
+inside the replaced turns, which only a hand-built session can produce, the
+applier sets `last_input_tokens`, `last_input_messages` and `last_input_chars`
+to 0, so the estimate falls back to the whole transcript over four.
+
 Turn numbers in later stubs count assistant messages in the transcript, as
 they do today, so after a summary they count from it. The summary block names
 how many turns it replaced, not their numbers.
@@ -490,6 +540,25 @@ saved.
 A cut-off summary is not counted in the session's `cutoffs` and spends no
 cut-off correction: it is not a turn.
 
+*Amended in the build:* a reply can match several rows. The order is
+`tool_call` (any tool call), `refused`, `cut_off` (`stop_reason` `max_tokens`
+or `repetition`), `empty` (no text once whitespace is stripped), then
+`too_long`. `failed` is a request that raised after the retries.
+
+*Amended in the build:* a `refused` status was added. A summary reply whose
+`stop_reason` is `refusal` is discarded under status `refused`, falls back to
+elision and turns the tier off, as the other discarded statuses do, and
+nothing is written to the transcript. Both rails report a refusal (the openai
+rail maps `content_filter` to `refusal`). Applying the reply would have
+replaced the old turns with its refusal text.
+
+*Amended in the build:* `step()` takes `compaction` (the mode, default
+`elide`) and `summary_tier: SummaryTier | None`, the per-invocation flag.
+`run()` takes `compaction`, and `_run` builds one `SummaryTier` per
+invocation, as it builds `CutoffLimit` and `ToolCallLimit`. "Off for the rest
+of the invocation" is `run()`'s rule: a caller that drives `step()` itself and
+passes no tier gets a fresh attempt at each step.
+
 ## 9. Accounting and budgets
 
 - The reply's usage, priced by `turn_usage` as a turn's is, is added to
@@ -511,6 +580,11 @@ cut-off correction: it is not a turn.
   the turn, and the after-step check in `_run` (`src/nare/loop.py:1409`) must
   not report it a second time. A `--budget-usd` run whose summary cost comes
   back unknown stops on the existing "cannot be enforced" rule.
+
+*Amended in the build:* the estimated request in "Before the call" is
+`context_chars(request) / 4`, which leaves out the system prompt and the tool
+schemas (section 4's note). The call is skipped when `usage.total_tokens` plus
+that estimate plus `L` reaches the limit.
 
 `usage.total` counts cache reads at full size, which is what `--budget-tokens`
 counts. A summary call that reads 20000 cached tokens adds 20000 to the total
@@ -568,6 +642,18 @@ above for summaries.
   this nare cannot be loaded by an older one, which rejects unknown fields.
   The mode is not saved (section 4).
 
+*Amended in the build:* `at_turn` is the session's `turns` when the summary was
+applied, so `31` means after 31 turns, before the 32nd.
+
+*Amended in the build:* in `replaced`, each image keeps its `type`, `width`,
+`height`, `source.type` and `source.media_type`, and loses `source.data`.
+
+*Amended in the build:* the archive is read by the headless question nudge. A
+`write` or `edit` that a summary replaced still counts as having succeeded, so
+the nudge reads `summaries[*].replaced` as well as the transcript. Without
+that, the nudge would fire on a finished run, and the run could end `blocked`
+on a question.
+
 ## 12. What the model sees, in order
 
     user:       <task> <user texts from replaced turns> [summary by nare: ...] <summary>
@@ -595,6 +681,13 @@ with `detail.compaction_summary`:
 | `usage` | The call's usage, as a `cost` event's detail |
 | `text` | The summary's text when there was any, redacted as every event is |
 
+*Amended in the build:* `status` also takes `refused`, for a summary reply whose
+`stop_reason` is `refusal` (section 8); the statuses are `applied`, `failed`,
+`empty`, `tool_call`, `refused`, `cut_off` and `too_long`.
+
+*Amended in the build:* `usage` is null for `failed`, since no reply arrived,
+and `text` is null whenever the reply had no text.
+
 The text is in the event because the summary is the one lossy step a caller
 cannot reconstruct from the stream, and a caller that keeps no session file
 would otherwise never see it.
@@ -609,6 +702,10 @@ from `detail.compaction_summary` instead. Its text:
 
     compacted: summarized 14 turns, dropped 9 thinking blocks, ~26000 -> ~9000 tokens
 
+*Amended in the build:* a single turn reads `1 turn` in both event texts
+(`compaction summary: 1 turn into ~...` and `compacted: summarized 1 turn,
+...`), as the label in section 7 does.
+
 A summary and an elision never share one compaction: an applied summary leaves
 elision nothing to do, and after a summary that was not applied the event's
 text is the one `elide` mode writes today. `mode` is `elide` or `summary`, the
@@ -617,6 +714,19 @@ mode the invocation ran in.
 Order within a step: retry events, the call's `cost` event, the
 `compaction_summary` event, the `compaction` event, then a `context` or
 `budget` error if one ends the step, then the turn.
+
+*Amended in the build:* under `--stream`, `_live_step` yields the turn's text as
+it arrives, and everything `step()` appends to `session.events` (today's
+`compaction` event included) is yielded after the step. So this order holds
+among the step's own events and for a run without streaming; under `--stream`
+the turn's deltas come first, as they already do for the `compaction` event.
+The summary request's retry events go through `on_event`, so they still come
+first.
+
+*Amended in the build:* when the summary request crosses a limit and the
+estimate still reaches the window, the step reports `budget`, not `context`:
+the limit is checked first, since "a limit the call crosses ends the run with
+`budget` before the turn" (decision 6, section 9).
 
 ## 14. Contract
 
@@ -644,6 +754,24 @@ Documentation changes, in nare's own terms:
 `nare contract` lists the flag with its choices in `flags`, which is what the
 benchmark's argument check reads (#156 section 6.1). No separate discovery key
 is added.
+
+*Amended in the build:* `run()` and `step()` take `compaction`, and `step()`
+also takes `summary_tier` (section 8).
+
+*Amended in the build:* `step()` calls `check_compaction` as `run()` does, so a
+caller that drives `step()` itself with an unknown mode gets a `ValueError`
+before any request, not `elide`.
+
+*Amended in the build:* `ReplayTransport` still raises "replay script has no
+reply for turn N: it holds M", where N already counts requests. The text stays
+(two existing tests pin it, and `elide` mode must not change); the contract
+says N counts every request, summary requests included.
+
+*Amended in the build:* `docs/contract.md` states three things beyond the
+list above: a failed summary request emits no `cost` event, since no reply
+arrived; a `cost` event covers one model request, and a summary's carries
+`detail.call` = `"compaction_summary"`; and an error reply or an exhausted
+script at a summary position gives status `failed`, and the run continues.
 
 ## 15. Benchmark plan
 
@@ -839,6 +967,14 @@ Elsewhere:
   `nare contract`.
 - `tests/test_python_api_docs.py`: any example added for `compaction=` runs.
 
+*Amended in the build:* two tests were added to `tests/test_summary_compaction.py`. One
+cancels the run during the summary request: nothing is applied, no
+`compaction_summary` event is emitted, and the cancellation propagates. The
+other runs `--timeout` end to end: the deadline lands during the summary
+request, the run ends `error`/`timeout`, and the saved session holds no
+summary. The two existing tests that pin the replay error's text are
+unchanged, and new replay tests pin that N counts the summary request.
+
 ## 17. Files
 
 - Changed: `src/nare/compact.py` (planner, applier, report fields, about 120
@@ -849,6 +985,10 @@ Elsewhere:
 - No transport changes: `ToolChoiceTransport` already carries what is needed.
 - Docs: `docs/contract.md`, `docs/architecture.md`, `README.md`.
 - Tests: as section 16.
+
+*Amended in the build:* the `ToolChoiceTransport` docstring said the loop sends
+`tool_choice="none"` only on a turn-limit summary; it now names the compaction
+summary too. No transport code changed.
 
 Roughly 290 lines of source, plus tests.
 
@@ -914,20 +1054,20 @@ section 15 to test.
 
 ## 20. Acceptance criteria
 
-- [ ] `--compaction elide|summary` and `NARE_COMPACTION` select the mode;
+- [x] `--compaction elide|summary` and `NARE_COMPACTION` select the mode;
       any other value exits 2; the default is `elide`, and in it every request
       is identical to today's.
-- [ ] In `summary` mode a session crossing the trigger gets one summary call
+- [x] In `summary` mode a session crossing the trigger gets one summary call
       with the turn's tools and `tool_choice` none, and its next request is the
       task, carried user text, the labelled summary and the last two turns,
       with every call paired and no signed thinking.
-- [ ] Every failure in section 8 leaves the session as `elide` would, and turns
+- [x] Every failure in section 8 leaves the session as `elide` would, and turns
       the tier off for the invocation; the `context` stop is unchanged.
-- [ ] The call counts in usage, budgets and retries, not in turns, with a
+- [x] The call counts in usage, budgets and retries, not in turns, with a
       `cost` event and a `compaction_summary` event.
-- [ ] The session file keeps the replaced messages in `summaries`, redacted,
+- [x] The session file keeps the replaced messages in `summaries`, redacted,
       and an older file loads.
-- [ ] `docs/contract.md`, `docs/architecture.md` and `README.md` describe the
+- [x] `docs/contract.md`, `docs/architecture.md` and `README.md` describe the
       modes on nare's own terms; the contract version stays 3; `bin/build`
       passes.
 - [ ] After code review, the implementing session runs section 15 on the one
