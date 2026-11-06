@@ -316,6 +316,7 @@ async def drive(
     transport: Any, retry: RetryPolicy, **kwargs: Any
 ) -> tuple[Session, list[Event]]:
     session = new_session("go")
+    kwargs.setdefault("policy", Policy())
     events = [
         e
         async for e in run(

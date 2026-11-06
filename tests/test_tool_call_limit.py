@@ -20,6 +20,7 @@ from nare.cli import main
 from nare.contract import describe
 from nare.loop import run
 from nare.session import Message, Usage, loads, new_session, reopen
+from nare.tools import Policy
 from nare.transport import Reply, ToolCall
 
 DOC = Path(__file__).parent.parent / "docs" / "contract.md"
@@ -94,14 +95,14 @@ async def test_the_cap_counts_per_invocation() -> None:
     first = FakeProvider(
         [tool_reply("ask", {"questions": ["?"]}, call_id="q1")]
     )  # an ask runs, and counts
-    [_ async for _ in run(session, transport=first, max_tool_calls=1)]
+    [_ async for _ in run(session, transport=first, max_tool_calls=1, policy=Policy())]
     assert session.tool_calls == 1
 
     reopen(session, "carry on")
     second = FakeProvider(
         [tool_reply("bash", {"command": "true"}, call_id="b1"), text_reply("done")]
     )
-    [_ async for _ in run(session, transport=second, max_tool_calls=1)]
+    [_ async for _ in run(session, transport=second, max_tool_calls=1, policy=Policy())]
 
     # The resume got its own allowance: its one call ran.
     assert session.status == "done"

@@ -11,7 +11,7 @@ from fake_provider import FakeProvider, text_reply, tool_reply
 from nare.cli import main
 from nare.loop import run
 from nare.session import dumps, loads, new_session
-from nare.tools import Policy
+from nare.tools import TOOLS, Policy
 
 
 async def drain(session: object, provider: FakeProvider, **kwargs: object) -> None:
@@ -145,3 +145,73 @@ def test_the_cli_records_the_bash_credentials_opt_in(
     capsys.readouterr()
     saved = json.loads(session_path.read_text(encoding="utf-8"))["policy"]
     assert saved["bash_credentials"] is True
+
+
+async def test_run_with_no_policy_offers_read_only_tools() -> None:
+    provider = FakeProvider([text_reply("done")])
+    session = new_session("go")
+
+    await drain(session, provider)
+
+    _, tools = provider.calls[0]
+    assert sorted(tool["name"] for tool in tools) == ["list", "read", "search"]
+
+
+async def test_run_with_no_policy_refuses_a_write(tmp_path: Path) -> None:
+    target = tmp_path / "a.txt"
+    provider = FakeProvider(
+        [
+            tool_reply("write", {"path": str(target), "content": "x"}),
+            text_reply("understood"),
+        ]
+    )
+    session = new_session("go")
+
+    await drain(session, provider)
+
+    results = [
+        b for m in session.messages for b in m.content if b.get("type") == "tool_result"
+    ]
+    assert results[0]["is_error"] is True
+    assert not target.exists()
+
+
+async def test_run_with_no_policy_refuses_bash(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    provider = FakeProvider(
+        [
+            tool_reply("bash", {"command": f"touch {marker}"}),
+            text_reply("understood"),
+        ]
+    )
+    session = new_session("go")
+
+    await drain(session, provider)
+
+    results = [
+        b for m in session.messages for b in m.content if b.get("type") == "tool_result"
+    ]
+    assert results[0]["is_error"] is True
+    assert not marker.exists()
+
+
+async def test_an_approver_without_a_policy_offers_the_built_in_set() -> None:
+    # Passing approve is the caller opting in to the built-in tools, each call
+    # still gated by it. Without one, the default is read-only.
+    provider = FakeProvider([text_reply("done")])
+    session = new_session("go")
+
+    await drain(session, provider, approve=lambda tool, args: True)
+
+    _, tools = provider.calls[0]
+    assert {tool["name"] for tool in tools} == set(TOOLS)
+
+
+async def test_an_explicit_policy_is_unchanged() -> None:
+    provider = FakeProvider([text_reply("done")])
+    session = new_session("go")
+
+    await drain(session, provider, policy=Policy())
+
+    _, tools = provider.calls[0]
+    assert {tool["name"] for tool in tools} == set(TOOLS)

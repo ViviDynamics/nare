@@ -729,6 +729,10 @@ def ask(questions: list[str]) -> str:
 # lead back out of the root. A result is a list of records rendered at the
 # end, so a record can carry more than its line without reshaping the page.
 NAVIGATION_TOOLS = frozenset({"list", "search"})
+# What nare.run offers a caller that passes neither a policy nor an approver:
+# the tools that read, and change nothing. Writing, editing and bash need a
+# policy that names them, or an approver that gates each call.
+READ_ONLY_TOOLS = frozenset({"read", "list", "search"})
 
 
 def _clamp(limit: object, default: int) -> int:
