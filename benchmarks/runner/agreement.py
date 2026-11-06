@@ -35,7 +35,8 @@ class Row:
     task: TaskName
     judge: JudgeName
     model: str | None  # for Jev, the pinned version it reported
-    verdicts: list[float] | list[bool] | None = None  # claims: P(yes), or booleans
+    # claims: P(yes), or booleans; None where the judge said "unknown"
+    verdicts: Sequence[float | bool | None] | None = None
     cause: str | None = None  # triage
     probabilities: dict[str, float] | None = None  # triage, Jev only
     confidence: float | None = None  # triage, Jev only
@@ -84,14 +85,17 @@ def _answered(
 
 
 def claim_pairs(rows: Sequence[Row], judge: JudgeName) -> list[ClaimPair]:
-    """A judge that could not answer is dropped, never counted as wrong. A
-    reference that could not answer drops the repetition for every judge."""
+    """A judge that could not answer is dropped, never counted as wrong, and
+    so is a claim it marked "unknown". A reference that could not answer drops
+    the repetition for every judge."""
     reference = _answered(rows, "claims", "reference")
     other = _answered(rows, "claims", judge)
     pairs: list[ClaimPair] = []
     for key in sorted(reference.keys() & other.keys()):
         mine, theirs = other[key].verdicts or [], reference[key].verdicts or []
         for index, (value, truth) in enumerate(zip(mine, theirs, strict=True)):
+            if value is None or truth is None:
+                continue
             pairs.append(ClaimPair(key[0], index, float(value), bool(truth)))
     return pairs
 
@@ -129,8 +133,13 @@ def outcome_flips(
             continue
         if case.judge.min_met is None:
             continue
-        mine = [float(v) >= cutoff for v in other[key].verdicts or []]
-        theirs = [bool(v) for v in reference[key].verdicts or []]
+        judged_mine = other[key].verdicts or []
+        judged_theirs = reference[key].verdicts or []
+        # A repetition with an "unknown" on either side has no outcome to flip.
+        if any(v is None for v in (*judged_mine, *judged_theirs)):
+            continue
+        mine = [float(v) >= cutoff for v in judged_mine if v is not None]
+        theirs = [bool(v) for v in judged_theirs if v is not None]
         n += 1
         if rep_outcome(rec.checks, case.judge, mine) != rep_outcome(
             rec.checks, case.judge, theirs

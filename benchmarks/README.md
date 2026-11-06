@@ -16,8 +16,9 @@ change without notice. See "Which models the endpoint serves" below.
 
     export ANTHROPIC_API_KEY=...        # OPENAI_API_KEY for NARE_PROVIDER=openai
     export NARE_MODEL=...               # one that `bin/bench models` lists
-    export NARE_BENCH_JUDGE_MODEL=...   # the judge its baseline names; unset,
-                                        # the judge is NARE_MODEL itself
+    export NARE_BENCH_JUDGE_MODEL=...   # the judge, required for judged cases;
+                                        # never defaults to NARE_MODEL
+    export NARE_BENCH_JUDGE_MAX_TOKENS=4096  # judge output cap; default 4096
     export NARE_BASE_URL=https://...    # only if you use a proxy
     export NARE_STREAM=1                # stream agent and judge, for proxies
     export NARE_BENCH_MAX_TOKENS=32000  # agent output cap; default is nare's
@@ -37,7 +38,9 @@ three repetitions are not conclusive on their own.
 which each results line records, and not the ones in your shell. Results
 written before the provider and judge were recorded take them from the flags,
 or else from the shell as `run` would: `NARE_PROVIDER`, which defaults to
-`anthropic`, and `NARE_BENCH_JUDGE_MODEL`, which defaults to the model itself.
+`anthropic`, and `NARE_BENCH_JUDGE_MODEL`, which has no default: a run with a
+judged case refuses to start without one, because a model that grades its own
+reps measures its own self-preference.
 A `--provider` or `--judge-model` that contradicts what the results recorded
 exits 2, for `compare` too. `bless` merges into the existing baseline, so
 cases the results do not cover are kept; when that baseline was blessed on
@@ -330,7 +333,7 @@ benchmark sends the same proxy key it uses for `run`.
     export ANTHROPIC_API_KEY=...        # OPENAI_API_KEY for NARE_PROVIDER=openai
     export NARE_BASE_URL=https://...    # the proxy; required
     export NARE_BENCH_REFERENCE_MODEL=claude-opus-5-5   # the proxy's alias; required
-    export NARE_BENCH_JUDGE_MODEL=...   # optional: defaults to the model under test
+    export NARE_BENCH_JUDGE_MODEL=...   # optional: defaults to the judge the run used
     export NARE_BENCH_JEV_MODEL=...     # optional: defaults to jev-latest
 
     bin/bench compare-judges                       # the newest results
@@ -375,9 +378,43 @@ Reading the summary:
   the proxy's header nor Jev's reply reported one.
 
 Every percentage carries its n. A judge that could not answer is never
-counted as wrong: it drops out of its own figures, and a reference that could
-not answer drops the repetition from every judge's. Jev gives no reason for a
-verdict, and that is not counted against it.
+counted as wrong: it drops out of its own figures, and so does a claim it
+marked `unknown`. A reference that could not answer drops the repetition from
+every judge's. Jev gives no reason for a verdict, and that is not counted
+against it.
+
+## Calibrating the judge
+
+The LLM judge's error rates are measured against a small set of claims that
+people have labelled, kept in `benchmarks/calibration/labels.jsonl`. Nothing
+in the harness labels them: two people do, blind to what the judge said.
+
+    bin/bench calibrate export --results benchmarks/results/<stamp>.jsonl \
+        --sample 80 --seed 1 --out <a path outside the repo>.jsonl
+    bin/bench calibrate check      # the labels file: format, claims, duplicates
+    bin/bench calibrate score      # the judge's FP and FN rates, per judge model
+
+`export` writes one row per claim instance, with the claim, the diff's digest
+and where its evidence is kept. It leaves out the judge's verdict and reason,
+so a labeller reads the diff and not the judge. Each labeller fills in their
+own `labels` entry (`"a"` and `"b"`) and the row is added to the labels file:
+
+    {"case": "fix-failing-test", "claim": 1, "claim_text": "...",
+     "diff_sha256": "<64 hex>", "labels": {"a": true, "b": true},
+     "label": true, "adjudicated": false}
+
+When the two labellers agree, `label` is their answer. When they disagree,
+`adjudicated` is `true` and `label` is the agreed answer after discussion.
+`calibrate check` refuses a row that breaks that rule, a claim that no longer
+matches its case, or the same claim on the same diff twice.
+
+`score` reads the labelled claims against the judged reps on the same diff. A
+false positive is a claim labelled false and judged true; a false negative is
+one labelled true and judged false. `run` prints the same figures after each
+run. A claim with no judged rep on its diff is counted as unmatched, and the
+rates are kept per judge model, so a change of judge is measured again rather
+than assumed. The set is small, so the rates are a rough check, not a
+precision measurement.
 
 It exits 0 when the comparison finished, even if some judges failed on some
 repetitions, since those failures are in the report; 1 when there is nothing
@@ -396,6 +433,20 @@ Checks are `bash` (must exit 0) or `result` (asserts on nare's result line).
 The optional `[judge]` block lists binary, objectively checkable claims about
 the diff; `min_met` turns it into a gate. A judge can only ever fail a
 repetition that passed its checks - it can never rescue one that failed.
+
+The judge answers each claim `true`, `false` or `"unknown"`, with one short
+reason per claim. An `unknown` is never a `false`: it cannot turn a rep into a
+fail unless even counting every unknown as true would miss `min_met`, and it
+cannot make a pass unless the true claims already reach `min_met`. Any other
+rep the judge cannot settle is a judge failure: it is an error, and it stays in
+the pass rate's denominator as a rep that did not pass. (An infrastructure
+error, such as a dead container, stays out of the denominator.) The summary
+shows how many reps the judge could not settle, so a judge that fails on the
+hard reps cannot quietly raise the rate.
+
+Each judged rep's per-claim verdicts and reasons are in its results line
+(`judge_claims`, `judge_reasons`), with the digest of the diff the judge read
+(`diff_sha256`), which is what the calibration set is matched against.
 
 A bash check runs in a fresh container over the agent's working directory,
 with the run's artifacts mounted read-only at `/out`, so a check can see what

@@ -7,9 +7,10 @@ endpoint can run the benchmark with no further configuration.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 
+from benchmarks.runner.case import Case
 from benchmarks.runner.nare_args import RunArgs
 from nare.cli import stream_from_env
 from nare.transport.anthropic import nonstreaming_ceiling
@@ -24,12 +25,19 @@ class ConfigError(Exception):
 KEY_VARS = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 
 
+# Judging is a short answer, but a reasoning judge spends tokens before it. The
+# old cap was 1024, and a reasoning judge ran out of it on real reps (#46).
+DEFAULT_JUDGE_MAX_TOKENS = 4096
+
+
 @dataclass(frozen=True)
 class Config:
     model: str
     provider: str
     base_url: str | None
-    judge_model: str
+    # None when nothing names a judge. A run whose cases are judged refuses
+    # that (see require_judge); nothing defaults to the model under test.
+    judge_model: str | None
     api_key: str | None
     api_key_var: str
     # The agent's --max-tokens, or None for nare's own default. A reasoning
@@ -42,6 +50,43 @@ class Config:
     # What a run passes to nare after `--`, as recorded and as the container
     # gets it; compare and bless take it from the results.
     run_args: RunArgs = field(default_factory=RunArgs)
+    # The judge's output cap. A reasoning judge can spend a small cap on
+    # thinking and return an empty answer, which the rep then records as an
+    # error; the default leaves room for that.
+    judge_max_tokens: int = DEFAULT_JUDGE_MAX_TOKENS
+
+
+def judge_max_tokens_from(
+    env: Mapping[str, str], provider: str, judge_model: str, stream: bool
+) -> int:
+    raw = env.get("NARE_BENCH_JUDGE_MAX_TOKENS")
+    if not raw:
+        return DEFAULT_JUDGE_MAX_TOKENS
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        raise ConfigError(
+            f"NARE_BENCH_JUDGE_MAX_TOKENS must be a positive integer: {raw!r}"
+        )
+    _check_ceiling("NARE_BENCH_JUDGE_MAX_TOKENS", value, provider, judge_model, stream)
+    return value
+
+
+def require_judge(config: Config, cases: Sequence[Case]) -> str | None:
+    """Why a run cannot start without a judge, or None when it can.
+
+    The judge is never the model under test by default: a model that grades
+    its own reps measures its own self-preference. A run with no judged case
+    needs none.
+    """
+    if config.judge_model is not None or not any(c.judge for c in cases):
+        return None
+    return (
+        "no judge model: pass --judge-model or set NARE_BENCH_JUDGE_MODEL; a "
+        "judge is not the model under test by default"
+    )
 
 
 def _max_tokens_from(
@@ -104,15 +149,12 @@ def resolve_config(
     if need_key and not api_key:
         raise ConfigError(f"{key_var} is not set")
     stream = stream_from_env(env)
+    resolved_judge = judge_model or env.get("NARE_BENCH_JUDGE_MODEL") or None
     return Config(
         model=resolved_model,
         provider=resolved_provider,
         base_url=base_url or env.get("NARE_BASE_URL") or None,
-        # The judge defaults to the model under test because that is the one
-        # model the operator is known to have access to.
-        judge_model=(
-            judge_model or env.get("NARE_BENCH_JUDGE_MODEL") or resolved_model
-        ),
+        judge_model=resolved_judge,
         api_key=api_key,
         api_key_var=key_var,
         max_tokens=(
@@ -121,6 +163,11 @@ def resolve_config(
             else None
         ),
         stream=stream,
+        judge_max_tokens=(
+            judge_max_tokens_from(env, resolved_provider, resolved_judge or "", stream)
+            if need_key
+            else DEFAULT_JUDGE_MAX_TOKENS
+        ),
     )
 
 

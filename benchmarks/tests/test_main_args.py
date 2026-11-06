@@ -149,9 +149,16 @@ def test_the_new_fields_survive_a_results_file(tmp_path: Path) -> None:
     assert read_results(write_results(tmp_path, [ran])) == [ran]
 
 
+@pytest.fixture(autouse=True)
+def judge_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A run with judged cases needs a judge (config.require_judge). These tests
+    # are about other things; a test about the judge itself clears this.
+    monkeypatch.setenv("NARE_BENCH_JUDGE_MODEL", "judge-stub")
+
+
 REFUSED = "nare: error: argument --context-window: invalid int value: 'abc'\n"
 STAMP = "2026-11-04T00-00-00Z"
-VERDICT = '{"met": [true, true, true], "why": "ok"}'
+VERDICT = '{"met": [true, true, true], "reasons": ["ok", "ok", "ok"]}'
 
 
 @pytest.mark.parametrize(
@@ -305,7 +312,7 @@ def test_a_stop_in_the_confirmation_sets_the_first_results_aside(
     baselines.mkdir()
     baseline_path(baselines, "m", "smoke").write_text(
         dumps_baseline(
-            BaselineMeta("t", "abc1234", "anthropic", "m", "m"),
+            BaselineMeta("t", "abc1234", "anthropic", "m", "judge-stub"),
             [summary("edit-docstring", 1.0)],
         )
     )
@@ -378,7 +385,7 @@ def stopping_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *cases: str) -
         baselines.mkdir()
         baseline_path(baselines, "m", "smoke").write_text(
             dumps_baseline(
-                BaselineMeta("t", "abc1234", "anthropic", "m", "m"),
+                BaselineMeta("t", "abc1234", "anthropic", "m", "judge-stub"),
                 [summary(case, 1.0) for case in cases],
             )
         )
@@ -488,7 +495,6 @@ def argued(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: str = "") -> R
     for var in (
         "NARE_PROVIDER",
         "NARE_BASE_URL",
-        "NARE_BENCH_JUDGE_MODEL",
         "NARE_BENCH_MAX_TOKENS",
     ):
         monkeypatch.delenv(var, raising=False)
@@ -714,7 +720,7 @@ def ran_with(
     return replace(ran, **change)
 
 
-BASE = Baseline(BaselineMeta("t", "abc1234", "anthropic", "m", "m"), {})
+BASE = Baseline(BaselineMeta("t", "abc1234", "anthropic", "m", "judge-stub"), {})
 
 
 @pytest.mark.parametrize(

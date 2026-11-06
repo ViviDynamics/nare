@@ -15,7 +15,6 @@ from benchmarks.runner.config import Config
 from benchmarks.runner.jev import estimated_tokens
 from benchmarks.runner.judge import (
     JUDGE_ATTEMPTS,
-    JUDGE_MAX_TOKENS,
     JudgeAttempt,
     JudgeError,
     _extract_json,
@@ -188,7 +187,7 @@ def triage_transport(config: Config, model: str) -> Transport:
         model=model,
         base_url=config.base_url,
         api_key=config.api_key,
-        max_tokens=JUDGE_MAX_TOKENS,
+        max_tokens=config.judge_max_tokens,
         system=TRIAGE_SYSTEM,
     )
 

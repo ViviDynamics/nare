@@ -72,26 +72,44 @@ def test_prompt_carries_the_task_the_diff_and_the_assertions() -> None:
 
 
 def test_parses_a_clean_json_reply() -> None:
-    assert parse_reply('{"met": [true, false], "why": "second failed"}', 2) == [
-        True,
-        False,
-    ]
+    reply = '{"met": [true, false], "reasons": ["fixed", "second failed"]}'
+    assert parse_reply(reply, 2) == ([True, False], ["fixed", "second failed"])
 
 
 def test_parses_json_wrapped_in_prose() -> None:
     """Small models pad their answers. That is not a judge failure."""
-    reply = 'Here is my assessment:\n{"met": [true, true], "why": "ok"}\nDone.'
-    assert parse_reply(reply, 2) == [True, True]
+    reply = (
+        'Here is my assessment:\n{"met": [true, true], "reasons": ["a", "b"]}\nDone.'
+    )
+    assert parse_reply(reply, 2) == ([True, True], ["a", "b"])
 
 
 def test_parses_json_in_a_fenced_block() -> None:
-    reply = '```json\n{"met": [false, true], "why": "x"}\n```'
-    assert parse_reply(reply, 2) == [False, True]
+    reply = '```json\n{"met": [false, true], "reasons": ["x", "y"]}\n```'
+    assert parse_reply(reply, 2) == ([False, True], ["x", "y"])
+
+
+def test_unknown_is_a_verdict_of_none_not_false() -> None:
+    reply = '{"met": [true, "unknown"], "reasons": ["fixed", "cannot tell"]}'
+    assert parse_reply(reply, 2) == ([True, None], ["fixed", "cannot tell"])
+
+
+def test_unknown_is_matched_whatever_its_case_or_spacing() -> None:
+    reply = '{"met": [" Unknown ", false], "reasons": ["a", "b"]}'
+    assert parse_reply(reply, 2)[0] == [None, False]
+
+
+def test_a_reply_without_one_reason_per_claim_is_a_judge_failure() -> None:
+    """The old shared "why" is refused: a verdict needs its own reason."""
+    with pytest.raises(JudgeError, match="reasons"):
+        parse_reply('{"met": [true, false], "why": "shared"}', 2)
+    with pytest.raises(JudgeError, match="reasons"):
+        parse_reply('{"met": [true, false], "reasons": ["only one"]}', 2)
 
 
 def test_a_wrong_length_array_is_a_judge_failure() -> None:
     with pytest.raises(JudgeError, match="2"):
-        parse_reply('{"met": [true], "why": "x"}', 2)
+        parse_reply('{"met": [true], "reasons": ["x"]}', 2)
 
 
 def test_unparseable_output_is_a_judge_failure() -> None:
@@ -101,20 +119,24 @@ def test_unparseable_output_is_a_judge_failure() -> None:
 
 def test_non_boolean_entries_are_a_judge_failure() -> None:
     with pytest.raises(JudgeError):
-        parse_reply('{"met": ["yes", "no"], "why": "x"}', 2)
+        parse_reply('{"met": ["yes", "no"], "reasons": ["x", "y"]}', 2)
 
 
-async def test_score_returns_the_booleans_and_the_reason() -> None:
-    transport = FakeJudge('{"met": [true, false], "why": "the test was edited"}')
-    met, why, attempts = await score(CASE, "a diff", "final text", transport=transport)
+async def test_score_returns_the_verdicts_and_one_reason_each() -> None:
+    transport = FakeJudge(
+        '{"met": [true, false], "reasons": ["fixed", "the test was edited"]}'
+    )
+    met, reasons, attempts = await score(
+        CASE, "a diff", "final text", transport=transport
+    )
     assert met == [True, False]
-    assert why == "the test was edited"
+    assert reasons == ["fixed", "the test was edited"]
     assert len(transport.calls) == 1
     assert len(attempts) == 1
 
 
 async def test_an_empty_reply_is_retried_once() -> None:
-    answer = '{"met": [true, true], "why": "ok"}'
+    answer = '{"met": [true, true], "reasons": ["ok", "ok"]}'
     transport = FakeJudge("", answer)
     met, _, attempts = await score(CASE, "d", "f", transport=transport)
     assert met == [True, True]
@@ -151,7 +173,7 @@ async def test_retries_are_bounded_by_calls_not_by_attempts_carried(
 
 async def test_a_transport_failure_then_an_answer_scores() -> None:
     transport = FakeJudge(
-        ConnectionError("reset"), '{"met": [true, false], "why": "x"}'
+        ConnectionError("reset"), '{"met": [true, false], "reasons": ["x", "y"]}'
     )
     met, _, attempts = await score(CASE, "d", "f", transport=transport)
     assert met == [True, False]
@@ -206,3 +228,25 @@ def test_the_judge_streams_when_the_run_does(stream: bool) -> None:
     transport = judge_transport(config)
     assert isinstance(transport, AnthropicTransport)
     assert transport.streaming is stream
+
+
+def test_the_judge_uses_the_configured_output_cap() -> None:
+    from benchmarks.runner.config import Config
+    from benchmarks.runner.judge import judge_transport
+    from nare.transport.anthropic import AnthropicTransport
+
+    config = Config(
+        "m", "anthropic", None, "j", "k", "ANTHROPIC_API_KEY", judge_max_tokens=4096
+    )
+    transport = judge_transport(config)
+    assert isinstance(transport, AnthropicTransport)
+    assert transport.max_tokens == 4096
+
+
+def test_a_judge_transport_without_a_judge_is_refused() -> None:
+    from benchmarks.runner.config import Config
+    from benchmarks.runner.judge import judge_transport
+
+    config = Config("m", "anthropic", None, None, "k", "ANTHROPIC_API_KEY")
+    with pytest.raises(JudgeError, match="no judge model"):
+        judge_transport(config)

@@ -33,6 +33,13 @@ from benchmarks.tests.test_judge import FakeJudge
 from nare.transport import Transport
 
 
+@pytest.fixture(autouse=True)
+def judge_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A run with judged cases needs a judge (config.require_judge). These tests
+    # are about other things; a test about the judge itself clears this.
+    monkeypatch.setenv("NARE_BENCH_JUDGE_MODEL", "judge-stub")
+
+
 def case_with(*checks: Check, case_id: str = "demo") -> Case:
     return Case(
         id=case_id,
@@ -340,7 +347,7 @@ DONE_LINE = json.dumps(
         "questions": [],
     }
 )
-CONFIG = Config("m", "anthropic", None, "m", "k", "ANTHROPIC_API_KEY")
+CONFIG = Config("m", "anthropic", None, "judge-stub", "k", "ANTHROPIC_API_KEY")
 
 
 def sandboxed(tmp_path: Path, judge: Judge | None = None) -> Case:
@@ -371,7 +378,7 @@ async def test_a_rep_keeps_its_session_output_and_judge_replies(
     fake_sandbox(monkeypatch, RunArtifacts(DONE_LINE, "a warning", 0, False, 1.0))
     case = sandboxed(tmp_path, Judge(("x",), 1))
     evidence = tmp_path / "results" / "stamp"
-    judge = FakeJudge('{"met": [true], "why": "ok"}')
+    judge = FakeJudge('{"met": [true], "reasons": ["ok"]}')
     rec = await run_rep(case, CONFIG, judge, 0, evidence)
     kept = evidence / "demo-0"
     assert rec.outcome == "pass"
@@ -507,7 +514,7 @@ def test_a_confirmation_rerun_leaves_one_results_file(
     baselines.mkdir()
     baseline_path(baselines, "m", "smoke").write_text(
         dumps_baseline(
-            BaselineMeta("t", "abc1234", "anthropic", "m", "m"),
+            BaselineMeta("t", "abc1234", "anthropic", "m", "judge-stub"),
             [summary("edit-docstring", 1.0)],
         )
     )
@@ -527,7 +534,7 @@ def test_a_confirmation_rerun_leaves_one_results_file(
     monkeypatch.setattr(bench, "judge_transport", lambda config: None)
     monkeypatch.setattr(bench, "run_case", failing)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    for var in ("NARE_PROVIDER", "NARE_BASE_URL", "NARE_BENCH_JUDGE_MODEL"):
+    for var in ("NARE_PROVIDER", "NARE_BASE_URL"):
         monkeypatch.delenv(var, raising=False)
 
     code = main(
@@ -556,7 +563,10 @@ def test_numbers_from_another_output_cap_are_not_compared(
     from benchmarks.runner.report import Baseline
 
     baseline = Baseline(
-        BaselineMeta("t", "abc1234", "anthropic", "m", "m", max_tokens=blessed), {}
+        BaselineMeta(
+            "t", "abc1234", "anthropic", "m", "judge-stub", max_tokens=blessed
+        ),
+        {},
     )
     assert model_changed(baseline, replace(CONFIG, max_tokens=now), False)
     assert not model_changed(baseline, replace(CONFIG, max_tokens=blessed), False)
@@ -570,7 +580,7 @@ def results_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / "benchmarks").mkdir()
     (tmp_path / "benchmarks" / "cases").symlink_to(repo_root() / "benchmarks" / "cases")
     monkeypatch.setattr(bench, "repo_root", lambda: tmp_path)
-    for var in ("NARE_BENCH_MAX_TOKENS", "NARE_BENCH_JUDGE_MODEL", "NARE_PROVIDER"):
+    for var in ("NARE_BENCH_MAX_TOKENS", "NARE_PROVIDER"):
         monkeypatch.delenv(var, raising=False)
     return tmp_path / "benchmarks" / "baselines"
 
@@ -599,7 +609,7 @@ def test_compare_refuses_results_run_at_another_cap(
     baselines.mkdir()
     baseline_path(baselines, "m", "smoke").write_text(
         dumps_baseline(
-            BaselineMeta("t", "abc1234", "anthropic", "m", "m"),
+            BaselineMeta("t", "abc1234", "anthropic", "m", "judge-stub"),
             [summary("edit-docstring", 1.0)],
         )
     )
@@ -612,7 +622,7 @@ async def test_a_judged_rep_keeps_the_diff_and_closing_message_it_judged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_sandbox(monkeypatch, RunArtifacts(f"{OUTPUT}\n{DONE_LINE}", "", 0, False, 1.0))
-    judge = FakeJudge('{"met": [true], "why": "ok"}')
+    judge = FakeJudge('{"met": [true], "reasons": ["ok"]}')
     evidence = tmp_path / "results" / "stamp"
     await run_rep(sandboxed(tmp_path, Judge(("x",), 1)), CONFIG, judge, 0, evidence)
     kept = evidence / "demo-0"
@@ -931,7 +941,7 @@ def matrix(
             record(case.id, model=config.model),
             outcome="fail" if config.model == failing else "pass",
             provider=config.provider,
-            judge_model=config.judge_model,
+            judge_model=config.judge_model or "",
         )
         base = replace(base, **(changed or {}).get(config.model, {}))
         return [replace(base, rep=rep) for rep in range(n)]
@@ -1161,8 +1171,12 @@ def test_baselines_goes_with_matrix(
         # The same model on the other route can lose a reasoning model's
         # thinking on the way, so the numbers are not comparable.
         (["--provider", "anthropic", "--judge-model", SONNET], {}, "'anthropic'"),
-        # No judge set: it defaults to the model under test.
-        (["--provider", "openai"], {}, "'gpt-5-nano' / 'gpt-5-nano'"),
+        # A judge equal to the model under test is allowed, and named.
+        (
+            ["--provider", "openai", "--judge-model", "gpt-5-nano"],
+            {},
+            "'gpt-5-nano' / 'gpt-5-nano'",
+        ),
         (
             ["--provider", "openai", "--judge-model", SONNET],
             {"NARE_BENCH_MAX_TOKENS": "32000"},
@@ -1277,6 +1291,25 @@ def test_a_flag_that_contradicts_the_results_is_refused(
     assert blessed.read_text() == before
     # A flag that agrees with the results is fine.
     assert main([command, "--model", "gpt-5-nano", flag, recorded]) == 0
+
+
+def test_a_run_with_judged_cases_refuses_to_start_without_a_judge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The judge is never the model under test by default, so a run with no
+    # judge named stops before the image, the key or any rep.
+    results_dir(tmp_path, monkeypatch)
+    monkeypatch.delenv("NARE_BENCH_JUDGE_MODEL")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    import benchmarks.runner.__main__ as bench
+
+    built: list[str] = []
+    monkeypatch.setattr(bench, "build_image", lambda root: built.append("image"))
+    assert main(["run", "--model", "m", "--case", "edit-docstring"]) == 2
+    assert built == []
+    assert "no judge model" in capsys.readouterr().err
 
 
 def test_compare_judges_asks_for_a_file_after_a_matrix_run(

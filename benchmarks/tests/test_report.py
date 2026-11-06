@@ -9,7 +9,9 @@ from benchmarks.runner.grade import Outcome
 from benchmarks.runner.report import (
     Baseline,
     BaselineMeta,
+    CaseDelta,
     CaseSummary,
+    Comparison,
     RepRecord,
     baseline_path,
     compare,
@@ -71,6 +73,39 @@ def test_errors_are_excluded_from_the_denominator() -> None:
     assert summary.pass_rate == 1.0
     assert summary.errors == 1
     assert not summary.inconclusive
+
+
+def test_judge_failures_stay_in_the_denominator() -> None:
+    """A judge that cannot settle a rep is not a pass, and must not be dropped:
+    dropping it would let the rate depend on what the agent wrote."""
+    records = [
+        record(outcome="pass"),
+        record(outcome="pass"),
+        replace(record(outcome="error"), judge_failed=True),
+    ]
+    summary = summarize(records)[0]
+    assert summary.judge_errors == 1
+    assert summary.pass_rate == 2 / 3
+
+
+def test_infrastructure_errors_do_not_count_as_judge_errors() -> None:
+    summary = summarize([record(outcome="pass"), record(outcome="error")])[0]
+    assert summary.judge_errors == 0
+    assert summary.pass_rate == 1.0
+
+
+def test_a_judge_failure_is_rendered_beside_the_case() -> None:
+    records = [
+        record(outcome="pass"),
+        replace(record(outcome="error"), judge_failed=True),
+    ]
+    text = render(
+        Comparison(
+            deltas=(CaseDelta("c", "new", summarize(records)[0], None, None, ()),),
+            exit_code=0,
+        )
+    )
+    assert "the judge could not settle 1 rep(s)" in text
 
 
 def test_more_than_half_errors_is_inconclusive() -> None:
