@@ -360,6 +360,12 @@ def sandboxed(tmp_path: Path, judge: Judge | None = None) -> Case:
 def fake_sandbox(monkeypatch: pytest.MonkeyPatch, result: RunArtifacts) -> None:
     import benchmarks.runner.__main__ as bench
 
+    def closing(workdir: Path, artifacts: Path, text: str) -> None:
+        # The real one runs a container; here the host writes the same file.
+        (artifacts / "closing.txt").write_text(text, encoding="utf-8")
+
+    monkeypatch.setattr(bench, "write_closing", closing)
+
     def agent(
         case: Case, workdir: Path, artifacts: Path, config: Config
     ) -> RunArtifacts:
@@ -482,6 +488,54 @@ async def test_a_rep_keeps_what_its_container_left(
     evidence = tmp_path / "results" / "stamp"
     await run_rep(sandboxed(tmp_path), CONFIG, cast(Transport, None), 0, evidence)
     assert (evidence / "demo-0" / "after.json").read_text() == '{"processes": []}'
+
+
+async def test_a_check_reads_the_closing_message_at_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The read-only case's check reads /out/closing.txt. The host writes the
+    # closing message there after the agent exits, so the agent cannot.
+    import benchmarks.runner.__main__ as bench
+
+    output = json.dumps({"type": "output", "text": "It returns 90 seconds."})
+    fake_sandbox(
+        monkeypatch, RunArtifacts(output + "\n" + DONE_LINE, "", 0, False, 1.0)
+    )
+    seen: list[str] = []
+
+    def check(
+        workdir: Path, cmd: str, timeout: int, artifacts: Path | None = None
+    ) -> tuple[int, str]:
+        assert artifacts is not None
+        seen.append((artifacts / "closing.txt").read_text())
+        return 0, ""
+
+    monkeypatch.setattr(bench, "run_check", check)
+    evidence = tmp_path / "results" / "stamp"
+    await run_rep(sandboxed(tmp_path), CONFIG, cast(Transport, None), 0, evidence)
+    assert seen == ["It returns 90 seconds."]
+
+
+def test_an_idle_run_leaves_an_empty_closing_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import benchmarks.runner.sandbox as sandbox_module
+    from benchmarks.runner.sandbox import idle_artifacts
+
+    written: list[str] = []
+    monkeypatch.setattr(
+        sandbox_module, "_docker_run", lambda *args, **kwargs: (0, "", "", False)
+    )
+    monkeypatch.setattr(
+        sandbox_module,
+        "write_closing",
+        lambda workdir, artifacts, text: written.append(text),
+    )
+    artifacts = tmp_path / "out"
+    artifacts.mkdir()
+    idle_artifacts(case_with(), tmp_path, artifacts)
+    assert written == [""]
+    assert (artifacts / "session.json").is_file()
 
 
 @pytest.mark.docker

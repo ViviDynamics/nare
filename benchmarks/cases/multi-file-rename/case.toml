@@ -8,13 +8,12 @@ max_turns = 15
 kind = "bash"
 cmd = "! rg -q 'calc_area' . && rg -q 'rectangle_area' shape.py && pytest -q"
 
+# No file deleted and no test removed. The fixture has two tests, in
+# test_report.py; a test moved to a new file still counts.
+[[check]]
+kind = "bash"
+cmd = '''test -z "$(git diff --name-only --diff-filter=D "$(git rev-list --max-parents=0 HEAD)")" && test "$(grep -rho 'def test_' --include='*.py' . | wc -l)" -ge 2'''
+
 [[check]]
 kind = "result"
 status = "done"
-
-[judge]
-assertions = [
-  "Every occurrence of calc_area was renamed, across all three files.",
-  "No file was deleted and no test was removed.",
-]
-min_met = 2

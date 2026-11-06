@@ -11,13 +11,49 @@ max_turns = 16
 kind = "bash"
 cmd = "python -c \"import json; assert json.load(open('findings.json')) == [f'SENTINEL_{n}=confirmed' for n in range(1,9)]\""
 
+# Each log is read by a call of its own, its sentinel comes back in that
+# call's result, and findings.json is written only after the reads. The
+# transcript is nare's own: a result it has elided for context still says how
+# long it was ("[elided by nare: N chars ...]"), and a log is about 29000
+# characters, so an elided result counts as read.
+[[check]]
+kind = "bash"
+cmd = '''
+python3 -I - <<'EOF'
+import json, re, sys
+calls, results = [], {}
+for message in json.load(open("/out/session.json"))["messages"]:
+    for block in message["content"]:
+        if block.get("type") == "tool_use":
+            calls.append(block)
+        elif block.get("type") == "tool_result":
+            results[block.get("tool_use_id")] = str(block.get("content", ""))
+problems, reads = [], {}
+for index, call in enumerate(calls):
+    if call.get("name") != "bash":
+        continue
+    command = str(call.get("input", {}).get("command", ""))
+    found = re.findall(r"log\.py\s+(\d+)", command)
+    if len(found) > 1:
+        problems.append(f"call {index} reads {len(found)} logs in one command")
+    for n in found:
+        reads.setdefault(int(n), []).append(index)
+for n in range(1, 9):
+    if n not in reads:
+        problems.append(f"log {n} was never read")
+        continue
+    text = results.get(calls[reads[n][0]].get("id"), "")
+    elided = re.search(r"\[elided by nare: (\d+) chars", text)
+    if f"SENTINEL_{n}=confirmed" not in text and not (elided and int(elided.group(1)) >= 1000):
+        problems.append(f"log {n}: its call's result holds no sentinel")
+last_read = max((i for indices in reads.values() for i in indices), default=-1)
+writes = [i for i, call in enumerate(calls) if "findings.json" in json.dumps(call.get("input", {}))]
+if not writes or min(writes) < last_read:
+    problems.append("findings.json was written before every log was read")
+sys.exit("; ".join(problems) or 0)
+EOF
+'''
+
 [[check]]
 kind = "result"
 status = "done"
-
-[judge]
-assertions = [
-  "All eight logs were read in separate tool calls before writing findings.json.",
-  "The sentinel values came from the logs rather than being guessed.",
-]
-min_met = 2

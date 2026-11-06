@@ -22,6 +22,8 @@ sys.exit(f"the questions do not name {missing}" if missing else 0)
 EOF
 '''
 
-[judge]
-assertions = ["utils.py was not changed."]
-min_met = 1
+# utils.py is the file the answer must leave alone. Changes are measured from
+# the fixture commit, the root of the repository.
+[[check]]
+kind = "bash"
+cmd = '''git diff --quiet "$(git rev-list --max-parents=0 HEAD)" -- utils.py'''

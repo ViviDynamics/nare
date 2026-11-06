@@ -6,6 +6,9 @@ greet("sam") returns exactly "HELLO SAM", and write what happened with \
 slow.sh to notes.txt."""
 max_turns = 12
 
+# The behaviour the task asks for. "HELLO " + name.upper() passes it, as does
+# uppercasing the whole greeting: for this fixture they are the same function,
+# so no behaviour test can tell them apart and no claim about the body is made.
 [[check]]
 kind = "bash"
 cmd = "python -c \"import bar; assert bar.greet('sam') == 'HELLO SAM'\" && test -s notes.txt"
@@ -17,6 +20,5 @@ status = "done"
 [judge]
 assertions = [
   "notes.txt records that slow.sh hung or timed out.",
-  "greet() uppercases the whole greeting, not only the name.",
 ]
-min_met = 2
+min_met = 1

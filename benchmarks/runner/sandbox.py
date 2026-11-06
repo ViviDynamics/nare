@@ -127,6 +127,7 @@ def _docker_run(
     inputs: Path | None = None,
     env: dict[str, str] | None = None,
     passthrough: tuple[str, ...] = (),
+    stdin: str | None = None,
 ) -> tuple[int, str, str, bool]:
     name = f"nare-bench-{uuid.uuid4().hex[:12]}"
     command = [
@@ -156,10 +157,15 @@ def _docker_run(
             # Passed by name so the value never reaches argv, which is
             # world-readable through ps and /proc.
             command += ["-e", key]
+    if stdin is not None:
+        # Kept open so the container can read it; without -i, docker sends none.
+        command.insert(2, "-i")
     command += [IMAGE, *argv]
 
     try:
-        proc = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(
+            command, capture_output=True, text=True, timeout=timeout, input=stdin
+        )
         return proc.returncode, proc.stdout, proc.stderr, False
     except subprocess.TimeoutExpired as exc:
         # subprocess's timeout kills the docker CLI, not the container it
@@ -254,12 +260,37 @@ def git_checkpoint(workdir: Path) -> None:
     )
 
 
+# The closing message, written by the container from stdin rather than by the
+# host through the bind mount: Docker Desktop can serve a file's text from before
+# a host write to the first container that reads it, so the first check could
+# judge the message the run before it, or none. A container's own write is seen.
+_WRITE_CLOSING = (
+    "import sys; open('/out/closing.txt', 'w', encoding='utf-8')"
+    ".write(sys.stdin.read())"
+)
+
+
+def write_closing(workdir: Path, artifacts: Path, text: str) -> None:
+    """Put the closing message at /out/closing.txt, where the checks read it."""
+    code, _, err, _ = _docker_run(
+        workdir,
+        ["python3", "-I", "-c", _WRITE_CLOSING],
+        60,
+        artifacts=artifacts,
+        stdin=text,
+    )
+    if code != 0:
+        raise SandboxError(f"could not write the closing message:\n{err.strip()}")
+
+
 def idle_artifacts(case: Case, workdir: Path, artifacts: Path) -> None:
     """What /out holds after a run in which the agent did nothing: the
-    session nare starts with, and the snapshot of a container left idle.
-    Used by `verify`, which never runs the agent.
+    session nare starts with, an empty closing message, and the snapshot of a
+    container left idle. Used by `verify`, which never runs the agent.
     """
     save(new_session(case.prompt), artifacts / "session.json")
+    # An idle run closes with nothing: the closing message is empty.
+    write_closing(workdir, artifacts, "")
     _docker_run(
         workdir,
         ["python3", "-I", "-c", _LEFTOVERS, "/out/after.json"],

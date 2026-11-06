@@ -107,6 +107,7 @@ from benchmarks.runner.sandbox import (
     run_agent,
     run_check,
     sandbox,
+    write_closing,
 )
 from benchmarks.runner.toolhealth import (
     model_health,
@@ -592,6 +593,9 @@ async def run_rep(
         # exactly what this one read. compare-judges reads them back.
         (kept / "diff.patch").write_text(diff, encoding="utf-8")
         (kept / "closing.txt").write_text(closing, encoding="utf-8")
+        # Under the name the checks read, at /out/closing.txt. Written by the
+        # host after the agent exits, so nothing the agent wrote there is seen.
+        write_closing(workdir, artifacts, closing)
 
         graded = [
             grade_result_check(check, line)

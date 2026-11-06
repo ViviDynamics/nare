@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -57,12 +58,17 @@ def test_the_ask_case_expects_a_blocked_run() -> None:
 
 
 def test_the_ask_case_judges_the_question_not_just_the_status() -> None:
-    """A vague "what should I do?" must not score like a concrete question."""
+    """A vague "what should I do?" must not score like a concrete question.
+
+    The judge keeps the claim about the question's content. config.py being
+    left alone is a command's to decide, so it is no longer a judge claim.
+    """
     cases = {c.id: c for c in load_cases(repo_root() / "benchmarks" / "cases")}
     judge = cases["ambiguous-request"].judge
     assert judge is not None
-    assert judge.min_met == 2
-    assert len(judge.assertions) == 2
+    assert judge.min_met == 1
+    assert len(judge.assertions) == 1
+    assert "question" in judge.assertions[0]
 
 
 def test_the_new_ask_cases_are_in_the_smoke_tier() -> None:
@@ -73,19 +79,20 @@ def test_the_new_ask_cases_are_in_the_smoke_tier() -> None:
 def test_the_after_reading_case_expects_a_blocked_run() -> None:
     case = cases()["ambiguous-after-reading"]
     assert [c.status for c in case.checks if c.kind == "result"] == ["blocked"]
-    assert case.judge is not None
-    assert case.judge.min_met == 1
+    # "utils.py was not changed" is a command's to decide, so nothing is left
+    # for the judge.
+    assert case.judge is None
 
 
 def test_the_read_only_case_expects_an_answer_not_a_question() -> None:
     """The guard: asking here is the failure #38 fixed."""
     case = cases()["read-only-question"]
     assert [c.status for c in case.checks if c.kind == "result"] == ["done"]
-    # No bash check: one that nothing changed would pass on the pristine
-    # fixture, so the judge's first claim does that job.
-    assert case.bash_checks == ()
-    assert case.judge is not None
-    assert case.judge.min_met == 2
+    # Both claims are commands' to decide: nothing changed, and the closing
+    # message says 90 seconds. The closing check fails on the pristine fixture,
+    # which is what keeps the no-change check from passing vacuously.
+    assert case.judge is None
+    assert len(case.bash_checks) == 2
 
 
 def cases() -> dict[str, Case]:
@@ -339,3 +346,237 @@ def test_the_bootstrap_case_fails_a_run_that_committed(
     assert (
         subprocess.run(["sh", "-c", cmd], cwd=tmp_path, env=git_env()).returncode != 0
     )
+
+
+def fixture_checkout(case_id: str, path: Path) -> None:
+    """The fixture as the agent gets it: copied, then committed as the checkpoint."""
+    shutil.copytree(cases()[case_id].fixture, path, dirs_exist_ok=True)
+    identity = ["-c", "user.email=bench@nare.invalid", "-c", "user.name=nare-bench"]
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["add", "-A"],
+        [*identity, "commit", "-qm", "fixture"],
+    ):
+        subprocess.run(["git", *args], cwd=path, env=git_env(), check=True)
+
+
+def test_the_after_reading_case_fails_a_change_to_utils(tmp_path: Path) -> None:
+    cmd = check_with("ambiguous-after-reading", "utils.py")
+    fixture_checkout("ambiguous-after-reading", tmp_path)
+    assert run_here(cmd, tmp_path) == 0
+    (tmp_path / "utils.py").write_text("# edited\n")
+    assert run_here(cmd, tmp_path) != 0
+
+
+def test_the_ask_case_fails_a_change_to_config(tmp_path: Path) -> None:
+    cmd = check_with("ambiguous-request", "config.py")
+    fixture_checkout("ambiguous-request", tmp_path)
+    assert run_here(cmd, tmp_path) == 0
+    (tmp_path / "config.py").write_text("TIMEOUT = 60\n")
+    assert run_here(cmd, tmp_path) != 0
+
+
+def test_the_fix_case_needs_a_change_to_bar_and_none_to_the_tests(
+    tmp_path: Path,
+) -> None:
+    bar = check_with("fix-failing-test", "-- bar.py")
+    tests = check_with("fix-failing-test", "-- test_bar.py")
+    fixture_checkout("fix-failing-test", tmp_path)
+    # Pristine: nothing was fixed, so the fix check fails there.
+    assert run_here(bar, tmp_path) != 0
+    assert run_here(tests, tmp_path) == 0
+    (tmp_path / "bar.py").write_text("def parse(text):\n    return []\n")
+    assert run_here(bar, tmp_path) == 0
+    assert run_here(tests, tmp_path) == 0
+    (tmp_path / "test_bar.py").write_text("")
+    assert run_here(tests, tmp_path) != 0
+
+
+def test_the_rename_case_fails_a_deleted_file_or_a_removed_test(
+    tmp_path: Path,
+) -> None:
+    cmd = check_with("multi-file-rename", "--diff-filter=D")
+    fixture_checkout("multi-file-rename", tmp_path)
+    assert run_here(cmd, tmp_path) == 0
+    (tmp_path / "test_report.py").write_text("from report import summary\n")
+    assert run_here(cmd, tmp_path) != 0
+
+
+def test_the_rename_case_counts_a_test_moved_to_another_file(tmp_path: Path) -> None:
+    cmd = check_with("multi-file-rename", "--diff-filter=D")
+    fixture_checkout("multi-file-rename", tmp_path)
+    (tmp_path / "test_report.py").write_text("from report import summary\n")
+    (tmp_path / "test_moved.py").write_text(
+        "from report import summary\n\n\ndef test_summary():\n"
+        '    assert summary(2, 3) == "area is 6"\n\n\ndef test_area():\n'
+        "    assert True\n"
+    )
+    assert run_here(cmd, tmp_path) == 0
+
+
+def test_the_read_only_case_fails_any_change_to_a_file(tmp_path: Path) -> None:
+    cmd = check_with("read-only-question", "git status")
+    fixture_checkout("read-only-question", tmp_path)
+    assert run_here(cmd, tmp_path) == 0
+    (tmp_path / "scratch.txt").write_text("left behind\n")
+    assert run_here(cmd, tmp_path) != 0
+
+
+@pytest.mark.parametrize(
+    ("closing", "passes"),
+    [
+        ("parse_duration returns a timedelta of 90 seconds.", True),
+        ("It returns timedelta(seconds=90).", True),
+        ("The result is a timedelta of 90s.", True),
+        ("It returns 90 seconds.", False),
+        ("It returns a timedelta of 5 minutes.", False),
+        ("", False),
+    ],
+)
+def test_the_read_only_case_passes_only_an_answer_of_90_seconds(
+    tmp_path: Path, closing: str, passes: bool
+) -> None:
+    # The host writes the closing message to /out/closing.txt. The pristine
+    # fixture's idle run writes an empty one, so this check fails there.
+    cmd = check_with("read-only-question", "closing.txt")
+    (tmp_path / "closing.txt").write_text(closing)
+    assert (run_here(cmd, tmp_path, tmp_path) == 0) is passes
+
+
+def bash_call(index: int, command: str, result: str) -> list[dict[str, Any]]:
+    """One bash tool call and its result, as nare's transcript holds them."""
+    call = f"call-{index}"
+    return [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": call,
+                    "name": "bash",
+                    "input": {"command": command},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": call,
+                    "content": result,
+                    "is_error": False,
+                }
+            ],
+        },
+    ]
+
+
+def write_findings(index: int) -> list[dict[str, Any]]:
+    call = f"call-{index}"
+    return [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": call,
+                    "name": "write",
+                    "input": {"path": "findings.json", "content": "[]"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": call,
+                    "content": "wrote findings.json",
+                    "is_error": False,
+                }
+            ],
+        },
+    ]
+
+
+def log_output(n: int) -> str:
+    """What `python log.py N` prints: about 29000 characters, sentinel last."""
+    return f"log {n}: " + "." * 29000 + f"\nSENTINEL_{n}=confirmed\n"
+
+
+def context_session(*turns: list[dict[str, Any]]) -> str:
+    return json.dumps({"messages": [m for turn in turns for m in turn]})
+
+
+def eight_reads() -> list[list[dict[str, Any]]]:
+    return [bash_call(n - 1, f"python log.py {n}", log_output(n)) for n in range(1, 9)]
+
+
+def context_reads_check(tmp_path: Path, session: str) -> int:
+    cmd = check_with("context-overflow", "/out/session.json")
+    (tmp_path / "session.json").write_text(session)
+    return run_here(cmd, tmp_path, tmp_path)
+
+
+def test_the_context_case_passes_eight_separate_reads_then_findings(
+    tmp_path: Path,
+) -> None:
+    session = context_session(*eight_reads(), write_findings(8))
+    assert context_reads_check(tmp_path, session) == 0
+
+
+def test_the_context_case_passes_reads_that_compaction_has_elided(
+    tmp_path: Path,
+) -> None:
+    # nare replaces an old result with a stub that still says its length.
+    stub = (
+        "[elided by nare: 29020 chars of output from turn 2. "
+        "Rerun the tool if you need it.]"
+    )
+    reads = [bash_call(n - 1, f"python log.py {n}", stub) for n in range(1, 9)]
+    assert (
+        context_reads_check(tmp_path, context_session(*reads, write_findings(8))) == 0
+    )
+
+
+def test_the_context_case_fails_a_combined_command(tmp_path: Path) -> None:
+    combined = bash_call(
+        0, "python log.py 1 && python log.py 2", log_output(1) + log_output(2)
+    )
+    reads = [combined] + eight_reads()[2:]
+    assert (
+        context_reads_check(tmp_path, context_session(*reads, write_findings(8))) != 0
+    )
+
+
+def test_the_context_case_fails_a_log_never_read(tmp_path: Path) -> None:
+    reads = [r for n, r in enumerate(eight_reads(), start=1) if n != 5]
+    assert (
+        context_reads_check(tmp_path, context_session(*reads, write_findings(8))) != 0
+    )
+
+
+def test_the_context_case_fails_a_sentinel_that_was_guessed(tmp_path: Path) -> None:
+    # The call for log 3 came back with nothing, so its sentinel was guessed.
+    reads = eight_reads()
+    reads[2] = bash_call(2, "python log.py 3", "")
+    assert (
+        context_reads_check(tmp_path, context_session(*reads, write_findings(8))) != 0
+    )
+
+
+def test_the_context_case_fails_findings_written_before_the_last_read(
+    tmp_path: Path,
+) -> None:
+    reads = eight_reads()
+    session = context_session(
+        *reads[:7], write_findings(100), reads[7], write_findings(8)
+    )
+    assert context_reads_check(tmp_path, session) != 0
+
+
+def test_the_context_case_fails_an_idle_run(tmp_path: Path) -> None:
+    # verify's pristine run: the session nare starts with asks and reads nothing.
+    save(new_session(cases()["context-overflow"].prompt), tmp_path / "session.json")
+    assert context_reads_check(tmp_path, (tmp_path / "session.json").read_text()) != 0

@@ -406,7 +406,7 @@ def bench_root(
         return built.jev
 
     def judge(config: Config) -> FakeJudge:
-        verdicts = "[true, false, true]" if config.judge_model == "opus" else "[true]"
+        verdicts = "[true, false]" if config.judge_model == "opus" else "[true]"
         reasons = ", ".join('"x"' for _ in verdicts.strip("[]").split(","))
         key = config.judge_model or ""
         built.transports[key] = FakeJudge(
@@ -486,9 +486,9 @@ def test_compare_judges_end_to_end(
     assert rows[3]["error"] == "jev returned HTTP 500: upstream down"
     assert rows[6]["cause"] == "no_change"
     assert rows[7]["cause"] == "wrong_change"
-    # The llm judge answered one verdict for three claims: an error, not a zero.
+    # The llm judge answered one verdict for two claims: an error, not a zero.
     assert rows[1]["error"].startswith("judge failed")
-    assert rows[2]["verdicts"] == [True, False, True]
+    assert rows[2]["verdicts"] == [True, False]
     assert set(built.transports) == {"qwen", "opus", "triage:opus"}
 
     summary = (out / "compare-2026-10-09T00-00-00Z.txt").read_text()
@@ -497,7 +497,7 @@ def test_compare_judges_end_to_end(
     assert "skipped, errored before its diff was taken: 1" in summary
     assert "judge errors: jev claims 1, llm claims 2" in summary
     assert "Agreement is with the reference model, not ground truth." in summary
-    assert "jev, P(yes) >= 0.5                 67% (2/3)" in summary
+    assert "jev, P(yes) >= 0.5                 50% (1/2)" in summary
 
 
 def test_a_second_comparison_does_not_overwrite_the_first(
