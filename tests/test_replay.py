@@ -15,6 +15,7 @@ import pytest
 from nare.session import Message, Usage
 from nare.transport import Delta, Reply, ToolCall, Transport, make_transport
 from nare.transport.replay import ReplayTransport, load_script
+from test_summary_compaction import at_trigger, drain
 
 HELLO = [Message("user", [{"type": "text", "text": "hello"}])]
 
@@ -206,3 +207,20 @@ def test_public_api_exports_it() -> None:
     import nare
 
     assert nare.ReplayTransport is ReplayTransport
+
+
+async def test_a_summary_request_takes_the_next_reply() -> None:
+    s = at_trigger()
+    transport = ReplayTransport({"replies": [{"text": "S"}, {"text": "done"}]})
+    await drain(s, transport, compaction="summary")
+    assert s.status == "done"
+    assert s.summaries[0]["summary"] == "S"
+
+
+async def test_a_script_one_reply_short_names_the_request_it_lacks() -> None:
+    s = at_trigger()
+    transport = ReplayTransport({"replies": [{"text": "S"}]})
+    await drain(s, transport, compaction="summary")
+    assert (s.status, s.stop_reason) == ("error", None)
+    assert s.error == "RuntimeError: replay script has no reply for turn 2: it holds 1"
+    assert s.summaries[0]["summary"] == "S"

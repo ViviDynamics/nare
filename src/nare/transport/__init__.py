@@ -208,9 +208,10 @@ class StreamingStructuredTransport(Protocol):
 
 class ToolChoiceTransport(Protocol):
     """A transport that keeps a turn's tools on the wire and can set a tool
-    choice on it. The loop passes `tool_choice="none"` only on a turn-limit
-    summary, which keeps the request's tool set (and so its prefix) the same
-    as the turns before it while forbidding calls.
+    choice on it. The loop passes `tool_choice="none"` on a turn-limit summary
+    and on a compaction summary (`--compaction summary`), each of which keeps
+    the request's tool set, and so its prefix, the same as the turns before it
+    while forbidding calls.
     """
 
     async def turn(

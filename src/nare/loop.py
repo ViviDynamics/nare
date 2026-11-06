@@ -26,7 +26,17 @@ from typing import Any, Literal, cast
 from nare import mcp_defer as deferral
 from nare.accounting import Prices, finite_number, turn_usage
 from nare.caller_tools import Tool, external_tools
-from nare.compact import compact, context_chars, estimate
+from nare.compact import (
+    COMPACTION_MODES,
+    CompactionMode,
+    CompactionReport,
+    SummaryPlan,
+    apply_summary,
+    compact,
+    context_chars,
+    estimate,
+    plan_summary,
+)
 from nare.corrections import (
     SCHEMA_CORRECTIONS_DEFAULT,
     charge,
@@ -39,7 +49,13 @@ from nare.mcp import Server, connect
 from nare.reads import NO_READS, ReadRequirement, cited_unmet, read_record, unmet
 from nare.reads import build as build_reads
 from nare.schema import DuplicateKeyError, SchemaError, extract_json, validate
-from nare.session import Message, Session, append_user_text, drop_signed_thinking
+from nare.session import (
+    Message,
+    Session,
+    Usage,
+    append_user_text,
+    drop_signed_thinking,
+)
 from nare.tools import (
     READ_ONLY_TOOLS,
     Approve,
@@ -270,6 +286,13 @@ def check_max_cutoffs(value: int | None) -> None:
         isinstance(value, bool) or not isinstance(value, int) or value < 0
     ):
         raise ValueError("max_cutoffs must be a nonnegative integer")
+
+
+def check_compaction(value: object) -> None:
+    if value not in COMPACTION_MODES:
+        raise ValueError(
+            f"compaction must be one of {', '.join(COMPACTION_MODES)}, not {value!r}"
+        )
 
 
 # An ask beside other calls is not a question about the request: the turn has
@@ -747,6 +770,87 @@ def _hold_for_reads(
     return True
 
 
+# The `cost` event's `detail.call` for a request that is not a turn.
+SUMMARY_CALL = "compaction_summary"
+
+
+def _cost_event(usage: Usage, call: str | None = None) -> Event:
+    """One request's cost. `call` names a request that is not a turn."""
+    detail = usage.wire()
+    if call is not None:
+        detail["call"] = call
+    return Event(
+        "cost",
+        f"{usage.input} in / {usage.output} out, "
+        + (f"${usage.cost:.6f}" if usage.cost is not None else "cost unknown")
+        + (" (estimate)" if usage.estimated else ""),
+        detail,
+    )
+
+
+def _compaction_text(report: CompactionReport) -> str:
+    """The compaction event's text. A summary that was not applied leaves an
+    elision, whose text is the one `elide` mode writes."""
+    if report.summarized:
+        done = f"summarized {report.summarized} turns"
+    else:
+        done = f"elided {report.elided} tool results" + (
+            f" and {report.inputs} tool inputs" if report.inputs else ""
+        )
+    return (
+        f"compacted: {done}"
+        + (f", dropped {report.thinking} thinking blocks" if report.thinking else "")
+        + f", ~{report.before:.0f} -> ~{report.after:.0f} tokens"
+    )
+
+
+async def _summarize(
+    s: Session,
+    transport: Transport,
+    policy: Policy,
+    plan: SummaryPlan,
+    *,
+    window: int,
+    prices: Prices | None,
+    retry: RetryPolicy,
+    on_event: Callable[[Event], None] | None,
+) -> tuple[CompactionReport | None, bool]:
+    """Ask the model for the summary `plan` describes, and apply it.
+
+    Returns the report when the summary was applied, and whether a reply was
+    accounted. The request is not a turn: it counts in `usage` and `retries`,
+    and the transcript changes only through `apply_summary`. It is never
+    streamed, so no delta of it reaches the caller.
+    """
+    request = (
+        plan.request
+        if policy.image_input
+        else _without_images(plan.request, policy.image_model)
+    )
+    offered = policy.schemas()
+
+    async def attempt() -> Reply:
+        # As the turn-limit summary does: the turn's tools stay on the wire, so
+        # the prefix the signed thinking binds to is the one it was made
+        # against, and tool_choice none forbids calls. A run that offers no
+        # tools sends its ordinary request.
+        if offered:
+            return await cast(ToolChoiceTransport, transport).turn(
+                request, offered, tool_choice="none"
+            )
+        return await transport.turn(request, offered)
+
+    reply = await _with_retries(s, transport, attempt, retry, on_event)
+    usage = turn_usage(reply, prices)
+    s.usage += usage
+    s.events.append(_cost_event(usage, SUMMARY_CALL))
+    text = _final_text(reply.content).strip()
+    report = None
+    if not reply.tool_calls and reply.stop_reason not in CUTOFF_REASONS and text:
+        report = apply_summary(s, plan, text, window, image_input=policy.image_input)
+    return report, True
+
+
 async def step(
     s: Session,
     transport: Transport,
@@ -767,6 +871,7 @@ async def step(
     tools: Sequence[Tool] = (),
     summary: bool = False,
     question_nudge: bool = False,
+    compaction: CompactionMode = "elide",
 ) -> Session:
     if tools:
         # The allowlist is the policy's, as for built-ins: a registered tool is
@@ -776,21 +881,38 @@ async def step(
             policy,
             external={**policy.external, **external_tools(tools)},
         )
-    report = compact(s, context_window, image_input=policy.image_input)
-    if report is not None:
-        s.events.append(
-            Event(
-                "progress",
-                f"compacted: elided {report.elided} tool results"
-                + (f" and {report.inputs} tool inputs" if report.inputs else "")
-                + (
-                    f", dropped {report.thinking} thinking blocks"
-                    if report.thinking
-                    else ""
-                )
-                + f", ~{report.before:.0f} -> ~{report.after:.0f} tokens",
-                {"compaction": asdict(report)},
+    report: CompactionReport | None = None
+    # Not on the turn-limit summary: the run ends after that call, and a
+    # resume compacts on its first step anyway.
+    if compaction == "summary" and not summary:
+        cap = getattr(transport, "max_tokens", None)
+        plan = plan_summary(
+            s,
+            context_window,
+            image_input=policy.image_input,
+            output_cap=(
+                cap
+                if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0
+                else None
+            ),
+        )
+        if plan is not None:
+            report, _ = await _summarize(
+                s,
+                transport,
+                policy,
+                plan,
+                window=context_window,
+                prices=prices,
+                retry=retry,
+                on_event=on_event,
             )
+    if report is None:
+        report = compact(s, context_window, image_input=policy.image_input)
+    if report is not None:
+        report = replace(report, mode=compaction)
+        s.events.append(
+            Event("progress", _compaction_text(report), {"compaction": asdict(report)})
         )
     size = estimate(s, image_input=policy.image_input)
     if size >= context_window:
@@ -917,15 +1039,7 @@ async def step(
             s.events.append(Event("progress", block.get("text", "")))
         elif block.get("type") == "thinking":
             s.events.append(Event("thinking", block.get("thinking", "")))
-    s.events.append(
-        Event(
-            "cost",
-            f"{usage.input} in / {usage.output} out, "
-            + (f"${usage.cost:.6f}" if usage.cost is not None else "cost unknown")
-            + (" (estimate)" if usage.estimated else ""),
-            usage.wire(),
-        )
-    )
+    s.events.append(_cost_event(usage))
 
     # A tool turn can carry already valid findings alongside its calls. Keep
     # the latest schema-valid document without claiming the task completed.
@@ -1204,6 +1318,7 @@ async def _live_step(
     check: Check | None = None,
     summary: bool = False,
     question_nudge: bool = False,
+    compaction: CompactionMode = "elide",
 ) -> AsyncGenerator[Event, None]:
     queue: asyncio.Queue[Event] = asyncio.Queue()
     buffers: dict[Literal["progress", "thinking"], LiveText] = {
@@ -1248,6 +1363,7 @@ async def _live_step(
             check=check,
             summary=summary,
             question_nudge=question_nudge,
+            compaction=compaction,
         )
     )
     waiter: asyncio.Task[Event] | None = None
@@ -1303,6 +1419,7 @@ async def _run(
     check: Check | None = None,
     inbox: Callable[[], list[str]] | None = None,
     question_nudge: bool = False,
+    compaction: CompactionMode = "elide",
 ) -> AsyncGenerator[Event, None]:
     """Advance the session to a terminal status, yielding events as they occur.
 
@@ -1470,6 +1587,7 @@ async def _run(
                             check=check,
                             summary=summary,
                             question_nudge=question_nudge,
+                            compaction=compaction,
                         )
                     ) as stream:
                         async for event in stream:
@@ -1492,6 +1610,7 @@ async def _run(
                         check=check,
                         summary=summary,
                         question_nudge=question_nudge,
+                        compaction=compaction,
                     )
                 if session.status not in ("done", "blocked"):
                     check_budget(session)
@@ -1557,6 +1676,7 @@ async def run(
     inbox: Callable[[], list[str]] | None = None,
     tools: Sequence[Tool] = (),
     question_nudge: bool = False,
+    compaction: CompactionMode = "elide",
 ) -> AsyncGenerator[Event, None]:
     check_structured_output(transport, schema, structured_output)
     # Refused before any call: a bad registration is the caller's error, not a
@@ -1575,6 +1695,7 @@ async def run(
     check_max_tool_calls(max_tool_calls)
     check_max_corrections(max_corrections)
     check_max_cutoffs(max_cutoffs)
+    check_compaction(compaction)
     # No policy: read-only tools, whatever approver is passed. Only an explicit
     # policy enables write, edit or bash; the approver gates what it allows.
     base = Policy(tools=READ_ONLY_TOOLS) if policy is None else policy
@@ -1639,6 +1760,7 @@ async def run(
                     check=check,
                     inbox=inbox,
                     question_nudge=question_nudge,
+                    compaction=compaction,
                 )
             ) as stream:
                 async for event in stream:
