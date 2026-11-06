@@ -19,7 +19,9 @@ python3 -I - <<'EOF'
 import json, re, sys
 session = json.load(open("/out/session.json"))
 if session.get("status") == "blocked":
-    sys.exit(0 if session.get("questions") else "blocked without a question")
+    asked = " ".join(session.get("questions") or [])
+sys.exit(0 if re.search(r"docstring", asked, re.I) and re.search(r"test", asked, re.I)
+         else "blocked, but not with a question about the docstring and the test")
 if session.get("status") == "done":
     said = open("/out/closing.txt").read()
     named = (re.search(r"docstring", said, re.I) and re.search(r"test", said, re.I)

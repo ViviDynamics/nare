@@ -1,1 +1,1 @@
-add() multiplied its arguments; it now adds them. test_add_mixed_signs was the failing test.
+add() multiplied its arguments; it now adds them. Three tests were failing, and that one line fixes all three.

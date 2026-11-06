@@ -17,9 +17,20 @@ cmd = '''
 python3 -I - <<'EOF'
 import json, sys
 s = json.load(open("/out/session.json"))
-calls = [b for m in s.get("messages", []) for b in m.get("content", [])
-         if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "fanout__report"]
-sys.exit(0 if any((b.get("input") or {}).get("name") == "q3" for b in calls) else "the q3 report was never fetched")
+msgs = s.get("messages", [])
+results = {b.get("tool_use_id"): b for m in msgs for b in m.get("content", [])
+           if isinstance(b, dict) and b.get("type") == "tool_result"}
+for m in msgs:
+    for b in m.get("content", []):
+        if not (isinstance(b, dict) and b.get("type") == "tool_use"
+                and b.get("name") == "fanout__report"
+                and (b.get("input") or {}).get("name") == "q3"):
+            continue
+        r = results.get(b.get("id"), {})
+        text = str(r.get("content", ""))
+        if not r.get("is_error") and ("ANSWER=" in text or "elided by nare" in text):
+            sys.exit(0)
+sys.exit("the q3 report was never fetched successfully")
 EOF
 '''
 

@@ -84,6 +84,11 @@ sys.exit("; ".join(problems) or 0)
 EOF
 '''
 
+# The task is the same as the other context case: log.py must be left as it is.
+[[check]]
+kind = "bash"
+cmd = '''git diff --quiet "$(git rev-list --max-parents=0 HEAD)" -- log.py'''
+
 [[check]]
 kind = "result"
 status = "done"

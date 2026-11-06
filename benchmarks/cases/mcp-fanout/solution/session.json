@@ -19,7 +19,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-0",
-          "content": "5",
+          "content": "5\n{\"result\": \"5\"}",
           "is_error": false
         }
       ]
@@ -43,7 +43,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-1",
-          "content": "18",
+          "content": "18\n{\"result\": \"18\"}",
           "is_error": false
         }
       ]
@@ -67,7 +67,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-2",
-          "content": "31",
+          "content": "31\n{\"result\": \"31\"}",
           "is_error": false
         }
       ]
@@ -91,7 +91,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-3",
-          "content": "44",
+          "content": "44\n{\"result\": \"44\"}",
           "is_error": false
         }
       ]
@@ -115,7 +115,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-4",
-          "content": "57",
+          "content": "57\n{\"result\": \"57\"}",
           "is_error": false
         }
       ]
@@ -139,7 +139,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-5",
-          "content": "70",
+          "content": "70\n{\"result\": \"70\"}",
           "is_error": false
         }
       ]
@@ -163,7 +163,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-6",
-          "content": "83",
+          "content": "83\n{\"result\": \"83\"}",
           "is_error": false
         }
       ]
@@ -187,7 +187,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-7",
-          "content": "96",
+          "content": "96\n{\"result\": \"96\"}",
           "is_error": false
         }
       ]
@@ -211,7 +211,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-8",
-          "content": "12",
+          "content": "12\n{\"result\": \"12\"}",
           "is_error": false
         }
       ]
@@ -235,7 +235,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-9",
-          "content": "25",
+          "content": "25\n{\"result\": \"25\"}",
           "is_error": false
         }
       ]
@@ -259,7 +259,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-10",
-          "content": "38",
+          "content": "38\n{\"result\": \"38\"}",
           "is_error": false
         }
       ]
@@ -283,7 +283,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-11",
-          "content": "51",
+          "content": "51\n{\"result\": \"51\"}",
           "is_error": false
         }
       ]
@@ -307,7 +307,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-12",
-          "content": "64",
+          "content": "64\n{\"result\": \"64\"}",
           "is_error": false
         }
       ]
@@ -331,7 +331,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-13",
-          "content": "77",
+          "content": "77\n{\"result\": \"77\"}",
           "is_error": false
         }
       ]
@@ -355,7 +355,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-14",
-          "content": "90",
+          "content": "90\n{\"result\": \"90\"}",
           "is_error": false
         }
       ]
@@ -379,7 +379,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-15",
-          "content": "6",
+          "content": "6\n{\"result\": \"6\"}",
           "is_error": false
         }
       ]
@@ -403,7 +403,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-16",
-          "content": "19",
+          "content": "19\n{\"result\": \"19\"}",
           "is_error": false
         }
       ]
@@ -427,7 +427,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-17",
-          "content": "32",
+          "content": "32\n{\"result\": \"32\"}",
           "is_error": false
         }
       ]
@@ -451,7 +451,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-18",
-          "content": "45",
+          "content": "45\n{\"result\": \"45\"}",
           "is_error": false
         }
       ]
@@ -475,7 +475,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-19",
-          "content": "58",
+          "content": "58\n{\"result\": \"58\"}",
           "is_error": false
         }
       ]
@@ -499,7 +499,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-20",
-          "content": "71",
+          "content": "71\n{\"result\": \"71\"}",
           "is_error": false
         }
       ]
@@ -523,7 +523,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-21",
-          "content": "84",
+          "content": "84\n{\"result\": \"84\"}",
           "is_error": false
         }
       ]
@@ -547,7 +547,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-22",
-          "content": "0",
+          "content": "0\n{\"result\": \"0\"}",
           "is_error": false
         }
       ]
@@ -571,7 +571,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-23",
-          "content": "13",
+          "content": "13\n{\"result\": \"13\"}",
           "is_error": false
         }
       ]
@@ -595,7 +595,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-24",
-          "content": "26",
+          "content": "26\n{\"result\": \"26\"}",
           "is_error": false
         }
       ]
@@ -619,7 +619,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-25",
-          "content": "39",
+          "content": "39\n{\"result\": \"39\"}",
           "is_error": false
         }
       ]
@@ -643,7 +643,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-26",
-          "content": "52",
+          "content": "52\n{\"result\": \"52\"}",
           "is_error": false
         }
       ]
@@ -667,7 +667,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-27",
-          "content": "65",
+          "content": "65\n{\"result\": \"65\"}",
           "is_error": false
         }
       ]
@@ -691,7 +691,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-28",
-          "content": "78",
+          "content": "78\n{\"result\": \"78\"}",
           "is_error": false
         }
       ]
@@ -715,7 +715,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-29",
-          "content": "91",
+          "content": "91\n{\"result\": \"91\"}",
           "is_error": false
         }
       ]
@@ -739,7 +739,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-30",
-          "content": "7",
+          "content": "7\n{\"result\": \"7\"}",
           "is_error": false
         }
       ]
@@ -763,7 +763,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-31",
-          "content": "20",
+          "content": "20\n{\"result\": \"20\"}",
           "is_error": false
         }
       ]
@@ -787,7 +787,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-32",
-          "content": "33",
+          "content": "33\n{\"result\": \"33\"}",
           "is_error": false
         }
       ]
@@ -811,7 +811,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-33",
-          "content": "46",
+          "content": "46\n{\"result\": \"46\"}",
           "is_error": false
         }
       ]
@@ -835,7 +835,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-34",
-          "content": "59",
+          "content": "59\n{\"result\": \"59\"}",
           "is_error": false
         }
       ]
@@ -859,7 +859,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-35",
-          "content": "72",
+          "content": "72\n{\"result\": \"72\"}",
           "is_error": false
         }
       ]
@@ -883,7 +883,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-36",
-          "content": "85",
+          "content": "85\n{\"result\": \"85\"}",
           "is_error": false
         }
       ]
@@ -907,7 +907,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-37",
-          "content": "1",
+          "content": "1\n{\"result\": \"1\"}",
           "is_error": false
         }
       ]
@@ -931,7 +931,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-38",
-          "content": "14",
+          "content": "14\n{\"result\": \"14\"}",
           "is_error": false
         }
       ]
@@ -955,7 +955,7 @@
         {
           "type": "tool_result",
           "tool_use_id": "call-39",
-          "content": "27",
+          "content": "27\n{\"result\": \"27\"}",
           "is_error": false
         }
       ]
