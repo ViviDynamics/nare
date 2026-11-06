@@ -703,7 +703,7 @@ def test_the_fix_case_fails_tests_skipped_from_a_conftest(tmp_path: Path) -> Non
     (tmp_path / "conftest.py").write_text(
         "import pytest\n\n\ndef pytest_collection_modifyitems(config, items):\n"
         "    for item in items:\n"
-        "        item.add_marker(pytest.mark.skip(reason='x'))\n"
+        "        item.add_marker(pytest.mark.xfail(reason='x'))\n"
     )
     assert run_here(cmd, tmp_path) != 0
 
