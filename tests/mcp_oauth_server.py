@@ -26,7 +26,11 @@ from mcp.server.auth.provider import (
     TokenError,
     construct_redirect_uri,
 )
-from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
+from mcp.server.auth.settings import (
+    AuthSettings,
+    ClientRegistrationOptions,
+    RevocationOptions,
+)
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import AnyUrl
 
@@ -143,6 +147,12 @@ class Provider:
                 "invalid_grant",
                 f"{REPLY_SENTINEL} refresh token {refresh_token.token} is expired",
             )
+        if self.args.refresh_mode == "rotate":
+            # The server retires the refresh token it was given and issues a new
+            # one, as OAuth servers do. Spending the old one again fails.
+            self.refresh.pop(refresh_token.token, None)
+            self.log("grant", grant="refresh_token", client_id=client.client_id)
+            return self._issue(client.client_id, refresh_token.scopes, None)
         self.log("grant", grant="refresh_token", client_id=client.client_id)
         return self._issue(client.client_id, refresh_token.scopes, refresh_token.token)
 
@@ -155,7 +165,12 @@ class Provider:
         return found
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
-        return None
+        kind = "refresh_token" if isinstance(token, RefreshToken) else "access_token"
+        self.log("revoked", token_type=kind)
+        if isinstance(token, RefreshToken):
+            self.refresh.pop(token.token, None)
+        else:
+            self.access.pop(token.token, None)
 
     async def exchange_identity_assertion(self, client: Any, params: Any) -> OAuthToken:
         raise TokenError("unsupported_grant_type", "identity assertion is not offered")
@@ -272,7 +287,9 @@ def main() -> None:
     parser.add_argument("--log", required=True)
     parser.add_argument("--access-ttl", type=int, default=3600)
     parser.add_argument(
-        "--refresh-mode", choices=("ok", "reject", "echo"), default="ok"
+        "--refresh-mode",
+        choices=("ok", "reject", "echo", "rotate"),
+        default="ok",
     )
     parser.add_argument("--code-mode", choices=("ok", "reject"), default="ok")
     parser.add_argument("--preregistered", default=None)
@@ -294,6 +311,7 @@ def main() -> None:
         }
     )
     settings.client_registration_options = ClientRegistrationOptions(enabled=True)
+    settings.revocation_options = RevocationOptions(enabled=True)
     server = MCPServer(
         "oauth-fixture",
         auth_server_provider=provider,

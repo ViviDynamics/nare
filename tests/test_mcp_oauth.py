@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fcntl
 import json
 import logging
+import os
 import secrets
 import socket
 import stat
@@ -20,6 +22,7 @@ import threading
 import time
 import traceback
 from collections.abc import Callable, Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
@@ -962,3 +965,584 @@ def test_forged_loopback_delivery_does_not_abort_the_login(
 
     assert login("remote", server, present=present) == ["remote__echo"]
     assert stored(home)["tokens"]["access_token"]
+
+
+# -- logout, revocation, and the token lock ------------------------------------
+
+
+class Recorder:
+    """A loopback HTTP server that records every POST and answers with a fixed
+    status. It stands in for an authorization server's revocation endpoint."""
+
+    def __init__(self, status: int, body: bytes = b"") -> None:
+        self.posts: list[tuple[str, dict[str, list[str]]]] = []
+        recorder = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0"))
+                form = parse_qs(self.rfile.read(length).decode())
+                recorder.posts.append((self.path, form))
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_: object) -> None:
+                return
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+@pytest.fixture
+def recorder() -> Iterator[Callable[..., Recorder]]:
+    made: list[Recorder] = []
+
+    def make(status: int = 200, body: bytes = b"") -> Recorder:
+        rec = Recorder(status, body)
+        made.append(rec)
+        return rec
+
+    yield make
+    for rec in made:
+        rec.close()
+
+
+def write_record(
+    home: Path, alias: str, server_url: str, revocation_endpoint: str | None
+) -> Path:
+    """A token file as a login would leave it, written by hand so the test
+    controls the advertised revocation endpoint."""
+    path = token_file(home, alias)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    metadata: dict[str, Any] = {
+        "issuer": server_url,
+        "authorization_endpoint": f"{server_url}/authorize",
+        "token_endpoint": f"{server_url}/token",
+    }
+    if revocation_endpoint is not None:
+        metadata["revocation_endpoint"] = revocation_endpoint
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "server": server_url,
+                "tokens": {
+                    "access_token": "ACCESS-VALUE",
+                    "token_type": "Bearer",
+                    "refresh_token": "REFRESH-VALUE",
+                },
+                "expires_at": None,
+                "metadata": metadata,
+                "client": {"client_id": "registered-client"},
+            }
+        )
+    )
+    path.chmod(0o600)
+    return path
+
+
+def test_logout_revokes_then_the_next_run_asks_for_login(
+    tmp_path: Path,
+    home: Path,
+    start: Callable[..., Fake],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake = start()
+    config = write_config(
+        tmp_path, {"remote": {"url": f"{fake.url}/mcp", "timeout": 5, "auth": {}}}
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+    assert login("remote", server) == ["remote__echo"]
+    refresh = stored(home)["tokens"]["refresh_token"]
+
+    code = main(["mcp", "logout", "remote", "--mcp-config", str(config)])
+    err = capsys.readouterr().err
+    assert code == 0, err
+    assert not token_file(home).exists()
+    assert "revoked at the server" in err
+    revoked = [e for e in fake.events() if e["event"] == "revoked"]
+    assert sorted(e["token_type"] for e in revoked) == [
+        "access_token",
+        "refresh_token",
+    ]
+    assert refresh not in err
+
+    model = MCPModel("remote__echo")
+    code, out, _ = run_with(config, model, capsys)
+    assert code == 1
+    assert model.calls == 0
+    result = json.loads(out.splitlines()[-1])
+    assert result["stop_reason"] == "mcp"
+    assert "nare mcp login remote" in result["error"]
+
+
+def test_logout_without_config_deletes_the_file_and_revokes_nothing(
+    tmp_path: Path,
+    home: Path,
+    start: Callable[..., Fake],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake = start()
+    config = write_config(
+        tmp_path, {"remote": {"url": f"{fake.url}/mcp", "timeout": 5, "auth": {}}}
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+    login("remote", server)
+
+    assert main(["mcp", "logout", "remote"]) == 0
+    assert not token_file(home).exists()
+    assert "not revoked" in capsys.readouterr().err
+    assert not [e for e in fake.events() if e["event"] == "revoked"]
+
+
+def test_logout_with_nothing_stored_is_a_clean_no_op(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["mcp", "logout", "remote"]) == 0
+    assert "no stored authorization for remote" in capsys.readouterr().err
+
+
+def test_revocation_goes_to_the_pinned_authorization_server(
+    tmp_path: Path, home: Path, recorder: Callable[..., Recorder]
+) -> None:
+    pinned = recorder(200)
+    mcp_host = recorder(200)
+    write_record(
+        home,
+        "remote",
+        f"{mcp_host.url}/mcp",
+        revocation_endpoint=f"{pinned.url}/revoke",
+    )
+    config = write_config(
+        tmp_path,
+        {
+            "remote": {
+                "url": f"{mcp_host.url}/mcp",
+                "timeout": 5,
+                "auth": {"authorization_server": pinned.url, "client_id": "pinned"},
+            }
+        },
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+
+    message = asyncio.run(mcp_auth.logout("remote", server))
+
+    assert "revoked at the server" in message
+    assert [path for path, _ in pinned.posts] == ["/revoke", "/revoke"]
+    assert mcp_host.posts == []
+    refresh_form = pinned.posts[0][1]
+    assert refresh_form["token"] == ["REFRESH-VALUE"]
+    assert refresh_form["token_type_hint"] == ["refresh_token"]
+    assert refresh_form["client_id"] == ["pinned"]
+    assert not token_file(home).exists()
+
+
+def test_revocation_outside_the_authorization_server_is_never_sent(
+    tmp_path: Path, home: Path, recorder: Callable[..., Recorder]
+) -> None:
+    """The advertised endpoint names a third origin. Nothing is sent to it,
+    the tokens are still removed, and the failure is said plainly."""
+    mcp_host = recorder(200)
+    elsewhere = recorder(200)
+    write_record(
+        home,
+        "remote",
+        f"{mcp_host.url}/mcp",
+        revocation_endpoint=f"{elsewhere.url}/revoke",
+    )
+    config = write_config(
+        tmp_path, {"remote": {"url": f"{mcp_host.url}/mcp", "timeout": 5, "auth": {}}}
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+
+    with pytest.raises(mcp_auth.McpAuthError) as caught:
+        asyncio.run(mcp_auth.logout("remote", server))
+
+    assert elsewhere.posts == [] and mcp_host.posts == []
+    assert "revocation was not sent" in str(caught.value)
+    assert "stored tokens were removed" in str(caught.value)
+    assert not token_file(home).exists()
+
+
+def test_revocation_plain_http_off_loopback_is_never_sent(
+    tmp_path: Path, home: Path
+) -> None:
+    write_record(
+        home,
+        "remote",
+        "https://mcp.example.test/mcp",
+        revocation_endpoint="http://revoke.example.test/revoke",
+    )
+    config = write_config(
+        tmp_path,
+        {
+            "remote": {
+                "url": "https://mcp.example.test/mcp",
+                "timeout": 5,
+                "auth": {},
+            }
+        },
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+
+    with pytest.raises(mcp_auth.McpAuthError, match="https"):
+        asyncio.run(mcp_auth.logout("remote", server))
+    assert not token_file(home).exists()
+
+
+def test_revocation_failure_text_is_fixed_and_hides_the_reply(
+    tmp_path: Path, home: Path, recorder: Callable[..., Recorder]
+) -> None:
+    host = recorder(500, b"SENTINEL-REPLY-7731 token REFRESH-VALUE is retired")
+    write_record(
+        home, "remote", f"{host.url}/mcp", revocation_endpoint=f"{host.url}/revoke"
+    )
+    config = write_config(
+        tmp_path, {"remote": {"url": f"{host.url}/mcp", "timeout": 5, "auth": {}}}
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+
+    with pytest.raises(mcp_auth.McpAuthError) as caught:
+        asyncio.run(mcp_auth.logout("remote", server))
+    text = str(caught.value)
+    assert "HTTP 500" in text
+    assert "SENTINEL" not in text and "REFRESH-VALUE" not in text
+    assert not token_file(home).exists()
+
+
+def test_server_without_a_revocation_endpoint_is_said_so(
+    tmp_path: Path, home: Path, recorder: Callable[..., Recorder]
+) -> None:
+    host = recorder(200)
+    write_record(home, "remote", f"{host.url}/mcp", revocation_endpoint=None)
+    config = write_config(
+        tmp_path, {"remote": {"url": f"{host.url}/mcp", "timeout": 5, "auth": {}}}
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+
+    message = asyncio.run(mcp_auth.logout("remote", server))
+    assert "advertises no revocation endpoint" in message
+    assert host.posts == []
+
+
+def test_logout_waits_for_the_token_lock_and_keeps_the_file_on_timeout(
+    tmp_path: Path,
+    home: Path,
+    recorder: Callable[..., Recorder],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host = recorder(200)
+    path = write_record(
+        home, "remote", f"{host.url}/mcp", revocation_endpoint=f"{host.url}/revoke"
+    )
+    config = write_config(
+        tmp_path, {"remote": {"url": f"{host.url}/mcp", "timeout": 5, "auth": {}}}
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+    monkeypatch.setattr(mcp_auth, "_LOCK_WAIT", 0.2)
+
+    holder = os.open(path.parent / "remote.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(holder, fcntl.LOCK_EX)
+    try:
+        with pytest.raises(mcp_auth.McpAuthError, match="another nare process"):
+            asyncio.run(mcp_auth.logout("remote", server))
+    finally:
+        fcntl.flock(holder, fcntl.LOCK_UN)
+        os.close(holder)
+    assert path.exists()
+    assert host.posts == []
+
+
+def test_leftover_tmp_file_is_removed_on_the_next_save(home: Path) -> None:
+    folder = home / "mcp-auth"
+    folder.mkdir(mode=0o700, parents=True)
+    old = folder / ".mcp-crashed.tmp"
+    old.write_text("{}")
+    two_hours = time.time() - 7200
+    os.utime(old, (two_hours, two_hours))
+    recent = folder / ".mcp-inflight.tmp"
+    recent.write_text("{}")
+
+    tokens = mcp_auth.TokenFile(
+        token_file(home),
+        "https://mcp.example.test/mcp",
+        mcp_auth.OAuthSettings(),
+        None,
+        "http://127.0.0.1/callback",
+        fresh=True,
+    )
+    tokens.reset()
+
+    assert not old.exists()
+    assert recent.exists(), "a recent tmp file may be another process's save"
+
+
+def test_refresh_uses_the_rotated_token_another_process_stored(
+    tmp_path: Path,
+    home: Path,
+    start: Callable[..., Fake],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Process B loads its tokens, then process A refreshes and the server
+    rotates the refresh token. B must not spend the retired token: it reads the
+    file under the lock and carries on with what A stored."""
+    fake = start(refresh_mode="rotate", access_ttl=3600)
+    config = write_config(
+        tmp_path, {"remote": {"url": f"{fake.url}/mcp", "timeout": 5, "auth": {}}}
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+    login("remote", server)
+    original = stored(home)["tokens"]["refresh_token"]
+
+    async def scenario() -> tuple[str, str]:
+        request = httpx2.Request("POST", f"{fake.url}/mcp", json={})
+        b = mcp_auth.build_provider(
+            "remote", f"{fake.url}/mcp", mcp_auth.OAuthSettings(), None
+        )
+        await b._initialize()
+        b.context.token_expiry_time = time.time() - 1
+        a = mcp_auth.build_provider(
+            "remote", f"{fake.url}/mcp", mcp_auth.OAuthSettings(), None
+        )
+        await a._initialize()
+        a.context.token_expiry_time = time.time() - 1
+        flow = a._auth_flow(request)
+        outgoing = await flow.__anext__()
+        async with httpx2.AsyncClient(trust_env=False) as client:
+            while mcp_auth._refresh_token_sent(outgoing) is not None:
+                outgoing = await flow.asend(await client.send(outgoing))
+        await flow.aclose()
+        assert stored(home)["tokens"]["refresh_token"] != original
+
+        # B now refreshes from its stale state.
+        flow_b = b._auth_flow(request)
+        first = await flow_b.__anext__()
+        assert mcp_auth._refresh_token_sent(first) is None, "B spent a retired token"
+        await flow_b.aclose()
+        return first.headers["authorization"], stored(home)["tokens"]["access_token"]
+
+    header, current = asyncio.run(scenario())
+    assert header == f"Bearer {current}"
+    grants = [e for e in fake.events() if e["event"] == "grant"]
+    assert [g["grant"] for g in grants] == ["authorization_code", "refresh_token"]
+
+
+def test_refresh_after_logout_does_not_resurrect_the_session(
+    tmp_path: Path,
+    home: Path,
+    start: Callable[..., Fake],
+) -> None:
+    fake = start(refresh_mode="rotate", access_ttl=3600)
+    config = write_config(
+        tmp_path, {"remote": {"url": f"{fake.url}/mcp", "timeout": 5, "auth": {}}}
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+    login("remote", server)
+
+    async def scenario() -> None:
+        request = httpx2.Request("POST", f"{fake.url}/mcp", json={})
+        b = mcp_auth.build_provider(
+            "remote", f"{fake.url}/mcp", mcp_auth.OAuthSettings(), None
+        )
+        await b._initialize()
+        b.context.token_expiry_time = time.time() - 1
+        await mcp_auth.logout("remote", server)
+        flow = b._auth_flow(request)
+        with pytest.raises(mcp_auth.McpAuthError, match="needs authorization again"):
+            await flow.__anext__()
+
+    asyncio.run(scenario())
+    assert not token_file(home).exists()
+    assert [e["grant"] for e in fake.events() if e["event"] == "grant"] == [
+        "authorization_code"
+    ]
+
+
+def test_two_processes_refreshing_at_once_both_end_with_a_valid_token(
+    tmp_path: Path,
+    home: Path,
+    start: Callable[..., Fake],
+) -> None:
+    """Two refreshes race against a server that rotates refresh tokens. The
+    lock serialises them: one spends the token, the other reads the rotated
+    one. Neither fails, and the server sees one refresh."""
+    fake = start(refresh_mode="rotate", access_ttl=3600)
+    config = write_config(
+        tmp_path, {"remote": {"url": f"{fake.url}/mcp", "timeout": 5, "auth": {}}}
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+    login("remote", server)
+    url = f"{fake.url}/mcp"
+    barrier = threading.Barrier(2)
+    errors: list[BaseException] = []
+    headers: list[str] = []
+
+    async def one() -> None:
+        request = httpx2.Request("POST", url, json={})
+        provider = mcp_auth.build_provider(
+            "remote", url, mcp_auth.OAuthSettings(), None
+        )
+        await provider._initialize()
+        provider.context.token_expiry_time = time.time() - 1
+        flow = provider._auth_flow(request)
+        outgoing = await flow.__anext__()
+        async with httpx2.AsyncClient(trust_env=False) as client:
+            while mcp_auth._refresh_token_sent(outgoing) is not None:
+                outgoing = await flow.asend(await client.send(outgoing))
+        headers.append(outgoing.headers["authorization"])
+        await flow.aclose()
+
+    def worker() -> None:
+        try:
+            barrier.wait(10)
+            asyncio.run(one())
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(60)
+
+    assert errors == []
+    current = stored(home)["tokens"]["access_token"]
+    assert headers == [f"Bearer {current}"] * 2
+    refreshes = [
+        e
+        for e in fake.events()
+        if e["event"] == "grant" and e["grant"] == "refresh_token"
+    ]
+    assert len(refreshes) == 1
+
+
+def test_revocation_sends_both_stored_tokens(
+    tmp_path: Path, home: Path, recorder: Callable[..., Recorder]
+) -> None:
+    """A server need not revoke the access token when the refresh token is
+    revoked, so both are sent."""
+    host = recorder(200)
+    write_record(
+        home, "remote", f"{host.url}/mcp", revocation_endpoint=f"{host.url}/revoke"
+    )
+    config = write_config(
+        tmp_path, {"remote": {"url": f"{host.url}/mcp", "timeout": 5, "auth": {}}}
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+
+    asyncio.run(mcp_auth.logout("remote", server))
+
+    sent = sorted(form["token_type_hint"][0] for _, form in host.posts)
+    assert sent == ["access_token", "refresh_token"]
+    values = {form["token"][0] for _, form in host.posts}
+    assert values == {"ACCESS-VALUE", "REFRESH-VALUE"}
+
+
+def test_malformed_revocation_endpoint_is_a_fixed_failure(
+    tmp_path: Path, home: Path, recorder: Callable[..., Recorder]
+) -> None:
+    host = recorder(200)
+    write_record(
+        home,
+        "remote",
+        f"{host.url}/mcp",
+        revocation_endpoint="https://revoke.example.test:99999/revoke",
+    )
+    config = write_config(
+        tmp_path, {"remote": {"url": f"{host.url}/mcp", "timeout": 5, "auth": {}}}
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+
+    with pytest.raises(mcp_auth.McpAuthError) as caught:
+        asyncio.run(mcp_auth.logout("remote", server))
+    assert "not a valid URL" in str(caught.value)
+    assert not token_file(home).exists()
+
+
+def test_logout_refuses_an_alias_that_is_not_a_server_name(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The alias names a file under NARE_HOME. A traversal name must not reach
+    a file outside the token folder."""
+    victim = home / "victim.json"
+    victim.parent.mkdir(parents=True, exist_ok=True)
+    victim.write_text("{}")
+
+    assert main(["mcp", "logout", "../victim"]) == 1
+    assert victim.exists()
+    assert "not a valid server name" in capsys.readouterr().err
+
+
+def test_metadata_discovered_later_does_not_restore_retired_tokens(
+    tmp_path: Path,
+    home: Path,
+    start: Callable[..., Fake],
+) -> None:
+    """Process B holds tokens from before process A refreshed. When B later
+    learns new authorization server metadata, saving it must not write B's
+    retired refresh token back over A's."""
+    fake = start(refresh_mode="rotate", access_ttl=3600)
+    config = write_config(
+        tmp_path, {"remote": {"url": f"{fake.url}/mcp", "timeout": 5, "auth": {}}}
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+    login("remote", server)
+    url = f"{fake.url}/mcp"
+
+    async def scenario() -> None:
+        request = httpx2.Request("POST", url, json={})
+        b = mcp_auth.build_provider("remote", url, mcp_auth.OAuthSettings(), None)
+        await b._initialize()
+        a = mcp_auth.build_provider("remote", url, mcp_auth.OAuthSettings(), None)
+        await a._initialize()
+        a.context.token_expiry_time = time.time() - 1
+        flow = a._auth_flow(request)
+        outgoing = await flow.__anext__()
+        async with httpx2.AsyncClient(trust_env=False) as client:
+            while mcp_auth._refresh_token_sent(outgoing) is not None:
+                outgoing = await flow.asend(await client.send(outgoing))
+        await flow.aclose()
+        rotated = stored(home)["tokens"]["refresh_token"]
+
+        metadata = b.context.storage.metadata
+        assert metadata is not None
+        changed = metadata.model_copy(update={"scopes_supported": ["changed"]})
+        b.context.storage.set_metadata(changed)
+        assert stored(home)["tokens"]["refresh_token"] == rotated
+
+    asyncio.run(scenario())
+    assert stored(home)["metadata"]["scopes_supported"] == ["changed"]
+
+
+def test_metadata_discovered_after_logout_does_not_recreate_the_file(
+    tmp_path: Path,
+    home: Path,
+    start: Callable[..., Fake],
+) -> None:
+    fake = start(access_ttl=3600)
+    config = write_config(
+        tmp_path, {"remote": {"url": f"{fake.url}/mcp", "timeout": 5, "auth": {}}}
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+    login("remote", server)
+    url = f"{fake.url}/mcp"
+
+    async def scenario() -> None:
+        b = mcp_auth.build_provider("remote", url, mcp_auth.OAuthSettings(), None)
+        await b._initialize()
+        await mcp_auth.logout("remote", server)
+        metadata = b.context.storage.metadata
+        assert metadata is not None
+        b.context.storage.set_metadata(
+            metadata.model_copy(update={"scopes_supported": ["changed"]})
+        )
+
+    asyncio.run(scenario())
+    assert not token_file(home).exists()
