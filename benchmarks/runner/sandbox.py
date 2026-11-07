@@ -50,13 +50,13 @@ def preflight(
         )
 
 
-def build_image(root: Path) -> None:
+def build_image(root: Path, tag: str = IMAGE) -> None:
     proc = subprocess.run(
         [
             "docker",
             "build",
             "-t",
-            IMAGE,
+            tag,
             "-f",
             str(root / "benchmarks" / "Dockerfile"),
             str(root),
@@ -133,6 +133,7 @@ def _docker_run(
     env: dict[str, str] | None = None,
     passthrough: tuple[str, ...] = (),
     stdin: str | None = None,
+    image: str = IMAGE,
 ) -> tuple[int, str, str, bool]:
     name = f"nare-bench-{uuid.uuid4().hex[:12]}"
     command = [
@@ -165,7 +166,7 @@ def _docker_run(
     if stdin is not None:
         # Kept open so the container can read it; without -i, docker sends none.
         command.insert(command.index("run") + 1, "-i")
-    command += [IMAGE, *argv]
+    command += [image, *argv]
 
     try:
         proc = subprocess.run(
@@ -203,6 +204,7 @@ def run_agent(
         ["sh", "-c", _AGENT_SCRIPT, "nare-bench", *config.run_args.passed, *case.args],
         case.timeout,
         artifacts=artifacts,
+        image=config.image or IMAGE,
         inputs=config.run_args.inputs,
         # Provider and endpoint come from the resolved config, not the host
         # environment: `--base-url` must steer the agent, not just the judge.

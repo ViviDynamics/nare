@@ -55,11 +55,11 @@ def case_hash(case: Case) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def image_id() -> str:
+def image_id(tag: str = IMAGE) -> str:
     """The Docker image ID the reps ran in, or "" when docker cannot say."""
     try:
         proc = subprocess.run(
-            ["docker", "image", "inspect", "-f", "{{.Id}}", IMAGE],
+            ["docker", "image", "inspect", "-f", "{{.Id}}", tag],
             capture_output=True,
             text=True,
             timeout=30,

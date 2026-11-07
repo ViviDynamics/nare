@@ -196,6 +196,69 @@ caught only sometimes: a guard cell falling from 0.95 to 0.80 is confirmed
 about 30% of the time, so pooled comparisons (`bin/bench ab`, #153) are the
 tool for effects that size.
 
+## Comparing two commits: `bin/bench ab`
+
+The question a harness change raises is whether it helped, with the model
+fixed. `bin/bench ab` answers it by running two nare commits on the same
+cases, rep by rep, and pooling the result across cases.
+
+    bin/bench ab --base origin/main --head my-branch --reps 10
+    bin/bench ab --base <sha> --head <sha> --case read-only-question --reps 2
+
+Each commit is checked out to a temporary worktree and built as its own image
+(`nare-bench:ab-base`, `nare-bench:ab-head`), so the arms differ in nare and in
+nothing else. The reps interleave, base then head, within each case, so drift
+in the endpoint hits both arms alike. The model, provider, judge and endpoint
+come from the same flags and environment as `run`.
+
+By default the cases are the ones the model's smoke baseline blessed between
+0.1 and 0.9: the cases a harness change can move. Guards (blessed above 0.9)
+and floor cases (below 0.1) say little about a change, so they are left out.
+`--case` adds a case whatever its baseline says, and `--all-cases` runs the
+whole tier.
+
+The output is one table of per-case counts, then the pooled figures:
+
+- **Pass rate, head minus base**, with each case weighted equally, and a
+  bootstrap interval over cases.
+- **Mantel-Haenszel odds ratio** of head over base, with a Robins-Breslow-
+  Greenland interval. A stratified estimate: each case contributes its own
+  2x2 table, so one case's noise does not swamp the others.
+- **Cochran-Mantel-Haenszel test** of no difference, with continuity
+  correction, two-sided, at 5%.
+- **Tokens and dollars per rep**, head over base, paired by case: a geometric
+  mean of the per-case ratios, with a bootstrap interval over cases. Dollars
+  pair only where every rep in both arms reported a cost.
+
+With few cases the bootstrap intervals are coarse. The test is the authority
+on the pass rate.
+
+Results are written to `benchmarks/results/ab/<stamp>/`: `base.jsonl`,
+`head.jsonl`, each arm's evidence, and `summary.txt`. They are not
+`results/*.jsonl`, so `compare` and `bless` never read an A/B run as the
+newest run. Each line records its arm's commit in `nare_commit`.
+
+**Power.** The test pools cases, so it sees effects no single case can. The
+table gives the chance the one-sided 5% test flags a head arm worse than base,
+for a uniform drop in pass rate. The setup is six cases at base rates 0.3,
+0.4, 0.5, 0.6, 0.7 and 0.8, the matrix's mid-range, and reps per arm per case
+as the rows give. It is reproduced by `power()` in `benchmarks/runner/ab.py`
+(seeded, 2000 to 4000 trials per cell, so each figure is good to about two
+points):
+
+| reps per arm | drop 0.10 | drop 0.15 | drop 0.20 | drop 0.30 |
+| --- | --- | --- | --- | --- |
+| 5 | 0.18 | 0.32 | 0.49 | 0.83 |
+| 10 | 0.36 | 0.57 | 0.79 | 0.99 |
+| 15 | 0.40 | 0.69 | 0.89 | 1.00 |
+| 20 | 0.52 | 0.81 | 0.96 | 1.00 |
+| 30 | 0.64 | 0.93 | 0.99 | 1.00 |
+
+With no drop, the false-alarm rate is about 5% (5.6% at 10 reps, from the
+same simulation). Ten reps per arm is 120 reps across six cases: about 80
+minutes and a few dollars at the matrix models' prices. Pick the reps for the
+smallest effect you care about; a drop of 0.10 needs about 30 per arm.
+
 ## Arguments to nare
 
 A case can pass flags to `nare run`, and so can a run. A case's flags say

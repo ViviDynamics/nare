@@ -15,6 +15,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, replace
@@ -22,6 +23,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from benchmarks.runner.ab import (
+    CaseAB,
+    dollars_per_rep_pairs,
+    mantel_haenszel,
+    paired_ratio,
+    pass_rate_effect,
+    token_pairs,
+)
+from benchmarks.runner.ab import render as render_ab
 from benchmarks.runner.agreement import Header, Skip, render_summary
 from benchmarks.runner.calibration import (
     LABELS_FILE,
@@ -108,6 +118,7 @@ from benchmarks.runner.report import (
 )
 from benchmarks.runner.sandbox import (
     DID_NOT_RUN,
+    IMAGE,
     RunArtifacts,
     SandboxError,
     build_image,
@@ -279,6 +290,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--sample", type=int, help="export: at most this many rows, chosen at random"
     )
     calibration.add_argument("--seed", type=int, default=0, help="export: sample seed")
+    ab = sub.add_parser(
+        "ab",
+        help="paired comparison of two nare commits, pooled across cases",
+        description="Run both commits on the same cases, reps interleaved, and "
+        "pool the pass rates with a stratified test. See 'bin/bench ab' in "
+        "benchmarks/README.md.",
+    )
+    ab.add_argument("--base", required=True, help="the base commit or ref")
+    ab.add_argument("--head", required=True, help="the head commit or ref")
+    ab.add_argument("--tier", choices=["smoke", "full"], default="smoke")
+    ab.add_argument(
+        "--case",
+        action="append",
+        help="add this case; it is always compared, whatever its baseline says",
+    )
+    ab.add_argument(
+        "--all-cases",
+        action="store_true",
+        help="every case in the tier, not only the informative ones",
+    )
+    ab.add_argument(
+        "--reps", type=int, default=AB_REPS, help="repetitions per arm per case"
+    )
+    ab.add_argument("--model", help="the model (env: NARE_MODEL)")
+    ab.add_argument("--provider", help="the agent's provider (env: NARE_PROVIDER)")
+    ab.add_argument("--base-url", help="endpoint (env: NARE_BASE_URL)")
+    ab.add_argument("--judge-model", help="judge (env: NARE_BENCH_JUDGE_MODEL)")
     models = sub.add_parser(
         "models", help="list what the endpoint serves, with window, price, baselines"
     )
@@ -621,9 +659,9 @@ async def run_rep(
     # numbers are the same measurement. Taken before the rep runs.
     provenance: dict[str, Any] = {
         "nare_version": NARE_VERSION,
-        "nare_commit": _commit(),
+        "nare_commit": config.nare_commit or _commit(),
         "case_hash": case_hash(case),
-        "image_id": image_id(),
+        "image_id": image_id(config.image or IMAGE),
         "started": datetime.now(UTC).isoformat(timespec="seconds"),
     }
     with sandbox(case) as (workdir, artifacts):
@@ -1330,6 +1368,189 @@ def as_recorded(
     return recorded
 
 
+AB_REPS = 10
+AB_TAG = {"base": "nare-bench:ab-base", "head": "nare-bench:ab-head"}
+# Cases the baseline blessed between these rates: the ones a harness change can
+# move. Guards at the top and floor cases at the bottom are left out by default.
+AB_LOW, AB_HIGH = 0.1, 0.9
+
+
+def resolve_commit(root: Path, ref: str) -> str | None:
+    proc = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+        capture_output=True,
+        text=True,
+        cwd=root,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def informative(
+    root: Path,
+    tier: str,
+    model: str,
+    cases: Sequence[Case],
+    named: set[str],
+    all_cases: bool,
+) -> tuple[list[Case], str]:
+    """The cases an A/B run measures, and how they were chosen, for the report."""
+    if all_cases:
+        return list(cases), "every case in the tier"
+    baseline_file = baseline_path(root / "benchmarks" / "baselines", model, tier)
+    if not baseline_file.exists():
+        return list(cases), "no baseline for this model, so every case in the tier"
+    blessed = load_baseline(baseline_file).cases
+
+    def informative_here(case_id: str) -> bool:
+        rate = blessed[case_id].pass_rate if case_id in blessed else None
+        return rate is not None and AB_LOW <= rate <= AB_HIGH
+
+    chosen = [c for c in cases if c.id in named or informative_here(c.id)]
+    return chosen, f"blessed between {AB_LOW} and {AB_HIGH}, plus any named"
+
+
+def ab_stratum(
+    case: str, base: Sequence[RepRecord], head: Sequence[RepRecord]
+) -> CaseAB | None:
+    """One case's two arms as a stratum, or None when an arm was mostly errors."""
+    arms = {}
+    for label, records in (("base", base), ("head", head)):
+        summary = summarize(records)[0]
+        if summary.inconclusive:
+            return None
+        reps = summary.passes + summary.fails + summary.errors
+        arms[label] = (summary, reps)
+    (bs, _), (hs, _) = arms["base"], arms["head"]
+    return CaseAB(
+        case=case,
+        head_pass=hs.passes,
+        head_n=hs.passes + hs.fails + hs.judge_errors,
+        base_pass=bs.passes,
+        base_n=bs.passes + bs.fails + bs.judge_errors,
+        head_tokens=hs.tokens_median,
+        base_tokens=bs.tokens_median,
+        head_cost=hs.cost,
+        base_cost=bs.cost,
+        head_cost_reps=arms["head"][1] - hs.cost_unknown,
+        base_cost_reps=arms["base"][1] - bs.cost_unknown,
+    )
+
+
+def ab_command(args: argparse.Namespace, root: Path, config: Config) -> int:
+    """`bin/bench ab`: both commits, interleaved rep by rep on the same cases.
+
+    Each commit is checked out to a temporary worktree and built as its own
+    image tag, so the arms differ in nare and in nothing else. Results go to
+    results/ab/<stamp>/, not results/*.jsonl, so compare and bless never read
+    an A/B run as the newest run.
+    """
+    commits = {}
+    for arm, ref in (("base", args.base), ("head", args.head)):
+        sha = resolve_commit(root, ref)
+        if sha is None:
+            print(f"bench: {ref!r} is not a commit in this checkout", file=sys.stderr)
+            return 2
+        commits[arm] = sha
+    if args.reps < 1:
+        print("bench: --reps must be at least 1", file=sys.stderr)
+        return 2
+    try:
+        every = load_cases(root / "benchmarks" / "cases", tier=args.tier)
+    except CaseError as exc:
+        print(f"bench: {exc}", file=sys.stderr)
+        return 2
+    cases, how = informative(
+        root, args.tier, config.model, every, set(args.case or ()), args.all_cases
+    )
+    if not cases:
+        print(f"bench: no cases to compare ({how})", file=sys.stderr)
+        return 2
+    why = require_judge(config, cases)
+    if why is not None:
+        print(f"bench: {why}", file=sys.stderr)
+        return 2
+
+    stamp = new_stamp()
+    out = root / "benchmarks" / "results" / "ab" / stamp
+    out.mkdir(parents=True)
+    arms = {
+        arm: replace(config, image=AB_TAG[arm], nare_commit=commits[arm])
+        for arm in ("base", "head")
+    }
+    scratch = Path(tempfile.mkdtemp(prefix="nare-ab-"))
+    trees: list[str] = []
+    try:
+        for arm in ("base", "head"):
+            tree = scratch / arm
+            proc = subprocess.run(
+                ["git", "worktree", "add", "--detach", str(tree), commits[arm]],
+                capture_output=True,
+                text=True,
+                cwd=root,
+            )
+            if proc.returncode != 0:
+                print(f"bench: {proc.stderr.strip()}", file=sys.stderr)
+                return 2
+            trees.append(str(tree))
+            try:
+                build_image(tree, tag=AB_TAG[arm])
+            except SandboxError as exc:
+                print(f"bench: {arm}: {exc}", file=sys.stderr)
+                return 2
+        transport = judge_transport(config)
+        records: dict[str, list[RepRecord]] = {"base": [], "head": []}
+        for case in cases:
+            for rep in range(args.reps):
+                for arm in ("base", "head"):
+                    evidence = out / arm
+                    evidence.mkdir(exist_ok=True)
+                    records[arm].append(
+                        asyncio.run(run_rep(case, arms[arm], transport, rep, evidence))
+                    )
+    except NeverStarted as exc:
+        print(f"bench: a rep never started: {exc.log}", file=sys.stderr)
+        return 2
+    finally:
+        for worktree in trees:
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", worktree],
+                capture_output=True,
+                cwd=root,
+            )
+        shutil.rmtree(scratch, ignore_errors=True)
+
+    for arm in ("base", "head"):
+        _write_records(out / f"{arm}.jsonl", records[arm])
+    strata = []
+    skipped = []
+    for case in cases:
+        base = [r for r in records["base"] if r.case == case.id]
+        head = [r for r in records["head"] if r.case == case.id]
+        stratum = ab_stratum(case.id, base, head)
+        if stratum is None:
+            skipped.append(case.id)
+        else:
+            strata.append(stratum)
+    text = render_ab(
+        base_label=f"{args.base} ({commits['base'][:12]})",
+        head_label=f"{args.head} ({commits['head'][:12]})",
+        reps=args.reps,
+        how=how,
+        strata=strata,
+        skipped=skipped,
+        mantel=mantel_haenszel(strata),
+        effect=pass_rate_effect(strata),
+        tokens=paired_ratio(token_pairs(strata)),
+        dollars=paired_ratio(dollars_per_rep_pairs(strata)),
+    )
+    (out / "summary.txt").write_text(text + "\n", encoding="utf-8")
+    print(text)
+    print(f"results: {out}")
+    return 0
+
+
 def run_model(
     root: Path, cases: Sequence[Case], config: Config, name: str
 ) -> tuple[Transport, list[RepRecord]]:
@@ -1918,11 +2139,14 @@ def main(argv: list[str] | None = None) -> int:
             judge_model=args.judge_model,
             env=os.environ,
             # compare and bless read local files only; they never spend a key.
-            need_key=args.command == "run",
+            need_key=args.command in ("run", "ab"),
         )
     except ConfigError as exc:
         print(f"bench: {exc}", file=sys.stderr)
         return 2
+
+    if args.command == "ab":
+        return ab_command(args, root, config)
 
     if args.command == "run":
         why = require_judge(config, cases)
