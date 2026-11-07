@@ -317,6 +317,14 @@ def describe() -> dict[str, Any]:
             "session_field": "system",
             "resume": "recorded",
         },
+        # Additive: a resume written to a new file. The original is only read,
+        # and the new session records where it came from.
+        "session_fork": {
+            "flag": "--fork",
+            "requires": ["--resume", "--session"],
+            "session_field": "forked_from",
+            "fields": ["session_id", "turn", "path"],
+        },
         # Additive: a caller checks for it before asking for constrained
         # answers, and refuses to run unconstrained rather than guess.
         "structured_output": {

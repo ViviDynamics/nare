@@ -16,7 +16,7 @@ from nare.caller_tools import Tool, ToolError
 from nare.contract import NARE_VERSION
 from nare.events import Event
 from nare.loop import run, step
-from nare.session import Message, Session, Usage, dumps, loads, new_session
+from nare.session import Message, Session, Usage, dumps, fork, loads, new_session
 from nare.tools import Policy, approve_all
 from nare.transport import Reply, ToolCall, Transport, make_transport
 from nare.transport.replay import ReplayTransport
@@ -37,6 +37,7 @@ __all__ = [
     "Usage",
     "approve_all",
     "dumps",
+    "fork",
     "loads",
     "make_transport",
     "new_session",
