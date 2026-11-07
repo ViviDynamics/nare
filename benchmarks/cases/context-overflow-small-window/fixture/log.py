@@ -1,8 +1,8 @@
 """Eight tool outputs together exceed a 32000 token context estimate.
 
 The text is hex, not dots: a tokenizer squeezes a run of dots into a few tokens,
-so a dotted log never grows the context the way its length says it should. Each
-log here costs about its characters divided by four, as the estimate assumes.
+so a dotted log never grows the context the way its length says it should. Hex
+costs about 2.6 characters per token, so each log here is about 11,000 tokens.
 """
 
 import hashlib
