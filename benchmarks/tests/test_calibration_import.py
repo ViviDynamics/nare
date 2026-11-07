@@ -505,7 +505,8 @@ def test_bin_bench_calibrate_import_runs_end_to_end(
 
     real = {c.id: c for c in load_cases(Path("benchmarks/cases"))}
     judged = next(c for c in real.values() if c.judge and c.judge.assertions)
-    text = judged.judge.assertions[0]  # type: ignore[union-attr]
+    assert judged.judge is not None
+    text = judged.judge.assertions[0]
     export_real = tmp_path / "real-export.jsonl"
     export_real.write_text(
         json.dumps(
