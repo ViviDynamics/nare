@@ -748,8 +748,8 @@ What is compared, and how:
 - **Cost is recomputed.** Each arm's dollars are its usage times the gateway's
   list prices, read from `/v1/model/info` at run time and saved in the
   manifest. Neither harness's own cost figure is compared. Claude Code's
-  reported `total_cost_usd` agrees with this figure to the last digit on the
-  rep checked.
+  reported `total_cost_usd` matched this figure on every result in the #114
+  run that reported one (`docs/evidence/114/claude-code-reported-cost.csv`).
 - **Usage is the result's total.** Claude Code's streamed messages report a
   provisional output count, so the arm takes input, output and cache tokens
   from the final result object, which is the billing total.

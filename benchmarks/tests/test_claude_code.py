@@ -181,3 +181,10 @@ def test_comparable_cases_use_only_what_both_arms_have():
 
 
 HAIKU_PRICE = price_from_model_info(HAIKU_INFO)
+
+
+def test_a_truncated_final_turn_is_an_error_even_on_success_subtype():
+    result = _result(stop_reason="max_tokens")
+    line = to_result_line(parse_stream(_lines(result)), HAIKU_PRICE)
+    assert line.status == "error"
+    assert line.stop_reason == "max_tokens"

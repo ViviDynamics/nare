@@ -46,8 +46,9 @@ same tasks and model, and did result quality move with it?
   subagents and web tools disallowed. Its harness overhead is part of the
   result, and it is large (see the cache columns).
 - **Dollars.** Both arms are recomputed from their usage at the gateway list
-  prices above. Claude Code's own `total_cost_usd` agrees with that figure on
-  all 99 results that have one (both sum to $0.3627), so the cross-check holds.
+  prices above. Claude Code's own `total_cost_usd` matches that figure exactly
+  on all 99 results that report one: the largest difference is $0.0. Both sum
+  to $0.3627. The per-result figures are in `claude-code-reported-cost.csv`.
 - **Tokens.** Input, output, cache read and cache write, from each rep's final
   usage. Claude Code's streamed messages undercount output, so the final result
   is used.
@@ -64,23 +65,23 @@ are over decided reps. Dollars are per rep, and per solved task.
 | Case | Arm | Reps | Pass (n) [95% Wilson] | Errors | Input | Output | Cache read | Cache write | Turns | Wall s | $/rep | $/solved |
 | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | bash-timeout-recovery | nare | 10 | 10/10 [0.72, 1.00] | 0 | 14 | 1,741 | 18,223 | 1,948 | 6 | 21.32 | $0.0014 | $0.0014 |
-| bash-timeout-recovery | Claude Code | 10 | 10/10 [0.72, 1.00] | 0 | 10 | 1,403 | 74,530 | 4,704 | 7 | 18.95 | $0.0020 | $0.0020 |
-| bootstrap-without-database | nare | 10 | 9/10 [0.60, 0.98] | 0 | 17 | 13,266 | 50,887 | 14,411 | 7 | 76.09 | $0.0091 | $0.0101 |
+| bash-timeout-recovery | Claude Code | 10 | 10/10 [0.72, 1.00] | 0 | 10 | 1,404 | 74,530 | 4,704 | 7 | 18.95 | $0.0020 | $0.0020 |
+| bootstrap-without-database | nare | 10 | 9/10 [0.60, 0.98] | 0 | 17 | 13,266 | 50,888 | 14,412 | 8 | 76.09 | $0.0091 | $0.0101 |
 | bootstrap-without-database | Claude Code | 10 | 3/9 [0.12, 0.65] | 2 | 45 | 22,800 | 561,568 | 30,008 | 31 | 133.65 | $0.0181 | $0.0604 |
-| edit-docstring | nare | 12 | 12/12 [0.76, 1.00] | 0 | 16 | 668 | 8,993 | 523 | 4 | 8.30 | $0.0005 | $0.0005 |
+| edit-docstring | nare | 12 | 12/12 [0.76, 1.00] | 0 | 16 | 668 | 8,994 | 523 | 4 | 8.30 | $0.0005 | $0.0005 |
 | edit-docstring | Claude Code | 12 | 10/12 [0.55, 0.95] | 2 | 8 | 498 | 50,966 | 3,715 | 4 | 6.39 | $0.0014 | $0.0017 |
-| expense-tracker-cli | nare | 10 | 10/10 [0.72, 1.00] | 0 | 16 | 6,623 | 32,160 | 7,141 | 7 | 30.86 | $0.0045 | $0.0045 |
-| expense-tracker-cli | Claude Code | 10 | 10/10 [0.72, 1.00] | 0 | 12 | 8,015 | 99,685 | 12,539 | 7 | 35.27 | $0.0067 | $0.0067 |
-| fix-failing-test | nare | 12 | 12/12 [0.76, 1.00] | 0 | 12 | 995 | 13,201 | 1,646 | 5 | 10.68 | $0.0008 | $0.0008 |
-| fix-failing-test | Claude Code | 12 | 12/12 [0.76, 1.00] | 0 | 8 | 715 | 58,045 | 4,442 | 5 | 7.51 | $0.0015 | $0.0015 |
-| long-test-output | nare | 10 | 10/10 [0.72, 1.00] | 0 | 10 | 607 | 29,356 | 10,828 | 4 | 8.76 | $0.0020 | $0.0020 |
-| long-test-output | Claude Code | 10 | 10/10 [0.72, 1.00] | 0 | 8 | 575 | 58,503 | 4,567 | 4 | 8.07 | $0.0014 | $0.0014 |
-| multi-file-rename | nare | 12 | 12/12 [0.76, 1.00] | 0 | 8 | 480 | 6,975 | 851 | 3 | 7.74 | $0.0005 | $0.0005 |
-| multi-file-rename | Claude Code | 12 | 12/12 [0.76, 1.00] | 0 | 8 | 580 | 57,211 | 4,232 | 4 | 8.20 | $0.0014 | $0.0014 |
-| read-only-question | nare | 12 | 12/12 [0.76, 1.00] | 0 | 12 | 437 | 6,870 | 0 | 3 | 6.63 | $0.0003 | $0.0003 |
-| read-only-question | Claude Code | 12 | 12/12 [0.76, 1.00] | 0 | 6 | 437 | 41,700 | 3,596 | 3 | 5.87 | $0.0011 | $0.0011 |
-| stale-backup-cleanup | nare | 12 | 12/12 [0.76, 1.00] | 0 | 8 | 472 | 6,913 | 775 | 3 | 7.86 | $0.0004 | $0.0004 |
-| stale-backup-cleanup | Claude Code | 12 | 12/12 [0.76, 1.00] | 0 | 6 | 508 | 42,142 | 4,075 | 4 | 7.25 | $0.0012 | $0.0012 |
+| expense-tracker-cli | nare | 10 | 10/10 [0.72, 1.00] | 0 | 16 | 6,624 | 32,160 | 7,142 | 7 | 30.86 | $0.0045 | $0.0045 |
+| expense-tracker-cli | Claude Code | 10 | 10/10 [0.72, 1.00] | 0 | 12 | 8,015 | 99,686 | 12,540 | 7 | 35.27 | $0.0067 | $0.0067 |
+| fix-failing-test | nare | 12 | 12/12 [0.76, 1.00] | 0 | 12 | 995 | 13,202 | 1,646 | 5 | 10.68 | $0.0008 | $0.0008 |
+| fix-failing-test | Claude Code | 12 | 12/12 [0.76, 1.00] | 0 | 8 | 716 | 58,045 | 4,442 | 5 | 7.51 | $0.0015 | $0.0015 |
+| long-test-output | nare | 10 | 10/10 [0.72, 1.00] | 0 | 10 | 608 | 29,356 | 10,828 | 4 | 8.76 | $0.0020 | $0.0020 |
+| long-test-output | Claude Code | 10 | 10/10 [0.72, 1.00] | 0 | 8 | 575 | 58,503 | 4,568 | 4 | 8.07 | $0.0014 | $0.0014 |
+| multi-file-rename | nare | 12 | 12/12 [0.76, 1.00] | 0 | 8 | 480 | 6,975 | 852 | 3 | 7.74 | $0.0005 | $0.0005 |
+| multi-file-rename | Claude Code | 12 | 12/12 [0.76, 1.00] | 0 | 8 | 580 | 57,212 | 4,232 | 4 | 8.20 | $0.0014 | $0.0014 |
+| read-only-question | nare | 12 | 12/12 [0.76, 1.00] | 0 | 12 | 438 | 6,870 | 0 | 3 | 6.63 | $0.0003 | $0.0003 |
+| read-only-question | Claude Code | 12 | 12/12 [0.76, 1.00] | 0 | 6 | 438 | 41,700 | 3,596 | 3 | 5.87 | $0.0011 | $0.0011 |
+| stale-backup-cleanup | nare | 12 | 12/12 [0.76, 1.00] | 0 | 8 | 472 | 6,913 | 776 | 3 | 7.86 | $0.0004 | $0.0004 |
+| stale-backup-cleanup | Claude Code | 12 | 12/12 [0.76, 1.00] | 0 | 6 | 508 | 42,142 | 4,076 | 4 | 7.25 | $0.0012 | $0.0012 |
 
 | Case | Arm | Stop reasons (count) |
 | --- | --- | --- |
@@ -114,8 +115,8 @@ The nare arm had none there. Claude Code, bootstrap-without-database, 1 judge re
 kills processes by name, and the run did not finish. It is counted as an
 infrastructure error, not a pass or a fail. It is not investigated further.
 
-Bootstrap failures, Claude Code (5 of 9 decided). Two reps hit the 31-turn
-limit. Three reps finished and failed bash checks. The checks read
+Bootstrap failures, Claude Code (5 of 9 decided). Two reps stopped at the
+turn limit, with Claude Code reporting 31 turns against a cap of 30. Three reps finished and failed bash checks. The checks read
 `/out/after.json`. Three of the five left a Postgres or Node process running at
 the end (reps 1, 6 and 8), which the case forbids. Two installed an embedded
 Postgres server (reps 3 and 7), which the case also forbids. Rep 1's closing
@@ -149,6 +150,10 @@ not as a size.
   exception is long-test-output, where Claude Code was lower ($0.0014 against
   $0.0020). Agent spend was $0.36 for Claude Code, recomputed, and $0.20 for
   nare, at its own estimate. The judge's spend is in neither figure.
+- **Turn counts.** Claude Code's turn count is its own. On two bootstrap reps
+  it reported 31 turns against a cap of 30, so its counting differs from nare's
+  by at least one. The turn check on expense-tracker-cli compares the two counts
+  as they are.
 - Nothing here measures general superiority: one model, nine cases, 10 to 12
   reps per arm, one judge, one day.
 
@@ -163,9 +168,17 @@ not as a size.
   rep's image ID.
 - **Concurrency.** Both arms ran together, so they shared the endpoint and its
   rate limit. No `agent_http_error` or `judge_http_error` was recorded.
-- **Edits during the run.** The report and formatting code in
-  `benchmarks/runner/claude_arm.py` changed while the Claude arm ran. The record
-  path did not change.
+- **Edits during and after the run.** The report and formatting code in
+  `benchmarks/runner/claude_arm.py` changed while the Claude arm ran. After the
+  run, a review round changed the record path: each rep is now written as it
+  finishes, the manifest records the nare commit and the tools each rep's init
+  message reported, a `max_tokens` stop maps to an error, and the median rounds
+  as the bench's `median_int` does. None of these changes alters a recorded
+  value apart from the median rounding, and the tables above are regenerated
+  from the results with the current code. No run in this note stopped on
+  `max_tokens`. The image Dockerfile also gained the pinned pip step that
+  `benchmarks/Dockerfile` has. The runs used the image built before that step,
+  which installed pytest under the base image's pip.
 - **The judge.** Two classes of judge error occurred, both on the Claude arm
   only, both where the judge's reply was not valid JSON. The judge was not
   changed for this note (#46 covers it).

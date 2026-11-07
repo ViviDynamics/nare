@@ -3,6 +3,7 @@ trip, the gateway paths, the cross-arm arithmetic, and the refusals."""
 
 from __future__ import annotations
 
+import json
 from typing import cast
 
 import pytest
@@ -148,3 +149,19 @@ def test_list_names_every_case_once(capsys):
     text = capsys.readouterr().out
     assert text.count("compared  ") == 9
     assert text.count("excluded  ") == 8
+
+
+def test_tools_seen_reads_each_reps_init_message(tmp_path):
+    rep = tmp_path / "edit-docstring-0"
+    rep.mkdir()
+    init = {"type": "system", "subtype": "init", "tools": ["Bash", "Read"]}
+    (rep / "stream.jsonl").write_text(json.dumps(init) + "\n", encoding="utf-8")
+    assert claude_arm._tools_seen(tmp_path) == {"edit-docstring-0": ["Bash", "Read"]}
+
+
+def test_a_max_tokens_setting_is_refused_before_anything_runs(monkeypatch, capsys):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setenv("NARE_BENCH_MAX_TOKENS", "4096")
+    monkeypatch.setenv("NARE_BASE_URL", "https://gw.example")
+    assert claude_arm.main(["--case", "edit-docstring", "--judge-model", "j"]) == 2
+    assert "NARE_BENCH_MAX_TOKENS" in capsys.readouterr().out

@@ -194,7 +194,10 @@ def to_result_line(run: ClaudeRun, price: ModelPrice) -> ResultLine | None:
     usage = _usage(result)
     cost = dollars(usage, price)
     subtype = result.get("subtype")
-    if subtype == "success" and not result.get("is_error"):
+    if result.get("stop_reason") == "max_tokens":
+        # A truncated final turn is not a finish, whatever the subtype says.
+        status, stop_reason, error = "error", "max_tokens", None
+    elif subtype == "success" and not result.get("is_error"):
         status, stop_reason, error = "done", "end_turn", None
     elif subtype == "error_max_turns":
         status, stop_reason, error = "error", "max_turns", None

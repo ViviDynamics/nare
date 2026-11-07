@@ -22,7 +22,7 @@ import statistics
 import subprocess
 import time
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -53,8 +53,9 @@ from benchmarks.runner.grade import (
     rep_outcome,
 )
 from benchmarks.runner.judge import JudgeError, judge_transport, render_attempts, score
+from benchmarks.runner.models import proxy_root
 from benchmarks.runner.provenance import case_hash, image_id, judge_cause
-from benchmarks.runner.report import RepRecord, summarize, wilson_interval
+from benchmarks.runner.report import RepRecord, median_int, summarize, wilson_interval
 from benchmarks.runner.sandbox import (
     _LEFTOVERS,
     DID_NOT_RUN,
@@ -92,8 +93,7 @@ class ArmError(Exception):
 
 def gateway_root(base_url: str) -> str:
     """The proxy's root, with any trailing /v1 removed, as `models` reads it."""
-    root = base_url.rstrip("/")
-    return root[:-3] if root.endswith("/v1") else root
+    return proxy_root(base_url)
 
 
 def fetch_model_info(base_url: str, api_key: str, model: str) -> dict[str, Any]:
@@ -131,13 +131,17 @@ def build_arm_image(root: Path) -> None:
 
 
 def claude_version() -> str:
+    """The Claude Code version the image reports. Refused if it cannot say:
+    the note names a version, and an empty one would leave it unpinned."""
     proc = subprocess.run(
         ["docker", "run", "--rm", CLAUDE_IMAGE, "claude", "--version"],
         capture_output=True,
         text=True,
         timeout=120,
     )
-    return proc.stdout.strip() if proc.returncode == 0 else ""
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise ArmError(f"could not read the Claude Code version: {proc.stderr.strip()}")
+    return proc.stdout.strip()
 
 
 @dataclass(frozen=True)
@@ -481,7 +485,7 @@ def compare_arms(
 
 
 def _median(values: Sequence[int]) -> int | None:
-    return int(statistics.median(values)) if values else None
+    return median_int(list(values))
 
 
 def _median_f(values: Sequence[float]) -> float | None:
@@ -507,6 +511,7 @@ def _reprice(records: Sequence[RepRecord], price: ModelPrice) -> list[RepRecord]
 async def _run_all(
     cases: Sequence[Case],
     *,
+    sink: Callable[[RepRecord], None],
     reps: dict[str, int | None],
     model: str,
     base_url: str,
@@ -515,12 +520,12 @@ async def _run_all(
     judge_model: str,
     evidence: Path,
     image: str,
-) -> list[RepRecord]:
-    records: list[RepRecord] = []
+) -> None:
+    """Each rep goes to `sink` as it finishes, so a stop keeps what was paid for."""
     for case in cases:
         n = reps[case.id] if reps.get(case.id) is not None else case.reps
         for rep in range(n):
-            records.append(
+            sink(
                 await run_claude_rep(
                     case,
                     rep=rep,
@@ -533,7 +538,41 @@ async def _run_all(
                     image=image,
                 )
             )
-    return records
+
+
+def _record_payload(record: RepRecord) -> dict[str, Any]:
+    payload = asdict(record)
+    payload["checks"] = [asdict(c) for c in record.checks]
+    return payload
+
+
+def _git_head(root: Path) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def _tools_seen(evidence: Path) -> dict[str, list[str]]:
+    """The tools each rep's init message reported, by rep. Recorded so the
+    subagent and web-tool exclusions can be checked against what ran."""
+    seen: dict[str, list[str]] = {}
+    for stream in sorted(evidence.glob("*/stream.jsonl")):
+        for raw in stream.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                obj = json.loads(raw)
+            except ValueError:
+                continue
+            if (
+                isinstance(obj, dict)
+                and obj.get("type") == "system"
+                and obj.get("subtype") == "init"
+            ):
+                seen[stream.parent.name] = [str(t) for t in obj.get("tools", [])]
+                break
+    return seen
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -602,10 +641,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     if refusal:
         print(f"config: {refusal}")
         return 2
+    if config.max_tokens is not None:
+        # The Claude agent takes no output cap from the bench, so an arm run
+        # under one would be the nare arm alone under it. Refuse, do not mislead.
+        print(
+            "config: NARE_BENCH_MAX_TOKENS is set, and the Claude Code arm cannot "
+            "apply it; unset it so both arms run uncapped"
+        )
+        return 2
+
     try:
         info = fetch_model_info(config.base_url, config.api_key or "", args.model)
         price = price_from_model_info(info)
-    except (ArmError, ValueError, httpx2.HTTPError) as exc:
+    except (ArmError, ValueError, httpx2.HTTPError, httpx2.InvalidURL) as exc:
         print(f"prices: {exc}")
         return 2
 
@@ -618,20 +666,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     transport = judge_transport(config)
     reps = {c.id: args.reps for c in cases}
     started = datetime.now(UTC).isoformat(timespec="seconds")
-    records = asyncio.run(
-        _run_all(
-            cases,
-            reps=reps,
-            model=args.model,
-            base_url=config.base_url,
-            price=price,
-            transport=transport,
-            judge_model=config.judge_model or "",
-            evidence=evidence,
-            image=image_id(CLAUDE_IMAGE),
-        )
-    )
-    _write_records(evidence / "results.jsonl", records)
     manifest = {
         "arm": ARM,
         "claude_code_version": version,
@@ -639,6 +673,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "image_id": image_id(CLAUDE_IMAGE),
         "checks_image": IMAGE,
         "checks_image_id": image_id(IMAGE),
+        "nare_commit": _git_head(root),
         "model": args.model,
         "judge_model": config.judge_model,
         "gateway": gateway_root(config.base_url),
@@ -650,11 +685,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         "reps": {c.id: (args.reps if args.reps is not None else c.reps) for c in cases},
         "excluded": EXCLUDED_CASES,
         "started": started,
-        "finished": datetime.now(UTC).isoformat(timespec="seconds"),
+        "finished": None,
     }
-    (evidence / "manifest.json").write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
-    )
+    manifest_path = evidence / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    results_path = evidence / "results.jsonl"
+    with results_path.open("w", encoding="utf-8") as handle:
+
+        def sink(record: RepRecord) -> None:
+            # Written as each rep finishes, so a stop or a crash keeps the reps
+            # already paid for; `report` reads whatever is there.
+            handle.write(json.dumps(_record_payload(record)) + "\n")
+            handle.flush()
+
+        asyncio.run(
+            _run_all(
+                cases,
+                sink=sink,
+                reps=reps,
+                model=args.model,
+                base_url=config.base_url,
+                price=price,
+                transport=transport,
+                judge_model=config.judge_model or "",
+                evidence=evidence,
+                image=image_id(CLAUDE_IMAGE),
+            )
+        )
+    manifest["tools_seen"] = _tools_seen(evidence)
+    manifest["finished"] = datetime.now(UTC).isoformat(timespec="seconds")
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(f"results: {evidence / 'results.jsonl'}")
     return 0
 
