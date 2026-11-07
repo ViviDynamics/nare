@@ -118,9 +118,9 @@ without putting its text in argv. Both routes read UTF-8 exactly and work with
 `--resume`; choose one source. See [the input contract](docs/contract.md#prompt-input).
 
 `--yes` approves every tool call, including `bash`. nare runs
-model-generated shell commands with your privileges and no sandbox of its
-own, so treat it like piping a script you have not read: run it in a
-container, a VM, or a throwaway checkout.
+model-generated shell commands with your privileges. Unless you pass
+`--bash-sandbox`, it has no sandbox of its own, so treat it like piping a
+script you have not read: run it in a container, a VM, or a throwaway checkout.
 
 nare sends a short default system prompt that keeps the agent in scope: no
 installs, long-lived services or commits unless asked, claims limited to what
@@ -159,7 +159,12 @@ file content. See [the evidence contract](docs/contract.md#read-evidence).
 reads return a named tool error. See [the image contract](docs/contract.md#read-only-image-input).
 
 `--root` gives `bash` that directory to start in. It is not a jail: a shell
-can still walk upward, so real confinement stays the sandbox's job.
+can still walk upward. `--bash-sandbox` (with `--root`) runs each `bash`
+command under the OS sandbox instead: sandbox-exec on macOS, bubblewrap on
+Linux. Writes stay in the root and a private temp dir, credential folders are
+unreadable, and the network is off unless `--bash-network` allows it. It is
+off by default, and where the sandbox cannot start nare refuses to run rather
+than run unconfined. See [the bash sandbox](docs/contract.md#bash-sandbox).
 
 `bash` runs without the provider keys nare reads (`ANTHROPIC_API_KEY`,
 `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`), so a command cannot print them.

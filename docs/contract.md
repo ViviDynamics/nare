@@ -91,6 +91,8 @@ keeps the contract version; removing or renaming one bumps it.
 | `--bash-credentials` | no | | Let `bash` see the provider credentials nare reads ([The bash environment](#the-bash-environment)) |
 | `--bash-allow` | yes | | Run a `bash` command matching PATTERN without asking; repeatable ([Bash command rules](#bash-command-rules)) |
 | `--bash-deny` | yes | | Refuse a `bash` command matching PATTERN, even with `--yes`; repeatable ([Bash command rules](#bash-command-rules)) |
+| `--bash-sandbox` | no | | Run each `bash` command under the OS sandbox: writes only in `--root` and a private temp dir, credentials unreadable, no network ([Bash sandbox](#bash-sandbox)) |
+| `--bash-network` | no | | With `--bash-sandbox`, let `bash` use the network ([Bash sandbox](#bash-sandbox)) |
 | `--resume` | yes | | Continue the session at a path. `nare tui --resume` with no path picks one of this directory's saved sessions; `nare run` needs the path |
 | `--mcp-config` | yes | | JSON file of MCP servers ([MCP tool sources](#mcp-tool-sources)) |
 | `--command-tools` | yes | | JSON file of tools this command line runs ([caller tools](#caller-tools)) |
@@ -1363,6 +1365,80 @@ that set rules records them under its policy as `"bash_allow"` and
 
 The rules add flags, a session field with a default and keys under the recorded
 policy, so the contract version stays the same ([What changes the version](#what-changes-the-version)).
+
+## Bash sandbox
+
+`--bash-sandbox` (library: `Policy(bash_sandbox=True)`) runs each `bash`
+command under the operating system's own sandbox. It is off by default. Without
+it, `bash` is confined by nothing but the container around nare, and the
+pattern rules above are not a sandbox.
+
+    nare run --yes --jsonl --root ./work --bash-sandbox "fix the failing test"
+
+What a confined command may do:
+
+- **Write** only inside `--root` and a private temporary directory made for
+  that call. `TMPDIR` points at it, and it is deleted when the call returns.
+- **Read** anything the user can read, except the credential locations below.
+- **Use the network** not at all, unless `--bash-network` is also given.
+- **See** only the environment variables a shell needs: `PATH`, `HOME`, `USER`,
+  `LOGNAME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TERM`, `TZ` and `SHELL`, plus
+  `TMPDIR`. A variable such as `GH_TOKEN` or a cloud key is not passed on.
+  `--bash-credentials` restores the full environment, as before.
+
+The credential locations are denied for reads and writes: `~/.ssh`, `~/.aws`,
+`~/.gnupg`, `~/.kube`, `~/.docker`, `~/.azure`, `~/.terraform.d`,
+`~/.password-store`, `~/.config/gh`, `~/.config/gcloud`, `~/.config/op`,
+`~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.s3cfg`, `~/.vault-token`, `~/.pgpass`,
+`~/.my.cnf`, `~/.git-credentials`, `~/.config/git/credentials`,
+`~/.cargo/credentials` and `~/.cargo/credentials.toml`, `~/.gem/credentials`,
+`~/.m2/settings.xml`, and all of `NARE_HOME` (MCP tokens and saved sessions).
+On macOS also `~/Library/Keychains` and `/Library/Keychains`, and the
+keychain's mach services are refused, so `security find-generic-password`
+returns nothing.
+
+**The root must not hold a credential.** `--root` is refused when a credential
+location lies inside it or is it. Otherwise bash could rename a folder that
+contains a credential, and read the credential at its new, undenied path.
+
+**Platforms.** On macOS nare uses `sandbox-exec` (Seatbelt). On Linux it uses
+`bwrap` (bubblewrap), which needs the `bubblewrap` package and permission to
+create user namespaces. Other platforms have no sandbox here.
+
+**Refusal, never a fallback.** `--bash-sandbox` needs `--root`, and it refuses
+a root of `/`. When the platform has no sandbox, or it fails to start (no
+`bwrap`, or user namespaces are blocked), `nare run` exits 2 before any turn
+and says why. A call made while a sandboxed session runs is refused the same
+way and its command never starts unconfined. `--bash-network` without
+`--bash-sandbox` is refused too.
+
+**Recording.** A sandboxed session records the profile under its policy as
+`bash_sandbox`: `mechanism` (`seatbelt` or `bubblewrap`), `profile` (`confined-1`),
+`network`, `writable` (the root), `private_temp: true`, and `denied` (the
+credential locations on this machine). A session without the flag has no
+`bash_sandbox` key. `nare contract` reports under `bash_sandbox` whether this
+host can confine bash, and why not when it cannot.
+
+**Limits.** These are stated, not hidden:
+
+- Credential folders are masked when they exist at the start of a call. On
+  Linux a credential created inside the root during the same call is not
+  masked. On macOS the path rule covers it.
+- Caller tools (`--command-tools`) and MCP stdio servers are not confined. They
+  are programs the caller chose to run, not the model's shell.
+- The root is writable in full. Put the work in a directory you can throw away.
+- Non-file mach services stay reachable on macOS, apart from the keychain
+  services above. Anything a process can ask of a system service is still open.
+- On Linux the sandbox has no seccomp filter. Kernel attack surface is shared
+  with the host.
+- Landlock is not used. Where bubblewrap is missing, nare refuses rather than
+  switching to a weaker mechanism.
+- `/tmp` and `/run` are not the host's. On Linux each is an empty tmpfs, so a
+  Unix socket there (an agent socket, a container runtime socket) cannot be
+  reached. On macOS writes to `/tmp` are refused. A tool that hard-codes `/tmp`
+  fails on macOS. Tools that honour `TMPDIR` work on both.
+- Linux masks credential folders by path. A credential folder bind-mounted at a
+  second path, outside the masks, stays readable there.
 
 ## Tool arguments
 

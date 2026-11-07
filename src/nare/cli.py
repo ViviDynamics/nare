@@ -486,6 +486,21 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--bash-sandbox",
+        action="store_true",
+        help=(
+            "run each bash command under the OS sandbox: writes only in --root "
+            "and a private temp dir, credential folders unreadable, no network "
+            "unless --bash-network. Needs --root. macOS (sandbox-exec) and Linux "
+            "(bubblewrap). Refused where unavailable, never run unconfined"
+        ),
+    )
+    parser.add_argument(
+        "--bash-network",
+        action="store_true",
+        help="with --bash-sandbox, let bash commands use the network",
+    )
+    parser.add_argument(
         "--resume",
         nargs="?",
         const="",
@@ -655,6 +670,8 @@ def policy_from_args(args: argparse.Namespace) -> Policy:
         bash_credentials=args.bash_credentials,
         bash_allow=frozenset(args.bash_allow),
         bash_deny=frozenset(args.bash_deny),
+        bash_sandbox=args.bash_sandbox,
+        bash_network=args.bash_network,
     )
 
 

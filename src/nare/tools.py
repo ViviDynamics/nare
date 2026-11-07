@@ -20,6 +20,7 @@ import re
 import shutil
 import signal
 import subprocess
+import tempfile
 from collections.abc import Awaitable, Callable, Iterable, Iterator
 from dataclasses import asdict, dataclass, field
 from io import BytesIO
@@ -28,6 +29,7 @@ from typing import Any, TypeGuard
 
 from PIL import Image
 
+from nare import sandbox
 from nare.bash_rules import decide as decide_bash
 from nare.bash_rules import validate as validate_bash_rules
 from nare.events import redact
@@ -555,20 +557,41 @@ async def _lingers(pgid: int) -> bool:
     return True
 
 
-def _shell_env(credentials: bool) -> dict[str, str] | None:
+def _shell_env(credentials: bool, scratch: Path | None = None) -> dict[str, str] | None:
     """nare's environment without the provider credentials, or all of it when
     the policy opts in (None inherits).
+
+    A confined call gets its own TMPDIR, the scratch directory the sandbox
+    allows writes to, in place of the host's temp folder it may not write, and
+    only the variables in sandbox.CONFINED_ENV unless `credentials` is set.
 
     Read at each spawn, not at import, so the shell sees nare's environment as
     it is now.
     """
-    if credentials:
+    if credentials and scratch is None:
         return None
-    return {k: v for k, v in os.environ.items() if k not in CREDENTIAL_ENV}
+    if scratch is not None and not credentials:
+        # A confined call keeps only the variables a shell needs. Dropping just
+        # CREDENTIAL_ENV would leave GH_TOKEN and any cloud key in reach.
+        env = {k: os.environ[k] for k in sandbox.CONFINED_ENV if k in os.environ}
+        env["TMPDIR"] = str(scratch)
+        return env
+    env = (
+        dict(os.environ)
+        if credentials
+        else {k: v for k, v in os.environ.items() if k not in CREDENTIAL_ENV}
+    )
+    if scratch is not None:
+        env["TMPDIR"] = str(scratch)
+    return env
 
 
 async def _spawn(
-    command: str, cwd: str | None, *, credentials: bool = False
+    argv: list[str],
+    cwd: str | None,
+    *,
+    credentials: bool = False,
+    scratch: Path | None = None,
 ) -> asyncio.subprocess.Process | Exception:
     """Start the shell in its own group, and return a failure, not raise it.
 
@@ -578,13 +601,13 @@ async def _spawn(
     """
     try:
         return await asyncio.create_subprocess_exec(
-            *_shell(command),
+            *argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
             cwd=cwd,
-            env=_shell_env(credentials),
+            env=_shell_env(credentials, scratch),
         )
     except Exception as exc:
         return exc
@@ -596,9 +619,46 @@ async def bash_outcome(
     *,
     cwd: str | None = None,
     credentials: bool = False,
+    confine: sandbox.Confinement | None = None,
 ) -> BashOutcome:
-    """Run a command in bash with pipefail (sh without bash), in its own
-    process group, with no stdin.
+    """Run a command, confined when `confine` is given, else as a plain shell.
+
+    A confined call gets a fresh scratch directory for its TMPDIR, removed when
+    the call returns. It never starts unconfined: when the sandbox cannot wrap the
+    shell, SandboxUnavailable is raised before anything is spawned.
+    """
+    if confine is None:
+        return await _run_shell(
+            command, timeout, cwd=cwd, credentials=credentials, argv=_shell(command)
+        )
+    # Resolved: Seatbelt matches the real path, and macOS temp folders are
+    # reached through /var, a link to /private/var.
+    scratch = Path(tempfile.mkdtemp(prefix="nare-bash-")).resolve()
+    try:
+        argv = confine.wrap(_shell(command), scratch, sandbox.availability())
+        return await _run_shell(
+            command,
+            timeout,
+            cwd=cwd,
+            credentials=credentials,
+            argv=argv,
+            scratch=scratch,
+        )
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+async def _run_shell(
+    command: str,
+    timeout: int,
+    *,
+    cwd: str | None,
+    credentials: bool,
+    argv: list[str],
+    scratch: Path | None = None,
+) -> BashOutcome:
+    """Run `argv` (the shell, possibly wrapped) in its own process group, with no
+    stdin.
 
     `subprocess.run(timeout=...)` kills the shell and nothing the shell started,
     so `make dev &` outlives the call and the run leaks a server. The group is
@@ -614,7 +674,9 @@ async def bash_outcome(
     its own requests: `env` would put them in the transcript, and a file the
     model reads can ask for exactly that. `credentials` restores them.
     """
-    spawn = asyncio.create_task(_spawn(command, cwd, credentials=credentials))
+    spawn = asyncio.create_task(
+        _spawn(argv, cwd, credentials=credentials, scratch=scratch)
+    )
     try:
         # Shielded: Popen has started the shell before asyncio connects its
         # pipes. asyncio's own cleanup for a cancel there kills the shell
@@ -700,11 +762,15 @@ async def run_bash(
     *,
     cwd: str | None = None,
     credentials: bool = False,
+    confine: sandbox.Confinement | None = None,
 ) -> str:
     """The text of bash_outcome(): what the model reads. dispatch() calls
     bash_outcome() itself, to learn whether the result is an error.
     """
-    return (await bash_outcome(command, timeout, cwd=cwd, credentials=credentials)).text
+    outcome = await bash_outcome(
+        command, timeout, cwd=cwd, credentials=credentials, confine=confine
+    )
+    return outcome.text
 
 
 def ask(questions: list[str]) -> str:
@@ -1422,6 +1488,11 @@ class Policy:
     # refused before any approval. Deny wins. See nare.bash_rules.
     bash_allow: frozenset[str] = frozenset()
     bash_deny: frozenset[str] = frozenset()
+    # Run each bash command under the OS sandbox (nare.sandbox): writes only in
+    # the root and a private temp dir, credentials unreadable, and no network
+    # unless bash_network. Off by default.
+    bash_sandbox: bool = False
+    bash_network: bool = False
 
     def __post_init__(self) -> None:
         unknown = sorted(self.tools - set(TOOLS) - self.external.keys() - self.pending)
@@ -1434,6 +1505,39 @@ class Policy:
         validate_bash_rules(self.bash_deny, "deny")
         if (self.bash_allow or self.bash_deny) and "bash" not in self.tools:
             raise ValueError("bash command patterns need the bash tool in the policy")
+        if self.bash_network and not self.bash_sandbox:
+            raise ValueError(
+                "--bash-network needs --bash-sandbox: the network is only "
+                "switched off by the sandbox"
+            )
+        if self.bash_sandbox:
+            self._check_sandbox()
+
+    def _check_sandbox(self) -> None:
+        """Refuse a sandboxed policy that could not confine bash.
+
+        This is the startup refusal, so a caller learns it before any turn runs.
+        Each bash call is checked again at dispatch: the probe is cached per
+        process, and a sandbox binary that disappears later makes the spawn fail,
+        which is refused too.
+        """
+        if "bash" not in self.tools:
+            raise ValueError("the bash sandbox needs the bash tool in the policy")
+        if self.root is None:
+            raise ValueError(
+                "--bash-sandbox needs --root: it names the one folder bash may write to"
+            )
+        if self.root.resolve() == Path("/"):
+            raise ValueError(
+                "--bash-sandbox refuses a root of /: that would make the whole "
+                "disk writable"
+            )
+        found = sandbox.availability()
+        if not found.available:
+            raise ValueError(
+                f"{found.reason}; --bash-sandbox refuses to run bash unconfined"
+            )
+        self.confinement()
 
     def schemas(self) -> list[dict[str, Any]]:
         return [s for s in TOOL_SCHEMAS if s["name"] in self.tools] + [
@@ -1459,10 +1563,38 @@ class Policy:
             **({"bash_credentials": True} if self.bash_credentials else {}),
             **({"bash_allow": sorted(self.bash_allow)} if self.bash_allow else {}),
             **({"bash_deny": sorted(self.bash_deny)} if self.bash_deny else {}),
+            **({"bash_sandbox": self._sandbox_record()} if self.bash_sandbox else {}),
             **({"external_sha256": external_digest(offered)} if offered else {}),
             "tools": sorted(self.tools),
             "root": None if self.root is None else str(self.root),
         }
+
+    def _sandbox_record(self) -> dict[str, Any]:
+        """The confinement each bash call gets, as the session records it."""
+        confine = self.confinement()
+        assert confine is not None  # only called when bash_sandbox is set
+        return sandbox.record(confine, sandbox.availability().mechanism)
+
+    def confinement(self) -> sandbox.Confinement | None:
+        """What a bash call runs under, or None when the sandbox is off.
+
+        Refused when the root contains a credential location. Renaming a folder
+        that holds one, inside the root, would move the credential to a path
+        that is not denied, so the root must not contain one.
+        """
+        if not self.bash_sandbox:
+            return None
+        assert self.root is not None  # _check_sandbox ran at construction
+        root = self.root.resolve()
+        denied = sandbox.default_denied()
+        for path in denied:
+            if path == root or path.is_relative_to(root):
+                raise ValueError(
+                    f"--root {root} contains the credential location {path}; "
+                    "choose a root that does not hold it, since bash could "
+                    "rename the folder and read the credential from its new path"
+                )
+        return sandbox.Confinement(root=root, network=self.bash_network, denied=denied)
 
     def resolve(self, path: str) -> Path:
         """Resolve a model-supplied path, refusing anything outside the root.
@@ -1600,6 +1732,17 @@ async def dispatch(
             return tool_result(
                 call.id, f"{call.name}: {'; '.join(problems)}", is_error=True
             )
+    if call.name == "bash" and policy.bash_sandbox:
+        # Before approval, and again at the spawn: a host that lost its sandbox
+        # under a session refuses here, and the command is never run bare.
+        found = sandbox.availability()
+        if not found.available or policy.root is None:
+            return tool_result(
+                call.id,
+                "bash sandbox is not available here, so the command was not run: "
+                f"{found.reason or 'no root to confine to'}",
+                is_error=True,
+            )
     ruled: str | None = None
     if call.name == "bash" and (policy.bash_allow or policy.bash_deny):
         # Before approval, so a deny holds under --yes, and an allow runs
@@ -1660,6 +1803,7 @@ async def dispatch(
         if call.name == "bash":
             # Set after the model's arguments, so it cannot be moved by them.
             args["credentials"] = policy.bash_credentials
+            args["confine"] = policy.confinement()
         output: str | dict[str, Any]
         record: Evidence | None = None
         if call.name == "read":
