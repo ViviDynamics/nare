@@ -762,8 +762,27 @@ request is refused with 400 and the wait goes on. Nothing goes to
 stdout. Success prints `authorized <alias>` on stderr and exits 0; a failure
 exits 1 with a message that quotes no token and no server reply.
 
+    nare mcp logout docs --mcp-config servers.json
+
+`nare mcp logout ALIAS` deletes the stored tokens. With `--mcp-config` it first
+revokes the stored refresh and access tokens (RFC 7009) at the authorization server, when the
+server advertises a revocation endpoint. That request goes only to the pinned
+`authorization_server`, or to the MCP server's origin, under the same https and
+origin rules as login; it is never sent to any other origin. The client secret,
+when one is configured, is read from its environment variable and sent only in
+that request. Without `--mcp-config` nothing is revoked, and the message says so.
+The file is removed either way. It exits 0 when the file is gone and the
+revocation was sent and accepted, or when the server offers no revocation. It
+exits 1 when the revocation was refused, unreachable or not sent, because the
+token may still be valid at the server; the message says which. Nothing goes to
+stdout. The next `nare run` then asks for `nare mcp login`.
+
 `nare run` never opens a browser. It refreshes stored tokens when they near
-expiry (30 seconds early). A server with no stored authorization, a refresh the
+expiry (30 seconds early). A refresh is made while holding a lock beside the
+token file (`ALIAS.lock`), and the file is read again once the lock is held, so
+two runs refreshing the same token take turns: the second uses the tokens the
+first stored, rather than spending a refresh token the server has already
+rotated out. A logout takes the same lock. A server with no stored authorization, a refresh the
 server refuses, or a revoked token stops the run with `status=error`,
 `stop_reason=mcp`, exit 1, before any model call, and the message names
 `nare mcp login`. A tool call that meets the same failure is an `is_error` tool
@@ -774,7 +793,7 @@ result.
 a 0700 folder, atomically. It holds the access and refresh tokens, the expiry
 and any dynamic registration, and it is bound to the server URL it was written
 for. A file readable by other users is refused until it is fixed. Delete the
-file to forget a server's authorization.
+file (or run `nare mcp logout`) to forget a server's authorization.
 
 The tokens never appear in argv, the session file, the event stream, stderr or
 logs. A session records the policy and the root, never the configuration. A

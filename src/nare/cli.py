@@ -151,6 +151,22 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SECONDS",
         help="how long to wait for the browser to finish (default 300)",
     )
+    logout_parser = mcp_sub.add_parser(
+        "logout",
+        help=(
+            "delete the stored OAuth tokens for a server, revoking them at its "
+            "authorization server when it advertises a revocation endpoint"
+        ),
+    )
+    logout_parser.add_argument("alias", help="the server's alias")
+    logout_parser.add_argument(
+        "--mcp-config",
+        metavar="PATH",
+        help=(
+            "JSON file of MCP servers; needed to revoke the token at the server "
+            "(without it the tokens are only deleted)"
+        ),
+    )
     run_parser = sub.add_parser("run", help="run a task headlessly")
 
     run_parser.add_argument(
@@ -1111,6 +1127,35 @@ def _mcp_login(args: argparse.Namespace) -> int:
     return 0
 
 
+def _mcp_logout(args: argparse.Namespace) -> int:
+    """`nare mcp logout`: delete the stored tokens, revoking them where the
+    server allows. Status goes to stderr, like login."""
+    server = None
+    if args.mcp_config is not None:
+        try:
+            servers = parse_servers(
+                json.loads(Path(args.mcp_config).read_text(encoding="utf-8"))
+            )
+        except (OSError, ValueError) as exc:
+            print(f"nare: --mcp-config: {exc}", file=sys.stderr)
+            return 2
+        server = servers.get(args.alias)
+        if server is None or server.auth is None:
+            print(
+                f"nare: {args.alias!r} is not a remote MCP server with auth in "
+                "--mcp-config",
+                file=sys.stderr,
+            )
+            return 2
+    try:
+        message = asyncio.run(mcp_auth.logout(args.alias, server))
+    except (mcp_auth.McpAuthError, OSError) as exc:
+        print(f"nare: {exc}", file=sys.stderr)
+        return 1
+    print(f"nare: {message}", file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None, *, transport: Transport | None = None) -> int:
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
     parser = build_parser()
@@ -1124,6 +1169,8 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         return _redact_stdin()
 
     if args.command == "mcp":
+        if args.mcp_command == "logout":
+            return _mcp_logout(args)
         return _mcp_login(args)
 
     if args.command == "tui":

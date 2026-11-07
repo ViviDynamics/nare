@@ -18,7 +18,9 @@ is the MCP server's own origin, unless the configuration pins another one with
 
 Tokens, the discovered authorization server metadata and any dynamic
 registration live in $NARE_HOME/mcp-auth/ALIAS.json, written 0600 in a 0700
-folder. Nothing here goes into the session file or the event stream. Errors
+folder. A refresh, and a logout, hold a lock beside that file so concurrent
+runs take turns; `nare mcp logout` revokes the token where the server allows.
+Nothing here goes into the session file or the event stream. Errors
 that reach a caller say what kind of failure happened, never a reply from a
 server, because the SDK's OAuth errors quote the authorization server.
 """
@@ -27,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fcntl
 import json
 import logging
 import math
@@ -60,6 +63,14 @@ DEFAULT_LOGIN_TIMEOUT = 300.0
 # headless run refreshes it rather than meeting the server's 401 at the boundary,
 # where the SDK would ask for a browser.
 _EXPIRY_SKEW = 30.0
+# How long a process waits for another nare process that holds a server's token
+# lock (a refresh or a logout). A token exchange is bounded by its own timeout,
+# so this only fails when something is badly wrong.
+_LOCK_WAIT = 60.0
+# A .mcp-*.tmp file older than this is a leftover from a crash, not a save in
+# progress. A save takes milliseconds, so ten minutes is far past any live one.
+_TMP_GRACE = 600.0
+_REVOKE_TIMEOUT = 10.0
 _PLACEHOLDER_REDIRECT = "http://127.0.0.1/callback"
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _KEYS = frozenset(
@@ -190,6 +201,19 @@ def _check_request(
         )
 
 
+def _refresh_token_sent(request: httpx2.Request) -> str | None:
+    """The refresh token a refresh-grant token request carries, else None."""
+    if request.method != "POST":
+        return None
+    try:
+        body = parse_qs(request.content.decode("utf-8"))
+    except (UnicodeDecodeError, RuntimeError):
+        return None
+    if body.get("grant_type") != ["refresh_token"]:
+        return None
+    return body.get("refresh_token", [None])[0]
+
+
 def failure(alias: str, exc: BaseException) -> BaseException:
     """What a caller sees of an exception from an OAuth server.
 
@@ -231,8 +255,14 @@ def _leaves(exc: BaseException) -> list[BaseException]:
 # -- token storage -----------------------------------------------------------
 
 
+_ALIAS = re.compile(r"[A-Za-z][A-Za-z0-9_-]*\Z")
+
+
 def _token_path(alias: str) -> Path:
     from nare.session import nare_home
+
+    if not _ALIAS.fullmatch(alias) or "__" in alias:
+        raise McpAuthError(f"MCP alias {alias!r} is not a valid server name")
 
     try:
         home = nare_home()
@@ -321,6 +351,16 @@ class TokenFile:
         self._client = None
         self._save()
 
+    def reload(self) -> None:
+        """Read the file again, as another process may have left it. A missing
+        file means no stored authorization: nothing is kept from memory, so a
+        token that another process removed is not used."""
+        self.tokens = None
+        self.expires_at = None
+        self.metadata = None
+        self._client = None
+        self._load()
+
     def _configured(self) -> OAuthClientInformationFull | None:
         from mcp.shared.auth import OAuthClientInformationFull
 
@@ -350,17 +390,66 @@ class TokenFile:
     async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
         if self.settings.client_id is None:
             self._client = client_info
-            self._save()
+            self._save_shared(locked=False)
 
-    def set_metadata(self, metadata: OAuthMetadata) -> None:
+    def set_metadata(self, metadata: OAuthMetadata, *, locked: bool = False) -> None:
         """Keep the authorization server's endpoints, so a refresh in a later
-        process goes where this one's did, not to the MCP server's origin."""
+        process goes where this one's did, not to the MCP server's origin.
+        `locked` says the caller already holds the token lock."""
         if self.metadata is not None and self.metadata.model_dump(
             mode="json"
         ) == metadata.model_dump(mode="json"):
             return
         self.metadata = metadata
-        self._save()
+        self._save_shared(locked)
+
+    def _save_shared(self, locked: bool) -> None:
+        """Save metadata or a registration without writing back tokens this
+        process holds in memory. Another process may have refreshed or logged
+        out since they were read, so the file's tokens are kept. If the file is
+        gone and this process held tokens, they were logged out elsewhere, and
+        nothing is written. When the lock is free it is taken without waiting;
+        when it is busy the save is skipped, and the next response saves it."""
+        fd: int | None = None
+        if not locked:
+            fd = _try_lock(self.path.parent, self.path.stem)
+            if fd is None:
+                return
+        try:
+            if not self.path.exists():
+                if self.tokens is not None:
+                    return
+            elif not self._adopt_disk_tokens():
+                return
+            self._save()
+        finally:
+            if fd is not None:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
+
+    def _adopt_disk_tokens(self) -> bool:
+        """Take the tokens and their expiry from the file. False when the file
+        cannot be read as this server's record, so nothing is written over it."""
+        from mcp.shared.auth import OAuthToken
+
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        if not isinstance(data, dict) or data.get("server") != self.server_url:
+            return False
+        raw = data.get("tokens")
+        try:
+            self.tokens = OAuthToken.model_validate(raw) if raw is not None else None
+        except ValueError:
+            return False
+        expires = data.get("expires_at")
+        self.expires_at = (
+            float(expires)
+            if isinstance(expires, (int, float)) and not isinstance(expires, bool)
+            else None
+        )
+        return True
 
     def _save(self) -> None:
         payload = {
@@ -399,6 +488,76 @@ class TokenFile:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
             raise
+        _sweep_leftovers(folder, keep=tmp)
+
+
+def _try_lock(folder: Path, stem: str) -> int | None:
+    """The token lock, taken without waiting. None when another holder has it."""
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(folder / f"{stem}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def _sweep_leftovers(folder: Path, *, keep: str) -> None:
+    """Remove .mcp-*.tmp files a crashed save left behind. A recent one may be
+    another process's save in progress, so only old ones go."""
+    cutoff = time.time() - _TMP_GRACE
+    for leftover in folder.glob(".mcp-*.tmp"):
+        if str(leftover) == keep:
+            continue
+        with contextlib.suppress(OSError):
+            if leftover.stat().st_mtime < cutoff:
+                leftover.unlink()
+
+
+class _TokenLock:
+    """An exclusive lock on one server's token file, held across a token
+    exchange and across a logout. Two nare processes refreshing the same token
+    would otherwise both spend the refresh token, and the server rotates it:
+    the loser would store a token the server has already retired.
+
+    The lock is an flock on a file beside the token file. It is taken without
+    blocking the event loop, so the SDK's own in-process lock still works.
+    """
+
+    def __init__(self, folder: Path, alias: str) -> None:
+        self.folder = folder
+        self.alias = alias
+        self._fd: int | None = None
+
+    async def __aenter__(self) -> _TokenLock:
+        self.folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd = os.open(self.folder / f"{self.alias}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _LOCK_WAIT
+        try:
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if loop.time() >= deadline:
+                        raise McpAuthError(
+                            f"MCP server {self.alias}: another nare process is "
+                            "using its authorization; try again"
+                        ) from None
+                    await asyncio.sleep(0.05)
+        except BaseException:
+            os.close(fd)
+            raise
+        self._fd = fd
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        if self._fd is not None:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+            os.close(self._fd)
+            self._fd = None
 
 
 def _redirect(uri: str) -> Any:
@@ -525,19 +684,54 @@ def build_provider(
             # is sent. The original request is the MCP call itself, which the
             # transport already addresses to the server.
             flow = super()._auth_flow(request)
+            guard: _TokenLock | None = None
             try:
                 outgoing = await flow.__anext__()
                 while True:
                     if outgoing is not request:
                         _check_request(alias, outgoing, mcp_origin, as_origin)
+                    spent = _refresh_token_sent(outgoing)
+                    if spent is not None and guard is None:
+                        # A refresh spends the refresh token, which the server
+                        # may rotate. Take the lock, then read what another
+                        # process stored while this one waited.
+                        guard = _TokenLock(storage.path.parent, alias)
+                        await guard.__aenter__()
+                        storage.reload()
+                        if storage.tokens is None:
+                            raise McpAuthError(
+                                f"MCP server {alias} needs authorization again; "
+                                f"{login_hint(alias)}"
+                            )
+                        if storage.tokens.refresh_token != spent:
+                            # Another process already refreshed. Use its tokens and
+                            # do not spend the retired refresh token.
+                            self.context.current_tokens = storage.tokens
+                            self.context.token_expiry_time = (
+                                storage.expires_at - _EXPIRY_SKEW
+                                if storage.expires_at is not None
+                                else None
+                            )
+                            await flow.aclose()
+                            flow = super()._auth_flow(request)
+                            outgoing = await flow.__anext__()
+                            continue
                     response = yield outgoing
                     if self.context.oauth_metadata is not None:
-                        storage.set_metadata(self.context.oauth_metadata)
+                        storage.set_metadata(
+                            self.context.oauth_metadata, locked=guard is not None
+                        )
                     outgoing = await flow.asend(response)
+                    if guard is not None and _refresh_token_sent(outgoing) is None:
+                        # The exchange is over and its tokens are stored.
+                        await guard.__aexit__()
+                        guard = None
             except StopAsyncIteration:
                 return
             finally:
                 await flow.aclose()
+                if guard is not None:
+                    await guard.__aexit__()
 
         async def _initialize(self) -> None:
             await super()._initialize()
@@ -689,3 +883,137 @@ async def login(
             {alias: server}, startup_timeout=timeout, authorizer=authorizer
         ) as tools:
             return sorted(tools)
+
+
+# -- logout ------------------------------------------------------------------
+
+
+async def logout(alias: str, server: Server | None = None) -> str:
+    """Delete the stored tokens for ALIAS and return a fixed status sentence.
+
+    With `server` (its entry in --mcp-config), the token is first revoked at
+    the authorization server, when that server advertises a revocation
+    endpoint. The endpoint must be https (or loopback) and must be on the
+    authorization server's origin, the same rule as every other request in this
+    module; it is never contacted otherwise. Without `server` nothing is
+    revoked, and the sentence says so.
+
+    The file is removed whether or not revocation worked. A failed revocation
+    raises McpAuthError, because the token may still be valid at the server.
+    The token lock is held throughout, so a refresh in another process cannot
+    store a token after this logout.
+    """
+    path = _token_path(alias)
+    async with _TokenLock(path.parent, alias):
+        record = _read_record(path)
+        if not path.exists():
+            return f"no stored authorization for {alias}"
+        outcome = "not revoked: no --mcp-config was given"
+        failed = None
+        if server is not None:
+            outcome, failed = await _revoke(alias, server, record)
+        with contextlib.suppress(FileNotFoundError):
+            path.unlink()
+        if failed is not None:
+            raise McpAuthError(f"{failed}; the stored tokens were removed")
+    return f"removed the stored tokens for {alias}; {outcome}"
+
+
+def _read_record(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+async def _revoke(
+    alias: str, server: Server, record: dict[str, Any] | None
+) -> tuple[str, str | None]:
+    """Revoke the stored tokens at the server. Returns (what happened, the
+    failure in fixed text or None). Error text never includes a server reply."""
+    import httpx2
+
+    if server.auth is None or server.url is None or record is None:
+        return "nothing to revoke", None
+    if record.get("server") != server.url:
+        # The file was written for another URL. Its tokens are not this server's.
+        return "nothing to revoke", None
+    tokens = record.get("tokens")
+    metadata = record.get("metadata") or {}
+    endpoint = (
+        metadata.get("revocation_endpoint") if isinstance(metadata, dict) else None
+    )
+    if not isinstance(endpoint, str) or not endpoint:
+        return (
+            "the server advertises no revocation endpoint, so it was not revoked",
+            None,
+        )
+    if not isinstance(tokens, dict):
+        return "nothing to revoke", None
+    # The refresh token first: the server may revoke the access token with it.
+    # Both are sent, because a server need not cascade the revocation.
+    held = [
+        (tokens[key], hint)
+        for key, hint in (
+            ("refresh_token", "refresh_token"),
+            ("access_token", "access_token"),
+        )
+        if isinstance(tokens.get(key), str) and tokens.get(key)
+    ]
+    if not held:
+        return "nothing to revoke", None
+    try:
+        mcp_origin = _origin(server.url)
+        pinned = server.auth.authorization_server
+        as_origin = _origin(pinned) if pinned is not None else mcp_origin
+    except ValueError:
+        return "", f"MCP server {alias}: its address is not valid, so nothing was sent"
+
+    client_id = server.auth.client_id
+    if client_id is None and isinstance(record.get("client"), dict):
+        client_id = record["client"].get("client_id")
+    # The SDK's revocation model requires the key, so a public client sends it
+    # empty. The value is never logged; it is only the secret when one is set.
+    secret = ""
+    if server.auth.client_secret_env is not None:
+        secret = os.environ.get(server.auth.client_secret_env) or ""
+        if not secret:
+            return "", (
+                f"MCP server {alias}: environment variable "
+                f"{server.auth.client_secret_env} is not set, so it was not revoked"
+            )
+
+    async with httpx2.AsyncClient(
+        follow_redirects=False, trust_env=False, timeout=_REVOKE_TIMEOUT
+    ) as client:
+        for token, hint in held:
+            data: dict[str, str] = {
+                "token": token,
+                "token_type_hint": hint,
+                "client_secret": secret,
+            }
+            if client_id:
+                data["client_id"] = client_id
+            try:
+                request = httpx2.Request("POST", endpoint, data=data)
+                _check_request(alias, request, mcp_origin, as_origin)
+            except McpAuthError as exc:
+                return "", f"{exc}; the revocation was not sent"
+            except (ValueError, httpx2.InvalidURL):
+                return "", (
+                    f"MCP server {alias}: the revocation endpoint is not a valid "
+                    "URL; the revocation was not sent"
+                )
+            try:
+                reply = await client.send(request)
+            except httpx2.TimeoutException:
+                return "", f"MCP server {alias}: revocation timed out"
+            except (httpx2.HTTPError, OSError):
+                return "", f"MCP server {alias}: revocation could not reach the server"
+            if reply.status_code != 200:
+                return "", (
+                    f"MCP server {alias}: the server refused the revocation "
+                    f"(HTTP {reply.status_code})"
+                )
+    return "revoked at the server", None
