@@ -157,11 +157,21 @@ def _denied_by(command: str, deny: frozenset[str], depth: int = 0) -> set[str]:
                 return set(deny)
             if name in _SHELLS and not _reads_command_string(texts[1:]):
                 return set(deny)  # the commands come from a file or stdin
+            if any("\\" in text for text in texts[1:]):
+                # A runner may unescape its string itself (`env -S` reads `\_`
+                # as a space), which this check does not model.
+                return set(deny)
             for text in texts[1:]:
                 refused |= _denied_by(text, deny, depth + 1)
                 refused |= _suffix_hits(text, deny)
         for index in range(len(texts)):
             refused |= _tail_hits(texts[index:], deny)
+        for text in texts:
+            # An option may name a program after `=`: `--to-command=rm x`.
+            refused |= _hits(
+                (text[index + 1 :] for index, char in enumerate(text) if char == "="),
+                deny,
+            )
     return refused
 
 

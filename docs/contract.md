@@ -1239,6 +1239,11 @@ checked, so `sh -c "rm x"`, `env -S'rm x'` and `bash -e -c 'rm x'` match. A
 shell's `-c` must come before any operand, and a long option such as
 `--rcfile` is refused, because its operand would be a file that runs unseen.
 
+A runner's argument that contains a backslash is refused, since a runner such as
+`env -S` unescapes its string itself. A word's text after any `=` is also read
+as a command, so an option that names a program, such as `--to-command=rm x`,
+is checked.
+
 A deny refuses, rather than guesses, every line it cannot check, and says which
 patterns refused it.
 

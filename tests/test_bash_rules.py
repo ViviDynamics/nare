@@ -393,6 +393,12 @@ REVIEW_TWO = [
     "arch -arm64 {{touch,{m}}}",
     "xcrun {{touch,{m}}}",
     "GIT_EXTERNAL_DIFF='touch {m}' git diff",
+    # Found by the third review: env unescapes its -S string itself.
+    "env -S 'touch\\_{m}'",
+    'env -S"touch\\\\_{m}"',
+    # An option that names a program, for a command that is not a runner.
+    "tar --to-command='touch {m}' -xf a.tar",
+    "sort --compress-program='touch {m}' x",
 ]
 
 
