@@ -28,12 +28,12 @@ source list at the end.
 
 - **Target:** Bedrock; context compaction (window discovery, then summary);
   a cost-aware benchmark (#151-159); bash command-pattern rules; remote MCP
-  OAuth; session fork. Measure before changing behaviour.
+  OAuth; session fork; an OS sandbox for `bash` (#240); a bounded sub-run as a
+  tool (#241); MCP tool deferral (#242). Measure before changing behaviour.
 - **Cut:** in-loop subagents, hooks and plugins, skills and plugin packaging,
   a network server or SDK, and TUI feature parity. Each has a reason below and
   a condition for revisiting it.
-- **Undecided (Jason):** an OS sandbox for `bash`; a bounded sub-run as a
-  tool; Vertex and Foundry providers; MCP tool deferral; and whether comparisons
+- **Undecided (Jason):** Vertex and Foundry providers; and whether comparisons
   with other products belong in an ADR (see the last undecided item).
 
 ## 1. Feature matrix
@@ -112,6 +112,9 @@ other two without writing the layer itself.
 | Remote MCP OAuth | both | new (P2) | Remote servers that need login cannot be used |
 | Session fork | both | new (P3) | A caller branches a run without copying files by hand |
 | Local home for sessions and settings | none | #72 | Operational convenience only |
+| OS sandbox for `bash` (U1, moved 2026-11-07) | Claude Code | #240 | nare's README leaves confinement to the container; the largest security gap in the table |
+| Bounded sub-run as a tool (U2, moved 2026-11-07) | both | #241 | The only subagent form with a clear case; it crosses the ADR 0008 policy line |
+| MCP tool deferral (U4, moved 2026-11-07) | Claude Code | #242 | Worth it only if callers hit context limits with many MCP tools |
 
 ### Cut: explicitly out of scope
 
@@ -133,24 +136,30 @@ other two without writing the layer itself.
 
 ### Undecided: for Jason
 
-- **U1. OS sandbox for `bash`.** Claude Code ships one, off by default. nare's
-  README leaves confinement to the container. This is the largest security gap
-  in the table. Decide whether to ship optional confinement or keep the
-  container as the contract.
-- **U2. A bounded sub-run as a tool.** A fresh context that returns a summary
-  and counts against the parent budget. It is the only subagent form with a
-  clear case, and it crosses the ADR 0008 policy line.
 - **U3. Vertex and Foundry providers.** Claude Code has both; only Bedrock is
   planned.
-- **U4. MCP tool deferral.** Claude Code defers MCP tool definitions behind a
-  search step by default [C3]. Worth it only if callers hit context limits with
-  many MCP tools.
 - **U5. OpenCode v2 status.** Confirm the release state and whether v2 changes
   any `opencode` row above before the matrix is used for a decision.
 - **U6. Where comparisons live.** ADR 0008 bars other products' names from
   living documentation, and the PR template repeats that rule. This document
   sits in `docs/plans/`, which the caller-agnostic test exempts as history. If
   comparisons should be recorded as ADRs, the rule itself needs an amendment.
+
+### Moved from undecided to target (2026-11-07)
+
+Jason moved these three items to target on 2026-11-07. Their text is kept here
+as it stood in section 3.
+
+- **U1 (#240). OS sandbox for `bash`.** Claude Code ships one, off by default.
+  nare's README leaves confinement to the container. This is the largest
+  security gap in the table. Decide whether to ship optional confinement or
+  keep the container as the contract.
+- **U2 (#241). A bounded sub-run as a tool.** A fresh context that returns a
+  summary and counts against the parent budget. It is the only subagent form
+  with a clear case, and it crosses the ADR 0008 policy line.
+- **U4 (#242). MCP tool deferral.** Claude Code defers MCP tool definitions
+  behind a search step by default [C3]. Worth it only if callers hit context
+  limits with many MCP tools.
 
 ## 4. Recommended order for the target gaps
 
