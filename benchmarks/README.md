@@ -64,6 +64,40 @@ Tokens are `input + output + cache_read + cache_write` from nare's result
 line. A proxy serves most input from cache, so counting only `input` would
 hide a longer prompt.
 
+## Cost, provenance and the token test
+
+Every results line carries what produced it, so an old number can be
+compared with a new one or refused. `nare_version` and `nare_commit` name the
+nare that ran, `image_id` the container image, `case_hash` the case as the
+runner read it (`case.toml` and every fixture file, by path and digest),
+`started` the rep's start time, `tool_calls` the calls by tool from the
+kept `session.json`, and `error_cause` the reason a rep could not be graded.
+`error_cause` is one of `timeout`, `no_result_line`, `agent_http_error`,
+`sandbox_error`, `judge_http_error`, `judge_empty`, `judge_unparsed`, or
+`judge_unanswered`. Each rep also records `cost`, nare's dollar cost for the
+rep, and `cost_estimated`, which is true when nare estimated the cost from
+prices rather than reading the backend's figure. A backend that reports no
+cost leaves `cost` null, and that rep is counted as unknown, never as zero.
+
+`render` shows, per case, the pass count with its interval, the token median
+with its range, dollars per rep and per solved task, and the verdict. A `~`
+marks an estimated figure and a `*` marks reps with no reported cost.
+
+**Refusal on a changed case.** A baseline records each case's hash. `run` and
+`compare` refuse, with exit 2, a case whose hash differs from the one the
+baseline measured, since its old numbers are for a different task. Pass
+`--allow-case-change` to compare anyway, or bless again. A baseline blessed
+before hashes were recorded cannot say, and is compared as before.
+
+**The token test.** A rise in tokens is a ratio, so it is tested on the log
+of the token median against each side's spread (the standard deviation of
+the logs of its judged reps). A rise is flagged only when it is significant
+at one-sided 5%. A rise under the noise is not flagged however large it looks,
+and a drop is never flagged. Both sides need a spread: a baseline blessed
+before spreads were recorded, or a run with one rep, has no test, and the
+note says so rather than calling the rise. `--strict-tokens` fails the run on
+a significant rise. Re-bless to record spreads on an old baseline.
+
 ## Which models the endpoint serves
 
     bin/bench models                    # needs NARE_BASE_URL and the key

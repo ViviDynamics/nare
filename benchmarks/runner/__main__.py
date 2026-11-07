@@ -20,7 +20,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from benchmarks.runner.agreement import Header, Skip, render_summary
 from benchmarks.runner.calibration import (
@@ -81,6 +81,12 @@ from benchmarks.runner.nare_args import (
     stage_inputs,
     variant,
 )
+from benchmarks.runner.provenance import (
+    case_hash,
+    image_id,
+    judge_cause,
+    session_tool_calls,
+)
 from benchmarks.runner.reference import DockerRuntime, judge_from, verify_references
 from benchmarks.runner.report import (
     Baseline,
@@ -90,6 +96,7 @@ from benchmarks.runner.report import (
     Comparison,
     RepRecord,
     baseline_path,
+    changed_cases,
     compare,
     dumps_baseline,
     load_baseline,
@@ -120,6 +127,7 @@ from benchmarks.runner.toolhealth import (
     rep_health,
 )
 from benchmarks.runner.triage import triage_transport
+from nare import __version__ as NARE_VERSION
 from nare.contract import NEVER_STARTED
 from nare.transport import Transport
 
@@ -128,7 +136,6 @@ CONFIRM_REPS = 10
 # 124 is the sandbox timeout; 125-127 are docker's own (daemon, permissions,
 # command not found). A check that exits one of these never ran, so it proves
 # nothing about the fixture and must not read as a failing check.
-TOKEN_BAND = 0.10
 
 
 def split_run_args(argv: Sequence[str]) -> tuple[list[str], list[str] | None]:
@@ -213,6 +220,12 @@ def build_parser() -> argparse.ArgumentParser:
             action="store_true",
             help="compare against, or bless on top of, a baseline blessed with "
             "different run arguments (what follows -- on run)",
+        )
+        child.add_argument(
+            "--allow-case-change",
+            action="store_true",
+            help="compare against a baseline whose case (case.toml or its fixture) "
+            "has changed since it was blessed",
         )
         if name == "run":
             child.add_argument(
@@ -557,6 +570,9 @@ def _errored_rep(
     kept_ref: str,
     why: str,
     health: dict[str, int] | None,
+    cause: str,
+    provenance: Mapping[str, Any],
+    tool_calls: dict[str, int] | None,
 ) -> RepRecord:
     """A repetition that could not be graded. It is counted in neither rate."""
     empty = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
@@ -583,6 +599,11 @@ def _errored_rep(
         context_window=use.window,
         compactions=use.compactions,
         tool_health=health,
+        cost=None if line is None else line.cost,
+        cost_estimated=False if line is None else line.cost_estimated,
+        tool_calls=tool_calls,
+        error_cause=cause,
+        **provenance,
     )
 
 
@@ -596,11 +617,21 @@ async def run_rep(
     """
     kept = evidence / f"{case.id}-{rep}"
     kept_ref = kept.relative_to(evidence.parent).as_posix()
+    # What produced this line, so a later comparison can tell whether the
+    # numbers are the same measurement. Taken before the rep runs.
+    provenance: dict[str, Any] = {
+        "nare_version": NARE_VERSION,
+        "nare_commit": _commit(),
+        "case_hash": case_hash(case),
+        "image_id": image_id(),
+        "started": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
     with sandbox(case) as (workdir, artifacts):
         result = run_agent(case, workdir, artifacts, config)
         keep_evidence(kept, artifacts, result)
         # Read from the kept copies, so every rep is counted, stopped or not.
         health = rep_health(kept)
+        tool_calls = session_tool_calls(kept)
         line = parse_stdout(result.stdout)
         if line is None and not result.timed_out and result.exit_code == NEVER_STARTED:
             # nare refused to start (its parser, its argument checks or its
@@ -618,10 +649,23 @@ async def run_rep(
             # same thing with a result line. Either is an error, never a failure.
             if line is None:
                 why = "timed out" if result.timed_out else "no result line"
+                cause = "timeout" if result.timed_out else "no_result_line"
             else:
                 why = line.error or "run errored"
+                cause = "agent_http_error"
             return _errored_rep(
-                case, rep, config, result, line, use, kept_ref, why, health
+                case,
+                rep,
+                config,
+                result,
+                line,
+                use,
+                kept_ref,
+                why,
+                health,
+                cause,
+                provenance,
+                tool_calls,
             )
 
         # Before the bash checks, so nothing a check writes reaches the judge.
@@ -640,7 +684,18 @@ async def run_rep(
             # cannot be graded is an error, as a dead container is, so the
             # run's other repetitions are kept.
             return _errored_rep(
-                case, rep, config, result, line, use, kept_ref, str(exc), health
+                case,
+                rep,
+                config,
+                result,
+                line,
+                use,
+                kept_ref,
+                str(exc),
+                health,
+                "sandbox_error",
+                provenance,
+                tool_calls,
             )
 
         graded = [
@@ -655,6 +710,7 @@ async def run_rep(
         met: list[bool | None] | None = None
         reasons: list[str] = []
         why = ""
+        judge_cause_text: str | None = None
         if case.judge is not None:
             attempts: tuple[JudgeAttempt, ...]
             try:
@@ -666,6 +722,7 @@ async def run_rep(
                 )
             except JudgeError as exc:
                 why = f"judge failed: {exc}"
+                judge_cause_text = judge_cause(exc)
                 attempts = exc.attempts
             (kept / "judge.txt").write_text(render_attempts(attempts), encoding="utf-8")
 
@@ -699,6 +756,11 @@ async def run_rep(
         judge_max_tokens=config.judge_max_tokens if case.judge is not None else None,
         diff_sha256=hashlib.sha256(diff.encode("utf-8")).hexdigest(),
         tool_health=health,
+        cost=line.cost,
+        cost_estimated=line.cost_estimated,
+        tool_calls=tool_calls,
+        error_cause=judge_cause_text,
+        **provenance,
     )
 
 
@@ -939,12 +1001,35 @@ def args_changed(
     return True
 
 
+def case_changed(
+    baseline: Baseline,
+    hashes: Mapping[str, str],
+    args: argparse.Namespace,
+    *,
+    where: str | None = None,
+) -> bool:
+    """Whether a case changed since the baseline measured it, refused unless
+    `--allow-case-change`. A changed task's old numbers are not its new ones."""
+    changed = changed_cases(hashes, baseline)
+    if not changed or getattr(args, "allow_case_change", False):
+        return False
+    named = f" ({where})" if where else ""
+    print(
+        f"bench: {', '.join(changed)} changed since the baseline{named} measured "
+        "it, so its numbers are not comparable; re-bless the baseline, or pass "
+        "--allow-case-change",
+        file=sys.stderr,
+    )
+    return True
+
+
 def incomparable(
     baseline: Baseline,
     config: Config,
     args: argparse.Namespace,
     *,
     where: str | None = None,
+    hashes: Mapping[str, str] | None = None,
 ) -> bool:
     """Whether a model change or a variant change refuses the comparison.
 
@@ -960,7 +1045,8 @@ def incomparable(
         where=where,
         match="run" if where is None else "matrix",
     )
-    return model or arguments
+    case = case_changed(baseline, hashes or {}, args, where=where)
+    return model or arguments or case
 
 
 def variant_note(baseline: Baseline, config: Config) -> str | None:
@@ -1314,7 +1400,6 @@ def confirm(
     first = compare(
         summarize(records),
         baseline,
-        token_band=TOKEN_BAND,
         strict_tokens=strict_tokens,
     )
     suspects = [d.case for d in first.deltas if d.verdict == "suspect"]
@@ -1337,7 +1422,6 @@ def confirm(
         summarize(records),
         baseline,
         confirmed=True,
-        token_band=TOKEN_BAND,
         strict_tokens=strict_tokens,
     )
 
@@ -1506,6 +1590,10 @@ def run_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) -> i
             )
         if moved:
             return 2
+        if case_changed(
+            baseline, {c.id: case_hash(c) for c in cases}, args, where=path.name
+        ):
+            return 2
         configs.append((path, replace(config, run_args=staged)))
     code = served_check(configs, base_url)
     if code:
@@ -1625,7 +1713,13 @@ def compare_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) 
             ),
             records,
         )
-        if incomparable(baseline, config, args, where=baseline_file.name):
+        if incomparable(
+            baseline,
+            config,
+            args,
+            where=baseline_file.name,
+            hashes={s.case: s.case_hash for s in summarize(records)},
+        ):
             refused = True
             continue
         judges.add(config.judge_model or "")
@@ -1644,7 +1738,6 @@ def compare_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) 
                     summaries,
                     baseline,
                     confirmed=True,
-                    token_band=TOKEN_BAND,
                     strict_tokens=args.strict_tokens,
                 ),
             )
@@ -1849,7 +1942,9 @@ def main(argv: list[str] | None = None) -> int:
         baseline = load_baseline(baseline_file) if baseline_file.exists() else None
         # Before the image and the reps: numbers the baseline cannot be
         # compared with would be paid for and then thrown away.
-        if baseline is not None and incomparable(baseline, config, args):
+        if baseline is not None and incomparable(
+            baseline, config, args, hashes={c.id: case_hash(c) for c in cases}
+        ):
             return 2
         try:
             build_image(root)
@@ -1989,13 +2084,14 @@ def main(argv: list[str] | None = None) -> int:
         # Results written before the provider was recorded, and no flag to
         # say: the route they took is unknown, which is not a mismatch.
         config = replace(config, provider="")
-    if incomparable(baseline, config, args):
+    if incomparable(
+        baseline, config, args, hashes={s.case: s.case_hash for s in summaries}
+    ):
         return 2
     comparison = compare(
         summaries,
         baseline,
         confirmed=True,
-        token_band=TOKEN_BAND,
         strict_tokens=args.strict_tokens,
     )
     note = variant_note(baseline, config)

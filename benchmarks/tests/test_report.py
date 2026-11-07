@@ -393,8 +393,12 @@ def test_tokens_above_the_band_warn_but_exit_zero() -> None:
 
 
 def test_tokens_above_the_band_fail_under_strict() -> None:
+    # Both sides carry a spread, so the rise is tested: 15% over reps that
+    # vary by 5% in log terms is far outside the noise.
     comparison = compare(
-        [summary(tokens=1150)], baseline_of(summary(tokens=1000)), strict_tokens=True
+        [replace(summary(tokens=1150), tokens_log_sd=0.05)],
+        baseline_of(replace(summary(tokens=1000), tokens_log_sd=0.05)),
+        strict_tokens=True,
     )
     assert comparison.exit_code == 1
 

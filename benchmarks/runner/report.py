@@ -90,6 +90,16 @@ class RepRecord:
     # kind, with `session` and `events` saying which files were read. None when
     # neither was there, or the results predate the counts.
     tool_health: dict[str, int] | None = None
+    # Cost and provenance (#155). Empty or None in results written before.
+    cost: float | None = None
+    cost_estimated: bool = False
+    nare_version: str = ""
+    nare_commit: str = ""
+    case_hash: str = ""
+    image_id: str = ""
+    started: str = ""
+    tool_calls: dict[str, int] | None = None
+    error_cause: str | None = None
 
 
 @dataclass(frozen=True)
@@ -107,6 +117,17 @@ class CaseSummary:
     # denominator, so a judge that fails on the reps the agent did worst
     # cannot make the rate look better.
     judge_errors: int = 0
+    # Dollars over the reps whose cost was reported, the count of reps that
+    # were not, and whether any reported cost was an estimate.
+    cost: float | None = None
+    cost_unknown: int = 0
+    cost_estimated: bool = False
+    # The judged reps' total tokens: range, and the spread of their logs. The
+    # spread is what the token test needs; None under two reps.
+    tokens_min: int | None = None
+    tokens_max: int | None = None
+    tokens_log_sd: float | None = None
+    case_hash: str = ""
 
 
 def median_int(values: Sequence[int]) -> int | None:
@@ -139,6 +160,9 @@ def summarize(records: Sequence[RepRecord]) -> list[CaseSummary]:
         judged = [r for r in reps if r.outcome != "error"]
         decided = passes + fails + judge_errors
         inconclusive = errors > len(reps) / 2
+        totals = [sum(r.usage.get(f, 0) for f in USAGE_FIELDS) for r in judged]
+        positive = [math.log(t) for t in totals if t > 0]
+        costs = [r.cost for r in reps if r.cost is not None]
         summaries.append(
             CaseSummary(
                 case=case,
@@ -158,6 +182,17 @@ def summarize(records: Sequence[RepRecord]) -> list[CaseSummary]:
                     [r.judge_met for r in judged if r.judge_met is not None]
                 ),
                 judge_errors=judge_errors,
+                cost=sum(costs) if costs else None,
+                cost_unknown=len(reps) - len(costs),
+                cost_estimated=any(
+                    r.cost_estimated for r in reps if r.cost is not None
+                ),
+                tokens_min=min(totals) if totals else None,
+                tokens_max=max(totals) if totals else None,
+                tokens_log_sd=statistics.stdev(positive)
+                if len(positive) >= 2
+                else None,
+                case_hash=next((r.case_hash for r in reps if r.case_hash), ""),
             )
         )
     return summaries
@@ -264,6 +299,10 @@ def dumps_baseline(meta: BaselineMeta, summaries: Sequence[CaseSummary]) -> str:
             f"passes           = {summary.passes}",
             f"reps             = {summary.passes + summary.fails}",
         ]
+        if summary.case_hash:
+            lines.append(f"case_hash        = {_toml_str(summary.case_hash)}")
+        if summary.tokens_log_sd is not None:
+            lines.append(f"tokens_log_sd    = {summary.tokens_log_sd!r}")
         for key, value in (
             ("tokens_median", summary.tokens_median),
             ("turns_median", summary.turns_median),
@@ -309,6 +348,12 @@ def load_baseline(path: Path) -> Baseline:
             tokens_median=body.get("tokens_median"),
             turns_median=body.get("turns_median"),
             judge_met_median=body.get("judge_met_median"),
+            case_hash=str(body.get("case_hash", "")),
+            tokens_log_sd=(
+                None
+                if body.get("tokens_log_sd") is None
+                else float(body["tokens_log_sd"])
+            ),
         )
     return Baseline(meta=meta, cases=cases)
 
@@ -339,7 +384,6 @@ def compare(
     baseline: Baseline,
     *,
     confirmed: bool = False,
-    token_band: float = 0.10,
     strict_tokens: bool = False,
 ) -> Comparison:
     """Diff a run against a baseline.
@@ -412,10 +456,18 @@ def compare(
             token_delta = (
                 current.tokens_median - before.tokens_median
             ) / before.tokens_median
-            if token_delta > token_band:
-                notes.append(f"tokens +{token_delta:.0%}, outside the band")
+            z = token_z(current, before)
+            if z is not None and z > TOKEN_Z:
+                notes.append(
+                    f"tokens +{token_delta:.0%}, a significant rise (z {z:.1f})"
+                )
                 if strict_tokens:
                     failed = True
+            elif z is None and token_delta > 0:
+                notes.append(
+                    f"tokens +{token_delta:.0%}, not tested: needs two reps here "
+                    "and a baseline blessed with its spread"
+                )
 
         if (
             current.judge_met_median is not None
@@ -431,6 +483,50 @@ def compare(
         )
 
     return Comparison(deltas=tuple(deltas), exit_code=1 if failed else 0)
+
+
+# One-sided 5% for a rise in tokens. Tokens are judged on a log scale, so a
+# rise is a ratio, and the test needs each side's spread to be a test at all.
+TOKEN_Z = 1.6449
+
+
+def token_z(current: CaseSummary, before: CaseSummary) -> float | None:
+    """How many standard errors the log of the token median rose, or None.
+
+    None when either side has no spread (fewer than two judged reps, or a
+    baseline blessed before spreads were recorded). Nothing is then called a
+    rise, so an untested change never fails a run.
+    """
+    sd_now, sd_then = current.tokens_log_sd, before.tokens_log_sd
+    if sd_now is None or sd_then is None:
+        return None
+    if not current.tokens_median or not before.tokens_median:
+        return None
+    n_now = current.passes + current.fails
+    n_then = before.passes + before.fails
+    if n_now <= 0 or n_then <= 0:
+        return None
+    rise = math.log(current.tokens_median) - math.log(before.tokens_median)
+    se = math.sqrt(sd_now**2 / n_now + sd_then**2 / n_then)
+    if se == 0:
+        return math.inf if rise > 0 else 0.0
+    return rise / se
+
+
+def changed_cases(hashes: Mapping[str, str], baseline: Baseline) -> list[str]:
+    """Cases whose current case hash differs from the one the baseline measured.
+
+    A case with no hash on either side is not called changed: a baseline
+    blessed before hashes were recorded cannot say, and is compared as before.
+    """
+    return sorted(
+        name
+        for name, digest in hashes.items()
+        if digest
+        and name in baseline.cases
+        and baseline.cases[name].case_hash
+        and baseline.cases[name].case_hash != digest
+    )
 
 
 def _beats(current: CaseSummary, before: CaseSummary) -> bool:
@@ -452,30 +548,68 @@ def _rate(summary: CaseSummary | None, *, interval: bool = False) -> str:
     return text
 
 
+def _dollars(
+    dollars: float | None, *, estimated: bool = False, unknown: bool = False
+) -> str:
+    """A dollar figure. `~` marks an estimate; `*` marks reps with no cost."""
+    if dollars is None:
+        return "-"
+    text = f"{'~' if estimated else ''}${dollars:.4f}"
+    return text + "*" if unknown else text
+
+
+def _tokens(summary: CaseSummary | None, delta: CaseDelta) -> str:
+    if summary is None or summary.tokens_median is None:
+        return "-"
+    text = f"{summary.tokens_median:,}"
+    if summary.tokens_min is not None and summary.tokens_max is not None:
+        text += f" [{summary.tokens_min:,}-{summary.tokens_max:,}]"
+    if delta.token_delta is not None:
+        text += f" {delta.token_delta:+.0%}"
+    return text
+
+
 def render(comparison: Comparison) -> str:
-    header = f"{'case':<24} {'pass [95% interval]':>21} {'tokens':>10} {'judge':>6}"
-    lines = [f"{header}  verdict", "-" * 84]
+    """One row per case: pass count and interval, tokens, dollars per rep and
+    per solved task, judge, and the verdict."""
+    header = (
+        f"{'case':<24} {'pass [95% interval]':>21} {'tokens [range]':>26} "
+        f"{'$/rep':>9} {'$/solved':>9} {'judge':>6}  verdict"
+    )
+    lines = [header, "-" * len(header)]
+    any_unknown = False
     for delta in comparison.deltas:
-        tokens = "-"
-        if delta.summary and delta.summary.tokens_median is not None:
-            tokens = f"{delta.summary.tokens_median:,}"
-            if delta.token_delta is not None:
-                tokens += f" {delta.token_delta:+.0%}"
+        summary = delta.summary
+        per_rep = per_solved = "-"
+        if summary is not None and summary.cost is not None:
+            reps = summary.passes + summary.fails + summary.errors
+            unknown = summary.cost_unknown > 0
+            any_unknown = any_unknown or unknown
+            flags = {"estimated": summary.cost_estimated, "unknown": unknown}
+            if reps:
+                per_rep = _dollars(summary.cost / reps, **flags)
+            if summary.passes:
+                per_solved = _dollars(summary.cost / summary.passes, **flags)
         judge = "-"
-        if delta.summary and delta.summary.judge_met_median is not None:
-            judge = str(delta.summary.judge_met_median)
+        if summary and summary.judge_met_median is not None:
+            judge = str(summary.judge_met_median)
         lines.append(
-            f"{delta.case:<24} {_rate(delta.summary, interval=True):>21} {tokens:>10} "
+            f"{delta.case:<24} {_rate(summary, interval=True):>21} "
+            f"{_tokens(summary, delta):>26} {per_rep:>9} {per_solved:>9} "
             f"{judge:>6}  {delta.verdict}"
         )
-        if delta.summary is not None and delta.summary.judge_errors:
+        if summary is not None and summary.judge_errors:
             lines.append(
-                f"{'':<24} the judge could not settle {delta.summary.judge_errors} "
+                f"{'':<24} the judge could not settle {summary.judge_errors} "
                 "rep(s); counted as not passing"
             )
         for note in delta.notes:
             lines.append(f"{'':<24} {note}")
-    lines.append("-" * 84)
+    lines.append("-" * len(header))
+    if any_unknown:
+        lines.append("* some reps reported no cost, so their dollars are not counted")
+    if any(s.cost_estimated for d in comparison.deltas if (s := d.summary) is not None):
+        lines.append("~ dollars estimated from prices, not reported by the backend")
 
     bad = [d for d in comparison.deltas if d.verdict in ("regression", "inconclusive")]
     for delta in bad:

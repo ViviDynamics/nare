@@ -27,11 +27,25 @@ class ResultLine:
     stop_reason: str | None
     error: str | None
     questions: list[str] = field(default_factory=list)
+    # nare's own dollar cost for the rep, None when the backend did not report
+    # one, and whether nare estimated it from prices rather than read it.
+    cost: float | None = None
+    cost_estimated: bool = False
 
 
 def _usage_from(raw: Any) -> dict[str, int]:
     source = raw if isinstance(raw, dict) else {}
     return {field: int(source.get(field, 0)) for field in USAGE_FIELDS}
+
+
+def _cost_from(raw: Any) -> tuple[float | None, bool]:
+    if not isinstance(raw, dict):
+        return None, False
+    cost = raw.get("cost")
+    # `bool` is an `int` in Python, and a cost of `True` dollars is not a cost.
+    if isinstance(cost, bool) or not isinstance(cost, int | float):
+        cost = None
+    return (None if cost is None else float(cost)), bool(raw.get("estimated", False))
 
 
 def _questions_from(raw: Any) -> list[str]:
@@ -57,6 +71,7 @@ def parse_stdout(text: str) -> ResultLine | None:
             continue
         if not isinstance(payload, dict) or payload.get("type") != "result":
             continue
+        cost, estimated = _cost_from(payload.get("usage"))
         found = ResultLine(
             status=str(payload.get("status", "")),
             turns=int(payload.get("turns", 0)),
@@ -64,6 +79,8 @@ def parse_stdout(text: str) -> ResultLine | None:
             stop_reason=payload.get("stop_reason"),
             error=payload.get("error"),
             questions=_questions_from(payload.get("questions")),
+            cost=cost,
+            cost_estimated=estimated,
         )
     return found
 
