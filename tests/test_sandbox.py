@@ -91,14 +91,18 @@ def test_seatbelt_refuses_a_control_character_in_a_path(tmp_path: Path) -> None:
 # bubblewrap argv
 
 
-def _bwrap(**kw: object) -> list[str]:
-    root = kw.pop("root", Path("/work/root"))
-    assert isinstance(root, Path)
+def _bwrap(
+    *,
+    root: Path = Path("/work/root"),
+    scratch: Path = Path("/tmp/nare-bash-x"),
+    denied: tuple[Path, ...] = (),
+    network: bool = False,
+) -> list[str]:
     return sandbox.bwrap_argv(
         root,
-        kw.pop("scratch", Path("/tmp/nare-bash-x")),  # type: ignore[arg-type]
-        kw.pop("denied", ()),  # type: ignore[arg-type]
-        network=bool(kw.pop("network", False)),
+        scratch,
+        denied,
+        network=network,
         command=["bash", "-o", "pipefail", "-c", "true"],
         bwrap="bwrap",
     )
