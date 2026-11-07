@@ -351,11 +351,17 @@ def test_fork_is_exported_from_the_package() -> None:
     assert nare.fork is fork
 
 
-def test_tui_refuses_fork() -> None:
+def test_tui_accepts_fork_with_the_same_flag() -> None:
+    """`nare tui --fork` is the run flag: one definition, one help text."""
     from nare.cli import build_parser
 
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(["tui", "--fork"])
+    tui = build_parser().parse_args(
+        ["tui", "--resume", "a.json", "--fork", "--session", "b.json"]
+    )
+    run = build_parser().parse_args(
+        ["run", "--resume", "a.json", "--fork", "--session", "b.json", "go"]
+    )
+    assert tui.fork is True and run.fork is True
 
 
 def test_contract_describes_the_fork_and_keeps_the_version() -> None:
@@ -374,3 +380,36 @@ def test_the_documented_contract_describes_the_fork() -> None:
     assert "## Forking a saved session" in text
     assert "`forked_from`" in text
     assert "nare.fork" in text
+
+
+@pytest.mark.parametrize(
+    "extra, message",
+    [
+        (["--resume", "{src}", "--fork"], "--fork writes a new session"),
+        (["--resume", "{src}", "--fork", "--session", "{src}"], "is the resumed file"),
+        (["--resume", "{src}", "--fork", "--session", "{exists}"], "already exists"),
+        (["--fork", "--session", "{new}"], "--fork needs --resume PATH"),
+    ],
+)
+def test_tui_fork_refusals_match_run(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    extra: list[str],
+    message: str,
+) -> None:
+    """`nare tui --fork` follows the same rules as `nare run --fork`."""
+    src = tmp_path / "src.json"
+    src.write_text(dumps(new_session("go")), encoding="utf-8")
+    exists = tmp_path / "exists.json"
+    exists.write_text("{}", encoding="utf-8")
+    values = {
+        "src": str(src),
+        "exists": str(exists),
+        "new": str(tmp_path / "new.json"),
+    }
+    argv = ["tui", "--model", "fake", *[a.format(**values) for a in extra]]
+    assert main(argv) == 2
+    captured = capsys.readouterr()
+    assert message in captured.err
+    assert captured.out == ""
+    assert not (tmp_path / "new.json").exists()

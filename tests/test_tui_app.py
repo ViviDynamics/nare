@@ -1487,3 +1487,99 @@ async def test_edit_approval_header_has_change_counts(tmp_path: Path) -> None:
         assert "edit · +2 −1" in header
         assert "a.py" in header
         await pilot.press("escape")
+
+
+def saved_session(path: Path) -> bytes:
+    """A finished one-turn session saved at `path`, returned as the bytes on disk."""
+    session = new_session("say one")
+    session.messages.append(Message("assistant", [{"type": "text", "text": "one"}]))
+    session.status = "done"
+    session.turns = 1
+    save(session, path)
+    return path.read_bytes()
+
+
+async def test_tui_fork_at_startup_writes_a_new_file_and_keeps_the_original(
+    tmp_path: Path,
+) -> None:
+    original = tmp_path / "saved.json"
+    before = saved_session(original)
+    branch = tmp_path / "branch.json"
+    args = build_parser().parse_args(
+        [
+            "tui", "--model", "fake", "--root", str(tmp_path),
+            "--resume", str(original), "--fork", "--session", str(branch),
+            "say two",
+        ]
+    )  # fmt: skip
+    app = prepare(args, FakeProvider([text_reply("two")]))
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: app.run_state == "done")
+    record = json.loads(branch.read_text())["forked_from"]
+    assert record["turn"] == 1
+    assert record["path"] == str(original.resolve())
+    assert original.read_bytes() == before
+
+
+async def test_slash_fork_leaves_the_original_byte_identical_from_the_fork_point(
+    tmp_path: Path,
+) -> None:
+    app = make(
+        tmp_path, FakeProvider([text_reply("one"), text_reply("two")]), prompt="say one"
+    )
+    branch = tmp_path / "branch.json"
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: app.run_state == "done")
+        at_fork = (tmp_path / "s.json").read_bytes()
+
+        await submit(pilot, app, f"/fork {branch}")
+        await until(pilot, lambda: app.args.session == str(branch.resolve()))
+        assert "is not written from here on" in shown(app)
+
+        await submit(pilot, app, "say two")
+        await until(
+            pilot,
+            lambda: (
+                app.run_state == "done"
+                and app.session is not None
+                and app.session.turns == 2
+            ),
+        )
+    assert (tmp_path / "s.json").read_bytes() == at_fork
+    saved = json.loads(branch.read_text())
+    assert saved["forked_from"]["turn"] == 1
+    assert saved["turns"] == 2
+
+
+async def test_slash_fork_refuses_an_existing_file_and_its_own_file(
+    tmp_path: Path,
+) -> None:
+    app = make(tmp_path, FakeProvider([text_reply("one")]), prompt="say one")
+    taken = tmp_path / "taken.json"
+    taken.write_text("keep me")
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: app.run_state == "done")
+        own = (tmp_path / "s.json").read_bytes()
+
+        await submit(pilot, app, f"/fork {taken}")
+        await until(pilot, lambda: "already exists" in shown(app))
+        await submit(pilot, app, "/fork")
+        await until(pilot, lambda: "usage: /fork PATH" in shown(app))
+        await submit(pilot, app, f"/fork {tmp_path / 's.json'}")
+        await until(pilot, lambda: "this session's own file" in shown(app))
+    assert taken.read_text() == "keep me"
+    assert (tmp_path / "s.json").read_bytes() == own
+    assert app.args.session == str((tmp_path / "s.json").resolve())
+
+
+async def test_slash_fork_waits_for_a_running_turn(tmp_path: Path) -> None:
+    streaming = Streaming("working")
+    app = make(tmp_path, streaming, prompt="go")
+    branch = tmp_path / "branch.json"
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: app.run_state == "working")
+        await submit(pilot, app, f"/fork {branch}")
+        await until(pilot, lambda: "once it has ended" in shown(app))
+        assert not branch.exists()
+        streaming.release.set()
+        await until(pilot, lambda: app.run_state == "done")

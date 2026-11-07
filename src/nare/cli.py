@@ -107,6 +107,13 @@ def cache_breakpoints_from_env(env: Mapping[str, str]) -> bool:
     )
 
 
+FORK_HELP = (
+    "with --resume PATH: write the continued session to --session, a new file, "
+    "and leave PATH byte-identical. The fork records the session and turn it came "
+    "from. In nare tui, /fork PATH does the same from a running session"
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="nare", description="A standalone agent harness."
@@ -295,15 +302,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     add_run_flags(run_parser)
-    run_parser.add_argument(
-        "--fork",
-        action="store_true",
-        help=(
-            "with --resume PATH: write the continued session to --session, a new "
-            "file, and leave PATH byte-identical. The fork records the session "
-            "and turn it came from. nare tui has no --fork"
-        ),
-    )
+    run_parser.add_argument("--fork", action="store_true", help=FORK_HELP)
 
     tui_parser = sub.add_parser(
         "tui", help="work with nare in a terminal UI, or watch a run with --attach"
@@ -317,6 +316,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="watch the session file at PATH, read-only; other flags are ignored",
     )
     add_run_flags(tui_parser)
+    tui_parser.add_argument("--fork", action="store_true", help=FORK_HELP)
     return parser
 
 
@@ -718,7 +718,7 @@ def validate_run_args(args: argparse.Namespace) -> Prices | None:
         raise ValueError("--provider fake requires --replay FILE")
     if args.replay is not None and args.provider != "fake":
         raise ValueError("--replay requires --provider fake")
-    # nare tui shares this check and has no --fork, so the flag is read with a default.
+    # nare tui shares this check, so the same rules apply to its --fork.
     if getattr(args, "fork", False):
         # A fork writes a file of its own. It never names the resumed path, so
         # the original cannot be written: the check runs before the default below.
@@ -778,6 +778,22 @@ def validate_run_args(args: argparse.Namespace) -> Prices | None:
     return prices_from_env()
 
 
+def fork_with_note(session: Session, source: str | Path | None) -> Session:
+    """A fork of `session` that says so in its events. The original is only read:
+    the caller decides where the fork is written."""
+    child = fork(session, source=source)
+    record = child.forked_from or {}
+    child.events.append(
+        Event(
+            "progress",
+            f"forked from session {record.get('session_id')} at turn "
+            f"{record.get('turn')}; the original file is not written",
+            {"fork": record},
+        )
+    )
+    return child
+
+
 def _load_or_new(args: argparse.Namespace) -> Session:
     if not args.resume:
         return new_session(args.prompt)
@@ -786,16 +802,7 @@ def _load_or_new(args: argparse.Namespace) -> Session:
         # Forked before reopen, so the copy is the transcript as saved; the
         # reopen, the redaction and the changed-prefix rules then run on it as
         # on a resume. The original is only read.
-        session = fork(session, source=args.resume)
-        record = session.forked_from or {}
-        session.events.append(
-            Event(
-                "progress",
-                f"forked from session {record.get('session_id')} at turn "
-                f"{record.get('turn')}; the original file is not written",
-                {"fork": record},
-            )
-        )
+        session = fork_with_note(session, args.resume)
     # Resuming is how a caller relays feedback: reopen and keep going.
     reopen(session, args.prompt)
     return session
