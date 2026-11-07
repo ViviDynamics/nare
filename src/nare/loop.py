@@ -1041,6 +1041,18 @@ async def step(
         s.events.append(event)
         s.evidence.append(event.detail["evidence"])
 
+    def bash_rule(record: dict[str, Any]) -> None:
+        # The session keeps the event's copy, so the two never disagree. The
+        # command text is never recorded: only the rule that decided the call.
+        event = Event(
+            "progress",
+            f"bash {record['effect']} by rule: {', '.join(record['patterns'])}",
+            {"tool": "bash", "bash_rule": record},
+            tool_use_id=record["tool_use_id"],
+        )
+        s.events.append(event)
+        s.bash_rules.append(event.detail["bash_rule"])
+
     results: list[dict[str, Any]] = []
     unanswered = "tool dispatch failed"
     try:
@@ -1078,7 +1090,12 @@ async def step(
                 if tool_calls is not None:
                     tool_calls.used += 1
                 result = await dispatch(
-                    call, policy, approve, left_running=left_running, evidence=evidence
+                    call,
+                    policy,
+                    approve,
+                    left_running=left_running,
+                    evidence=evidence,
+                    rule_match=bash_rule,
                 )
                 results.append(result)
                 if "image" in result:

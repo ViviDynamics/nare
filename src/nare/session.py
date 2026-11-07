@@ -175,6 +175,10 @@ class Session:
     # call order: the session's copy of the evidence its progress events
     # carried. A record, so reopen() keeps it.
     evidence: list[dict[str, Any]] = field(default_factory=list)
+    # The bash calls a policy rule decided, as {tool_use_id, effect, patterns}
+    # in call order: the session's copy of the progress events they carried.
+    # Never the command text. A record, so reopen() keeps it.
+    bash_rules: list[dict[str, Any]] = field(default_factory=list)
     # The system prompt the run sent, so a resume sends it again and a reader
     # can see what the model was told: "" when none was sent, None in a file
     # saved before nare recorded it. Redacted on save, like the transcript.
@@ -449,6 +453,8 @@ def loads(text: str) -> Session:
             raw["process_groups"] = []
         if not isinstance(raw.get("evidence", []), list):
             raw["evidence"] = []
+        if not isinstance(raw.get("bash_rules", []), list):
+            raw["bash_rules"] = []
         # Refused, not reset: a resume that quietly fell back to the default
         # prompt is what the record exists to prevent.
         if not isinstance(raw.get("system"), (str, type(None))):

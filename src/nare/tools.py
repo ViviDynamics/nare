@@ -28,6 +28,8 @@ from typing import Any, TypeGuard
 
 from PIL import Image
 
+from nare.bash_rules import decide as decide_bash
+from nare.bash_rules import validate as validate_bash_rules
 from nare.events import redact
 from nare.mcp import ExternalTool
 from nare.schema import validate
@@ -1416,6 +1418,10 @@ class Policy:
     image_model: str = "unconfigured transport/model"
     # Whether bash sees the provider credentials nare reads (CREDENTIAL_ENV).
     bash_credentials: bool = False
+    # Bash command patterns: a matching call is allowed without asking, or
+    # refused before any approval. Deny wins. See nare.bash_rules.
+    bash_allow: frozenset[str] = frozenset()
+    bash_deny: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         unknown = sorted(self.tools - set(TOOLS) - self.external.keys() - self.pending)
@@ -1424,6 +1430,10 @@ class Policy:
                 f"unknown tool {', '.join(unknown)}; "
                 f"nare has: {', '.join(sorted(TOOLS))}"
             )
+        validate_bash_rules(self.bash_allow, "allow")
+        validate_bash_rules(self.bash_deny, "deny")
+        if (self.bash_allow or self.bash_deny) and "bash" not in self.tools:
+            raise ValueError("bash command patterns need the bash tool in the policy")
 
     def schemas(self) -> list[dict[str, Any]]:
         return [s for s in TOOL_SCHEMAS if s["name"] in self.tools] + [
@@ -1447,6 +1457,8 @@ class Policy:
                 else {}
             ),
             **({"bash_credentials": True} if self.bash_credentials else {}),
+            **({"bash_allow": sorted(self.bash_allow)} if self.bash_allow else {}),
+            **({"bash_deny": sorted(self.bash_deny)} if self.bash_deny else {}),
             **({"external_sha256": external_digest(offered)} if offered else {}),
             "tools": sorted(self.tools),
             "root": None if self.root is None else str(self.root),
@@ -1535,6 +1547,7 @@ async def dispatch(
     *,
     left_running: Callable[[int, str], None] | None = None,
     evidence: Callable[[Evidence], None] | None = None,
+    rule_match: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run one tool call. Every failure comes back as an is_error result rather
     than an exception: the model adapts, which is what it is good at. A policy
@@ -1547,6 +1560,9 @@ async def dispatch(
 
     `evidence` hears of what a successful read, list or search returned, as
     a record with no content, for the same reason.
+
+    `rule_match` hears of a bash call a policy rule decided, as {tool_use_id,
+    effect, patterns}. It never hears the command text.
     """
     if call.error is not None:
         return tool_result(call.id, call.error, is_error=True)
@@ -1584,11 +1600,34 @@ async def dispatch(
             return tool_result(
                 call.id, f"{call.name}: {'; '.join(problems)}", is_error=True
             )
+    ruled: str | None = None
+    if call.name == "bash" and (policy.bash_allow or policy.bash_deny):
+        # Before approval, so a deny holds under --yes, and an allow runs
+        # without asking. A line no rule decides goes on to the approver.
+        verdict = decide_bash(
+            str(checked.get("command", "")), policy.bash_allow, policy.bash_deny
+        )
+        if verdict is not None:
+            effect, patterns = verdict
+            if rule_match is not None:
+                rule_match(
+                    {"tool_use_id": call.id, "effect": effect, "patterns": patterns}
+                )
+            if effect == "deny":
+                return tool_result(
+                    call.id,
+                    f"bash was refused by a policy rule: {', '.join(patterns)}",
+                    is_error=True,
+                )
+            ruled = effect
     try:
         # approve() is inside the try on purpose: a real approval seam prompts
         # a human or calls a service, so it can raise. Escaping here would
         # leave the transcript with a tool_use and no tool_result.
-        approved = approve(call.name, call.args)
+        if ruled == "allow":
+            approved: object = True
+        else:
+            approved = approve(call.name, call.args)
         if inspect.isawaitable(approved):
             approved = await approved
         # A reason denies, though a non-empty str is truthy.

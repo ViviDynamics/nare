@@ -89,6 +89,8 @@ keeps the contract version; removing or renaming one bumps it.
 | `--tools` | yes | | Comma-separated tools the run may call, or `none` |
 | `--root` | yes | | Confine file tools to a directory and run `bash` in it |
 | `--bash-credentials` | no | | Let `bash` see the provider credentials nare reads ([The bash environment](#the-bash-environment)) |
+| `--bash-allow` | yes | | Run a `bash` command matching PATTERN without asking; repeatable ([Bash command rules](#bash-command-rules)) |
+| `--bash-deny` | yes | | Refuse a `bash` command matching PATTERN, even with `--yes`; repeatable ([Bash command rules](#bash-command-rules)) |
 | `--resume` | yes | | Continue the session at a path. `nare tui --resume` with no path picks one of this directory's saved sessions; `nare run` needs the path |
 | `--mcp-config` | yes | | JSON file of MCP servers ([MCP tool sources](#mcp-tool-sources)) |
 | `--command-tools` | yes | | JSON file of tools this command line runs ([caller tools](#caller-tools)) |
@@ -1189,6 +1191,92 @@ event, and this removes the keys at the source instead of relying on it.
 
 Withholding is not a sandbox. A command can still read files, the network and
 anything else the environment gives it; confining those stays the caller's job.
+
+## Bash command rules
+
+A policy can allow or deny a `bash` command by pattern, so a caller can allow
+`git diff *` without allowing every command. `--bash-allow PATTERN` and
+`--bash-deny PATTERN` set them on the command line, repeatable; the library
+takes `Policy(bash_allow=..., bash_deny=...)` as frozensets of patterns. A
+pattern is matched as follows.
+
+- `*` matches any run of characters, including none and spaces. `?` matches one
+  character. Every other character matches itself, so `.` is a dot.
+- A command is matched as bash reads its words after quote removal, joined by
+  one space: `'git' diff` is `git diff`, and `"echo" ok` is `echo ok`.
+
+A line is split into simple commands at `&&`, `||`, `|`, `|&`, `;` and `&`. A
+line is **unreadable** when the lexer cannot read it: it contains `(` or `)`
+outside quotes, `$(`, a backtick, a process substitution, a heredoc or here
+string, a newline, an unterminated quote, or a brace sequence such as `{1..3}`.
+
+**Deny wins, and it holds under `--yes`.** A deny is checked before any
+approval, so a matching call is refused without the approver being asked. Deny
+patterns ignore case, since a case-insensitive filesystem runs `ECHO` as
+`echo`. A deny is checked on every tail of every simple command: each run of
+its words from any word to the end, the same with a first word's directory
+removed (`/usr/bin/rm x` is `rm x`), and the same with a trailing space, since
+`xargs rm` takes its arguments from stdin and a bare `rm` is `rm` with arguments
+to come. So `xargs rm`, `find . -exec rm {} \;` and `time rm x` all match
+`rm *`.
+
+**Under a deny, every word must be plain.** A word is plain when bash would
+read its unquoted characters as themselves: no `$`, glob (`*`, `?`, `[`), brace,
+tilde or `!`. A line with any word that is not plain is refused, since bash
+turns it into names this check cannot see. A line is also refused when it
+cannot be read (see the lexer rules above), when its first word holds an `=`
+(a variable assignment, which may name the program), or when it reads a file of
+commands: `.`, `source`, or a shell given no command string (`sh script.sh`,
+`echo 'rm x' | sh`). Redirections are not commands, so `> file rm x` is checked
+as `rm x`.
+
+A **runner** is a program that runs another program, or a string of commands,
+or whose arguments name one: the shells, `eval`, `env`, `xargs`, `find`,
+`sudo`, `nice`, `timeout`, `exec`, `command`, `busybox`, `git` and a few more
+(the list is `nare.bash_rules`). For a runner a deny also reads its arguments:
+each argument is read again as a command line, and each character run of it is
+checked, so `sh -c "rm x"`, `env -S'rm x'` and `bash -e -c 'rm x'` match. A
+shell's `-c` must come before any operand, and a long option such as
+`--rcfile` is refused, because its operand would be a file that runs unseen.
+
+A deny refuses, rather than guesses, every line it cannot check, and says which
+patterns refused it.
+
+**Allow is narrow.** A call is allowed without asking only when the line is
+readable, every simple command has plain words (no `$`, glob, brace, tilde or
+other expansion) and no redirection, and every simple command matches an allow
+pattern as a whole. `git diff --stat && touch x` is therefore allowed only if
+`touch x` also matches an allow pattern. An unreadable line, a redirection, or
+an expansion is never allowed by a rule and goes to the approver as before.
+An allowed call runs without the approver, and the approval rules that ask
+before destructive git commands or writes outside the root do not apply to it:
+the pattern is the caller's grant. The root and credential rules still apply.
+
+A call that no rule decides follows the approval rules as before, including
+`--yes`, which approves it.
+
+**What a pattern does not do.** A pattern matches the words as spelled. It does
+not know a program's options: `git push *` does not match `git -C dir push`, so
+a deny meant to stop pushes is written `git * push *`. A deny sees only what the
+line spells out. It does not read environment variables that name a program,
+set in the line or inherited, such as `GIT_EXTERNAL_DIFF`, `PAGER`, `EDITOR` or
+`BASH_ENV`; an assignment in front of a command is refused, but `export` and
+the environment the run started with are not. A program that runs commands from
+its own code, or from a file it was given, is not read: `python -c`, `perl -e`,
+`make`, `npm run`, `docker exec`, and any script run by a program that is not a
+shell or a listed runner. Rules are not a sandbox: confining what a command can
+reach stays the caller's job.
+
+**The session record.** Each call a rule decides adds a `progress` event with
+`bash_rule: {"tool_use_id", "effect", "patterns"}` and the same record in the
+session's `bash_rules` list, in call order. `effect` is `allow` or `deny`, and
+`patterns` lists the rules that decided it (one for a deny; for an allow, the
+rules that covered each command). The command text is never recorded. A session
+that set rules records them under its policy as `"bash_allow"` and
+`"bash_deny"`, sorted lists, and a policy with no rules has neither key.
+
+The rules add flags, a session field with a default and keys under the recorded
+policy, so the contract version stays the same ([What changes the version](#what-changes-the-version)).
 
 ## Tool arguments
 
