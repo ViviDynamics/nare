@@ -715,3 +715,61 @@ The container bounds the filesystem and the process tree. It does not bound
 the network - the agent's endpoint has to be reachable, so `--network none` is
 not available. Treat a benchmark run like any other unattended execution of
 model-generated shell commands.
+
+## Against Claude Code (#114)
+
+The question is how nare compares with Claude Code on the same tasks, with the
+same model, the same judge and the same grading, in tokens and dollars per
+solved task. It is run by hand, never in CI: it needs a key and costs money.
+It is its own runner, `python -m benchmarks.runner.claude_arm`, and not an
+opt-in tier. #97 is still open and no tier exists, so a tier would have been
+a second way to name the same nine cases. When #97 lands, this can move.
+
+What is compared, and how:
+
+- **Cases.** `COMPARABLE_CASES` in `benchmarks/runner/claude_code.py` are the
+  nine cases both arms can run on the same fixture, prompt and checks. The
+  other eight are listed with a reason by `--list`. A case added to
+  `benchmarks/cases` must land in one of the two sets, and the tests hold that.
+- **One rep is one rep.** The Claude arm copies the fixture, runs the checks
+  in the same image, judges with the same judge, and grades with the same
+  functions (`grade_result_check`, `grade_bash_check`, `rep_outcome`) as
+  nare's runner. Only the agent differs: `claude -p` in
+  `nare-bench-claude:local`, built from `benchmarks/Dockerfile.claude-code`,
+  with the Claude Code version set by its `CLAUDE_CODE_VERSION` build
+  argument. The nare arm is `bin/bench run`, unchanged.
+- **Same model, same judge.** Both arms use `claude-haiku-5-5` through the same
+  gateway root. The judge is named by `NARE_BENCH_JUDGE_MODEL` and is never the
+  model under test.
+- **Tools and prompts are each harness's own.** nare has its default tools.
+  Claude Code runs in print mode with its own system prompt, tool definitions
+  and built-in skills, and with subagents and web tools disallowed. That
+  harness overhead is part of what is measured, and the note says so.
+- **Cost is recomputed.** Each arm's dollars are its usage times the gateway's
+  list prices, read from `/v1/model/info` at run time and saved in the
+  manifest. Neither harness's own cost figure is compared. Claude Code's
+  reported `total_cost_usd` agrees with this figure to the last digit on the
+  rep checked.
+- **Usage is the result's total.** Claude Code's streamed messages report a
+  provisional output count, so the arm takes input, output and cache tokens
+  from the final result object, which is the billing total.
+
+Running it. Build from a checkout of the nare commit under test, and set the
+gateway root (without `/v1`) and the judge:
+
+    export ANTHROPIC_API_KEY=...              # the key, never in a file
+    export NARE_BASE_URL=https://...          # the root, without /v1
+    export NARE_BENCH_JUDGE_MODEL=...         # not the model under test
+    python -m benchmarks.runner.claude_arm --list
+    python -m benchmarks.runner.claude_arm --out smoke --reps 12 \
+        --case read-only-question --case edit-docstring    # and the rest
+    python -m benchmarks.runner.claude_arm report \
+        --nare benchmarks/results/<stamp>.jsonl ... \
+        --claude benchmarks/results/claude-code/smoke/results.jsonl ... \
+        --manifest benchmarks/results/claude-code/smoke/manifest.json ...
+
+Without `--reps`, each case runs at its tier's count, three for smoke and five
+for full, as `bin/bench run` does. `bin/bench run` has no `--reps` flag, so to
+match a count, run the nare arm once per block of reps and give the Claude
+arm the same total per case. Results land in `benchmarks/results/claude-code/`,
+which `compare` and `bless` never read as the newest run.
