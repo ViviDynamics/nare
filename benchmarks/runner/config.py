@@ -54,6 +54,11 @@ class Config:
     # thinking and return an empty answer, which the rep then records as an
     # error; the default leaves room for that.
     judge_max_tokens: int = DEFAULT_JUDGE_MAX_TOKENS
+    # The image the agent runs in, and the nare commit it was built from. None
+    # and "" are the checkout's own image and its HEAD, which every run before
+    # `bin/bench ab` used. `ab` gives each arm its own image and commit.
+    image: str | None = None
+    nare_commit: str = ""
 
 
 def judge_max_tokens_from(
