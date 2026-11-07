@@ -42,6 +42,7 @@ from benchmarks.runner.calibration import (
     problems,
     render_calibration,
 )
+from benchmarks.runner.calibration_import import ImportRefused, import_reviews
 from benchmarks.runner.case import TIER_CHOICES, Case, CaseError, load_cases
 from benchmarks.runner.compare import (
     Judges,
@@ -282,8 +283,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     calibration.add_argument(
         "action",
-        choices=["export", "check", "score"],
-        help="export blind rows to label; check the labels file; score the judge",
+        choices=["export", "import", "check", "score"],
+        help="export blind rows to label; import reviewed verdicts; check the "
+        "labels file; score the judge",
+    )
+    calibration.add_argument(
+        "file", nargs="?", help="import: the reviewed CSV or JSON file"
+    )
+    calibration.add_argument(
+        "--export", help="import: the rows `calibrate export --out` wrote"
+    )
+    calibration.add_argument(
+        "--reviewer-a",
+        help="import: the name that is labeller a, as the page records it",
+    )
+    calibration.add_argument(
+        "--reviewer-b",
+        help="import: the name that is labeller b, as the page records it",
+    )
+    calibration.add_argument(
+        "--adjudicate",
+        action="store_true",
+        help="import: accept the decisions in the CSV label column for disagreements",
     )
     calibration.add_argument("--results", help="results file (default: the newest)")
     calibration.add_argument("--labels", help=f"labels file (default: {LABELS_FILE})")
@@ -1163,6 +1184,58 @@ def calibration_text(root: Path, records: Sequence[RepRecord]) -> str:
     return render_calibration(calibrate(labels, records), LABELS_FILE)
 
 
+def import_command(
+    args: argparse.Namespace, cases: Mapping[str, Case], labels_path: Path
+) -> int:
+    """`calibrate import FILE`: load reviewed verdicts into the labels file. A
+    file is refused as a whole, with every row that is wrong, and writes nothing."""
+    missing = [
+        flag
+        for flag, value in (
+            ("FILE", args.file),
+            ("--export", args.export),
+            ("--reviewer-a", args.reviewer_a),
+            ("--reviewer-b", args.reviewer_b),
+        )
+        if not value
+    ]
+    if missing:
+        print(
+            f"bench: import needs {', '.join(missing)}: the reviewed file, the export "
+            "it was reviewed against, and the two reviewers' names",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        result = import_reviews(
+            source=Path(args.file),
+            export_path=Path(args.export),
+            labels_path=labels_path,
+            reviewers={"a": args.reviewer_a, "b": args.reviewer_b},
+            adjudicate=args.adjudicate,
+            cases=cases,
+        )
+    except ImportRefused as exc:
+        print(f"bench: {args.file} refused, nothing was written:", file=sys.stderr)
+        for text in exc.found:
+            print(f"bench:   {text}", file=sys.stderr)
+        return 2
+    except CalibrationError as exc:
+        print(f"bench: {exc}", file=sys.stderr)
+        return 2
+    counts = ", ".join(f"{n} {status}" for status, n in sorted(result.statuses.items()))
+    print(
+        f"calibration: imported {result.verdicts} verdict(s) and {result.decisions} "
+        f"decision(s) from {args.file}; {result.skipped} row(s) not reviewed yet, "
+        "skipped"
+    )
+    print(
+        f"calibration: {labels_path}: {counts or 'no rows'}"
+        + ("" if result.changed else " (unchanged)")
+    )
+    return 0
+
+
 def calibrate_command(args: argparse.Namespace, root: Path) -> int:
     """`calibrate export|check|score`. Reads the labelled set and results, and
     never calls a model: labelling is a person's job, and so is the scoring's
@@ -1185,7 +1258,15 @@ def calibrate_command(args: argparse.Namespace, root: Path) -> int:
         if found:
             return 1
         print(f"calibration: {len(labels)} labelled claim instance(s) check out")
+        held = Counter(lab.status for lab in labels if lab.label is None)
+        if held:
+            print(
+                "calibration: kept without a label (out of the rates): "
+                + ", ".join(f"{n} {status}" for status, n in sorted(held.items()))
+            )
         return 0
+    if args.action == "import":
+        return import_command(args, cases, labels_path)
     results_file = Path(args.results) if args.results else latest_results(root)
     if results_file is None or not results_file.is_file():
         print("bench: no results to read; run `bin/bench run` first", file=sys.stderr)

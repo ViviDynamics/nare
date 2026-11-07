@@ -6,6 +6,10 @@ label each instance blind to the judge (`export` leaves out what the judge said)
 and the labels file keeps both labels, so a disagreement is visible and is
 settled by an `adjudicated` label rather than by overwriting one of them.
 
+A row also has a status. A reviewer who cannot tell says `unknown`, which is no
+label: the row is kept, and it stays out of the rates. `calibration_import`
+writes these rows from the reviewers' verdicts.
+
 The judge's false-positive and false-negative rates are then read against the
 labels, for every judge model the labelled diffs were judged with.
 """
@@ -25,9 +29,40 @@ from benchmarks.runner.report import RepRecord
 LABELS_FILE = Path("benchmarks/calibration/labels.jsonl")
 LABELLERS = ("a", "b")
 
+# What a row's verdicts settle to. Only AGREED and ADJUDICATED rows carry a label.
+AGREED = "agreed"  # both labellers said the same
+ADJUDICATED = "adjudicated"  # they disagreed, and the decision is recorded
+DISAGREE = "disagree"  # they disagreed, and nobody has decided yet
+UNKNOWN = "unknown"  # a labeller could not tell: no label
+PENDING = "pending"  # a labeller has not answered yet
+STATUSES = (AGREED, ADJUDICATED, DISAGREE, UNKNOWN, PENDING)
+
 
 class CalibrationError(Exception):
     """A labels file that cannot be read, or does not follow the format."""
+
+
+def settle(
+    labels: Mapping[str, bool | None],
+    unknown_from: Sequence[str],
+    decision: bool | None,
+) -> tuple[str, bool | None, bool]:
+    """The (status, label, adjudicated) that a row's verdicts settle to.
+
+    An unknown from either labeller is no label, whatever the other one said.
+    Otherwise both must have answered: agreement is the label, and a
+    disagreement takes the adjudicator's decision.
+    """
+    if unknown_from:
+        return UNKNOWN, None, False
+    first, second = labels["a"], labels["b"]
+    if first is None or second is None:
+        return PENDING, None, False
+    if first == second:
+        return AGREED, first, False
+    if decision is None:
+        return DISAGREE, None, False
+    return ADJUDICATED, decision, True
 
 
 @dataclass(frozen=True)
@@ -37,9 +72,17 @@ class Label:
     claim: int  # 1-based, as the case lists its assertions
     claim_text: str
     diff_sha256: str
-    label: bool
-    labels: dict[str, bool]
+    label: bool | None
+    labels: dict[str, bool | None]
     adjudicated: bool
+    status: str = AGREED
+    unknown_from: tuple[str, ...] = ()
+    reviewers: dict[str, str] = field(default_factory=dict)
+    notes: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def key(self) -> tuple[str, int, str]:
+        return (self.case, self.claim, self.diff_sha256)
 
 
 def _label_from(raw: Any, line: int) -> Label:
@@ -52,6 +95,10 @@ def _label_from(raw: Any, line: int) -> Label:
     text, digest = raw.get("claim_text"), raw.get("diff_sha256")
     label, labels = raw.get("label"), raw.get("labels")
     adjudicated = raw.get("adjudicated", False)
+    status = raw.get("status")
+    unknown_from = raw.get("unknown_from", [])
+    reviewers = raw.get("reviewers", {})
+    notes = raw.get("notes", {})
     if not isinstance(case, str) or not case:
         raise fail("case must be a case id")
     if not isinstance(claim, int) or isinstance(claim, bool) or claim < 1:
@@ -60,23 +107,55 @@ def _label_from(raw: Any, line: int) -> Label:
         raise fail("claim_text must be the assertion's text")
     if not isinstance(digest, str) or len(digest) != 64:
         raise fail("diff_sha256 must be the 64-character digest of the diff")
-    if not isinstance(label, bool):
-        raise fail("label must be true or false, never null")
-    if (
-        not isinstance(labels, dict)
-        or set(labels) != set(LABELLERS)
-        or not all(isinstance(v, bool) for v in labels.values())
-    ):
-        raise fail('labels must hold a true or false from each of "a" and "b"')
+    if not isinstance(labels, dict) or set(labels) != set(LABELLERS):
+        raise fail('labels must hold a true, false or null from each of "a" and "b"')
     if not isinstance(adjudicated, bool):
         raise fail("adjudicated must be true or false")
-    agreed = labels["a"] == labels["b"]
-    if agreed and (label != labels["a"] or adjudicated):
-        raise fail(
-            "both labellers agree, so label must be their answer and not adjudicated"
-        )
-    if not agreed and not adjudicated:
-        raise fail("the labellers disagree, so the label needs adjudicated: true")
+    if not isinstance(reviewers, dict) or not (
+        set(reviewers) <= set(LABELLERS)
+        and all(isinstance(v, str) and v for v in reviewers.values())
+    ):
+        raise fail('reviewers must name the person behind "a" and/or "b"')
+    if not isinstance(notes, dict) or not (
+        set(notes) <= set(LABELLERS) and all(isinstance(v, str) for v in notes.values())
+    ):
+        raise fail('notes must hold text for "a" and/or "b"')
+
+    if status is None:
+        # The original format, which has no status: both labellers answered.
+        if not isinstance(label, bool):
+            raise fail("label must be true or false, never null")
+        if not all(isinstance(v, bool) for v in labels.values()):
+            raise fail('labels must hold a true or false from each of "a" and "b"')
+        agreed = labels["a"] == labels["b"]
+        if agreed and (label != labels["a"] or adjudicated):
+            raise fail(
+                "both labellers agree, so label must be their answer and not "
+                "adjudicated"
+            )
+        if not agreed and not adjudicated:
+            raise fail("the labellers disagree, so the label needs adjudicated: true")
+        status = ADJUDICATED if adjudicated else AGREED
+        unknown_from = []
+    else:
+        if status not in STATUSES:
+            raise fail(f"status must be one of {', '.join(STATUSES)}")
+        if label is not None and not isinstance(label, bool):
+            raise fail("label must be true, false or null")
+        if not all(v is None or isinstance(v, bool) for v in labels.values()):
+            raise fail('labels must hold true, false or null for "a" and "b"')
+        if not isinstance(unknown_from, list) or not set(unknown_from) <= set(
+            LABELLERS
+        ):
+            raise fail("unknown_from must name the labellers who said unknown")
+        if any(labels[name] is not None for name in unknown_from):
+            raise fail("a labeller who said unknown has no true or false")
+        expected = settle(labels, tuple(unknown_from), label if adjudicated else None)
+        if expected != (status, label, adjudicated):
+            raise fail(
+                f"status {status} does not follow from the labels; it should be "
+                f"{expected[0]}"
+            )
     return Label(
         line=line,
         case=case,
@@ -84,9 +163,37 @@ def _label_from(raw: Any, line: int) -> Label:
         claim_text=text,
         diff_sha256=digest,
         label=label,
-        labels={k: bool(v) for k, v in labels.items()},
+        labels={k: v for k, v in labels.items()},
         adjudicated=adjudicated,
+        status=status,
+        unknown_from=tuple(unknown_from),
+        reviewers=dict(reviewers),
+        notes=dict(notes),
     )
+
+
+def label_row(lab: Label) -> dict[str, Any]:
+    """A label as one line of the labels file. Fixed key order, so writing the
+    same labels twice gives the same bytes."""
+    row: dict[str, Any] = {
+        "case": lab.case,
+        "claim": lab.claim,
+        "claim_text": lab.claim_text,
+        "diff_sha256": lab.diff_sha256,
+        "labels": {name: lab.labels.get(name) for name in LABELLERS},
+        "label": lab.label,
+        "adjudicated": lab.adjudicated,
+        "status": lab.status,
+    }
+    if lab.unknown_from:
+        row["unknown_from"] = [n for n in LABELLERS if n in lab.unknown_from]
+    if lab.reviewers:
+        row["reviewers"] = {
+            n: lab.reviewers[n] for n in LABELLERS if n in lab.reviewers
+        }
+    if lab.notes:
+        row["notes"] = {n: lab.notes[n] for n in LABELLERS if n in lab.notes}
+    return row
 
 
 def load_labels(path: Path) -> list[Label]:
@@ -187,7 +294,7 @@ class JudgeRates:
 
 @dataclass(frozen=True)
 class Calibration:
-    labelled: int
+    labelled: int  # rows with a label; rows without one are in no rate
     unmatched: int  # labelled claims with no judged rep on that diff
     by_judge: dict[str, JudgeRates] = field(default_factory=dict)
 
@@ -197,7 +304,8 @@ def calibrate(labels: Sequence[Label], records: Sequence[RepRecord]) -> Calibrat
 
     A diff judged by two reps counts twice, once per rep: that is how the judge's
     consistency on one diff shows. A rep with no verdicts (the judge failed)
-    contributes nothing.
+    contributes nothing. A row with no label (unknown, or still waiting for a
+    reviewer) is kept in the file and counted nowhere here.
     """
     index: dict[tuple[str, str], list[RepRecord]] = {}
     for rec in records:
@@ -205,8 +313,13 @@ def calibrate(labels: Sequence[Label], records: Sequence[RepRecord]) -> Calibrat
             index.setdefault((rec.case, rec.diff_sha256), []).append(rec)
 
     by_judge: dict[str, JudgeRates] = {}
+    labelled = 0
     unmatched = 0
     for lab in labels:
+        label = lab.label
+        if label is None:
+            continue
+        labelled += 1
         matches = index.get((lab.case, lab.diff_sha256), [])
         if not matches:
             unmatched += 1
@@ -221,13 +334,13 @@ def calibrate(labels: Sequence[Label], records: Sequence[RepRecord]) -> Calibrat
                 rates.unknown += 1
                 continue
             rates.scored += 1
-            if lab.label:
+            if label:
                 rates.positives += 1
                 rates.false_neg += not verdict
             else:
                 rates.negatives += 1
                 rates.false_pos += verdict
-    return Calibration(labelled=len(labels), unmatched=unmatched, by_judge=by_judge)
+    return Calibration(labelled=labelled, unmatched=unmatched, by_judge=by_judge)
 
 
 def _pct(part: int, whole: int) -> str:
