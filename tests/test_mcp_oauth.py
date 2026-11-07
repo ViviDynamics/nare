@@ -8,6 +8,7 @@ redirects over real HTTP. No third-party service is contacted.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import secrets
@@ -15,12 +16,13 @@ import socket
 import stat
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx2
 import pytest
@@ -67,6 +69,7 @@ def start(tmp_path: Path) -> Iterator[Callable[..., Fake]]:
         issuer_base: str | None = None,
         token_endpoint: str | None = None,
         echo_bearer: bool = False,
+        prm_url: str | None = None,
     ) -> Fake:
         port = free_port()
 
@@ -100,6 +103,8 @@ def start(tmp_path: Path) -> Iterator[Callable[..., Fake]]:
             argv += ["--token-endpoint", fill(token_endpoint) or ""]
         if echo_bearer:
             argv += ["--echo-bearer"]
+        if prm_url is not None:
+            argv += ["--prm-url", fill(prm_url) or ""]
         proc = subprocess.Popen(
             argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
@@ -145,11 +150,16 @@ def browser(tamper_state: bool = False) -> Callable[[str], Any]:
                 (k, "forged" if k == "state" else v) for k, v in parse_qsl(parts.query)
             ]
             url = urlunsplit(parts._replace(query=urlencode(query)))
-        async with httpx2.AsyncClient(follow_redirects=False) as client:
+        async with httpx2.AsyncClient(
+            follow_redirects=False, trust_env=False
+        ) as client:
             first = await client.get(url)
             assert first.status_code in (302, 303, 307), first.status_code
             callback = await client.get(first.headers["location"])
-            assert callback.status_code == 200, callback.status_code
+            # A redirect with a state this login did not start is refused, and
+            # the listener keeps waiting for the real one.
+            expected = 400 if tamper_state else 200
+            assert callback.status_code == expected, callback.status_code
 
     return present
 
@@ -405,8 +415,12 @@ def test_forged_state_is_rejected_and_nothing_is_stored(
         tmp_path, {"remote": {"url": f"{fake.url}/mcp", "timeout": 5, "auth": {}}}
     )
     server = parse_servers(json.loads(config.read_text()))["remote"]
-    with pytest.raises(mcp_auth.McpAuthError, match="authorization failed"):
-        login("remote", server, present=browser(tamper_state=True))
+    with pytest.raises(mcp_auth.McpAuthError, match="timed out"):
+        asyncio.run(
+            mcp_auth.login(
+                "remote", server, timeout=2, present=browser(tamper_state=True)
+            )
+        )
     assert not any(e["event"] == "grant" for e in fake.events())
 
 
@@ -782,3 +796,169 @@ def test_oversized_loopback_request_is_refused_quietly(
     reply = asyncio.run(scenario())
     assert reply.startswith(b"HTTP/1.1 400")
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+# -- round-2 regression tests -------------------------------------------------
+
+
+@contextlib.contextmanager
+def tcp_sink(reply: bytes = b"") -> Iterator[tuple[int, list[bytes]]]:
+    """A listener on 127.0.0.1 that records what connects to it. Anything that
+    reaches it appears in the list; a test asserts the list is empty."""
+    received: list[bytes] = []
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)
+    listener.settimeout(0.2)
+    stop = threading.Event()
+
+    def serve() -> None:
+        while not stop.is_set():
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                continue
+            conn.settimeout(1.0)
+            try:
+                received.append(conn.recv(65536))
+                if reply:
+                    conn.sendall(reply)
+            except OSError:
+                pass
+            finally:
+                conn.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        yield listener.getsockname()[1], received
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+        listener.close()
+
+
+def test_hostile_token_endpoint_gets_no_request(
+    tmp_path: Path, home: Path, start: Callable[..., Fake]
+) -> None:
+    """The metadata names an https token endpoint on another origin. The POST
+    rule refuses it before any byte is sent there."""
+    with tcp_sink() as (sink, received):
+        fake = start(token_endpoint=f"https://127.0.0.1:{sink}/token")
+        config = write_config(
+            tmp_path, {"remote": {"url": f"{fake.url}/mcp", "timeout": 5, "auth": {}}}
+        )
+        server = parse_servers(json.loads(config.read_text()))["remote"]
+        with pytest.raises(mcp_auth.McpAuthError, match="outside its authorization"):
+            login("remote", server)
+    assert received == []
+    assert events_of(fake, "grant") == []
+
+
+def test_hostile_resource_metadata_gets_no_request(
+    tmp_path: Path, home: Path, start: Callable[..., Fake]
+) -> None:
+    """The challenge names a metadata URL on a third origin. The GET rule
+    refuses it before a request is made."""
+    with tcp_sink() as (sink, received):
+        fake = start(prm_url=f"http://127.0.0.1:{sink}/prm")
+        config = write_config(
+            tmp_path, {"remote": {"url": f"{fake.url}/mcp", "timeout": 5, "auth": {}}}
+        )
+        server = parse_servers(json.loads(config.read_text()))["remote"]
+        with pytest.raises(mcp_auth.McpAuthError):
+            login("remote", server)
+    assert received == []
+
+
+def test_startup_failure_is_mapped_to_fixed_text(tmp_path: Path, home: Path) -> None:
+    """A connection failure during startup reaches the caller as the kind of
+    failure, not the transport's own exception."""
+    config = write_config(
+        tmp_path,
+        {
+            "remote": {
+                "url": f"http://127.0.0.1:{free_port()}/mcp",
+                "timeout": 2,
+                "auth": {},
+            }
+        },
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+    with pytest.raises(mcp_auth.McpAuthError) as caught:
+        login("remote", server)
+    assert str(caught.value).startswith("MCP server remote: ")
+    assert "connection" not in str(caught.value).lower()
+
+
+def test_startup_exception_is_mapped_before_it_leaves_connect(
+    tmp_path: Path,
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    start: Callable[..., Fake],
+) -> None:
+    """A non-OAuth exception raised while the server is being set up must not
+    reach the caller as itself, with its text. This drives the setup step of
+    connect(), not the teardown that a connection failure happens to reach."""
+    import nare.mcp
+
+    async def discover(*_: Any, **__: Any) -> None:
+        raise RuntimeError("upstream replied: DO-NOT-SHOW")
+
+    monkeypatch.setattr(nare.mcp, "_discover", discover)
+    fake = start()
+    config = write_config(
+        tmp_path, {"remote": {"url": f"{fake.url}/mcp", "timeout": 5, "auth": {}}}
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+    with pytest.raises(mcp_auth.McpAuthError) as caught:
+        login("remote", server)
+    assert str(caught.value) == "MCP server remote: RuntimeError"
+
+
+def test_authorized_connection_ignores_environment_proxy(
+    tmp_path: Path,
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    start: Callable[..., Fake],
+) -> None:
+    """A proxy named in the environment must never see the token exchange: an
+    authorized connection does not honour the proxy variables."""
+    reply = b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
+    with tcp_sink(reply=reply) as (proxy, seen):
+        for name in ("HTTP_PROXY", "http_proxy"):
+            monkeypatch.setenv(name, f"http://127.0.0.1:{proxy}")
+        for name in ("NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(name, raising=False)
+        fake = start()
+        config = write_config(
+            tmp_path, {"remote": {"url": f"{fake.url}/mcp", "timeout": 5, "auth": {}}}
+        )
+        server = parse_servers(json.loads(config.read_text()))["remote"]
+        assert login("remote", server) == ["remote__echo"]
+    assert seen == []
+
+
+def test_forged_loopback_delivery_does_not_abort_the_login(
+    tmp_path: Path, home: Path, start: Callable[..., Fake]
+) -> None:
+    """A local process delivers a code with the wrong state before the real
+    redirect. The listener refuses it and the real login still completes."""
+    fake = start()
+    config = write_config(
+        tmp_path, {"remote": {"url": f"{fake.url}/mcp", "timeout": 5, "auth": {}}}
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+    real = browser()
+
+    async def present(url: str) -> None:
+        redirect = parse_qs(urlsplit(url).query)["redirect_uri"][0]
+        async with httpx2.AsyncClient(trust_env=False) as client:
+            forged = await client.get(
+                redirect, params={"code": "ATTACKER-CODE", "state": "guess"}
+            )
+            assert forged.status_code == 400
+        await real(url)
+
+    assert login("remote", server, present=present) == ["remote__echo"]
+    assert stored(home)["tokens"]["access_token"]

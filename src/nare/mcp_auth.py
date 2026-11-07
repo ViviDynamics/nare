@@ -32,6 +32,7 @@ import logging
 import math
 import os
 import re
+import secrets
 import stat
 import tempfile
 import time
@@ -69,6 +70,7 @@ _LOGGERS = (
     "mcp.client.auth.oauth2",
     "mcp.client.auth.utils",
     "mcp.client.streamable_http",
+    "mcp.client.session",
     "mcp.shared._httpx_utils",
 )
 
@@ -566,7 +568,14 @@ class _Loopback:
         self._timeout = timeout
         self._server: asyncio.AbstractServer | None = None
         self._future: asyncio.Future[AuthorizationCodeResult] | None = None
+        # The state of the authorization this listener is waiting for. It is
+        # set when the authorization URL is presented; until then, and for
+        # any other state, a delivery is refused and the wait goes on.
+        self._state: str | None = None
         self.port = 0
+
+    def expect(self, state: str | None) -> None:
+        self._state = state
 
     async def __aenter__(self) -> _Loopback:
         self._future = asyncio.get_running_loop().create_future()
@@ -626,6 +635,11 @@ class _Loopback:
         assert self._future is not None
         if self._future.done():
             return "409 Conflict", "nare: this authorization already arrived"
+        state = query.get("state", [""])[0]
+        if self._state is None or not secrets.compare_digest(state, self._state):
+            # Not this login's redirect (a stray or forged request): refuse it,
+            # and keep waiting for the real one.
+            return "400 Bad Request", "nare: this is not the expected authorization"
         if "error" in query:
             self._future.set_exception(
                 McpAuthError("the authorization server refused access")
@@ -660,9 +674,15 @@ async def login(
     if not (0 < timeout < math.inf):
         raise McpAuthError("MCP login timeout must be a positive finite number")
     async with _Loopback(server.auth.callback_port, timeout) as loopback:
+
+        async def present_expecting(url: str) -> None:
+            state = parse_qs(urlsplit(url).query).get("state", [None])[0]
+            loopback.expect(state)
+            await present(url)
+
         authorizer = Authorizer(
             redirect_uri=loopback.redirect_uri,
-            present=present,
+            present=present_expecting,
             receive=loopback.receive,
         )
         async with connect(

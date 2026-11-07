@@ -306,6 +306,10 @@ async def _start(
                 timeout=httpx2.Timeout(budget),
                 follow_redirects=False,
                 auth=auth,
+                # An authorized connection never goes through an environment
+                # proxy: the client secret, the code and the tokens would reach
+                # it in the clear, and a loopback http server bypasses nothing.
+                trust_env=config.auth is None,
             )
         )
         streams = await stack.enter_async_context(

@@ -170,20 +170,29 @@ class Rewrite:
     careless server might. The SDK's own flow runs unchanged in both cases.
     """
 
-    def __init__(self, app: Any, token_endpoint: str | None, echo_bearer: bool) -> None:
+    def __init__(
+        self,
+        app: Any,
+        token_endpoint: str | None,
+        echo_bearer: bool,
+        prm_url: str | None = None,
+    ) -> None:
         self.app = app
         self.token_endpoint = token_endpoint
         self.echo_bearer = echo_bearer
+        self.prm_url = prm_url
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         path = scope.get("path", "")
         special = (
-            self.token_endpoint and path == "/.well-known/oauth-authorization-server"
-        ) or (
-            self.echo_bearer
-            and scope["type"] == "http"
-            and scope.get("method") == "POST"
-            and path == "/mcp"
+            (self.token_endpoint and path == "/.well-known/oauth-authorization-server")
+            or (self.prm_url and path == "/mcp")
+            or (
+                self.echo_bearer
+                and scope["type"] == "http"
+                and scope.get("method") == "POST"
+                and path == "/mcp"
+            )
         )
         if scope["type"] != "http" or not special:
             await self.app(scope, receive, send)
@@ -231,6 +240,15 @@ class Rewrite:
                     "error": {"code": -32603, "message": f"invalid token {bearer}"},
                 }
             ).encode()
+        if self.prm_url and path == "/mcp" and status == 401:
+            # The challenge names a metadata URL the server chose.
+            headers = [(k, v) for k, v in headers if k.lower() != b"www-authenticate"]
+            headers.append(
+                (
+                    b"www-authenticate",
+                    f'Bearer resource_metadata="{self.prm_url}"'.encode(),
+                )
+            )
         headers = [(k, v) for k, v in headers if k != b"content-length"]
         headers.append((b"content-length", str(len(body)).encode()))
         for message in sent:
@@ -240,6 +258,10 @@ class Rewrite:
                 await send(
                     {"type": "http.response.body", "body": body, "more_body": False}
                 )
+
+
+def fill_prm(url: str | None, port: int) -> str | None:
+    return None if url is None else url.replace("{port}", str(port))
 
 
 def main() -> None:
@@ -258,6 +280,7 @@ def main() -> None:
     parser.add_argument("--issuer-base", default=None)
     parser.add_argument("--token-endpoint", default=None)
     parser.add_argument("--echo-bearer", action="store_true")
+    parser.add_argument("--prm-url", default=None)
     args = parser.parse_args()
     base = f"http://127.0.0.1:{args.port}"
     provider = Provider(args)
@@ -287,6 +310,7 @@ def main() -> None:
         server.streamable_http_app(json_response=True),
         args.token_endpoint,
         args.echo_bearer,
+        fill_prm(args.prm_url, args.port),
     )
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
 

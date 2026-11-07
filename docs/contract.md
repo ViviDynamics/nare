@@ -740,6 +740,10 @@ server is used as before, with optional `headers`:
   nothing else. A server's metadata cannot name a destination outside this rule.
   `auth` on a stdio server, a `url` over plain `http` elsewhere, or an
   `Authorization` header alongside `auth` exit 2.
+- An authorized connection ignores the proxy environment (`HTTP_PROXY`,
+  `HTTPS_PROXY` and their lowercase forms): the client secret, the code and the
+  tokens never go through a proxy. A connection without `auth` keeps the
+  environment's proxy settings, as before.
 - The flow is the MCP authorization specification's: protected resource
   metadata (RFC 9728), authorization server metadata (RFC 8414), PKCE S256,
   and the resource indicator (RFC 8707). It is run by the MCP SDK's client.
@@ -750,7 +754,9 @@ with a browser (or with the loopback port forwarded to one):
     nare mcp login docs --mcp-config servers.json
 
 It prints the authorization URL on stderr and waits up to 300 seconds
-(`--timeout SECONDS`) for the browser to return to `127.0.0.1`. Nothing goes to
+(`--timeout SECONDS`) for the browser to return to `127.0.0.1`. The listener
+accepts only a redirect whose `state` is the one this login started; any other
+request is refused with 400 and the wait goes on. Nothing goes to
 stdout. Success prints `authorized <alias>` on stderr and exits 0; a failure
 exits 1 with a message that quotes no token and no server reply.
 
