@@ -53,6 +53,7 @@ from nare.schema import UnsupportedSchema, check_supported
 from nare.session import (
     Session,
     drop_signed_thinking,
+    fork,
     loads,
     new_session,
     reopen,
@@ -256,6 +257,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     add_run_flags(run_parser)
+    run_parser.add_argument(
+        "--fork",
+        action="store_true",
+        help=(
+            "with --resume PATH: write the continued session to --session, a new "
+            "file, and leave PATH byte-identical. The fork records the session "
+            "and turn it came from. nare tui has no --fork"
+        ),
+    )
 
     tui_parser = sub.add_parser(
         "tui", help="work with nare in a terminal UI, or watch a run with --attach"
@@ -628,6 +638,25 @@ def validate_run_args(args: argparse.Namespace) -> Prices | None:
         raise ValueError("--provider fake requires --replay FILE")
     if args.replay is not None and args.provider != "fake":
         raise ValueError("--replay requires --provider fake")
+    # nare tui shares this check and has no --fork, so the flag is read with a default.
+    if getattr(args, "fork", False):
+        # A fork writes a file of its own. It never names the resumed path, so
+        # the original cannot be written: the check runs before the default below.
+        if not args.resume:
+            raise ValueError("--fork needs --resume PATH: it branches a saved session")
+        if not args.session:
+            raise ValueError(
+                "--fork writes a new session: give its path with --session"
+            )
+        if os.path.realpath(args.session) == os.path.realpath(args.resume):
+            raise ValueError(
+                f"--session {args.session} is the resumed file: a fork writes a new one"
+            )
+        if os.path.exists(args.session):
+            raise ValueError(
+                f"--session {args.session} already exists: "
+                "a fork never overwrites a file"
+            )
     # A resume with nowhere to write back silently throws the run away and
     # replays the stale prefix next time. Resuming a file means updating it.
     if args.resume and not args.session:
@@ -673,6 +702,20 @@ def _load_or_new(args: argparse.Namespace) -> Session:
     if not args.resume:
         return new_session(args.prompt)
     session = loads(Path(args.resume).read_text(encoding="utf-8"))
+    if args.fork:
+        # Forked before reopen, so the copy is the transcript as saved; the
+        # reopen, the redaction and the changed-prefix rules then run on it as
+        # on a resume. The original is only read.
+        session = fork(session, source=args.resume)
+        record = session.forked_from or {}
+        session.events.append(
+            Event(
+                "progress",
+                f"forked from session {record.get('session_id')} at turn "
+                f"{record.get('turn')}; the original file is not written",
+                {"fork": record},
+            )
+        )
     # Resuming is how a caller relays feedback: reopen and keep going.
     reopen(session, args.prompt)
     return session

@@ -407,6 +407,7 @@ def test_the_public_api_is_the_documented_surface() -> None:
         "Usage",
         "approve_all",
         "dumps",
+        "fork",
         "loads",
         "make_transport",
         "new_session",

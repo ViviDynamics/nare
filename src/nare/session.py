@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import copy
 import json
 import os
 import tempfile
@@ -184,6 +185,10 @@ class Session:
     # before nare recorded them.
     cwd: str | None = None
     root: str | None = None
+    # Set on a session `nare run --resume PATH --fork` wrote: the session and
+    # turn it was forked from, and the path it was read from (None for a
+    # library fork without one). Redacted on save. None on any other session.
+    forked_from: dict[str, Any] | None = None
     # Written by every save, which drops stale thinking. A file without it
     # comes from an older nare and may hold thinking that redaction or
     # compaction made stale, so loads() drops it by the markers they leave.
@@ -379,6 +384,7 @@ def dumps(s: Session) -> str:
         message["content"] = without_sent_thinking(message["content"])
     raw["messages"] = redacted
     raw["system"] = redact_value(raw["system"])
+    raw["forked_from"] = redact_value(raw["forked_from"])
     return json.dumps(raw)
 
 
@@ -449,6 +455,8 @@ def loads(text: str) -> Session:
             raise TypeError("system must be a string or null")
         if not isinstance(raw.get("schema_sha256"), (str, type(None))):
             raise TypeError("schema_sha256 must be a string or null")
+        if not isinstance(raw.get("forked_from"), (dict, type(None))):
+            raise TypeError("forked_from must be an object or null")
         # A file saved before the budget was counted spent its one correction
         # when schema_retried was set, and counts it as one charged correction.
         if "schema_corrections" not in raw and raw.get("schema_retried") is True:
@@ -456,6 +464,27 @@ def loads(text: str) -> Session:
         return Session(**raw)
     except (AttributeError, KeyError, TypeError) as exc:
         raise ValueError(f"malformed session file: {exc}") from exc
+
+
+def fork(s: Session, source: str | Path | None = None) -> Session:
+    """A new session that starts from `s`'s transcript, and leaves `s` alone.
+
+    The copy has a new id and a `forked_from` record of `s`'s id, its turn count
+    and `source`, the path it was read from. Usage, evidence and the policy
+    carry over, as they do on a resume. Process groups do not: a bash process
+    left running belongs to `s`'s run, and the fork must not offer to kill it.
+    Like a resume, the fork is not reopened here; call `reopen` before `run`.
+    """
+    child = copy.deepcopy(s)
+    child.id = uuid.uuid4().hex
+    child.events = []
+    child.process_groups = []
+    child.forked_from = {
+        "session_id": s.id,
+        "turn": s.turns,
+        "path": None if source is None else os.path.realpath(source),
+    }
+    return child
 
 
 def reopen(s: Session, text: str | None = None) -> None:

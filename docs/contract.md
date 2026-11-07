@@ -95,6 +95,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--image-input` | no | | Declare that the model accepts image input ([Read-only image input](#read-only-image-input)) |
 | `--session` | yes | | Write the session to a path |
 | `--max-turns` | yes | | Stop after this many turns in this invocation |
+| `--fork` | no | | With `--resume PATH`, write the continued session to `--session` (a new file) and leave PATH byte-identical ([Forking a saved session](#forking-a-saved-session)). `nare run` only |
 
 A test fails when this table and the parser disagree, so a new flag is
 documented here in the change that adds it.
@@ -1954,6 +1955,63 @@ whitespace, so reordering keys or reformatting the file is not a change.
 A `schema_sha256` that is neither a string nor `null` makes the session file
 malformed (exit 2). The session field and the event detail are additive and
 keep the contract version.
+
+## Forking a saved session
+
+`--fork` branches a saved session. It resumes the file at `--resume PATH`, but
+writes the continued session to `--session`, a new file, and never to PATH:
+
+    nare run --yes --jsonl --resume review.json --fork \
+      --session review-alt.json "Try the other approach."
+
+- `--fork` needs `--resume PATH` and `--session PATH`. Exit 2, with nothing on
+  stdout and no model call, when either is missing, when `--session` names the
+  resumed file, or when `--session` already exists. A fork never overwrites.
+- PATH is only read. Its bytes are the same after the run, whatever the run
+  does, including a failure or an interruption.
+- The new file has a new session `id`, reported as `session_id` on the result
+  line. Its transcript is the one PATH held, then the prompt, as on a resume.
+- Redaction, the recorded system prompt and budgets apply exactly as on a
+  resume. So does the changed-prefix rule: a fork that changes the tool set or
+  the system prompt drops the signed thinking from the new file, says so in a
+  `progress` event, and leaves the thinking in PATH.
+- A `progress` event with `detail` `{"fork": {...}}` says the fork happened,
+  before the first turn.
+- Process groups a bash call left running in PATH are not carried over: the new
+  file does not offer to kill them.
+- `nare tui` has no `--fork`; argparse refuses it with exit 2.
+
+The new file records where it came from in its `forked_from` field: an object
+or `null` (`null` in every file that is not a fork). It is redacted on save,
+like the system prompt.
+
+| Key | Meaning |
+| --- | --- |
+| `session_id` | The `id` of the session forked from |
+| `turn` | Its `turns` count when the fork was made |
+| `path` | The absolute path it was read from, or `null` for a library fork given none |
+
+A caller that reads `forked_from` before it trusts a file's history knows which
+run the branch came from. The field, the event detail and the flag are additive
+and keep the contract version.
+
+The same operation in Python is `nare.fork(session, source=path)`. It returns a
+copy with a new `id` and the `forked_from` record, and leaves `session` as it
+was. Call `reopen` on the copy with the follow-up, as the command line does,
+then `run` it, and `save` it to a new path. `transport` is one built with
+`make_transport`, as in [Choosing a transport](#choosing-a-transport):
+
+    from pathlib import Path
+
+    from nare import fork, loads, run
+    from nare.session import reopen, save
+
+    original = loads(Path("review.json").read_text(encoding="utf-8"))
+    branch = fork(original, source="review.json")
+    reopen(branch, "Try the other approach.")
+    async for event in run(branch, transport=transport):
+        ...  # as in "run and step"
+    save(branch, "review-alt.json")
 
 ## Prompt-cache breakpoints
 
