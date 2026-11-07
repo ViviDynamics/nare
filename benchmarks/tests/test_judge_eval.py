@@ -7,6 +7,7 @@ from pathlib import Path
 from benchmarks.judge_eval import (
     EXPLOIT_ANSWERS,
     Call,
+    Item,
     agreement,
     designed_answers,
     jev_unknown,
@@ -21,8 +22,7 @@ from benchmarks.runner.case import load_cases
 CASES = {c.id: c for c in load_cases(Path(__file__).parents[1] / "cases")}
 
 
-def _item(case_id: str, kind: str):
-    from benchmarks.judge_eval import Item
+def _item(case_id: str, kind: str) -> Item:
     from benchmarks.runner.compare import Evidence
 
     return Item(

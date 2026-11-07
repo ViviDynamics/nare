@@ -332,11 +332,11 @@ async def judge_with_jev(
             attempts=exc.attempts,
             latency_s=exc.latency_s,
         )
-    p_yes = [
-        reply.answers[qid].p_yes
-        for qid in questions
-        if isinstance(reply.answers[qid], Noul)
-    ]
+    p_yes: list[float] = []
+    for qid in questions:
+        answer = reply.answers[qid]
+        if isinstance(answer, Noul):
+            p_yes.append(answer.p_yes)
     return Call(
         candidate.name,
         item.id,
@@ -519,7 +519,8 @@ def capture_reference(cases: Mapping[str, Case]) -> dict[tuple[str, str], Eviden
                     break
             if (case_id, kind) not in captured:
                 raise RuntimeError(
-                    f"{case_id} {kind}: no diff was captured: {verdict.lines}"
+                    f"{case_id} {kind}: no diff was captured: "
+                    f"{verdict.lines if verdict else ()}"
                 )
     return captured
 
@@ -548,7 +549,8 @@ def summarise(
         ok = [c for c in mine if c.verdicts is not None]
 
         # Designed answers, split by what they test.
-        sol_pairs, exp_pairs = [], []
+        sol_pairs: list[tuple[bool | None, bool | None]] = []
+        exp_pairs: list[tuple[bool | None, bool | None]] = []
         for item in ref_items:
             answers = designed_answers(item)
             for call in mine:
@@ -571,16 +573,18 @@ def summarise(
         panel_pairs: list[tuple[bool | None, bool | None]] = []
         deviations: list[tuple[bool, float]] = []
         for item in panel_items:
-            call = by_item.get(item.id, {}).get(cand.name)
-            if call is None:
+            got = by_item.get(item.id, {}).get(cand.name)
+            if got is None:
                 continue
-            for n in range(1, len(item.case.judge.assertions) + 1):
-                label = loo_label(by_item[item.id], item.id, n, cand.name)
-                verdict = verdict_of(call, n)
-                panel_pairs.append((verdict, label))
-                if cand.agent and verdict is not None and label is not None:
+            judge = item.case.judge
+            claims_count = len(judge.assertions) if judge is not None else 0
+            for n in range(1, claims_count + 1):
+                panel_label = loo_label(by_item[item.id], item.id, n, cand.name)
+                judged = verdict_of(got, n)
+                panel_pairs.append((judged, panel_label))
+                if cand.agent and judged is not None and panel_label is not None:
                     deviations.append(
-                        (item.agent == cand.model, float(verdict) - float(label))
+                        (item.agent == cand.model, float(judged) - float(panel_label))
                     )
         panel = agreement(panel_pairs)
         self_pref, own_n = self_preference(deviations)
