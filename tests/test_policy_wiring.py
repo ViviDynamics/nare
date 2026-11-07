@@ -154,7 +154,7 @@ async def test_run_with_no_policy_offers_read_only_tools() -> None:
     await drain(session, provider)
 
     _, tools = provider.calls[0]
-    assert sorted(tool["name"] for tool in tools) == ["list", "read", "search"]
+    assert sorted(tool["name"] for tool in tools) == ["ask", "list", "read", "search"]
 
 
 async def test_run_with_no_policy_refuses_a_write(tmp_path: Path) -> None:
@@ -195,16 +195,41 @@ async def test_run_with_no_policy_refuses_bash(tmp_path: Path) -> None:
     assert not marker.exists()
 
 
-async def test_an_approver_without_a_policy_offers_the_built_in_set() -> None:
-    # Passing approve is the caller opting in to the built-in tools, each call
-    # still gated by it. Without one, the default is read-only.
+async def test_an_approver_without_a_policy_still_offers_only_read_only_tools() -> None:
+    # An approver gates whatever a policy allows. It does not widen the default.
     provider = FakeProvider([text_reply("done")])
     session = new_session("go")
 
     await drain(session, provider, approve=lambda tool, args: True)
 
     _, tools = provider.calls[0]
-    assert {tool["name"] for tool in tools} == set(TOOLS)
+    assert sorted(tool["name"] for tool in tools) == ["ask", "list", "read", "search"]
+
+
+async def test_an_approver_without_a_policy_refuses_bash_and_write(
+    tmp_path: Path,
+) -> None:
+    # The approver says yes to everything, and the model still cannot reach
+    # bash or write: they are not offered, so no call to them can run.
+    marker = tmp_path / "ran"
+    target = tmp_path / "a.txt"
+    provider = FakeProvider(
+        [
+            tool_reply("bash", {"command": f"touch {marker}"}, call_id="b1"),
+            tool_reply("write", {"path": str(target), "content": "x"}, call_id="w1"),
+            text_reply("understood"),
+        ]
+    )
+    session = new_session("go")
+
+    await drain(session, provider, approve=lambda tool, args: True)
+
+    results = [
+        b for m in session.messages for b in m.content if b.get("type") == "tool_result"
+    ]
+    assert [r["is_error"] for r in results] == [True, True]
+    assert not marker.exists()
+    assert not target.exists()
 
 
 async def test_an_explicit_policy_is_unchanged() -> None:

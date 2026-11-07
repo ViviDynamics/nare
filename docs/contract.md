@@ -842,22 +842,26 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-**Pass `policy`.** With neither a policy nor an `approve` callable, `run` offers
-only `read`, `list` and `search`. It cannot write, edit or run `bash`. To offer
-the built-in tools, pass a policy that names them, as `Policy()` does, or pass
-an `approve` callable, which gates each call and offers the whole built-in set.
-A call that needs an answer and no side effects passes
-`Policy(tools=frozenset())`, as the examples do. A policy that names a caller
-tool must name it in `tools` and in `pending`, as the
+**Pass `policy`.** With no policy, `run` offers only `read`, `list`, `search`
+and `ask`, whether or not an `approve` callable is passed. It cannot write, edit
+or run `bash`: an approver gates the calls a policy allows, and does not widen
+the default. To offer `write`, `edit` or `bash`, pass a policy that names them,
+such as `Policy()` for the built-in set. A call that needs an answer and no side
+effects passes `Policy(tools=frozenset())`, as the examples do. A policy that
+names a caller tool must name it in `tools` and in `pending`, as the
 [caller tools](#caller-tools) section shows. MCP servers and caller tools are
 offered when the call registers them, whichever default applies.
 
-**Changed for library callers.** Before this change, `run` with no policy
-offered every built-in tool, `bash` included, and approved every call. A caller
-that relied on that passes `policy=Policy()` to keep it, or names the tools it
-needs. This is a change to the Python API only. The command line still passes
-its policy explicitly, so `nare run`, its stream, its session file and its exit
-codes are unchanged, and the contract version does not move.
+**Changed for library callers.** An earlier library default offered every
+built-in tool, `bash` included, to a call that passed no policy, and passing
+`approve` alone kept that set. Now a call with no policy offers only the
+read-only tools, and passing `approve` alone no longer restores the built-in
+set. A caller that relied on the earlier behaviour passes `policy=Policy()` to
+keep it, or names the tools it needs. A caller that passed `approve` alone to
+get `write`, `edit` or `bash` passes a policy as well. This is a change to the
+Python API only. The command line still passes its policy explicitly, so
+`nare run`, its stream, its session file and its exit codes are unchanged, and
+the contract version does not move.
 
 With no `root`, the read tools reach any path the process can read. A caller
 that gives the model a tree passes `Policy(root=...)`.

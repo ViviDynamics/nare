@@ -1507,13 +1507,9 @@ async def run(
     check_max_tool_calls(max_tool_calls)
     check_max_corrections(max_corrections)
     check_max_cutoffs(max_cutoffs)
-    # No policy and no approver: read-only tools. An approver is the caller
-    # opting in to the built-in set, each call still gated by it. A policy
-    # names exactly what the session offers, so it always wins.
-    if policy is None:
-        base = Policy() if approve is not None else Policy(tools=READ_ONLY_TOOLS)
-    else:
-        base = policy
+    # No policy: read-only tools, whatever approver is passed. Only an explicit
+    # policy enables write, edit or bash; the approver gates what it allows.
+    base = Policy(tools=READ_ONLY_TOOLS) if policy is None else policy
     approver = approve_all if approve is None else approve
     reads = build_reads(
         require_reads,

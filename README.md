@@ -188,9 +188,10 @@ Python callers can run the same loop in-process, with `nare.run` and
 `nare.step`, typed answers through `schema=` and `check=`, and caller tools.
 Its budget arguments default to the command line's except `max_cutoffs`, the
 command line reads its defaults from `NARE_*` variables, and the library adds no
-default system prompt. With no `policy`, `nare.run` offers only `read`, `list`
-and `search`. Pass a policy such as `Policy()` to offer `write`, `edit` and
-`bash`, or an `approve` callable to gate them call by call.
+default system prompt. With no `policy`, `nare.run` offers only `read`, `list`,
+`search` and `ask`, whether or not it gets an `approve` callable. Pass a policy
+such as `Policy()` to offer `write`, `edit` and `bash`; `approve` then gates each
+call the policy allows.
 See [calling nare from Python](docs/contract.md#calling-nare-from-python).
 
 ## Terminal UI
