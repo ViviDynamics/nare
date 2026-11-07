@@ -175,6 +175,10 @@ class Session:
     # call order: the session's copy of the evidence its progress events
     # carried. A record, so reopen() keeps it.
     evidence: list[dict[str, Any]] = field(default_factory=list)
+    # The bash calls a policy rule decided, as {tool_use_id, effect, patterns}
+    # in call order: the session's copy of the progress events they carried.
+    # Never the command text. A record, so reopen() keeps it.
+    bash_rules: list[dict[str, Any]] = field(default_factory=list)
     # The system prompt the run sent, so a resume sends it again and a reader
     # can see what the model was told: "" when none was sent, None in a file
     # saved before nare recorded it. Redacted on save, like the transcript.
@@ -449,6 +453,8 @@ def loads(text: str) -> Session:
             raw["process_groups"] = []
         if not isinstance(raw.get("evidence", []), list):
             raw["evidence"] = []
+        if not isinstance(raw.get("bash_rules", []), list):
+            raw["bash_rules"] = []
         # Refused, not reset: a resume that quietly fell back to the default
         # prompt is what the record exists to prevent.
         if not isinstance(raw.get("system"), (str, type(None))):
@@ -470,9 +476,10 @@ def fork(s: Session, source: str | Path | None = None) -> Session:
     """A new session that starts from `s`'s transcript, and leaves `s` alone.
 
     The copy has a new id and a `forked_from` record of `s`'s id, its turn count
-    and `source`, the path it was read from. Usage, evidence and the policy
-    carry over, as they do on a resume. Process groups do not: a bash process
-    left running belongs to `s`'s run, and the fork must not offer to kill it.
+    and `source`, the path it was read from. Usage, evidence, the bash rule
+    records and the policy carry over, as they do on a resume. Process groups
+    do not: a bash process left running belongs to `s`'s run, and the fork must
+    not offer to kill it.
     Like a resume, the fork is not reopened here; call `reopen` before `run`.
     """
     child = copy.deepcopy(s)

@@ -441,6 +441,29 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--bash-allow",
+        action="append",
+        default=[],
+        metavar="PATTERN",
+        help=(
+            "let a bash command matching PATTERN run without asking; a line of "
+            "several commands runs only when every one matches. Repeatable. "
+            "* matches any run of characters, ? one. See docs/contract.md, "
+            "Bash command rules"
+        ),
+    )
+    parser.add_argument(
+        "--bash-deny",
+        action="append",
+        default=[],
+        metavar="PATTERN",
+        help=(
+            "refuse a bash command matching PATTERN, even with --yes; a deny "
+            "also matches a command run through a wrapper such as env, xargs, "
+            "sh -c or find -exec. Deny wins over --bash-allow. Repeatable"
+        ),
+    )
+    parser.add_argument(
         "--resume",
         nargs="?",
         const="",
@@ -608,6 +631,8 @@ def policy_from_args(args: argparse.Namespace) -> Policy:
         root=root,
         pending=unresolved_names,
         bash_credentials=args.bash_credentials,
+        bash_allow=frozenset(args.bash_allow),
+        bash_deny=frozenset(args.bash_deny),
     )
 
 
