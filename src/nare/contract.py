@@ -109,6 +109,25 @@ def _run_parser() -> argparse.ArgumentParser:
     return run
 
 
+def _bash_sandbox_contract() -> dict[str, Any]:
+    from nare import sandbox
+
+    found = sandbox.availability()
+    return {
+        "flag": "--bash-sandbox",
+        "network_flag": "--bash-network",
+        "profile": sandbox.PROFILE,
+        "platforms": sandbox.SUPPORTED,
+        "available": found.available,
+        "mechanism": found.mechanism,
+        "reason": found.reason,
+        "needs": "--root",
+        "writable": ["the root", "a private temporary directory per call"],
+        "network": "off unless --bash-network",
+        "fallback": "none: a call that cannot be confined is refused, never run",
+    }
+
+
 def describe() -> dict[str, Any]:
     """The contract as data, for a caller to read before it spawns a run.
 
@@ -156,6 +175,10 @@ def describe() -> dict[str, Any]:
         # Additive: the names `--tools` accepts, so a caller can check that a
         # tool it means to allow exists before it spawns a run.
         "tools": sorted(TOOLS),
+        # Additive: whether this host can confine bash (--bash-sandbox). The
+        # availability is this machine's, not the build's, so a caller reads it
+        # before it asks for the sandbox.
+        "bash_sandbox": _bash_sandbox_contract(),
         "navigation": {
             "tools": sorted(NAVIGATION_TOOLS),
             "max_output": MAX_TOOL_OUTPUT,

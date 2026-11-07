@@ -60,5 +60,6 @@ testpaths = ["tests", "benchmarks/tests"]
 markers = [
   "live: hits the real Anthropic API; needs ANTHROPIC_API_KEY",
   "docker: needs a working docker daemon",
+  "sandbox: runs the OS sandbox for bash; skipped where none is available",
 ]
 addopts = "-m 'not live and not docker'"

@@ -19,7 +19,20 @@ jobs:
           python-version: "3.12"
           enable-cache: true
       - run: uv sync
+      # The bash sandbox tests run the real bubblewrap here, and must not skip:
+      # NARE_REQUIRE_SANDBOX turns a missing sandbox into a failure. Ubuntu's
+      # AppArmor policy can block the unprivileged user namespaces bwrap needs,
+      # so lift that restriction first where the kernel has it.
+      - name: Install bubblewrap for the bash sandbox tests
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: Allow unprivileged user namespaces for bubblewrap
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - run: bin/build
+        env:
+          NARE_REQUIRE_SANDBOX: "1"
 
   cases:
     name: benchmark cases measure something
