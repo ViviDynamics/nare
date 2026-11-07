@@ -590,9 +590,14 @@ symptom and cause sit in different modules; a refactor held to the original's
 output; a format migration that must keep old files loading. `extended` runs
 only when named, `bin/bench run --tier extended`, and `full` never includes it,
 so `full` results, baselines and CI are what they were before the tier existed.
-It has no baselines yet: a proof run shows the cases work, and blessing waits
-for the judge to be chosen (#46). Its defaults are three repetitions per case
+It has no baselines yet: a proof run shows the cases work. The judge is now
+chosen (#46: `claude-haiku-5-5`, #239), so blessing is a separate decision
+that no baseline has made yet. Its defaults are three repetitions per case
 and a 30-minute timeout, set in `TIER_DEFAULTS`.
+
+The matrix judge is `claude-haiku-5-5` (#239). Each baseline records its judge
+in `[meta]`, and `run --matrix` refuses a matrix whose baselines name more than
+one judge, so re-bless every matrix model together when the judge changes.
 
 `bin/bench verify` with no `--tier` checks every case, extended included. CI
 runs `bin/bench verify --tier full`, which does not reach the extended tier, so
