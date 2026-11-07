@@ -26,9 +26,13 @@ COMPARABLE_CASES: tuple[str, ...] = (
     "edit-docstring",
     "expense-tracker-cli",
     "fix-failing-test",
+    "invoice-discount-bug",
     "long-test-output",
     "multi-file-rename",
+    "notes-tags-feature",
+    "prefs-migration",
     "read-only-question",
+    "report-refactor",
     "stale-backup-cleanup",
 )
 

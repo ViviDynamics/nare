@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-Tier = Literal["smoke", "full"]
+Tier = Literal["smoke", "full", "extended"]
 CheckKind = Literal["bash", "result"]
 
 # Fields that would pin a case to one operator's environment. Rejected by
@@ -33,7 +33,13 @@ class TierDefaults:
 TIER_DEFAULTS: dict[str, TierDefaults] = {
     "smoke": TierDefaults(reps=3, timeout=600),
     "full": TierDefaults(reps=5, timeout=900),
+    # Opt-in (#97): real work, several files and layers, run only when named.
+    # Fewer reps than full, because each rep is far longer and dearer.
+    "extended": TierDefaults(reps=3, timeout=1800),
 }
+
+# Every tier a run can name. `full` covers smoke and full; `extended` only when named.
+TIER_CHOICES: tuple[str, ...] = tuple(TIER_DEFAULTS)
 
 
 @dataclass(frozen=True)
@@ -203,8 +209,19 @@ def load_case(directory: Path) -> Case:
     )
 
 
+# The tiers `full` covers. `extended` is not among them: it runs only when
+# named, so `full` results, baselines and CI stay what they were (#97).
+_FULL_TIERS = ("smoke", "full")
+
+
 def load_cases(root: Path, tier: str | None = None) -> list[Case]:
-    """Load every case under `root`, sorted by id, optionally filtered by tier."""
+    """Load every case under `root`, sorted by id, optionally filtered by tier.
+
+    None is every case, in every tier. `full` is every smoke and full case,
+    not only the full-tagged ones: the tiers differ by scale, so a smoke result
+    predicts a full result. A case is tagged with the smallest tier it belongs
+    to. `extended` is its own tier and is never part of `full`.
+    """
     if not root.is_dir():
         return []
     cases = [
@@ -212,9 +229,8 @@ def load_cases(root: Path, tier: str | None = None) -> list[Case]:
         for entry in sorted(root.iterdir())
         if entry.is_dir() and (entry / "case.toml").exists()
     ]
-    # `full` is every case, not only the full-tagged ones: the tiers differ by
-    # scale, so a smoke result predicts a full result. A case is tagged with
-    # the smallest tier it belongs to.
-    if tier is not None and tier != "full":
-        cases = [c for c in cases if c.tier == tier]
-    return cases
+    if tier is None:
+        return cases
+    if tier == "full":
+        return [c for c in cases if c.tier in _FULL_TIERS]
+    return [c for c in cases if c.tier == tier]

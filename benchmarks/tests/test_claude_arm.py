@@ -11,9 +11,10 @@ import httpx2
 import pytest
 
 from benchmarks.runner import claude_arm
-from benchmarks.runner.claude_code import ModelPrice
+from benchmarks.runner.claude_code import COMPARABLE_CASES, EXCLUDED_CASES, ModelPrice
 from benchmarks.runner.grade import CheckResult, Outcome
 from benchmarks.runner.report import RepRecord
+from benchmarks.runner.sandbox import repo_root
 
 PRICE = ModelPrice(input=1e-07, output=5e-07, cache_read=1e-08, cache_write=1.25e-07)
 
@@ -162,8 +163,46 @@ def test_a_case_outside_the_comparable_set_is_refused_before_any_key_is_read(
 def test_list_names_every_case_once(capsys: pytest.CaptureFixture[str]) -> None:
     assert claude_arm.main(["--list"]) == 0
     text = capsys.readouterr().out
-    assert text.count("compared  ") == 9
-    assert text.count("excluded  ") == 8
+    assert text.count("compared  ") == len(COMPARABLE_CASES)
+    assert text.count("excluded  ") == len(EXCLUDED_CASES)
+
+
+OPT_IN_CASES = {
+    "invoice-discount-bug",
+    "notes-tags-feature",
+    "prefs-migration",
+    "report-refactor",
+}
+
+
+def test_the_tier_flag_selects_the_comparable_cases_of_that_tier() -> None:
+    root = repo_root()
+    # No tier means full, the nine cases the arm has always run.
+    assert claude_arm.selected_ids(root, None, None) == claude_arm.comparable_ids(
+        root, "full"
+    )
+    assert "edit-docstring" in claude_arm.selected_ids(root, None, None)
+    assert not OPT_IN_CASES & set(claude_arm.selected_ids(root, None, None))
+    # The opt-in tier (#97) is the arm's first user: only its cases run.
+    assert set(claude_arm.selected_ids(root, "extended", None)) == OPT_IN_CASES
+
+
+def test_a_named_case_may_be_run_without_a_tier_but_not_outside_its_tier() -> None:
+    root = repo_root()
+    assert claude_arm.selected_ids(root, None, ["notes-tags-feature"]) == [
+        "notes-tags-feature"
+    ]
+    with pytest.raises(ValueError, match="not in tier extended: edit-docstring"):
+        claude_arm.selected_ids(root, "extended", ["edit-docstring"])
+    with pytest.raises(ValueError, match="not comparable"):
+        claude_arm.selected_ids(root, None, ["ambiguous-request"])
+
+
+def test_a_case_outside_the_named_tier_is_refused_before_any_key_is_read(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert claude_arm.main(["--tier", "extended", "--case", "edit-docstring"]) == 2
+    assert "not in tier extended: edit-docstring" in capsys.readouterr().out
 
 
 def test_tools_seen_reads_each_reps_init_message(tmp_path: Path) -> None:

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Notes</title>
+</head>
+<body>
+  <h1>Notes</h1>
+  <form id="new-note">
+    <input name="title" placeholder="Title" required>
+    <textarea name="body" placeholder="Body"></textarea>
+    <button type="submit">Add</button>
+  </form>
+  <ul id="notes"></ul>
+  <script>
+    async function load() {
+      const res = await fetch("/api/notes");
+      const notes = await res.json();
+      const list = document.getElementById("notes");
+      list.innerHTML = "";
+      for (const note of notes) {
+        const item = document.createElement("li");
+        item.textContent = note.title + ": " + note.body;
+        list.appendChild(item);
+      }
+    }
+
+    document.getElementById("new-note").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.target;
+      await fetch("/api/notes", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({title: form.title.value, body: form.body.value}),
+      });
+      form.reset();
+      load();
+    });
+
+    load();
+  </script>
+</body>
+</html>

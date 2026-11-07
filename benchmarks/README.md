@@ -29,6 +29,7 @@ change without notice. See "Which models the endpoint serves" below.
     bin/bench verify --judge            # also the judge's claims: one call per judged solution
     bin/bench run --tier smoke          # measure
     bin/bench bless --tier smoke        # promote the numbers to a baseline
+    bin/bench run --tier extended       # the opt-in real-work tier, only when named
 
 `run` compares against `baselines/<model>.<tier>.toml` and exits 1 on a
 confirmed regression. Only a guard cell can regress: one blessed at 0.9 or
@@ -580,8 +581,22 @@ to compare; and 2 for a configuration error, before any model is called.
 ## Cases and their tiers
 
 Every case, with the tier it runs in. `smoke` cases are the cheap loop; `full`
-is every case. A smoke result predicts a full result (see the tests), so a case
-is tagged with the smallest tier it belongs to.
+is every `smoke` and `full` case. A smoke result predicts a full result (see the
+tests), so a case is tagged with the smallest tier it belongs to.
+
+**The extended tier (#97)** is opt-in. It holds larger cases that look like real
+work: a feature spread across storage, an API, a page and tests; a bug whose
+symptom and cause sit in different modules; a refactor held to the original's
+output; a format migration that must keep old files loading. `extended` runs
+only when named, `bin/bench run --tier extended`, and `full` never includes it,
+so `full` results, baselines and CI are what they were before the tier existed.
+It has no baselines yet: a proof run shows the cases work, and blessing waits
+for the judge to be chosen (#46). Its defaults are three repetitions per case
+and a 30-minute timeout, set in `TIER_DEFAULTS`.
+
+`bin/bench verify` with no `--tier` checks every case, extended included. CI
+runs `bin/bench verify --tier full`, which does not reach the extended tier, so
+run `bin/bench verify --tier extended` after changing one of its cases.
 
 | Case | Tier | What it measures |
 | --- | --- | --- |
@@ -595,10 +610,14 @@ is tagged with the smallest tier it belongs to.
 | `expense-tracker-cli` | full | builds a small CLI with tests, and stops |
 | `fix-failing-test` | smoke | fixes the code, not the test |
 | `impossible-test` | smoke | a docstring and a test that contradict: stops, or names the conflict |
+| `invoice-discount-bug` | extended | a discounted-invoice total wrong by a cent: the cause is in pricing, the failing test in invoices |
 | `long-test-output` | full | a failing test behind 36,000 characters of output |
 | `mcp-fanout` | full | forty small MCP lookups, summed |
 | `mcp-large-result` | full | one MCP call with a 60,000-character report, one line of which matters |
 | `multi-file-rename` | smoke | renames a function across three files |
+| `notes-tags-feature` | extended | tags across a stdlib notes app: store, JSON API, the page, and tests |
+| `prefs-migration` | extended | a v1 to v2 settings format: old files load, new ones are written, the CLI is unchanged |
+| `report-refactor` | extended | splits one report function into modules, checked against the original's output |
 | `read-only-question` | smoke | answers a question about the code and changes nothing |
 | `stale-backup-cleanup` | smoke | fixes a bug and leaves an unrelated backup file alone |
 | `typed-classify` | smoke | a tool-free schema answer over twelve items |
@@ -721,14 +740,15 @@ model-generated shell commands.
 The question is how nare compares with Claude Code on the same tasks, with the
 same model, the same judge and the same grading, in tokens and dollars per
 solved task. It is run by hand, never in CI: it needs a key and costs money.
-It is its own runner, `python -m benchmarks.runner.claude_arm`, and not an
-opt-in tier. #97 is still open and no tier exists, so a tier would have been
-a second way to name the same nine cases. When #97 lands, this can move.
+It is its own runner, `python -m benchmarks.runner.claude_arm`. The extended
+tier (#97) is its first user: `--tier extended` runs the comparable cases of
+that tier. A run without `--tier` runs the nine `full` cases, as it always has.
 
 What is compared, and how:
 
 - **Cases.** `COMPARABLE_CASES` in `benchmarks/runner/claude_code.py` are the
-  nine cases both arms can run on the same fixture, prompt and checks. The
+  thirteen cases both arms can run on the same fixture, prompt and checks: nine
+  smoke and full cases, and the four extended ones. The
   other eight are listed with a reason by `--list`. A case added to
   `benchmarks/cases` must land in one of the two sets, and the tests hold that.
 - **One rep is one rep.** The Claude arm copies the fixture, runs the checks
@@ -761,6 +781,7 @@ gateway root (without `/v1`) and the judge:
     export NARE_BASE_URL=https://...          # the root, without /v1
     export NARE_BENCH_JUDGE_MODEL=...         # not the model under test
     python -m benchmarks.runner.claude_arm --list
+    python -m benchmarks.runner.claude_arm --tier extended --out extended --reps 3
     python -m benchmarks.runner.claude_arm --out smoke --reps 12 \
         --case read-only-question --case edit-docstring    # and the rest
     python -m benchmarks.runner.claude_arm report \

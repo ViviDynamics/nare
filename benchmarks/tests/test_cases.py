@@ -31,6 +31,18 @@ SEEDS = {
     "mcp-large-result",
     "stale-backup-cleanup",
     "typed-classify",
+    # The opt-in extended tier (#97): real work, run only when named.
+    "invoice-discount-bug",
+    "notes-tags-feature",
+    "prefs-migration",
+    "report-refactor",
+}
+
+EXTENDED = {
+    "invoice-discount-bug",
+    "notes-tags-feature",
+    "prefs-migration",
+    "report-refactor",
 }
 
 
@@ -39,14 +51,36 @@ def test_every_seed_case_loads() -> None:
     assert {c.id for c in cases} == SEEDS
 
 
-def test_the_full_tier_is_every_case_and_smoke_is_a_subset() -> None:
+def test_the_full_tier_is_smoke_and_full_and_smoke_is_a_subset() -> None:
     """Tiers differ by scale, so a smoke result predicts a full result."""
     root = repo_root() / "benchmarks" / "cases"
     smoke = {c.id for c in load_cases(root, tier="smoke")}
     full = {c.id for c in load_cases(root, tier="full")}
-    assert full == SEEDS
+    assert full == SEEDS - EXTENDED
     assert smoke < full
     assert "bash-timeout-recovery" not in smoke
+
+
+def test_the_extended_tier_is_named_and_never_part_of_full() -> None:
+    """#97: `full` no longer means every case, so CI and baselines stay put."""
+    root = repo_root() / "benchmarks" / "cases"
+    extended = {c.id for c in load_cases(root, tier="extended")}
+    assert extended == EXTENDED
+    assert not extended & {c.id for c in load_cases(root, tier="full")}
+    assert not extended & {c.id for c in load_cases(root, tier="smoke")}
+    # Verify with no tier still checks every case, extended included.
+    assert {c.id for c in load_cases(root, tier=None)} == SEEDS
+
+
+def test_each_extended_case_has_a_reference_and_an_exploit() -> None:
+    for case in cases().values():
+        if case.id not in EXTENDED:
+            continue
+        assert (case.directory / "solution" / "result.toml").exists(), case.id
+        assert (case.directory / "exploit").is_dir(), case.id
+        assert case.judge is not None, f"{case.id} keeps its prose claims in a judge"
+        assert len(case.judge.assertions) >= 3, case.id
+        assert case.bash_checks, f"{case.id} has a bash check"
 
 
 def test_no_case_names_a_model() -> None:

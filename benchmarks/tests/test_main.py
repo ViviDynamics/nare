@@ -61,6 +61,18 @@ def test_parser_offers_the_four_subcommands() -> None:
         assert parser.parse_args([command]).command == command
 
 
+def test_the_extended_tier_is_named_and_verify_checks_every_case_by_default() -> None:
+    # #97: extended runs only when named, and verify is free, so with no
+    # --tier it checks every case rather than leaving the opt-in tier out.
+    parser = build_parser()
+    assert parser.parse_args(["run", "--tier", "extended"]).tier == "extended"
+    assert parser.parse_args(["verify"]).tier is None
+    assert parser.parse_args(["verify", "--tier", "full"]).tier == "full"
+    assert parser.parse_args(["run"]).tier == "smoke"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["run", "--tier", "enormous"])
+
+
 def test_run_accepts_the_configuration_flags() -> None:
     args = build_parser().parse_args(
         ["run", "--tier", "smoke", "--model", "claude-haiku", "--strict-tokens"]

@@ -31,7 +31,7 @@ from typing import Any
 import httpx2
 
 from benchmarks.runner.ab import CaseAB, mantel_haenszel, paired_ratio, token_pairs
-from benchmarks.runner.case import Case, load_cases
+from benchmarks.runner.case import TIER_CHOICES, Case, load_cases
 from benchmarks.runner.claude_code import (
     COMPARABLE_CASES,
     DISALLOWED_TOOLS,
@@ -581,6 +581,34 @@ def _tools_seen(evidence: Path) -> dict[str, list[str]]:
     return seen
 
 
+def comparable_ids(root: Path, tier: str) -> list[str]:
+    """The comparable cases of `tier`, in COMPARABLE_CASES order."""
+    in_tier = {c.id for c in load_cases(root / "benchmarks" / "cases", tier=tier)}
+    return [case for case in COMPARABLE_CASES if case in in_tier]
+
+
+def selected_ids(
+    root: Path, tier: str | None, named: Sequence[str] | None
+) -> list[str]:
+    """Which comparable cases a run takes, or raises ValueError saying why not.
+
+    With no --case, a run takes its tier's comparable cases: `full` when no tier
+    is named, as before the extended tier existed. With --case, the named cases
+    must be comparable, and inside the named tier when one is given.
+    """
+    if not named:
+        return comparable_ids(root, tier or "full")
+    refused = [c for c in named if c not in COMPARABLE_CASES]
+    if refused:
+        raise ValueError(f"not comparable, see --list: {', '.join(refused)}")
+    if tier is not None:
+        inside = set(comparable_ids(root, tier))
+        outside = [c for c in named if c not in inside]
+        if outside:
+            raise ValueError(f"not in tier {tier}: {', '.join(outside)}")
+    return list(named)
+
+
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m benchmarks.runner.claude_arm",
@@ -592,9 +620,16 @@ def _parser() -> argparse.ArgumentParser:
         help="a comparable case id (repeatable); default: all of them",
     )
     p.add_argument(
+        "--tier",
+        choices=TIER_CHOICES,
+        help="the comparable cases of this tier; extended is the opt-in tier of "
+        "#97, the arm's first user (default: full, the nine cases as before)",
+    )
+    p.add_argument(
         "--reps",
         type=int,
-        help="repetitions per case; default: each case's own (smoke 3, full 5)",
+        help="repetitions per case; default: each case's own (smoke 3, full 5, "
+        "extended 3)",
     )
     p.add_argument("--model", default=os.environ.get("NARE_MODEL") or DEFAULT_MODEL)
     p.add_argument("--base-url", help="the gateway root (env: NARE_BASE_URL)")
@@ -613,17 +648,18 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    root = repo_root()
     if args.list:
+        tiers = {c.id: c.tier for c in load_cases(root / "benchmarks" / "cases")}
         for case in COMPARABLE_CASES:
-            print(f"compared  {case}")
+            print(f"compared  {case}  [{tiers.get(case, '?')}]")
         for case, why in EXCLUDED_CASES.items():
             print(f"excluded  {case}: {why}")
         return 0
-    root = repo_root()
-    ids = list(args.case or COMPARABLE_CASES)
-    refused = [c for c in ids if c not in COMPARABLE_CASES]
-    if refused:
-        print(f"not comparable, see --list: {', '.join(refused)}")
+    try:
+        ids = selected_ids(root, args.tier, args.case)
+    except ValueError as exc:
+        print(str(exc))
         return 2
     try:
         config = resolve_config(
@@ -687,6 +723,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "model_info": info,
         "disallowed_tools": DISALLOWED_TOOLS,
         "agent_script": agent_script(),
+        "tier": args.tier,
         "cases": ids,
         "reps": {c.id: (args.reps if args.reps is not None else c.reps) for c in cases},
         "excluded": EXCLUDED_CASES,

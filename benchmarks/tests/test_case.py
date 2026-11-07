@@ -167,11 +167,39 @@ def test_load_cases_filters_by_tier_and_sorts(tmp_path: Path) -> None:
         "fix-failing-test",
     ]
     assert [c.id for c in load_cases(tmp_path, tier="smoke")] == ["fix-failing-test"]
-    # `full` is every case, not only the full-tagged ones.
+    # `full` is every smoke and full case, not only the full-tagged ones.
     assert [c.id for c in load_cases(tmp_path, tier="full")] == [
         "aaa-full-case",
         "fix-failing-test",
     ]
+
+
+def test_extended_is_opt_in_and_verify_still_sees_every_case(tmp_path: Path) -> None:
+    write_case(tmp_path, "fix-failing-test", GOOD)
+    write_case(
+        tmp_path,
+        "zzz-extended-case",
+        GOOD.replace('tier = "smoke"', 'tier = "extended"').replace(
+            'id = "fix-failing-test"', 'id = "zzz-extended-case"'
+        ),
+    )
+    assert [c.id for c in load_cases(tmp_path, tier="extended")] == [
+        "zzz-extended-case"
+    ]
+    assert [c.id for c in load_cases(tmp_path, tier="full")] == ["fix-failing-test"]
+    assert [c.id for c in load_cases(tmp_path, tier="smoke")] == ["fix-failing-test"]
+    assert [c.id for c in load_cases(tmp_path, tier=None)] == [
+        "fix-failing-test",
+        "zzz-extended-case",
+    ]
+
+
+def test_the_extended_tier_defaults_to_fewer_reps_and_a_longer_timeout() -> None:
+    from benchmarks.runner.case import TIER_CHOICES, TIER_DEFAULTS
+
+    assert TIER_CHOICES == ("smoke", "full", "extended")
+    assert TIER_DEFAULTS["extended"].reps < TIER_DEFAULTS["full"].reps
+    assert TIER_DEFAULTS["extended"].timeout > TIER_DEFAULTS["full"].timeout
 
 
 def test_load_cases_on_an_empty_root_returns_nothing(tmp_path: Path) -> None:

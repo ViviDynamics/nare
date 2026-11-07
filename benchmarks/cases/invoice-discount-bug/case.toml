@@ -1,0 +1,66 @@
+id = "invoice-discount-bug"
+tier = "extended"
+# A bug whose symptom and cause sit in different modules. The failing test is
+# on invoice totals, but the defect is in how pricing rounds a line, and the
+# fix belongs there. A hidden check runs the public function on invoices the
+# visible test does not have, so a special case for that test does not pass.
+prompt = """Invoice totals come out wrong for discounted lines: the test suite has a failing test that shows it. Find the cause and fix it. The rule in the docstring of billing/invoice.py's total() is the one to meet. Keep the public functions and their signatures, and leave the tests as they are."""
+max_turns = 30
+
+[[check]]
+kind = "result"
+status = "done"
+
+[[check]]
+kind = "bash"
+cmd = "python -m pytest -q"
+
+# Random invoices, with a fixed seed, checked against the rule worked out here
+# from exact decimals: exact line amounts, summed, taxed, rounded half-up once.
+[[check]]
+kind = "bash"
+cmd = '''
+python3 -I - <<'PYEOF'
+import os, random, sys
+from decimal import Decimal, ROUND_HALF_UP
+sys.path.insert(0, os.getcwd())
+from billing.invoice import total
+
+CENT = Decimal("0.01")
+rng = random.Random(20261106)
+bad = []
+for _ in range(400):
+    lines = []
+    for _ in range(rng.randint(1, 6)):
+        price = "%d.%02d" % (rng.randint(0, 99), rng.randint(0, 99))
+        qty = rng.randint(1, 9)
+        discount = rng.choice(["0%", "5%", "12.5%", "15%", "33%", "50%", "7.5%"])
+        lines.append((price, qty, discount))
+    tax = rng.choice(["0%", "8.25%", "20%"])
+    exact = sum(
+        (Decimal(p) * q * (1 - Decimal(d[:-1]) / 100) for p, q, d in lines),
+        Decimal(0),
+    )
+    expected = (exact * (1 + Decimal(tax[:-1]) / 100)).quantize(CENT, rounding=ROUND_HALF_UP)
+    got = total(lines, tax)
+    if got != expected:
+        bad.append((lines, tax, str(got), str(expected)))
+if bad:
+    lines, tax, got, expected = bad[0]
+    print("%d of 400 invoices wrong; first: %s tax %s gave %s, rule gives %s" % (len(bad), lines, tax, got, expected))
+    sys.exit(1)
+PYEOF
+'''
+
+# The tests are the spec the fix must meet, not a thing to edit around.
+[[check]]
+kind = "bash"
+cmd = 'test -z "$(git diff --name-only "$(git rev-list --max-parents=0 HEAD)" -- tests)"'
+
+[judge]
+assertions = [
+  "The diff changes where the rounding happens, so line amounts are no longer rounded before they are summed.",
+  "The diff keeps the public functions billing.invoice.total and billing.pricing.line_amount, with their signatures.",
+  "The diff does not change any file under tests/.",
+]
+min_met = 3

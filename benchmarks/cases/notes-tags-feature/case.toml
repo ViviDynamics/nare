@@ -1,0 +1,107 @@
+id = "notes-tags-feature"
+tier = "extended"
+# A small full-stack feature, the kind nare is used for: storage, a JSON API,
+# a page that calls it, and tests, with the change spread across all of them.
+# Stdlib only (sqlite3, http.server, plain HTML and JS), so the bench image
+# needs nothing it does not already have.
+prompt = """Add tags to the notes app in this directory. A note can carry any number of tags, and the API and the page should use them:
+- POST /api/notes accepts an optional "tags" list of strings and stores it with the note.
+- Every note in GET /api/notes and GET /api/notes/<id> has a "tags" list, sorted, and empty when the note has none.
+- GET /api/notes?tag=NAME returns only the notes that carry NAME.
+- GET /api/tags returns an object that maps each tag to the number of notes carrying it.
+- The page at / shows each note's tags and lets you filter the list by one tag.
+
+Keep the existing endpoints working, keep the existing tests passing, and add tests for the new behaviour. The server starts with: python -m notes.server --db notes.db"""
+max_turns = 40
+
+[[check]]
+kind = "result"
+status = "done"
+
+[[check]]
+kind = "bash"
+cmd = "python -m pytest -q"
+
+# The API, end to end: a real server on a free port, a fresh database, and
+# requests made the way a client makes them. make_server is the entry point
+# the prompt names, so this does not depend on how the agent wrote the store.
+[[check]]
+kind = "bash"
+cmd = '''
+python3 -I - <<'PYEOF'
+import json, os, sys, tempfile, threading, urllib.error, urllib.request
+sys.path.insert(0, os.getcwd())
+from notes.server import make_server
+
+failures = []
+
+def expect(label, ok):
+    if not ok:
+        failures.append(label)
+
+def call(base, method, path, body=None):
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(base + path, data=data, method=method,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as reply:
+            return reply.status, reply.read()
+    except urllib.error.HTTPError as err:
+        return err.code, err.read()
+
+with tempfile.TemporaryDirectory() as tmp:
+    server = make_server(os.path.join(tmp, "notes.db"), port=0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = "http://127.0.0.1:%d" % server.server_address[1]
+    try:
+        for title, body, tags in (("a", "x", ["work", "home"]), ("b", "y", ["home"]), ("c", "z", None)):
+            payload = {"title": title, "body": body}
+            if tags is not None:
+                payload["tags"] = tags
+            status, _ = call(base, "POST", "/api/notes", payload)
+            expect("create %s is 2xx" % title, 200 <= status < 300)
+
+        status, raw = call(base, "GET", "/api/notes")
+        notes = json.loads(raw) if status == 200 else []
+        by_title = {n.get("title"): sorted(n.get("tags", [])) for n in notes}
+        expect("every note has its tags", by_title == {"a": ["home", "work"], "b": ["home"], "c": []})
+        expect("the existing fields survive", all({"id", "title", "body"} <= set(n) for n in notes))
+
+        status, raw = call(base, "GET", "/api/notes?tag=work")
+        expect("tag=work is only a", status == 200 and sorted(n["title"] for n in json.loads(raw)) == ["a"])
+        status, raw = call(base, "GET", "/api/notes?tag=home")
+        expect("tag=home is a and b", status == 200 and sorted(n["title"] for n in json.loads(raw)) == ["a", "b"])
+        status, raw = call(base, "GET", "/api/notes?tag=nothing")
+        expect("an unused tag gives nothing", status == 200 and json.loads(raw) == [])
+
+        status, raw = call(base, "GET", "/api/tags")
+        expect("tag counts", status == 200 and json.loads(raw) == {"work": 1, "home": 2})
+
+        if notes:
+            status, raw = call(base, "GET", "/api/notes/%s" % notes[0].get("id"))
+            one = json.loads(raw) if status == 200 else None
+            expect("one note carries its tags", isinstance(one, dict) and sorted(one.get("tags", [])) == sorted(notes[0].get("tags", [])) and one.get("title") == notes[0].get("title"))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+if failures:
+    print("failed: " + "; ".join(failures))
+    sys.exit(1)
+PYEOF
+'''
+
+# The page is the only part of the feature a user sees, so it must mention
+# tags as well as the API it calls.
+[[check]]
+kind = "bash"
+cmd = "grep -q 'api/notes' notes/static/index.html && grep -qi 'tag' notes/static/index.html"
+
+[judge]
+assertions = [
+  "The diff stores each note's tags, so a note keeps the tags it was created with.",
+  "The diff makes GET /api/notes filter by a tag query parameter, returning only the notes that carry that tag.",
+  "The diff changes the page at / so that it shows each note's tags.",
+  "The diff leaves the existing fields title and body, and the existing endpoints, working as before.",
+]
+min_met = 4
