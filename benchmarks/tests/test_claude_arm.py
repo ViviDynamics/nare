@@ -4,8 +4,10 @@ trip, the gateway paths, the cross-arm arithmetic, and the refusals."""
 from __future__ import annotations
 
 import json
-from typing import cast
+from pathlib import Path
+from typing import Any, cast
 
+import httpx2
 import pytest
 
 from benchmarks.runner import claude_arm
@@ -17,7 +19,12 @@ PRICE = ModelPrice(input=1e-07, output=5e-07, cache_read=1e-08, cache_write=1.25
 
 
 def _rec(
-    case: str, rep: int, outcome: str, *, cost: float | None = 999.0, usage=None
+    case: str,
+    rep: int,
+    outcome: str,
+    *,
+    cost: float | None = 999.0,
+    usage: dict[str, int] | None = None,
 ) -> RepRecord:
     return RepRecord(
         case=case,
@@ -37,7 +44,7 @@ def _rec(
     )
 
 
-def test_gateway_root_drops_one_trailing_v1_and_no_more():
+def test_gateway_root_drops_one_trailing_v1_and_no_more() -> None:
     assert (
         claude_arm.gateway_root("https://llm.vividynamics.com/v1")
         == "https://llm.vividynamics.com"
@@ -48,12 +55,14 @@ def test_gateway_root_drops_one_trailing_v1_and_no_more():
     )
 
 
-def test_fetch_model_info_returns_the_named_entry(monkeypatch):
+def test_fetch_model_info_returns_the_named_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class Response:
-        def raise_for_status(self):
+        def raise_for_status(self) -> None:
             return None
 
-        def json(self):
+        def json(self) -> dict[str, Any]:
             return {
                 "data": [
                     {"model_name": "other", "model_info": {}},
@@ -64,14 +73,14 @@ def test_fetch_model_info_returns_the_named_entry(monkeypatch):
                 ]
             }
 
-    seen = {}
+    seen: dict[str, str] = {}
 
-    def fake_get(url, **kwargs):
+    def fake_get(url: str, **kwargs: Any) -> Any:
         seen["url"] = url
         seen["auth"] = kwargs["headers"]["Authorization"]
         return Response()
 
-    monkeypatch.setattr(claude_arm.httpx2, "get", fake_get)
+    monkeypatch.setattr(httpx2, "get", fake_get)
     info = claude_arm.fetch_model_info(
         "https://gw.example/v1", "KEY", "claude-haiku-5-5"
     )
@@ -80,20 +89,22 @@ def test_fetch_model_info_returns_the_named_entry(monkeypatch):
     assert seen["auth"] == "Bearer KEY"
 
 
-def test_fetch_model_info_refuses_an_unlisted_model(monkeypatch):
+def test_fetch_model_info_refuses_an_unlisted_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class Response:
-        def raise_for_status(self):
+        def raise_for_status(self) -> None:
             return None
 
-        def json(self):
+        def json(self) -> dict[str, Any]:
             return {"data": []}
 
-    monkeypatch.setattr(claude_arm.httpx2, "get", lambda *a, **k: Response())
+    monkeypatch.setattr(httpx2, "get", lambda *a, **k: Response())
     with pytest.raises(claude_arm.ArmError, match="does not list"):
         claude_arm.fetch_model_info("https://gw.example", "KEY", "claude-haiku-5-5")
 
 
-def test_records_round_trip_through_a_results_file(tmp_path):
+def test_records_round_trip_through_a_results_file(tmp_path: Path) -> None:
     records = [_rec("edit-docstring", 0, "pass"), _rec("edit-docstring", 1, "fail")]
     path = tmp_path / "results.jsonl"
     claude_arm._write_records(path, records)
@@ -106,7 +117,9 @@ def test_records_round_trip_through_a_results_file(tmp_path):
     assert back[0].usage == records[0].usage
 
 
-def test_compare_prices_both_arms_from_usage_not_from_each_harness(tmp_path):
+def test_compare_prices_both_arms_from_usage_not_from_each_harness(
+    tmp_path: Path,
+) -> None:
     nare = [_rec("c", 0, "pass", cost=50.0), _rec("c", 1, "fail", cost=50.0)]
     claude = [_rec("c", 0, "pass", cost=0.0001), _rec("c", 1, "pass", cost=0.0001)]
     out = claude_arm.compare_arms(nare, claude, PRICE)
@@ -119,7 +132,7 @@ def test_compare_prices_both_arms_from_usage_not_from_each_harness(tmp_path):
     assert row["claude"]["dollars_per_solved"] == pytest.approx(per_rep)
 
 
-def test_compare_gives_pooled_figures_over_cases_with_both_arms():
+def test_compare_gives_pooled_figures_over_cases_with_both_arms() -> None:
     nare = [_rec("a", i, "pass") for i in range(3)] + [
         _rec("b", i, "fail") for i in range(3)
     ]
@@ -132,26 +145,28 @@ def test_compare_gives_pooled_figures_over_cases_with_both_arms():
     assert out["nare_over_claude_tokens_geomean"] is not None
 
 
-def test_a_case_run_by_one_arm_only_is_still_a_row():
+def test_a_case_run_by_one_arm_only_is_still_a_row() -> None:
     out = claude_arm.compare_arms([_rec("only-nare", 0, "pass")], [], PRICE)
     assert [r["case"] for r in out["rows"]] == ["only-nare"]
     assert out["rows"][0]["claude"]["n"] == 0
     assert out["mantel_haenszel"] is None
 
 
-def test_a_case_outside_the_comparable_set_is_refused_before_any_key_is_read(capsys):
+def test_a_case_outside_the_comparable_set_is_refused_before_any_key_is_read(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     assert claude_arm.main(["--case", "ambiguous-request"]) == 2
     assert "not comparable" in capsys.readouterr().out
 
 
-def test_list_names_every_case_once(capsys):
+def test_list_names_every_case_once(capsys: pytest.CaptureFixture[str]) -> None:
     assert claude_arm.main(["--list"]) == 0
     text = capsys.readouterr().out
     assert text.count("compared  ") == 9
     assert text.count("excluded  ") == 8
 
 
-def test_tools_seen_reads_each_reps_init_message(tmp_path):
+def test_tools_seen_reads_each_reps_init_message(tmp_path: Path) -> None:
     rep = tmp_path / "edit-docstring-0"
     rep.mkdir()
     init = {"type": "system", "subtype": "init", "tools": ["Bash", "Read"]}
@@ -159,7 +174,9 @@ def test_tools_seen_reads_each_reps_init_message(tmp_path):
     assert claude_arm._tools_seen(tmp_path) == {"edit-docstring-0": ["Bash", "Read"]}
 
 
-def test_a_max_tokens_setting_is_refused_before_anything_runs(monkeypatch, capsys):
+def test_a_max_tokens_setting_is_refused_before_anything_runs(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     monkeypatch.setenv("NARE_BENCH_MAX_TOKENS", "4096")
     monkeypatch.setenv("NARE_BASE_URL", "https://gw.example")

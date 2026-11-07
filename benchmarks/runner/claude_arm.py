@@ -438,7 +438,12 @@ def compare_arms(
             fails = sum(1 for r in recs if r.outcome == "fail")
             judge_errors = sum(1 for r in recs if r.judge_failed)
             n = passes + fails + judge_errors
-            low, high = wilson_interval(passes, n) if n else (None, None)
+            low: float | None = None
+            high: float | None = None
+            if n:
+                interval = wilson_interval(passes, n)
+                if interval is not None:
+                    low, high = interval
             row[label] = {
                 "reps": len(recs),
                 "errors": len(recs) - len(decided),
@@ -523,7 +528,8 @@ async def _run_all(
 ) -> None:
     """Each rep goes to `sink` as it finishes, so a stop keeps what was paid for."""
     for case in cases:
-        n = reps[case.id] if reps.get(case.id) is not None else case.reps
+        chosen = reps.get(case.id)
+        n = chosen if chosen is not None else case.reps
         for rep in range(n):
             sink(
                 await run_claude_rep(

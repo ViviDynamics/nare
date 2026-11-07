@@ -107,7 +107,9 @@ def price_from_model_info(info: Mapping[str, Any]) -> ModelPrice:
 
 
 def dollars(usage: Mapping[str, int], price: ModelPrice) -> float:
-    return sum(usage.get(name, 0) * getattr(price, name) for name in USAGE_FIELDS)
+    return float(
+        sum(usage.get(name, 0) * getattr(price, name) for name in USAGE_FIELDS)
+    )
 
 
 @dataclass(frozen=True)
