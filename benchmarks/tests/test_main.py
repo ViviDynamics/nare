@@ -147,8 +147,8 @@ def test_results_are_gitignored(tmp_path: Path) -> None:
     assert "benchmarks/results/" in (repo_root() / ".gitignore").read_text()
 
 
-def test_confirmation_uses_seven_reps() -> None:
-    assert CONFIRM_REPS == 7
+def test_confirmation_uses_ten_reps() -> None:
+    assert CONFIRM_REPS == 10
 
 
 def test_results_round_trip(tmp_path: Path) -> None:
@@ -728,7 +728,7 @@ def test_a_confirmation_rerun_leaves_one_results_file(
     code = main(
         ["run", "--case", "edit-docstring", "--model", "m", "--provider", "anthropic"]
     )
-    assert code == 1  # the drop was confirmed at seven reps
+    assert code == 1  # the failures were confirmed at ten reps
     results = tmp_path / "benchmarks" / "results"
     assert [p.name for p in results.glob("*.jsonl")] == ["2026-09-24T00-00-00Z.jsonl"]
 
@@ -1163,7 +1163,11 @@ def test_the_matrix_runs_each_model_on_its_own_provider_and_route(
     ]
     out = capsys.readouterr().out
     assert table_row(out, "case") == ["case", "claude-haiku-5-5", "gpt-5-nano"]
-    assert table_row(out, "edit-docstring") == ["edit-docstring", "3/3", "3/3"]
+    assert table_row(out, "edit-docstring") == [
+        "edit-docstring",
+        "3/3 [0.44, 1.00]",
+        "3/3 [0.44, 1.00]",
+    ]
     assert f"Judge: {SONNET}, for every model." in out
 
 
@@ -1173,7 +1177,12 @@ def test_a_matrix_regression_on_any_model_exits_one(
     matrix(tmp_path, monkeypatch, HAIKU, NANO, failing="gpt-5-nano")
     assert main(["run", "--matrix", "--case", "edit-docstring"]) == 1
     row = table_row(capsys.readouterr().out, "edit-docstring")
-    assert row == ["edit-docstring", "3/3", f"0/{CONFIRM_REPS} regression"]
+    # 0 of 10 confirmation reps: the interval is what the regression rule read.
+    assert row == [
+        "edit-docstring",
+        "3/3 [0.44, 1.00]",
+        f"0/{CONFIRM_REPS} [0.00, 0.28] regression",
+    ]
 
 
 def test_a_matrix_with_two_judges_exits_two_before_any_model_call(
@@ -1343,7 +1352,11 @@ def test_compare_matrix_baselines_prints_the_tiers_baselines(
     assert main(["compare", "--matrix", "--baselines"]) == 0
     assert ran == []
     out = capsys.readouterr().out
-    assert table_row(out, "edit-docstring") == ["edit-docstring", "3/3", "3/3"]
+    assert table_row(out, "edit-docstring") == [
+        "edit-docstring",
+        "3/3 [0.44, 1.00]",
+        "3/3 [0.44, 1.00]",
+    ]
 
 
 def test_baselines_goes_with_matrix(
@@ -1582,7 +1595,7 @@ def test_an_inconclusive_case_fails_the_matrix(
     matrix(tmp_path, monkeypatch, HAIKU, NANO, changed=changed)
     assert main(["run", "--matrix", "--case", "edit-docstring"]) == 1
     row = table_row(capsys.readouterr().out, "edit-docstring")
-    assert row == ["edit-docstring", "3/3", "inconclusive"]
+    assert row == ["edit-docstring", "3/3 [0.44, 1.00]", "inconclusive"]
 
 
 @pytest.mark.parametrize(("flags", "code"), [([], 0), (["--strict-tokens"], 1)])

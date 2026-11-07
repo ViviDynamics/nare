@@ -438,12 +438,12 @@ def test_a_stop_keeps_the_records_of_each_case_its_pass_finished(
 def test_a_stop_in_the_confirmation_keeps_its_records_beside_the_first_pass(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Both cases drop, so both are re-run. edit-docstring's re-run finishes;
-    fix-failing-test's first re-run rep, the fourteenth call, is refused."""
+    """Both cases fail, so both are re-run. edit-docstring's re-run finishes;
+    fix-failing-test's first re-run rep, the seventeenth call, is refused."""
     results = stopping_run(tmp_path, monkeypatch, "edit-docstring", "fix-failing-test")
-    calls = refusing(monkeypatch, lambda config, n: n == 14, check_code=1)
+    calls = refusing(monkeypatch, lambda config, n: n == 17, check_code=1)
     assert main([*RUN, "--provider", "anthropic", *TWO_CASES]) == 2
-    assert len(calls) == 3 + 3 + 7 + 1
+    assert len(calls) == 3 + 3 + 10 + 1
     err = capsys.readouterr().err
     assert not list(results.glob("*.jsonl"))
     first = results / STAMP / "results.partial.jsonl"
@@ -453,9 +453,9 @@ def test_a_stop_in_the_confirmation_keeps_its_records_beside_the_first_pass(
     rerun = results / STAMP / "results.confirm.partial.jsonl"
     records = read_results(rerun)
     assert [(r.case, r.rep) for r in records] == [
-        ("edit-docstring", n) for n in range(7)
+        ("edit-docstring", n) for n in range(10)
     ]
-    assert [r.judge_met for r in records] == [2] * 7
+    assert [r.judge_met for r in records] == [2] * 10
     assert str(first) in err
     assert str(rerun) in err
 

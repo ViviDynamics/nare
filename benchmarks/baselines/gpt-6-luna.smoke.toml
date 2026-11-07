@@ -8,42 +8,42 @@ model       = "gpt-6-luna"
 judge_model = "gpt-6.1-sol"
 
 [case.ambiguous-after-reading]
-pass_rate        = 1.0
+passes           = 2
 reps             = 2
 tokens_median    = 3960
 turns_median     = 4
 judge_met_median = 1
 
 [case.ambiguous-request]
-pass_rate        = 0.6666666666666666
+passes           = 2
 reps             = 3
 tokens_median    = 2523
 turns_median     = 3
 judge_met_median = 2
 
 [case.edit-docstring]
-pass_rate        = 1.0
+passes           = 3
 reps             = 3
 tokens_median    = 3335
 turns_median     = 4
 judge_met_median = 3
 
 [case.fix-failing-test]
-pass_rate        = 1.0
+passes           = 3
 reps             = 3
 tokens_median    = 6383
 turns_median     = 5
 judge_met_median = 3
 
 [case.multi-file-rename]
-pass_rate        = 1.0
+passes           = 3
 reps             = 3
 tokens_median    = 4492
 turns_median     = 4
 judge_met_median = 2
 
 [case.read-only-question]
-pass_rate        = 1.0
+passes           = 3
 reps             = 3
 tokens_median    = 2410
 turns_median     = 3

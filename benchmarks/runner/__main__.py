@@ -124,7 +124,7 @@ from nare.contract import NEVER_STARTED
 from nare.transport import Transport
 
 CheckRunner = Callable[[Case, str, int], tuple[int, str]]
-CONFIRM_REPS = 7
+CONFIRM_REPS = 10
 # 124 is the sandbox timeout; 125-127 are docker's own (daemon, permissions,
 # command not found). A check that exits one of these never ran, so it proves
 # nothing about the fixture and must not read as a failing check.
@@ -1302,7 +1302,10 @@ def confirm(
     baseline: Baseline,
     strict_tokens: bool,
 ) -> Comparison:
-    """Re-run each case whose pass rate dropped at CONFIRM_REPS, then compare.
+    """Re-run each guard cell that failed at CONFIRM_REPS, then compare.
+
+    Only `suspect` cells are re-run: a guard cell with a failure on the first
+    pass. Their confirmation reps replace the first pass, as they always have.
 
     The re-run rewrites results/<name>.jsonl and its evidence instead of
     starting a second of each. A stop keeps the re-run's finished cases in

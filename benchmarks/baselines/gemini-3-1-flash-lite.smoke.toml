@@ -8,42 +8,42 @@ model       = "gemini-3.1-flash-lite"
 judge_model = "gpt-6.1-sol"
 
 [case.ambiguous-after-reading]
-pass_rate        = 0.0
+passes           = 0
 reps             = 3
 tokens_median    = 12217
 turns_median     = 8
 judge_met_median = 0
 
 [case.ambiguous-request]
-pass_rate        = 0.0
+passes           = 0
 reps             = 3
 tokens_median    = 5835
 turns_median     = 6
 judge_met_median = 0
 
 [case.edit-docstring]
-pass_rate        = 1.0
+passes           = 3
 reps             = 3
 tokens_median    = 5370
 turns_median     = 5
 judge_met_median = 3
 
 [case.fix-failing-test]
-pass_rate        = 1.0
+passes           = 3
 reps             = 3
 tokens_median    = 10141
 turns_median     = 8
 judge_met_median = 3
 
 [case.multi-file-rename]
-pass_rate        = 1.0
+passes           = 3
 reps             = 3
 tokens_median    = 7223
 turns_median     = 6
 judge_met_median = 2
 
 [case.read-only-question]
-pass_rate        = 1.0
+passes           = 3
 reps             = 3
 tokens_median    = 4113
 turns_median     = 4
