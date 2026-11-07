@@ -179,6 +179,11 @@ class Session:
     # in call order: the session's copy of the progress events they carried.
     # Never the command text. A record, so reopen() keeps it.
     bash_rules: list[dict[str, Any]] = field(default_factory=list)
+    # The MCP tools whose definitions the model loaded with mcp_load, as
+    # {name: sha256 of the definition}: a call through mcp_call runs only these
+    # (nare.mcp_defer). Kept by reopen() and fork(). Written only when non-empty,
+    # so a run without deferral writes the file it always has.
+    mcp_loaded: dict[str, str] = field(default_factory=dict)
     # The system prompt the run sent, so a resume sends it again and a reader
     # can see what the model was told: "" when none was sent, None in a file
     # saved before nare recorded it. Redacted on save, like the transcript.
@@ -353,6 +358,8 @@ def dumps(s: Session) -> str:
     """
     raw = asdict(s)
     raw.pop("events")
+    if not raw["mcp_loaded"]:
+        raw.pop("mcp_loaded")
     binary: list[tuple[int, int, str]] = []
     for mi, message in enumerate(raw["messages"]):
         for bi, block in enumerate(message["content"]):
@@ -463,6 +470,11 @@ def loads(text: str) -> Session:
             raise TypeError("schema_sha256 must be a string or null")
         if not isinstance(raw.get("forked_from"), (dict, type(None))):
             raise TypeError("forked_from must be an object or null")
+        loaded = raw.get("mcp_loaded", {})
+        if not isinstance(loaded, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in loaded.items()
+        ):
+            raise TypeError("mcp_loaded must be an object of strings")
         # A file saved before the budget was counted spent its one correction
         # when schema_retried was set, and counts it as one charged correction.
         if "schema_corrections" not in raw and raw.get("schema_retried") is True:

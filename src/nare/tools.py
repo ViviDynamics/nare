@@ -29,7 +29,7 @@ from typing import Any, TypeGuard
 
 from PIL import Image
 
-from nare import sandbox
+from nare import mcp_defer, sandbox
 from nare.bash_rules import decide as decide_bash
 from nare.bash_rules import validate as validate_bash_rules
 from nare.events import redact
@@ -1455,15 +1455,13 @@ PATH_TOOLS = frozenset({"read", "write", "edit", "list", "search"})
 EVIDENCE_TOOLS = frozenset({"read", *NAVIGATION_TOOLS})
 
 
-def external_digest(offered: dict[str, ExternalTool]) -> str:
-    """A digest of the offered MCP tools, in the order they are sent.
+def external_digest(offered: list[tuple[str, dict[str, Any]]]) -> str:
+    """A digest of the external tools offered, as (name, schema) in the order sent.
 
     Order is part of it: the tools array is what signed thinking binds to, and
     a server that reorders its tools changes that array.
     """
-    canonical = json.dumps(
-        [[name, tool.schema] for name, tool in offered.items()], default=str
-    )
+    canonical = json.dumps([[name, schema] for name, schema in offered], default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -1493,6 +1491,8 @@ class Policy:
     # unless bash_network. Off by default.
     bash_sandbox: bool = False
     bash_network: bool = False
+    # MCP tool definitions held back behind the search step (nare.mcp_defer).
+    defer_mcp: bool = False
 
     def __post_init__(self) -> None:
         unknown = sorted(self.tools - set(TOOLS) - self.external.keys() - self.pending)
@@ -1539,9 +1539,39 @@ class Policy:
             )
         self.confinement()
 
+    def deferred(self) -> dict[str, ExternalTool]:
+        """The MCP tools held back from the request; none unless deferral is on."""
+        if not self.defer_mcp:
+            return {}
+        return mcp_defer.deferred(self.external, self.tools)
+
+    def deferring(self) -> bool:
+        """Whether the request carries the search step in place of MCP definitions.
+
+        Off when there is nothing to defer, so a run with no MCP tools sends the
+        same request whether or not the flag is set.
+        """
+        return bool(self.deferred())
+
+    def offered_external(self) -> list[tuple[str, dict[str, Any]]]:
+        """The external tools in the request, as (name, schema), in the order sent.
+
+        Deferred tools are absent: their definitions reach the model only through
+        mcp_load, so the request's external part is the same from turn to turn.
+        """
+        held = self.deferred()
+        sent = [
+            (name, tool.schema)
+            for name, tool in self.external.items()
+            if name in self.tools and name not in held
+        ]
+        if held:
+            sent += [(schema["name"], schema) for schema in mcp_defer.SCHEMAS]
+        return sent
+
     def schemas(self) -> list[dict[str, Any]]:
         return [s for s in TOOL_SCHEMAS if s["name"] in self.tools] + [
-            t.schema for name, t in self.external.items() if name in self.tools
+            schema for _, schema in self.offered_external()
         ]
 
     def recorded(self) -> dict[str, Any]:
@@ -1553,7 +1583,7 @@ class Policy:
         Connected tools the policy does not offer are not digested, since they
         are not in the request.
         """
-        offered = {name: t for name, t in self.external.items() if name in self.tools}
+        offered = self.offered_external()
         return {
             **(
                 {"image_input": True, "image_model": self.image_model}
@@ -1565,6 +1595,9 @@ class Policy:
             **({"bash_deny": sorted(self.bash_deny)} if self.bash_deny else {}),
             **({"bash_sandbox": self._sandbox_record()} if self.bash_sandbox else {}),
             **({"external_sha256": external_digest(offered)} if offered else {}),
+            # Only when deferral is in the request, so a run without it writes
+            # the record it always has.
+            **({"mcp_defer": True} if self.deferring() else {}),
             "tools": sorted(self.tools),
             "root": None if self.root is None else str(self.root),
         }
@@ -1670,6 +1703,98 @@ def tool_result(call_id: str, text: str, *, is_error: bool = False) -> dict[str,
         "content": text,
         "is_error": is_error,
     }
+
+
+@dataclass
+class Routed:
+    """What a call becomes under deferral: a finished result, or a call to dispatch.
+
+    `name` is the name its result event carries: the real tool's for a call
+    `mcp_call` runs, the meta tool's otherwise.
+    """
+
+    name: str
+    result: dict[str, Any] | None = None
+    call: ToolCall | None = None
+    loaded: list[str] = field(default_factory=list)
+
+
+def route_deferred(
+    call: ToolCall, policy: Policy, loaded: dict[str, str]
+) -> Routed | None:
+    """Handle a call that belongs to deferral, or return None for dispatch.
+
+    Search and load finish here and never reach approval. A call to a deferred
+    tool by its own name is refused here as well: dispatch would run it, and the
+    model has not loaded it. `mcp_call` resolves to the real name, which is then
+    dispatched like any MCP call, so the allowlist and approval see `alias__tool`.
+    `loaded` is the session's record, updated in place by a successful load.
+    """
+    if not policy.deferring() or call.error is not None:
+        return None
+    pool = policy.deferred()
+    if call.name == mcp_defer.SEARCH:
+        query = call.args.get("query") or ""
+        text, found = mcp_defer.search_text(str(query), pool)
+        return Routed(call.name, tool_result(call.id, text, is_error=not found))
+    if call.name == mcp_defer.LOAD:
+        names = call.args.get("names")
+        if (
+            not isinstance(names, list)
+            or not names
+            or not all(isinstance(n, str) for n in names)
+        ):
+            return Routed(
+                call.name,
+                tool_result(
+                    call.id, "mcp_load needs names: a list of tool names", is_error=True
+                ),
+            )
+        if len(set(names)) > mcp_defer.LOAD_LIMIT:
+            return Routed(
+                call.name,
+                tool_result(
+                    call.id,
+                    f"mcp_load takes at most {mcp_defer.LOAD_LIMIT} names per call",
+                    is_error=True,
+                ),
+            )
+        text, got = mcp_defer.load_text(names, pool)
+        for name in got:
+            loaded[name] = mcp_defer.schema_digest(pool[name].schema)
+        return Routed(
+            call.name, tool_result(call.id, text, is_error=not got), loaded=got
+        )
+    if call.name == mcp_defer.CALL:
+        target = call.args.get("name")
+        arguments = call.args.get("arguments") or {}
+        if not isinstance(target, str) or not target:
+            problem = "mcp_call needs name: the full name of a loaded MCP tool"
+        elif not isinstance(arguments, dict):
+            problem = "mcp_call arguments must be an object"
+        elif target not in pool:
+            problem = (
+                f"{target!r} is not a deferred MCP tool in this session; "
+                "mcp_search lists them"
+            )
+        elif target not in loaded:
+            problem = f"{target} is not loaded; call mcp_load with its name first"
+        else:
+            return Routed(
+                target, call=ToolCall(id=call.id, name=target, args=dict(arguments))
+            )
+        return Routed(call.name, tool_result(call.id, problem, is_error=True))
+    if call.name in pool:
+        return Routed(
+            call.name,
+            tool_result(
+                call.id,
+                f"{call.name} is an MCP tool held back from this request: load it "
+                f"with mcp_load, then call it with mcp_call",
+                is_error=True,
+            ),
+        )
+    return None
 
 
 async def dispatch(

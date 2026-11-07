@@ -440,6 +440,11 @@ Both stdio child servers and remote Streamable HTTP servers use the normal tool
 allowlist and approval seam. For configuration, names (`server__tool`), errors,
 credential isolation and resume semantics, see [the MCP contract](docs/contract.md#mcp-tool-sources).
 
+With many MCP tools, `--mcp-defer` keeps their definitions out of the request: the model
+finds a tool with `mcp_search`, loads it with `mcp_load` and calls it with `mcp_call`.
+It is off by default, and [the contract](docs/contract.md#mcp-tool-deferral) says how it
+behaves on resume.
+
 A caller can also register its own tools. The Python API takes `nare.Tool` values as
 `tools=` to `nare.run` or `nare.step`, and `nare run --command-tools tools.json` runs a
 command for each call. Both follow the tool allowlist and the approval seam. See

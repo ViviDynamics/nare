@@ -528,6 +528,12 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
         "--mcp-config", help="JSON file of named MCP stdio or Streamable HTTP servers"
     )
     parser.add_argument(
+        "--mcp-defer",
+        action="store_true",
+        help="keep MCP tool definitions out of the request: the model finds a "
+        "tool with mcp_search, loads it with mcp_load and calls it with mcp_call",
+    )
+    parser.add_argument(
         "--command-tools",
         help="JSON file of tools this command line runs: an object keyed by tool "
         "name, each with description, input_schema, command (an argv) and an "
@@ -999,6 +1005,7 @@ async def _execute(
                 prices=prices,
                 mcp_servers=args.mcp_servers,
                 mcp_allow_all=args.tools is None,
+                mcp_defer=args.mcp_defer,
                 tools=args.command_tools,
                 structured_output=args.structured_output,
                 retry=args.retry,

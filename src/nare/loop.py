@@ -23,6 +23,7 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 from typing import Any, Literal, cast
 
+from nare import mcp_defer as deferral
 from nare.accounting import Prices, finite_number, turn_usage
 from nare.caller_tools import Tool, external_tools
 from nare.compact import compact, context_chars, estimate
@@ -46,6 +47,7 @@ from nare.tools import (
     approve_all,
     dispatch,
     questions_from,
+    route_deferred,
     tool_result,
 )
 from nare.transport import (
@@ -417,7 +419,12 @@ def prefix_changes(recorded: dict[str, Any], now: dict[str, Any]) -> list[str]:
         if before - after:
             parts.append("removed " + ", ".join(sorted(before - after)))
         changed.append("tools " + " and ".join(parts))
-    if "external_sha256" in recorded and recorded["external_sha256"] != now.get(
+    if recorded.get("mcp_defer") != now.get("mcp_defer"):
+        # The request's external part changes shape, so the digest below would
+        # only restate it.
+        state = "on" if now.get("mcp_defer") else "off"
+        changed.append(f"MCP tool deferral turned {state}")
+    elif "external_sha256" in recorded and recorded["external_sha256"] != now.get(
         "external_sha256"
     ):
         changed.append("the definitions of MCP tools")
@@ -1054,6 +1061,9 @@ async def step(
         s.bash_rules.append(event.detail["bash_rule"])
 
     results: list[dict[str, Any]] = []
+    # The name each call's result event carries, by call id: the real tool's
+    # name for a call that mcp_call ran, the call's own name otherwise.
+    named: dict[str, str] = {}
     unanswered = "tool dispatch failed"
     try:
         if unfinished:
@@ -1089,8 +1099,24 @@ async def step(
                 s.tool_calls += 1
                 if tool_calls is not None:
                     tool_calls.used += 1
+                routed = route_deferred(call, policy, s.mcp_loaded)
+                if routed is not None and routed.loaded:
+                    s.events.append(
+                        Event(
+                            "progress",
+                            "MCP tools loaded: " + ", ".join(routed.loaded),
+                            {"mcp_defer": {"loaded": routed.loaded}},
+                        )
+                    )
+                if routed is not None and routed.result is not None:
+                    named[call.id] = routed.name
+                    results.append(routed.result)
+                    continue
+                to_run = call if routed is None else routed.call
+                assert to_run is not None
+                named[call.id] = to_run.name
                 result = await dispatch(
-                    call,
+                    to_run,
                     policy,
                     approve,
                     left_running=left_running,
@@ -1144,7 +1170,7 @@ async def step(
         # One result event per call, from the results as the transcript holds
         # them, so no event reports a value the model was not sent.
         for call, result in zip(reply.tool_calls, results, strict=True):
-            s.events.append(result_event(call.name, result, policy))
+            s.events.append(result_event(named.get(call.id, call.name), result, policy))
 
     if unfinished and corrected:
         # Merged into the tool results just kept, so the turn stays well formed.
@@ -1365,6 +1391,20 @@ async def _run(
                 {"tools": {"changed": changed, "thinking_dropped": dropped}},
             )
         )
+    # A loaded definition is kept only while it is the one the model saw. The
+    # tools array does not move for this, so signed thinking is not dropped.
+    session.mcp_loaded, stale = deferral.reconcile_loaded(
+        session.mcp_loaded, policy.deferred()
+    )
+    if stale:
+        session.events.append(
+            Event(
+                "progress",
+                "MCP tools to load again on this resume (their definition changed, "
+                "or deferral is off): " + ", ".join(stale),
+                {"mcp_defer": {"dropped": stale}},
+            )
+        )
     session.policy = recorded
     # What this invocation sent, not what the session first ran with: a
     # resume without the flags sends none.
@@ -1504,6 +1544,7 @@ async def run(
     prices: Prices | None = None,
     mcp_servers: dict[str, Server] | None = None,
     mcp_allow_all: bool = False,
+    mcp_defer: bool = False,
     structured_output: StructuredOutput | None = None,
     retry: RetryPolicy | None = None,
     max_tool_calls: int | None = None,
@@ -1521,6 +1562,16 @@ async def run(
     # Refused before any call: a bad registration is the caller's error, not a
     # tool's, so it raises from the generator rather than ending the run.
     caller = external_tools(tools)
+    if mcp_defer or (policy is not None and policy.defer_mcp):
+        # The search step owns these names while deferral is on. A caller tool
+        # that took one would be routed to the step, or sent beside it under
+        # the same name, so the caller's error is named here, before any call.
+        taken = sorted(set(caller) & set(deferral.META_TOOLS))
+        if taken:
+            raise ValueError(
+                f"tool name(s) {', '.join(taken)} are reserved while MCP tool "
+                "deferral is on; rename the caller tool"
+            )
     check_max_tool_calls(max_tool_calls)
     check_max_corrections(max_corrections)
     check_max_cutoffs(max_cutoffs)
@@ -1561,7 +1612,11 @@ async def run(
                 else base.tools
             )
             active = replace(
-                base, tools=frozenset(names), external=external, pending=frozenset()
+                base,
+                tools=frozenset(names),
+                external=external,
+                pending=frozenset(),
+                defer_mcp=base.defer_mcp or mcp_defer,
             )
             async with aclosing(
                 _run(
