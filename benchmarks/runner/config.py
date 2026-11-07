@@ -158,7 +158,8 @@ def resolve_config(
     return Config(
         model=resolved_model,
         provider=resolved_provider,
-        base_url=base_url or env.get("NARE_BASE_URL") or None,
+        # The one routing rule, for the single-model path and the matrix alike.
+        base_url=route(base_url or env.get("NARE_BASE_URL") or None, resolved_provider),
         judge_model=resolved_judge,
         api_key=api_key,
         api_key_var=key_var,
@@ -198,7 +199,8 @@ def baseline_config(
     env: Mapping[str, str],
 ) -> Config:
     """One matrix model's config: the model, provider, judge and cap its
-    baseline names, with the endpoint, key and streaming from the run.
+    baseline names, with the endpoint, key and streaming from the run. The
+    endpoint is routed by resolve_config, as the single-model path routes it.
 
     NARE_BENCH_MAX_TOKENS is not read, since the cap is the baseline's, but
     the cap is still held to the ceiling nare enforces without streaming. A
@@ -218,7 +220,7 @@ def baseline_config(
     config = resolve_config(
         model=model,
         provider=provider,
-        base_url=route(base_url, provider),
+        base_url=base_url,
         judge_model=judge_model,
         env={k: v for k, v in env.items() if k != "NARE_BENCH_MAX_TOKENS"},
     )

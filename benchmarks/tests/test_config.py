@@ -57,7 +57,9 @@ def test_environment_supplies_what_flags_omit() -> None:
         },
     )
     assert config.model == "gpt-5-nano"
-    assert config.base_url == "https://proxy.example/v1"
+    # The anthropic route is the root: the SDK adds /v1/messages itself, so a
+    # /v1 base would reach /v1/v1/messages.
+    assert config.base_url == "https://proxy.example"
 
 
 def test_judge_model_has_no_default_so_it_is_never_the_model_under_test() -> None:
@@ -339,6 +341,49 @@ def test_one_base_url_gives_each_provider_its_route(
     # The openai transport posts to <base>/chat/completions; the Anthropic
     # SDK adds /v1/messages itself.
     assert route(base_url, provider) == routed
+
+
+@pytest.mark.parametrize(
+    ("base_url", "routed"),
+    [
+        ("https://proxy.example", "https://proxy.example/v1"),
+        ("https://proxy.example/", "https://proxy.example/v1"),
+        ("https://proxy.example/v1", "https://proxy.example/v1"),
+        ("https://proxy.example/v1/", "https://proxy.example/v1"),
+    ],
+)
+def test_resolve_config_routes_an_openai_judge_as_the_matrix_does(
+    base_url: str, routed: str
+) -> None:
+    # #254: a bare gateway root got HTTP 404 for an openai-provider judge,
+    # because only the matrix path applied the /v1 route.
+    config = resolve_config(
+        model="gpt-6.1-sol",
+        provider="openai",
+        base_url=base_url,
+        judge_model="claude-haiku-5-5",
+        env={"OPENAI_API_KEY": "k"},
+    )
+    assert config.base_url == routed
+
+
+def test_the_matrix_and_the_single_model_path_share_one_route() -> None:
+    single = resolve_config(
+        model="gpt-6.1-sol",
+        provider="openai",
+        base_url="https://proxy.example",
+        judge_model="claude-haiku-5-5",
+        env={"OPENAI_API_KEY": "k"},
+    )
+    matrix = baseline_config(
+        model="gpt-6.1-sol",
+        provider="openai",
+        judge_model="claude-haiku-5-5",
+        max_tokens=None,
+        base_url="https://proxy.example",
+        env=MATRIX_ENV,
+    )
+    assert single.base_url == matrix.base_url == "https://proxy.example/v1"
 
 
 MATRIX_ENV = {
