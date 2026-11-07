@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 DEFAULTS = {"theme": "light", "font_size": 12}
-VERSION = 3
+VERSION = 2
 
 
 def load(path):
