@@ -1,0 +1,40 @@
+id = "mcp-fanout"
+tier = "full"
+# One answer that needs forty small MCP calls: the sum of forty lookups. A run that
+# gets the sum without making the calls, from the server's source or a guess, has
+# the right number for the wrong reason, and the transcript shows it.
+prompt = """Look up the value of every key in keys.txt with the fanout lookup tool, one call per key, and write the sum of all the values to total.txt."""
+args = ["--mcp-config", "mcp.json", "--tools", "read,list,write,fanout__lookup"]
+max_turns = 60
+
+[[check]]
+kind = "bash"
+cmd = '''test "$(tr -d '[:space:]' < total.txt)" = "1804"'''
+
+# Forty different keys, each looked up successfully: the fan-out happened. A lookup
+# counts when it did not error and its first line is the value (or it was elided).
+[[check]]
+kind = "bash"
+cmd = '''
+python3 -I - <<'EOF'
+import json, sys
+s = json.load(open("/out/session.json"))
+msgs = s.get("messages", [])
+results = {b.get("tool_use_id"): b for m in msgs for b in m.get("content", [])
+           if isinstance(b, dict) and b.get("type") == "tool_result"}
+ok = set()
+for m in msgs:
+    for b in m.get("content", []):
+        if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "fanout__lookup":
+            r = results.get(b.get("id"), {})
+            text = str(r.get("content", ""))
+            value = text.split("\n")[0].strip()
+            if not r.get("is_error") and (value.isdigit() or "elided by nare" in text):
+                ok.add(str((b.get("input") or {}).get("key")))
+sys.exit(0 if len(ok) == 40 else f"{len(ok)} of 40 keys looked up successfully")
+EOF
+'''
+
+[[check]]
+kind = "result"
+status = "done"

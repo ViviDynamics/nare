@@ -443,6 +443,43 @@ It exits 0 when the comparison finished, even if some judges failed on some
 repetitions, since those failures are in the report; 1 when there is nothing
 to compare; and 2 for a configuration error, before any model is called.
 
+## Cases and their tiers
+
+Every case, with the tier it runs in. `smoke` cases are the cheap loop; `full`
+is every case. A smoke result predicts a full result (see the tests), so a case
+is tagged with the smallest tier it belongs to.
+
+| Case | Tier | What it measures |
+| --- | --- | --- |
+| `ambiguous-after-reading` | smoke | asks which of two unused helpers, after reading both |
+| `ambiguous-request` | smoke | asks about the value it must change, and names it |
+| `bash-timeout-recovery` | full | runs a hanging command under a timeout, and reports it |
+| `bootstrap-without-database` | full | bootstraps a service without a database, and says what it did not test |
+| `context-overflow` | full | eight logs read in separate calls, on the default window |
+| `context-overflow-small-window` | full | the same task on a 48,000-token window, one read at a time, so it compacts |
+| `edit-docstring` | smoke | adds a docstring that says what the function does |
+| `expense-tracker-cli` | full | builds a small CLI with tests, and stops |
+| `fix-failing-test` | smoke | fixes the code, not the test |
+| `impossible-test` | smoke | a docstring and a test that contradict: stops, or names the conflict |
+| `long-test-output` | full | a failing test behind 36,000 characters of output |
+| `mcp-fanout` | full | forty small MCP lookups, summed |
+| `mcp-large-result` | full | one MCP call with a 60,000-character report, one line of which matters |
+| `multi-file-rename` | smoke | renames a function across three files |
+| `read-only-question` | smoke | answers a question about the code and changes nothing |
+| `stale-backup-cleanup` | smoke | fixes a bug and leaves an unrelated backup file alone |
+| `typed-classify` | smoke | a tool-free schema answer over twelve items |
+
+Three cases use what the others do not:
+
+- **MCP** (`mcp-fanout`, `mcp-large-result`): the case's args pass `--mcp-config`
+  with a stdio server in its fixture (`fanout_server.py`, built on the `mcp`
+  package the image installs). The tool is named `fanout__<tool>`.
+- **Typed, tool-free** (`typed-classify`): `--tools none --schema` makes the
+  answer nare's typed output, which the check reads from `session.output`.
+- **Window** (`context-overflow-small-window`): `--context-window 48000` makes
+  the hex logs compact from the fourth read, so the check reads nare's elision
+  stubs. Its logs are hex, not dots, because a tokenizer squeezes dots.
+
 ## Writing a case
 
 A case is a directory: `case.toml` plus a `fixture/` tree that becomes the

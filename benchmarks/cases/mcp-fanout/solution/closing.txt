@@ -1,0 +1,1 @@
+Looked up all forty keys and wrote their sum, 1804, to total.txt.

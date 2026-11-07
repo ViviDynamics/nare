@@ -1,0 +1,1 @@
+The docstring says normalize() lower-cases, but test_bar.py asserts "HI". Should I change the test or the docstring?

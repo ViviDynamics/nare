@@ -1,0 +1,95 @@
+id = "context-overflow-small-window"
+tier = "full"
+prompt = """Run python log.py N for each N from 1 through 8, one at a time: run one, read its output, then run the next. Each emits \
+a different diagnostic log. Record the SENTINEL line from every log in \
+findings.json as a JSON array of strings, in numeric order. Read all eight \
+logs before writing the answer. Do not combine the commands or redirect \
+their output: the task exercises a growing tool transcript."""
+# The same task on a 48,000-token window. Each hex log costs about 11,000 tokens, so
+# compaction starts at the fourth read, and nare elides the two oldest reads, which
+# leaves the two most recent ones and the prompt under 60% of the window. The check
+# reads an elided result as a read that happened. The reference's reads 1 to 6 are
+# elided and 7 and 8 kept whole, the pattern this size gives. The reads are one at a
+# time: eight parallel calls land in one turn, and nothing in it is old enough to elide.
+# The logs here are hex, not dots: a tokenizer squeezes dots, so only hex grows the
+# context as the estimate says it should.
+args = ["--context-window", "48000"]
+max_turns = 16
+
+[[check]]
+kind = "bash"
+cmd = "python -c \"import json; assert json.load(open('findings.json')) == [f'SENTINEL_{n}=confirmed' for n in range(1,9)]\""
+
+# Each log is read by a call of its own, run exactly as the prompt says: no
+# pipe, no redirect, no second command. A read's sentinel comes back in its
+# result, or the result is nare's elision stub ("[elided by nare: N chars ...]"),
+# which still says how long it was; a log is about 29000 characters. A read
+# that failed and was run again counts once it proves the sentinel. findings.json
+# is written only after the reads, by a write, not by a command that looks at it.
+[[check]]
+kind = "bash"
+cmd = '''
+python3 -I - <<'EOF'
+import json, re, sys
+calls, results = [], {}
+for message in json.load(open("/out/session.json"))["messages"]:
+    for block in message["content"]:
+        if block.get("type") == "tool_use":
+            calls.append(block)
+        elif block.get("type") == "tool_result":
+            results[block.get("tool_use_id")] = str(block.get("content", ""))
+def proves(n, text):
+    elided = re.search(r"\[elided by nare: (\d+) chars", text)
+    return f"SENTINEL_{n}=confirmed" in text or bool(elided and int(elided.group(1)) >= 1000)
+
+def writes(call):
+    if "findings.json" not in json.dumps(call.get("input", {})):
+        return False
+    if call.get("name") in ("write", "edit"):
+        return True
+    if call.get("name") != "bash":
+        return False
+    command = str(call.get("input", {}).get("command", ""))
+    return re.search(
+        r"(?<![\d&])>{1,2}\s*['\"]?[^\s;|&]*findings\.json"
+        r"|\btee\b[^;|&]*findings\.json"
+        r"|\b(?:cp|mv|install)\b[^;|&]*findings\.json"
+        r"|\bof=\S*findings\.json"
+        r"|open\([^)]*findings\.json[^)]*['\"]w"
+        r"|json\.dump\(|write_text\(",
+        command,
+    ) is not None
+
+problems, reads = [], {}
+for index, call in enumerate(calls):
+    if call.get("name") != "bash":
+        continue
+    command = str(call.get("input", {}).get("command", "")).strip()
+    if not re.search(r"python3?\s+\S*log\.py", command):
+        continue
+    alone = re.fullmatch(r"python3?\s+(?:\S*/)?log\.py\s+(\d+)", command)
+    if alone is None:
+        problems.append(f"call {index} runs log.py with a pipe, a redirect or another command")
+        continue
+    reads.setdefault(int(alone.group(1)), []).append(index)
+for n in range(1, 9):
+    if n not in reads:
+        problems.append(f"log {n} was never read")
+    elif not any(proves(n, results.get(calls[i].get("id"), "")) for i in reads[n]):
+        problems.append(f"log {n}: no call's result holds its sentinel")
+last_read = max((i for indices in reads.values() for i in indices), default=-1)
+written = [i for i, call in enumerate(calls) if writes(call)]
+if not written or max(written) < last_read:
+    problems.append("findings.json was not written after every log was read")
+sys.exit("; ".join(problems) or 0)
+EOF
+'''
+
+# The task is the same as the other context case: log.py must be left as it is.
+[[check]]
+kind = "bash"
+cmd = '''git diff --quiet "$(git rev-list --max-parents=0 HEAD)" -- log.py'''
+
+[[check]]
+kind = "result"
+status = "done"

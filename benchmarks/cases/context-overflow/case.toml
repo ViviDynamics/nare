@@ -56,9 +56,9 @@ for index, call in enumerate(calls):
     if call.get("name") != "bash":
         continue
     command = str(call.get("input", {}).get("command", "")).strip()
-    if "log.py" not in command:
+    if not re.search(r"python3?\s+\S*log\.py", command):
         continue
-    alone = re.fullmatch(r"(?:python3?\s+)?log\.py\s+(\d+)", command)
+    alone = re.fullmatch(r"python3?\s+(?:\S*/)?log\.py\s+(\d+)", command)
     if alone is None:
         problems.append(f"call {index} runs log.py with a pipe, a redirect or another command")
         continue
@@ -70,7 +70,7 @@ for n in range(1, 9):
         problems.append(f"log {n}: no call's result holds its sentinel")
 last_read = max((i for indices in reads.values() for i in indices), default=-1)
 written = [i for i, call in enumerate(calls) if writes(call)]
-if not written or min(written) < last_read:
+if not written or max(written) < last_read:
     problems.append("findings.json was not written after every log was read")
 sys.exit("; ".join(problems) or 0)
 EOF

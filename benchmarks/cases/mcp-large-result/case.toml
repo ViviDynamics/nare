@@ -1,0 +1,39 @@
+id = "mcp-large-result"
+tier = "full"
+# One MCP call returns a report of about 60,000 characters, and one line of it is
+# the answer. The check is the answer, and that the report was asked for: a run
+# that writes the number without calling the tool has no transcript of it.
+prompt = """Get the report named q3 with the fanout report tool, and write the number on its ANSWER= line to answer.txt."""
+args = ["--mcp-config", "mcp.json", "--tools", "read,write,fanout__report"]
+max_turns = 12
+
+[[check]]
+kind = "bash"
+cmd = '''test "$(tr -d '[:space:]' < answer.txt)" = "4217"'''
+
+[[check]]
+kind = "bash"
+cmd = '''
+python3 -I - <<'EOF'
+import json, sys
+s = json.load(open("/out/session.json"))
+msgs = s.get("messages", [])
+results = {b.get("tool_use_id"): b for m in msgs for b in m.get("content", [])
+           if isinstance(b, dict) and b.get("type") == "tool_result"}
+for m in msgs:
+    for b in m.get("content", []):
+        if not (isinstance(b, dict) and b.get("type") == "tool_use"
+                and b.get("name") == "fanout__report"
+                and (b.get("input") or {}).get("name") == "q3"):
+            continue
+        r = results.get(b.get("id"), {})
+        text = str(r.get("content", ""))
+        if not r.get("is_error") and ("ANSWER=" in text or "elided by nare" in text):
+            sys.exit(0)
+sys.exit("the q3 report was never fetched successfully")
+EOF
+'''
+
+[[check]]
+kind = "result"
+status = "done"

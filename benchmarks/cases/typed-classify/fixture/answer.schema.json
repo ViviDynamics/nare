@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "properties": {
+    "labels": {
+      "type": "array",
+      "minItems": 12,
+      "maxItems": 12,
+      "items": {
+        "type": "string",
+        "enum": [
+          "fruit",
+          "vegetable",
+          "other"
+        ]
+      }
+    }
+  },
+  "required": [
+    "labels"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,25 @@
+id = "long-test-output"
+tier = "full"
+# Three tests fail under the bug. The first and last print about 36,000 and 24,000
+# characters, so the cut that keeps a tool result's head and tail takes the middle
+# test's failure out of view. The summary at the end still names it.
+prompt = """The test suite fails. Fix calc.py so that `pytest -q` passes."""
+max_turns = 12
+
+[[check]]
+kind = "bash"
+cmd = "pytest -q"
+
+# The tests are the spec. A run that edits them to match the bug fails here.
+[[check]]
+kind = "bash"
+cmd = '''git diff --quiet "$(git rev-list --max-parents=0 HEAD)" -- test_calc.py'''
+
+# Behaviour beyond the tests: a special case for the test inputs fails here.
+[[check]]
+kind = "bash"
+cmd = '''python3 -c "from calc import add; assert add(5, 7) == 12 and add(-4, 9) == 5"'''
+
+[[check]]
+kind = "result"
+status = "done"
