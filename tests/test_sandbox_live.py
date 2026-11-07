@@ -9,9 +9,11 @@ cannot pass silently.
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 from collections.abc import Iterator
 from pathlib import Path
@@ -297,3 +299,50 @@ def _connect_snippet(port: int) -> str:
 def _connected(body: str) -> bool:
     # A traceback echoes the source line, so match the line the snippet prints.
     return any(line.strip() == "CONNECTED" for line in body.splitlines())
+
+
+async def test_a_host_secret_in_the_environment_is_not_visible(
+    layout: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GH_TOKEN", "ghp_probe_visible_to_host")
+    code, body = await run('echo "gh=${GH_TOKEN:-none}"', layout["root"])
+    assert code == 0
+    assert "ghp_probe_visible_to_host" not in body
+    assert "gh=none" in body
+
+
+async def test_a_unix_socket_outside_the_root_cannot_be_connected(
+    layout: dict[str, Path],
+) -> None:
+    # The socket is outside the root and in a folder the host shares. Reaching
+    # it is how an agent socket or a container runtime socket would be used.
+    import socket as socket_module
+
+    # A short path: macOS limits a socket path to about 104 bytes.
+    short_dir = Path(tempfile.mkdtemp(prefix="nsk", dir="/tmp"))
+    sock_path = short_dir / "a.sock"
+    server = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+    server.bind(str(sock_path))
+    server.listen(1)
+    try:
+        snippet = (
+            f'{sys.executable} -c "import socket as s; '
+            f"c=s.socket(s.AF_UNIX, s.SOCK_STREAM); c.connect('{sock_path}'); "
+            "print('CONN' 'ECTED')\""
+        )
+        code, body = await run(snippet, layout["root"])
+        assert code != 0, body
+        assert not _connected(body)
+    finally:
+        server.close()
+        shutil.rmtree(short_dir, ignore_errors=True)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the system keychain is macOS")
+async def test_the_system_keychain_cannot_be_read(layout: dict[str, Path]) -> None:
+    code, body = await run(
+        "head -c 4 /Library/Keychains/System.keychain | od -An -c",
+        layout["root"],
+        denied=sandbox.default_denied(),
+    )
+    assert code != 0, body

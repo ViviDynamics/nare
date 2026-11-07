@@ -34,6 +34,22 @@ jobs:
         env:
           NARE_REQUIRE_SANDBOX: "1"
 
+  sandbox-macos:
+    # The Seatbelt profile has no other CI coverage. NARE_REQUIRE_SANDBOX makes a
+    # missing sandbox fail the job rather than skip the escape tests.
+    name: bash sandbox (macOS Seatbelt)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync
+      - run: uv run pytest -q tests/test_sandbox.py tests/test_sandbox_live.py
+        env:
+          NARE_REQUIRE_SANDBOX: "1"
+
   cases:
     name: benchmark cases measure something
     runs-on: ubuntu-latest

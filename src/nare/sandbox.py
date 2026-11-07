@@ -36,9 +36,11 @@ _CREDENTIAL_DIRS = (
     ".kube",
     ".docker",
     ".azure",
+    ".terraform.d",
     ".password-store",
     ".config/gh",
     ".config/gcloud",
+    ".config/op",
 )
 _CREDENTIAL_FILES = (
     ".netrc",
@@ -46,10 +48,34 @@ _CREDENTIAL_FILES = (
     ".pypirc",
     ".s3cfg",
     ".vault-token",
+    ".pgpass",
+    ".my.cnf",
     ".git-credentials",
     ".config/git/credentials",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".gem/credentials",
+    ".m2/settings.xml",
 )
-_MACOS_CREDENTIALS = ("Library/Keychains",)
+# An absolute entry is taken as it is (Path("/a") / "/b" is "/b").
+_MACOS_CREDENTIALS = ("Library/Keychains", "/Library/Keychains")
+
+# Environment a confined call keeps. Everything else is dropped, so a token a
+# caller left in the environment (GH_TOKEN, a cloud key) does not reach the
+# shell the sandbox was meant to contain. --bash-credentials keeps the full
+# environment, as it always has.
+CONFINED_ENV = (
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "TZ",
+    "SHELL",
+)
 
 # The mach services that answer keychain and security-policy requests. Denied by
 # name, since a path rule cannot stop a secret that a service hands over.
@@ -173,13 +199,20 @@ def credential_paths(
 
 
 def default_denied() -> tuple[Path, ...]:
-    """The credential locations on this machine, resolved for the sandbox."""
+    """The credential locations on this machine, resolved for the sandbox.
+
+    Raises when there is no home directory. A list without the home folders
+    would look complete and protect nothing, so the call is refused instead.
+    """
     from nare.session import nare_home
 
     try:
         home = Path.home()
-    except RuntimeError:
-        home = Path("/nonexistent-home")  # no home: only NARE_HOME below
+    except RuntimeError as exc:
+        raise ValueError(
+            "--bash-sandbox cannot find the credential locations: "
+            "there is no home directory"
+        ) from exc
     found = nare_home()
     paths = credential_paths(home, found, sys.platform)
     return tuple(p.resolve() for p in paths)
@@ -246,9 +279,12 @@ def bwrap_argv(
 
     The host is mounted read-only, then the root and the scratch directory are
     bound writable on top, and each credential is masked after that: a folder
-    by an empty read-only tmpfs, a file by /dev/null. /tmp is not given a
-    tmpfs, so the host's /tmp stays read-only, as on macOS: the root and the
-    scratch directory are the only writable places. The PID namespace hides every host
+    by an empty read-only tmpfs, a file by /dev/null. /tmp and /run are replaced
+    by empty tmpfs mounts, made read-only last. Unix sockets live in those
+    folders (ssh-agent, a container runtime socket, the D-Bus session bus), and
+    a read-only mount does not stop connect(), so the host copies are hidden
+    rather than left reachable. The root and the scratch directory are the only
+    writable places, as on macOS. The PID namespace hides every host
     process, so /proc names nothing outside. `--new-session` is not passed, since
     the spawn already starts a session and a second setsid would leave the
     process group a timeout kills.
@@ -270,6 +306,10 @@ def bwrap_argv(
         "/dev",
         "--proc",
         "/proc",
+        "--tmpfs",
+        "/tmp",
+        "--tmpfs",
+        "/run",
         "--bind",
         str(scratch),
         str(scratch),
@@ -283,6 +323,9 @@ def bwrap_argv(
             argv += ["--tmpfs", str(path), "--remount-ro", str(path)]
         elif path.exists():
             argv += ["--ro-bind", "/dev/null", str(path)]
+    # Last, so the mount points above were created while /tmp and /run were
+    # still writable, and the binds beneath them stay writable.
+    argv += ["--remount-ro", "/tmp", "--remount-ro", "/run"]
     argv += ["--chdir", str(root), "--", *command]
     return argv
 

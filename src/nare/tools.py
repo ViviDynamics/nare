@@ -562,13 +562,20 @@ def _shell_env(credentials: bool, scratch: Path | None = None) -> dict[str, str]
     the policy opts in (None inherits).
 
     A confined call gets its own TMPDIR, the scratch directory the sandbox
-    allows writes to, in place of the host's temp folder it may not write.
+    allows writes to, in place of the host's temp folder it may not write, and
+    only the variables in sandbox.CONFINED_ENV unless `credentials` is set.
 
     Read at each spawn, not at import, so the shell sees nare's environment as
     it is now.
     """
     if credentials and scratch is None:
         return None
+    if scratch is not None and not credentials:
+        # A confined call keeps only the variables a shell needs. Dropping just
+        # CREDENTIAL_ENV would leave GH_TOKEN and any cloud key in reach.
+        env = {k: os.environ[k] for k in sandbox.CONFINED_ENV if k in os.environ}
+        env["TMPDIR"] = str(scratch)
+        return env
     env = (
         dict(os.environ)
         if credentials
@@ -1509,9 +1516,10 @@ class Policy:
     def _check_sandbox(self) -> None:
         """Refuse a sandboxed policy that could not confine bash.
 
-        Checked again at each bash call, since the host can change under a
-        session. This is the startup refusal, so a caller learns it before any
-        turn runs.
+        This is the startup refusal, so a caller learns it before any turn runs.
+        Each bash call is checked again at dispatch: the probe is cached per
+        process, and a sandbox binary that disappears later makes the spawn fail,
+        which is refused too.
         """
         if "bash" not in self.tools:
             raise ValueError("the bash sandbox needs the bash tool in the policy")
@@ -1529,6 +1537,7 @@ class Policy:
             raise ValueError(
                 f"{found.reason}; --bash-sandbox refuses to run bash unconfined"
             )
+        self.confinement()
 
     def schemas(self) -> list[dict[str, Any]]:
         return [s for s in TOOL_SCHEMAS if s["name"] in self.tools] + [
@@ -1567,15 +1576,25 @@ class Policy:
         return sandbox.record(confine, sandbox.availability().mechanism)
 
     def confinement(self) -> sandbox.Confinement | None:
-        """What a bash call runs under, or None when the sandbox is off."""
+        """What a bash call runs under, or None when the sandbox is off.
+
+        Refused when the root contains a credential location. Renaming a folder
+        that holds one, inside the root, would move the credential to a path
+        that is not denied, so the root must not contain one.
+        """
         if not self.bash_sandbox:
             return None
         assert self.root is not None  # _check_sandbox ran at construction
-        return sandbox.Confinement(
-            root=self.root.resolve(),
-            network=self.bash_network,
-            denied=sandbox.default_denied(),
-        )
+        root = self.root.resolve()
+        denied = sandbox.default_denied()
+        for path in denied:
+            if path == root or path.is_relative_to(root):
+                raise ValueError(
+                    f"--root {root} contains the credential location {path}; "
+                    "choose a root that does not hold it, since bash could "
+                    "rename the folder and read the credential from its new path"
+                )
+        return sandbox.Confinement(root=root, network=self.bash_network, denied=denied)
 
     def resolve(self, path: str) -> Path:
         """Resolve a model-supplied path, refusing anything outside the root.

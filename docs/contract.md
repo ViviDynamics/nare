@@ -1381,14 +1381,25 @@ What a confined command may do:
   that call. `TMPDIR` points at it, and it is deleted when the call returns.
 - **Read** anything the user can read, except the credential locations below.
 - **Use the network** not at all, unless `--bash-network` is also given.
+- **See** only the environment variables a shell needs: `PATH`, `HOME`, `USER`,
+  `LOGNAME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TERM`, `TZ` and `SHELL`, plus
+  `TMPDIR`. A variable such as `GH_TOKEN` or a cloud key is not passed on.
+  `--bash-credentials` restores the full environment, as before.
 
 The credential locations are denied for reads and writes: `~/.ssh`, `~/.aws`,
-`~/.gnupg`, `~/.kube`, `~/.docker`, `~/.azure`, `~/.password-store`,
-`~/.config/gh`, `~/.config/gcloud`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`,
-`~/.s3cfg`, `~/.vault-token`, `~/.git-credentials`, `~/.config/git/credentials`,
-and all of `NARE_HOME` (MCP tokens and saved sessions). On macOS also
-`~/Library/Keychains`, and the keychain's mach services are refused, so
-`security find-generic-password` returns nothing.
+`~/.gnupg`, `~/.kube`, `~/.docker`, `~/.azure`, `~/.terraform.d`,
+`~/.password-store`, `~/.config/gh`, `~/.config/gcloud`, `~/.config/op`,
+`~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.s3cfg`, `~/.vault-token`, `~/.pgpass`,
+`~/.my.cnf`, `~/.git-credentials`, `~/.config/git/credentials`,
+`~/.cargo/credentials` and `~/.cargo/credentials.toml`, `~/.gem/credentials`,
+`~/.m2/settings.xml`, and all of `NARE_HOME` (MCP tokens and saved sessions).
+On macOS also `~/Library/Keychains` and `/Library/Keychains`, and the
+keychain's mach services are refused, so `security find-generic-password`
+returns nothing.
+
+**The root must not hold a credential.** `--root` is refused when a credential
+location lies inside it or is it. Otherwise bash could rename a folder that
+contains a credential, and read the credential at its new, undenied path.
 
 **Platforms.** On macOS nare uses `sandbox-exec` (Seatbelt). On Linux it uses
 `bwrap` (bubblewrap), which needs the `bubblewrap` package and permission to
@@ -1422,8 +1433,12 @@ host can confine bash, and why not when it cannot.
   with the host.
 - Landlock is not used. Where bubblewrap is missing, nare refuses rather than
   switching to a weaker mechanism.
-- Writes to the host's `/tmp` are refused on both platforms. A tool that
-  hard-codes `/tmp` fails. Tools that honour `TMPDIR` work.
+- `/tmp` and `/run` are not the host's. On Linux each is an empty tmpfs, so a
+  Unix socket there (an agent socket, a container runtime socket) cannot be
+  reached. On macOS writes to `/tmp` are refused. A tool that hard-codes `/tmp`
+  fails on macOS. Tools that honour `TMPDIR` work on both.
+- Linux masks credential folders by path. A credential folder bind-mounted at a
+  second path, outside the masks, stays readable there.
 
 ## Tool arguments
 

@@ -55,22 +55,25 @@ Limits that remain are listed in docs/contract.md.
 
 ## Tasks
 
-- [ ] 1. Escape tests first, live where the platform supports it: write
+- [x] 1. Escape tests first, live where the platform supports it: write
   outside the root, read a denied credential, symlink out of the root, hard link
   from a credential, network connect, `python -c` write, subshell and `env`
   write, `/proc/self/root` read (Linux), keychain read (macOS). They fail
   before the change.
-- [ ] 2. Profile builders with unit tests: Seatbelt text and bubblewrap argv,
+- [x] 2. Profile builders with unit tests: Seatbelt text and bubblewrap argv,
   with escaping, credential list, and nested-path folding.
-- [ ] 3. Availability probe and the refusal paths: unsupported platform, missing
+- [x] 3. Availability probe and the refusal paths: unsupported platform, missing
   `bwrap`, a failing probe, a sandbox with no root, a network switch without a
   sandbox, a root of `/`.
-- [ ] 4. Wiring: `Policy` fields and `recorded()`, `dispatch` refusal before
+- [x] 4. Wiring: `Policy` fields and `recorded()`, `dispatch` refusal before
   approval, `bash_outcome` spawns the wrapped argv with a per-call TMPDIR, and
   the scratch directory is removed after the call.
-- [ ] 5. CLI flags, `nare contract` `bash_sandbox` key, `docs/contract.md` rows
+- [x] 5. CLI flags, `nare contract` `bash_sandbox` key, `docs/contract.md` rows
   and section, README note.
-- [ ] 6. CI: install bubblewrap on the Linux job and require the live tests
+- [x] 6. CI: install bubblewrap on the Linux job and require the live tests
   there (`NARE_REQUIRE_SANDBOX=1`).
-- [ ] 7. Adversarial review round with a fresh agent (diffs only), fixes with
+- [x] 7. Adversarial review round with a fresh agent (diffs only), fixes with
   tests that fail without them, and mutation checks on each protection.
+  Review findings fixed: a root holding a credential (rename escape); host
+  secrets in the environment; a home-less fallback; host sockets in /tmp and
+  /run on Linux; the credential list and the System keychain.

@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from nare import sandbox
+from nare import tools as tools_module
 from nare.cli import main
 from nare.sandbox import Availability, Confinement, SandboxUnavailable
 from nare.tools import Policy, bash_outcome, dispatch
@@ -31,6 +32,13 @@ def available(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sandbox, "availability", lambda: UNAVAILABLE)
+
+
+def _root(tmp_path: Path) -> Path:
+    """A root that does not contain NARE_HOME, which conftest puts under tmp_path."""
+    root = tmp_path / "root"
+    root.mkdir(exist_ok=True)
+    return root
 
 
 # Seatbelt profile
@@ -152,11 +160,6 @@ def test_bwrap_runs_the_command_after_a_separator_and_chdirs_to_root() -> None:
     assert argv[sep + 1 :] == ["bash", "-o", "pipefail", "-c", "true"]
 
 
-def test_bwrap_leaves_the_host_tmp_read_only() -> None:
-    # A writable /tmp would be a second place to write outside the root.
-    assert "--tmpfs" not in _bwrap()
-
-
 # Credential locations
 
 
@@ -234,7 +237,7 @@ def test_the_sandbox_needs_a_root(available: None) -> None:
 
 def test_the_sandbox_needs_the_bash_tool(available: None, tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="bash"):
-        Policy(bash_sandbox=True, root=tmp_path, tools=frozenset({"read"}))
+        Policy(bash_sandbox=True, root=_root(tmp_path), tools=frozenset({"read"}))
 
 
 def test_the_sandbox_refuses_a_root_of_slash(available: None) -> None:
@@ -244,30 +247,30 @@ def test_the_sandbox_refuses_a_root_of_slash(available: None) -> None:
 
 def test_network_needs_the_sandbox(available: None, tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="--bash-sandbox"):
-        Policy(bash_network=True, root=tmp_path)
+        Policy(bash_network=True, root=_root(tmp_path))
 
 
 def test_a_requested_sandbox_that_cannot_start_is_refused_at_construction(
     unavailable: None, tmp_path: Path
 ) -> None:
     with pytest.raises(ValueError, match="no OS sandbox for test"):
-        Policy(bash_sandbox=True, root=tmp_path)
+        Policy(bash_sandbox=True, root=_root(tmp_path))
 
 
 def test_a_sandbox_policy_that_is_available_constructs(
     available: None, tmp_path: Path
 ) -> None:
-    policy = Policy(bash_sandbox=True, root=tmp_path)
+    policy = Policy(bash_sandbox=True, root=_root(tmp_path))
     assert policy.bash_sandbox
 
 
 def test_recorded_names_the_profile_in_force(available: None, tmp_path: Path) -> None:
-    policy = Policy(bash_sandbox=True, root=tmp_path, bash_network=False)
+    policy = Policy(bash_sandbox=True, root=_root(tmp_path), bash_network=False)
     record = policy.recorded()["bash_sandbox"]
     assert record["mechanism"] == "seatbelt"
     assert record["profile"] == sandbox.PROFILE
     assert record["network"] is False
-    assert record["writable"] == [str(tmp_path.resolve())]
+    assert record["writable"] == [str(_root(tmp_path).resolve())]
     assert record["private_temp"] is True
 
 
@@ -281,7 +284,7 @@ def test_recorded_has_no_sandbox_key_when_it_is_off(tmp_path: Path) -> None:
 async def test_dispatch_refuses_a_sandboxed_bash_call_when_the_sandbox_is_gone(
     available: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    policy = Policy(bash_sandbox=True, root=tmp_path)
+    policy = Policy(bash_sandbox=True, root=_root(tmp_path))
     monkeypatch.setattr(sandbox, "availability", lambda: UNAVAILABLE)
     ran: list[str] = []
 
@@ -360,7 +363,7 @@ def test_the_cli_passes_the_flags_to_the_policy(
     from nare.cli import build_parser, policy_from_args
 
     args = build_parser().parse_args(
-        ["run", "--root", str(tmp_path), "--bash-sandbox", "--bash-network", "x"]
+        ["run", "--root", str(_root(tmp_path)), "--bash-sandbox", "--bash-network", "x"]
     )
     # validate_run_args sets these from their files; policy_from_args reads them.
     args.command_tools = []
@@ -380,3 +383,75 @@ def test_the_contract_reports_the_sandbox() -> None:
     assert isinstance(block["available"], bool)
     assert block["network"] == "off unless --bash-network"
     json.dumps(block)
+
+
+# Reviewer findings: each is refused or confined by the code below
+
+
+def test_a_root_that_contains_a_credential_is_refused(
+    available: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Renaming a folder that holds a credential, inside the root, would move the
+    # credential to a path that is not denied. So such a root is refused.
+    root = _root(tmp_path)
+    secret = root / ".ssh"
+    secret.mkdir()
+    monkeypatch.setattr(sandbox, "default_denied", lambda: (secret,))
+    with pytest.raises(ValueError, match="contains the credential location"):
+        Policy(bash_sandbox=True, root=root)
+
+
+def test_a_root_beside_a_credential_is_accepted(
+    available: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sandbox, "default_denied", lambda: (tmp_path / ".ssh",))
+    Policy(bash_sandbox=True, root=_root(tmp_path))
+
+
+def test_default_denied_refuses_when_there_is_no_home(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def no_home() -> Path:
+        raise RuntimeError("no home")
+
+    monkeypatch.setattr(Path, "home", staticmethod(no_home))
+    with pytest.raises(ValueError, match="no home directory"):
+        sandbox.default_denied()
+
+
+def test_the_credential_list_covers_the_later_additions(tmp_path: Path) -> None:
+    paths = sandbox.credential_paths(tmp_path, None, "darwin")
+    for name in (".cargo/credentials.toml", ".gem/credentials", ".m2/settings.xml"):
+        assert tmp_path / name in paths
+    assert Path("/Library/Keychains") in paths
+
+
+def test_a_confined_call_keeps_only_the_shell_variables(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("GH_TOKEN", "ghp_probe")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "probe")
+    env = tools_module._shell_env(False, tmp_path)
+    assert env is not None
+    assert "GH_TOKEN" not in env
+    assert "AWS_SECRET_ACCESS_KEY" not in env
+    assert env["TMPDIR"] == str(tmp_path)
+    assert "PATH" in env
+
+
+def test_bash_credentials_keeps_the_full_environment_when_confined(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("GH_TOKEN", "ghp_probe")
+    env = tools_module._shell_env(True, tmp_path)
+    assert env is not None
+    assert env["GH_TOKEN"] == "ghp_probe"
+
+
+def test_bwrap_hides_the_host_sockets_and_locks_tmp_and_run_last() -> None:
+    argv = _bwrap()
+    assert argv[argv.index("--tmpfs") + 1] == "/tmp"
+    assert "--tmpfs" in argv and "/run" in argv
+    tail = argv.index("--remount-ro")
+    assert argv[tail : tail + 4] == ["--remount-ro", "/tmp", "--remount-ro", "/run"]
+    assert tail > argv.index("--bind")
