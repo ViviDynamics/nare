@@ -476,9 +476,10 @@ def fork(s: Session, source: str | Path | None = None) -> Session:
     """A new session that starts from `s`'s transcript, and leaves `s` alone.
 
     The copy has a new id and a `forked_from` record of `s`'s id, its turn count
-    and `source`, the path it was read from. Usage, evidence and the policy
-    carry over, as they do on a resume. Process groups do not: a bash process
-    left running belongs to `s`'s run, and the fork must not offer to kill it.
+    and `source`, the path it was read from. Usage, evidence, the bash rule
+    records and the policy carry over, as they do on a resume. Process groups
+    do not: a bash process left running belongs to `s`'s run, and the fork must
+    not offer to kill it.
     Like a resume, the fork is not reopened here; call `reopen` before `run`.
     """
     child = copy.deepcopy(s)
