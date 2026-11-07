@@ -35,3 +35,7 @@ jobs:
       # case's checks fail before an agent touches the fixture.
       # --tier full is every case: verify is free, so nothing goes unchecked.
       - run: bin/bench verify --tier full
+      # The extended tier is not part of full. verify applies each extended
+      # case's reference solution and exploit, so drift in those is caught
+      # here. Still no model calls and no key.
+      - run: bin/bench verify --tier extended
