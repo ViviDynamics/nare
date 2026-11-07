@@ -14,11 +14,14 @@ import re
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, TextIO
 from urllib.parse import urlsplit
 
 import httpx2
+
+from nare import mcp_auth
+from nare.mcp_auth import Authorizer, OAuthSettings
 
 if TYPE_CHECKING:
     from mcp import ClientSession
@@ -46,10 +49,13 @@ class Server:
     url: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
     timeout: float = 30
+    auth: OAuthSettings | None = None
 
     def __post_init__(self) -> None:
         if (self.command is None) == (self.url is None):
             raise ValueError("MCP server needs exactly one of command or url")
+        if self.auth is not None and not isinstance(self.auth, OAuthSettings):
+            raise ValueError("MCP auth must be an OAuth settings object")
         if (
             not isinstance(self.timeout, (int, float))
             or isinstance(self.timeout, bool)
@@ -88,8 +94,14 @@ class Server:
                 raise ValueError("MCP url must be HTTP(S) without embedded credentials")
             if self.args or self.env:
                 raise ValueError("MCP remote server cannot specify args or env")
-        elif self.headers:
-            raise ValueError("MCP stdio server cannot specify headers")
+            if self.auth is not None and not mcp_auth.secure_url(self.url):
+                raise ValueError("MCP auth needs an https URL (or a loopback host)")
+            if self.auth is not None and any(
+                k.lower() == "authorization" for k in self.headers
+            ):
+                raise ValueError("MCP auth supplies the Authorization header itself")
+        elif self.headers or self.auth is not None:
+            raise ValueError("MCP stdio server cannot specify headers or auth")
 
 
 def parse_servers(value: Any) -> dict[str, Server]:
@@ -108,8 +120,11 @@ def parse_servers(value: Any) -> dict[str, Server]:
             "url",
             "headers",
             "timeout",
+            "auth",
         }:
             raise ValueError(f"invalid MCP configuration for {alias}")
+        if "auth" in config:
+            config = {**config, "auth": mcp_auth.parse_oauth(config["auth"])}
         servers[alias] = Server(**config)
     return servers
 
@@ -174,60 +189,139 @@ def _tool(
     return ExternalTool(schema, call)
 
 
+def _guarded(alias: str, tool: ExternalTool) -> ExternalTool:
+    """An OAuth server's call errors go through the same sanitizing as startup."""
+    inner = tool.call
+
+    async def call(args: dict[str, Any]) -> tuple[str, bool]:
+        try:
+            return await inner(args)
+        except Exception as exc:
+            err = mcp_auth.failure(alias, exc)
+        # Raised outside the handler, so no raw exception is kept as context.
+        raise err
+
+    return replace(tool, call=call)
+
+
 @asynccontextmanager
 async def connect(
     servers: Mapping[str, Server],
     *,
     startup_timeout: float | None = None,
+    authorizer: Authorizer | None = None,
 ) -> AsyncIterator[dict[str, ExternalTool]]:
     if startup_timeout is not None and not (0 < startup_timeout < math.inf):
         raise ValueError("MCP startup timeout must be a positive finite number")
     stack = AsyncExitStack()
     try:
         tools: dict[str, ExternalTool] = {}
-        if servers:
-            from mcp import ClientSession, StdioServerParameters
-            from mcp.client.stdio import stdio_client
-            from mcp.client.streamable_http import streamable_http_client
         for alias, config in servers.items():
             # Process start and the handshake are bounded by the startup budget.
             # Each call keeps the server's own timeout: a short call deadline
             # must not fail a child that is still starting.
             budget = config.timeout if startup_timeout is None else startup_timeout
-            if config.command is not None:
-                # ponytail: a server's stderr goes to fd 2 and can paint
-                # over `nare tui` until it redraws. An errlog parameter
-                # threaded through connect() and run(), which the TUI points
-                # at a file, is the upgrade when a server is chatty.
-                streams = await stack.enter_async_context(
-                    stdio_client(
-                        StdioServerParameters(
-                            command=config.command, args=config.args, env=config.env
-                        ),
-                        errlog=_errlog(),
-                    )
-                )
-            else:
-                assert config.url is not None
-                client = await stack.enter_async_context(
-                    httpx2.AsyncClient(
-                        headers=config.headers,
-                        timeout=httpx2.Timeout(budget),
-                        follow_redirects=False,
-                    )
-                )
-                streams = await stack.enter_async_context(
-                    streamable_http_client(config.url, http_client=client)
-                )
-            session = await stack.enter_async_context(
-                ClientSession(*streams, read_timeout_seconds=budget)
+            failed = await _start_or_fail(
+                stack, alias, config, budget, authorizer, tools
             )
-            await _bounded(_discover(session, alias, config.timeout, tools), budget)
+            if failed is not None:
+                raise failed
         yield tools
     finally:
         # Close normally: passing GeneratorExit through SDK task groups wraps
-        # an ordinary early close into an exception group.
+        # an ordinary early close into an exception group. A close can also
+        # re-raise an OAuth failure from a transport's task group, which must
+        # be sanitized the same way as a startup failure.
+        closed = await _close_or_fail(stack, servers)
+        if closed is not None:
+            raise closed
+
+
+async def _start_or_fail(
+    stack: AsyncExitStack,
+    alias: str,
+    config: Server,
+    budget: float,
+    authorizer: Authorizer | None,
+    tools: dict[str, ExternalTool],
+) -> BaseException | None:
+    try:
+        await _start(stack, alias, config, budget, authorizer, tools)
+    except Exception as exc:
+        if config.auth is None:
+            raise
+        return mcp_auth.failure(alias, exc)
+    return None
+
+
+async def _close_or_fail(
+    stack: AsyncExitStack, servers: Mapping[str, Server]
+) -> BaseException | None:
+    try:
         await stack.aclose()
+    except BaseException as exc:
+        oauth = [alias for alias, c in servers.items() if c.auth is not None]
+        if not oauth or not isinstance(exc, Exception | BaseExceptionGroup):
+            raise
+        return mcp_auth.failure(", ".join(oauth), exc)
+    return None
+
+
+async def _start(
+    stack: AsyncExitStack,
+    alias: str,
+    config: Server,
+    budget: float,
+    authorizer: Authorizer | None,
+    tools: dict[str, ExternalTool],
+) -> None:
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    from mcp.client.streamable_http import streamable_http_client
+
+    before = set(tools)
+    if config.command is not None:
+        # ponytail: a server's stderr goes to fd 2 and can paint
+        # over `nare tui` until it redraws. An errlog parameter
+        # threaded through connect() and run(), which the TUI points
+        # at a file, is the upgrade when a server is chatty.
+        streams = await stack.enter_async_context(
+            stdio_client(
+                StdioServerParameters(
+                    command=config.command, args=config.args, env=config.env
+                ),
+                errlog=_errlog(),
+            )
+        )
+    else:
+        assert config.url is not None
+        auth = (
+            None
+            if config.auth is None
+            else mcp_auth.build_provider(alias, config.url, config.auth, authorizer)
+        )
+        client = await stack.enter_async_context(
+            httpx2.AsyncClient(
+                headers=config.headers,
+                timeout=httpx2.Timeout(budget),
+                follow_redirects=False,
+                auth=auth,
+                # An authorized connection never goes through an environment
+                # proxy: the client secret, the code and the tokens would reach
+                # it in the clear, and a loopback http server bypasses nothing.
+                trust_env=config.auth is None,
+            )
+        )
+        streams = await stack.enter_async_context(
+            streamable_http_client(config.url, http_client=client)
+        )
+    session = await stack.enter_async_context(
+        ClientSession(*streams, read_timeout_seconds=budget)
+    )
+    await _bounded(_discover(session, alias, config.timeout, tools), budget)
+    if config.auth is not None:
+        for name in set(tools) - before:
+            tools[name] = _guarded(alias, tools[name])
 
 
 async def _discover(

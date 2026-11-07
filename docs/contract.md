@@ -705,6 +705,87 @@ The standard [tool output cap](#the-tool-output-cap) applies, keeping the head a
 the same way as built-ins; raw transcripts can contain secrets and should be
 handled as private artifacts.
 
+### Remote servers with OAuth
+
+A remote server that requires OAuth adds an `auth` object. Without it the
+server is used as before, with optional `headers`:
+
+```json
+{
+  "crm": {
+    "url": "https://mcp.example.com/mcp",
+    "timeout": 30,
+    "auth": {"client_id": "nare-prod", "client_secret_env": "CRM_MCP_SECRET", "callback_port": 8765}
+  },
+  "docs": {"url": "https://docs.example.com/mcp", "auth": {}}
+}
+```
+
+- `auth: {}` registers a client dynamically, when the server supports it
+  (RFC 7591). `client_id` names a pre-registered client instead, and
+  `client_secret_env` names the environment variable that holds its secret.
+  A secret never goes in the file or on a command line.
+- `scope` requests scopes; `callback_port` fixes the loopback port the
+  browser returns to (use it when the pre-registered client has a fixed
+  redirect URI). Unknown keys exit 2.
+- `authorization_server` names the authorization server when it is not on the
+  MCP server's origin. It is the only way to send credentials to another host.
+- Where credentials may go, the rule is: every request the authorization flow
+  makes must be `https` (or a loopback host). A `POST` (registration, the token
+  exchange, refresh; these carry the client secret, the code and the refresh
+  token) must go to the authorization server's origin. A `GET` (metadata
+  discovery) may go to the MCP server's origin or the authorization server's.
+  The authorization server is the MCP server's own origin, unless
+  `authorization_server` pins another one, in which case that one is used and
+  nothing else. A server's metadata cannot name a destination outside this rule.
+  `auth` on a stdio server, a `url` over plain `http` elsewhere, or an
+  `Authorization` header alongside `auth` exit 2.
+- An authorized connection ignores the proxy environment (`HTTP_PROXY`,
+  `HTTPS_PROXY` and their lowercase forms): the client secret, the code and the
+  tokens never go through a proxy. A connection without `auth` keeps the
+  environment's proxy settings, as before.
+- The flow is the MCP authorization specification's: protected resource
+  metadata (RFC 9728), authorization server metadata (RFC 8414), PKCE S256,
+  and the resource indicator (RFC 8707). It is run by the MCP SDK's client.
+
+Authorization is a separate, explicit step, run once by a person on a machine
+with a browser (or with the loopback port forwarded to one):
+
+    nare mcp login docs --mcp-config servers.json
+
+It prints the authorization URL on stderr and waits up to 300 seconds
+(`--timeout SECONDS`) for the browser to return to `127.0.0.1`. The listener
+accepts only a redirect whose `state` is the one this login started; any other
+request is refused with 400 and the wait goes on. Nothing goes to
+stdout. Success prints `authorized <alias>` on stderr and exits 0; a failure
+exits 1 with a message that quotes no token and no server reply.
+
+`nare run` never opens a browser. It refreshes stored tokens when they near
+expiry (30 seconds early). A server with no stored authorization, a refresh the
+server refuses, or a revoked token stops the run with `status=error`,
+`stop_reason=mcp`, exit 1, before any model call, and the message names
+`nare mcp login`. A tool call that meets the same failure is an `is_error` tool
+result.
+
+**Where tokens are stored.** `$NARE_HOME/mcp-auth/ALIAS.json`, or
+`~/.nare/mcp-auth/ALIAS.json` without `NARE_HOME`. The file is written 0600 in
+a 0700 folder, atomically. It holds the access and refresh tokens, the expiry
+and any dynamic registration, and it is bound to the server URL it was written
+for. A file readable by other users is refused until it is fixed. Delete the
+file to forget a server's authorization.
+
+The tokens never appear in argv, the session file, the event stream, stderr or
+logs. A session records the policy and the root, never the configuration. A
+failure from an OAuth server reports its kind (for example "authorization
+failed" or the exception type), never the server's or the authorization
+server's text: an error can quote a credential, and the SDK's OAuth errors quote
+the authorization server's reply. A refresh, in a later process, goes to the
+authorization server the login used, which is kept in the token file.
+
+This is additive: the contract version does not change. The redaction rule set
+is unchanged. Tokens and server error text are kept out of events rather than
+matched, so the rule set does not carry the guarantee.
+
 Connections and child processes are closed on completion, error, cancellation
 or explicit generator close. Library consumers that stop iteration early must
 `await stream.aclose()` in the same task that began iteration. Configuration,

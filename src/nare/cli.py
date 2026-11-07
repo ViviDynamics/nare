@@ -20,7 +20,7 @@ from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Any
 
-from nare import __version__
+from nare import __version__, mcp_auth
 from nare.accounting import Prices, finite_number, prices_from_env
 from nare.caller_tools import command_tools
 from nare.contract import (
@@ -128,6 +128,28 @@ def build_parser() -> argparse.ArgumentParser:
             "apply the event redaction rules to text on stdin, writing the "
             "redacted text to stdout, and exit"
         ),
+    )
+    mcp_parser = sub.add_parser(
+        "mcp", help="authorize a remote MCP server that needs OAuth"
+    )
+    mcp_sub = mcp_parser.add_subparsers(dest="mcp_command", required=True)
+    login_parser = mcp_sub.add_parser(
+        "login",
+        help=(
+            "run the OAuth authorization once for a server in --mcp-config, "
+            "storing its tokens under NARE_HOME; nare run then refreshes them"
+        ),
+    )
+    login_parser.add_argument("alias", help="the server's alias in --mcp-config")
+    login_parser.add_argument(
+        "--mcp-config", required=True, metavar="PATH", help="JSON file of MCP servers"
+    )
+    login_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=mcp_auth.DEFAULT_LOGIN_TIMEOUT,
+        metavar="SECONDS",
+        help="how long to wait for the browser to finish (default 300)",
     )
     run_parser = sub.add_parser("run", help="run a task headlessly")
 
@@ -1028,6 +1050,50 @@ def _redact_stdin() -> int:
     return 0
 
 
+def _mcp_login(args: argparse.Namespace) -> int:
+    """`nare mcp login`: the one interactive step. Nothing here reaches stdout,
+    which a caller may be reading as a result stream."""
+    try:
+        servers = parse_servers(
+            json.loads(Path(args.mcp_config).read_text(encoding="utf-8"))
+        )
+    except (OSError, ValueError) as exc:
+        print(f"nare: --mcp-config: {exc}", file=sys.stderr)
+        return 2
+    server = servers.get(args.alias)
+    if server is None or server.auth is None:
+        print(
+            f"nare: {args.alias!r} is not a remote MCP server with auth in "
+            "--mcp-config",
+            file=sys.stderr,
+        )
+        return 2
+    if not (0 < args.timeout < math.inf):
+        print("nare: --timeout must be a positive finite number", file=sys.stderr)
+        return 2
+
+    async def present(url: str) -> None:
+        print(
+            "Open this URL in a browser that can reach this machine on 127.0.0.1 "
+            "(over SSH, forward the callback port first):\n"
+            f"{url}\nWaiting for the browser to finish.",
+            file=sys.stderr,
+        )
+
+    try:
+        names = asyncio.run(
+            mcp_auth.login(args.alias, server, timeout=args.timeout, present=present)
+        )
+    except (mcp_auth.McpAuthError, OSError) as exc:
+        print(f"nare: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"nare: authorized {args.alias}; tools: {', '.join(names) or 'none'}",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None, *, transport: Transport | None = None) -> int:
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
     parser = build_parser()
@@ -1039,6 +1105,9 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
 
     if args.command == "redact":
         return _redact_stdin()
+
+    if args.command == "mcp":
+        return _mcp_login(args)
 
     if args.command == "tui":
         if importlib.util.find_spec("textual") is None:
