@@ -42,7 +42,7 @@ from benchmarks.runner.calibration import (
     problems,
     render_calibration,
 )
-from benchmarks.runner.case import Case, CaseError, load_cases
+from benchmarks.runner.case import TIER_CHOICES, Case, CaseError, load_cases
 from benchmarks.runner.compare import (
     Judges,
     RecordingTransport,
@@ -189,10 +189,12 @@ def build_parser() -> argparse.ArgumentParser:
             child = sub.add_parser(name, help=help_text)
         child.add_argument(
             "--tier",
-            choices=["smoke", "full"],
-            # verify is free, so it checks every case unless asked otherwise.
-            default="full" if name == "verify" else "smoke",
-            help="which tier",
+            choices=TIER_CHOICES,
+            # verify is free, so it checks every case unless asked otherwise:
+            # no tier at all, extended included.
+            default=None if name == "verify" else "smoke",
+            help="which tier; full is smoke and full, extended runs only when "
+            "named (verify without --tier checks every case)",
         )
         child.add_argument("--case", action="append", help="limit to this case id")
         if name == "verify":
@@ -299,7 +301,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ab.add_argument("--base", required=True, help="the base commit or ref")
     ab.add_argument("--head", required=True, help="the head commit or ref")
-    ab.add_argument("--tier", choices=["smoke", "full"], default="smoke")
+    ab.add_argument("--tier", choices=TIER_CHOICES, default="smoke")
     ab.add_argument(
         "--case",
         action="append",
@@ -325,7 +327,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _select(root: Path, tier: str, only: Sequence[str] | None) -> list[Case]:
+def _select(root: Path, tier: str | None, only: Sequence[str] | None) -> list[Case]:
     cases = load_cases(root / "benchmarks" / "cases", tier=tier)
     if only:
         wanted = set(only)
@@ -2058,7 +2060,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"bench: {exc}", file=sys.stderr)
         return 2
     if not cases:
-        print(f"bench: no cases in tier {args.tier}", file=sys.stderr)
+        where = f"tier {args.tier}" if args.tier else "the corpus"
+        print(f"bench: no cases in {where}", file=sys.stderr)
         return 2
 
     if args.command == "verify":

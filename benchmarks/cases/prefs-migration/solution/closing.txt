@@ -1,0 +1,1 @@
+Version 2 is now written: display settings under display, recent files as {path, opened} objects. Version 1 files load and are upgraded in memory, and an unknown version raises ValueError. show prints the same lines. The new tests are in tests/test_store.py; the existing ones are unchanged.

@@ -1,0 +1,1 @@
+Added tags: notes/store.py keeps them in a note_tags table, POST /api/notes accepts a tags list, GET /api/notes?tag= filters, GET /api/tags counts them, and the page at / shows the tags and filters on them. Tests are in tests/test_store.py.

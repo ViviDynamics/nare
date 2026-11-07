@@ -1,0 +1,107 @@
+id = "prefs-migration"
+tier = "extended"
+# A format migration that has to keep old files working. Users' homes hold
+# version 1 files, so a change that only writes the new layout and forgets to
+# read the old one breaks people. The hidden check writes v1 and v2 files
+# itself, then reads what save wrote back, so it does not depend on how the
+# agent structured the code.
+prompt = """The preferences file in prefs/ is changing format. Version 2 is the new layout: the display settings sit under a "display" key, and each recent file is an object with its "path" and "opened", the time it was opened as an ISO string, or null when unknown. Version 1 files, the flat layout with no "version" key, are already in people's homes and must keep loading: load upgrades them in memory, and the next save writes version 2. load returns a dict with theme, font_size and recent, where recent is a list of {"path": ..., "opened": ...} objects, and save takes the same shape. A file with a version this code does not know raises ValueError. The show command keeps its output: one "recent:" line per recent file, with its path. Keep the existing tests passing, and add tests for the migration."""
+max_turns = 30
+
+[[check]]
+kind = "result"
+status = "done"
+
+[[check]]
+kind = "bash"
+cmd = "python -m pytest -q"
+
+# The migration, end to end, with files written the way each version writes them.
+[[check]]
+kind = "bash"
+cmd = '''
+python3 -I - <<'PYEOF'
+import json, os, subprocess, sys, tempfile
+sys.path.insert(0, os.getcwd())
+from prefs.store import load, save
+
+failures = []
+
+def expect(label, ok):
+    if not ok:
+        failures.append(label)
+
+def show(path):
+    proc = subprocess.run([sys.executable, "-m", "prefs", "show", path], capture_output=True, text=True)
+    return proc.returncode, proc.stdout
+
+with tempfile.TemporaryDirectory() as tmp:
+    v1 = os.path.join(tmp, "v1.json")
+    with open(v1, "w") as f:
+        json.dump({"theme": "dark", "font_size": 14, "recent": ["a.txt", "b.txt"]}, f)
+
+    code, out = show(v1)
+    expect("show reads a version 1 file", code == 0)
+    expect("show keeps its lines for version 1", out.splitlines()[:4] == ["theme: dark", "font size: 14", "recent: a.txt", "recent: b.txt"])
+
+    settings = load(v1)
+    expect("v1 loads with theme and size", settings.get("theme") == "dark" and settings.get("font_size") == 14)
+    expect("v1 recent files become objects with opened null",
+           settings.get("recent") == [{"path": "a.txt", "opened": None}, {"path": "b.txt", "opened": None}])
+
+    out_path = os.path.join(tmp, "out.json")
+    save(settings, out_path)
+    written = json.load(open(out_path))
+    expect("save writes version 2", written.get("version") == 2)
+    expect("save puts display settings under display", written.get("display") == {"theme": "dark", "font_size": 14})
+    expect("save keeps no flat theme", "theme" not in written)
+    expect("save writes recent as objects",
+           written.get("recent") == [{"path": "a.txt", "opened": None}, {"path": "b.txt", "opened": None}])
+    expect("a saved file loads back the same", load(out_path) == settings)
+
+    v2 = os.path.join(tmp, "v2.json")
+    with open(v2, "w") as f:
+        json.dump({"version": 2, "display": {"theme": "light", "font_size": 16},
+                   "recent": [{"path": "c.txt", "opened": "2026-10-01T09:00:00"}]}, f)
+    loaded = load(v2)
+    expect("v2 keeps opened times",
+           loaded.get("recent") == [{"path": "c.txt", "opened": "2026-10-01T09:00:00"}])
+    expect("v2 keeps display settings", loaded.get("theme") == "light" and loaded.get("font_size") == 16)
+    code, out = show(v2)
+    expect("show reads a version 2 file", code == 0 and "recent: c.txt" in out and "font size: 16" in out)
+
+    v2_bare = os.path.join(tmp, "v2_bare.json")
+    with open(v2_bare, "w") as f:
+        json.dump({"version": 2}, f)
+    bare = load(v2_bare)
+    expect("v2 without display gets the defaults", bare.get("theme") == "light" and bare.get("font_size") == 12)
+    expect("v2 without recent has none", bare.get("recent") == [])
+
+    future = os.path.join(tmp, "v3.json")
+    with open(future, "w") as f:
+        json.dump({"version": 3}, f)
+    try:
+        load(future)
+        expect("an unknown version raises ValueError", False)
+    except ValueError:
+        pass
+
+    empty = os.path.join(tmp, "empty.json")
+    with open(empty, "w") as f:
+        f.write("{}")
+    expect("an empty v1 file gets the defaults", load(empty).get("theme") == "light")
+
+if failures:
+    print("failed: " + "; ".join(failures))
+    sys.exit(1)
+PYEOF
+'''
+
+[judge]
+assertions = [
+  "The diff makes save write the version 2 layout, with the display settings under a display key and each recent file as an object.",
+  "The diff keeps loading version 1 files, so a file in the old flat layout still loads and is upgraded in memory.",
+  "The diff leaves the output of the show command the same for the same settings.",
+  "The diff does not change the existing test that checks the default theme.",
+]
+min_met = 4

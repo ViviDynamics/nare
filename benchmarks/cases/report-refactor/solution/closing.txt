@@ -1,0 +1,1 @@
+Split render_report into inventory/parse.py (parse_items), inventory/group.py (sort_rows and group_by_warehouse) and inventory/table.py (format_table). render_report in inventory/report.py now composes them with the same signature. The existing tests are unchanged and pass.
