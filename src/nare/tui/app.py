@@ -45,6 +45,7 @@ from textual.worker import Worker, WorkerCancelled
 from nare.accounting import Prices
 from nare.cli import (
     adopt_system,
+    fork_with_note,
     policy_from_args,
     transport_from_args,
     validate_run_args,
@@ -492,6 +493,10 @@ class TuiApp(App[None]):
         text = event.value.strip()
         if not text:
             return
+        if text == "/fork" or text.startswith("/fork "):
+            self.query_one(Input).value = ""
+            self._fork_to(text[len("/fork") :].strip())
+            return
         if self.run_state in BUSY:
             # A message during a turn: the model reads it at its next step.
             self.queued.append(text)
@@ -499,6 +504,62 @@ class TuiApp(App[None]):
             self._show_queue()
             return
         self._submit(text)
+
+    def _fork_to(self, target: str) -> None:
+        """`/fork PATH`: continue this conversation in a new session file at PATH.
+        The original is not written from here on, so it stays as it was at the
+        fork point. The fork is a copy of what is in memory, which is what was
+        saved at the last turn end."""
+        transcript = self.query_one(Transcript)
+        if not target:
+            transcript.note("usage: /fork PATH, a new session file")
+            return
+        if self.session is None or not self.args.session:
+            transcript.note("nothing to fork yet: send a message first")
+            return
+        if self.run_state in BUSY or self._turn_is_running():
+            transcript.note("the turn is still running: /fork once it has ended")
+            return
+        new_path = Path(target).expanduser()
+        if not new_path.is_absolute():
+            new_path = Path.cwd() / new_path
+        new_path = new_path.resolve()
+        if new_path == Path(self.args.session).resolve():
+            transcript.note("that is this session's own file: a fork needs a new one")
+            return
+        if new_path.exists():
+            transcript.note(
+                f"{new_path} already exists: a fork never overwrites a file"
+            )
+            return
+        if not new_path.parent.is_dir():
+            transcript.note(f"{new_path.parent} is not a folder")
+            return
+        child = fork_with_note(self.session, self.args.session)
+        try:
+            # Created exclusively first: the save below replaces this empty file,
+            # and no other file is ever at risk of being written over.
+            with open(new_path, "x", encoding="utf-8"):
+                pass
+        except OSError as exc:
+            transcript.note(f"could not create {new_path}: {exc.strerror or exc}")
+            return
+        try:
+            save(child, new_path)
+        except OSError as exc:
+            with contextlib.suppress(OSError):
+                new_path.unlink()
+            transcript.note(f"could not write {new_path}: {exc.strerror or exc}")
+            return
+        original = self.args.session
+        self.session = child
+        self.args.session = str(new_path)
+        # The fork's process groups were cleared: the original run's processes
+        # belong to it, so this one is not offered them.
+        self.left = set()
+        self.not_killed = []
+        transcript.note(f"forked to {new_path}; {original} is not written from here on")
+        self._status()
 
     def _show_queue(self) -> None:
         queue = self.query_one("#queued", Static)
@@ -953,6 +1014,9 @@ def prepare(args: argparse.Namespace, transport: Transport | None = None) -> Tui
     session = None
     if args.resume:
         session = loads(Path(args.resume).read_text(encoding="utf-8"))
+        if args.fork:
+            # As in nare run: the copy is what resumes; the original is only read.
+            session = fork_with_note(session, args.resume)
         # As in nare run: the recorded system prompt, unless a flag replaces it.
         adopt_system(args, session)
         # As in nare run: a bad saved budget exits 2, not in the worker.

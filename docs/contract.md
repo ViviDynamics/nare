@@ -99,7 +99,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--image-input` | no | | Declare that the model accepts image input ([Read-only image input](#read-only-image-input)) |
 | `--session` | yes | | Write the session to a path |
 | `--max-turns` | yes | | Stop after this many turns in this invocation |
-| `--fork` | no | | With `--resume PATH`, write the continued session to `--session` (a new file) and leave PATH byte-identical ([Forking a saved session](#forking-a-saved-session)). `nare run` only |
+| `--fork` | no | | With `--resume PATH`, write the continued session to `--session` (a new file) and leave PATH byte-identical ([Forking a saved session](#forking-a-saved-session)). `nare run` and `nare tui` |
 
 A test fails when this table and the parser disagree, so a new flag is
 documented here in the change that adds it.
@@ -2229,7 +2229,13 @@ writes the continued session to `--session`, a new file, and never to PATH:
   before the first turn.
 - Process groups a bash call left running in PATH are not carried over: the new
   file does not offer to kill them.
-- `nare tui` has no `--fork`; argparse refuses it with exit 2.
+- `nare tui --resume PATH --fork --session NEW` takes the same flag with the
+  same rules, and the same exit 2 refusals. Inside a running `nare tui`, the
+  command `/fork PATH` does the same from the current conversation: it writes
+  the conversation so far to a new file at PATH and continues there. It
+  refuses an existing file, the session's own file, and a fork while a turn is
+  running, and says so in the transcript. The original is not written from the
+  fork point on, so it stays as it was then.
 
 The new file records where it came from in its `forked_from` field: an object
 or `null` (`null` in every file that is not a fork). It is redacted on save,
