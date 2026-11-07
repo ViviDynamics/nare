@@ -566,6 +566,77 @@ When the two labellers agree, `label` is their answer. When they disagree,
 `calibrate check` refuses a row that breaks that rule, a claim that no longer
 matches its case, or the same claim on the same diff twice.
 
+### Reviewing and importing the labels
+
+Reviewers record a verdict per claim on a web page and export it. Import
+loads that export into the labels file:
+
+    bin/bench calibrate export --results benchmarks/results/<stamp>.jsonl \
+        --out <a path outside the repo>/candidates.jsonl
+    # reviewers fill in the page, then export it as CSV or JSON
+    bin/bench calibrate import <reviewed file>.csv \
+        --export <a path outside the repo>/candidates.jsonl \
+        --reviewer-a "Jason Berry" --reviewer-b "Sam Madinya"
+    bin/bench calibrate check
+    bin/bench calibrate score
+
+`--export` is the file `export --out` wrote. Every row is matched to it on
+`(case, claim, diff_sha256)`, so the file must be the export the reviewers
+read. `--reviewer-a` and `--reviewer-b` are the names the page records; the
+first is labeller `a` and the second labeller `b`. Each row keeps both
+names, so a label can be traced to the people behind it.
+
+A CSV takes the `review.csv` columns. Only these are read:
+
+- `case`, `claim`, `diff_sha256`: the match on the export. `claim_text` is
+  optional, and if given it must equal the export's text.
+- `human_a`, `human_b`: `true`, `false` or `unknown`. A row with both blank is
+  not reviewed yet and is skipped.
+- `label`: the adjudicator's `true` or `false`, for a claim where the two
+  verdicts disagree. It needs `--adjudicate`, and is refused on any other row.
+- `note_a`, `note_b`: optional notes, kept on the row.
+
+Every other column is ignored, including `draft_label`, `draft_reason` and
+`confidence`. A draft is never a label.
+
+A JSON file is an array of verdicts, one per reviewer per claim:
+
+    [{"case": "fix-failing-test", "claim": 1, "diff_sha256": "<64 hex>",
+      "reviewer": "Jason Berry", "verdict": "true", "note": "optional"}]
+
+`reviewer` must be one of the two names, and `verdict` is `true`, `false` or
+`unknown`. A JSON file cannot carry a decision; adjudicate in a CSV.
+
+What the import does with each claim:
+
+- **Both reviewers agree** (`true` and `true`, or `false` and `false`): the
+  label is their answer, status `agreed`.
+- **They disagree**: status `disagree`, with no label. It stays out of the
+  rates until an adjudicator's `label` is imported with `--adjudicate`, which
+  makes the row `adjudicated`.
+- **Either says `unknown`**: status `unknown`, with no label, whatever the
+  other reviewer said. The row is kept, with `unknown_from` naming who said
+  it, and it stays out of the rates.
+- **Only one reviewer has answered**: status `pending`, with no label, until
+  the other one imports.
+
+A file is refused as a whole, with nothing written, when any row is wrong:
+its case, claim or diff SHA-256 is not in the export (the diff or the claim
+has changed since the export, so export again and review the new rows), its
+claim text no longer matches, a verdict or reviewer name is not valid, or a
+labeller's name differs from the one already recorded on that claim. The
+refusal names each bad row.
+
+Import is idempotent. A reviewer's verdict replaces their earlier one on the
+same claim, and a labeller not in the file keeps theirs, so one reviewer's
+file can be imported now and the other's later, with the same result as
+importing both at once. Importing the same file twice leaves the labels file
+byte-for-byte as it was.
+
+The evidence paths in the export point into a results directory, which is not
+in the clone. Open the diff from the machine that ran the rep, or from the
+evidence copy your reviewers were given.
+
 `score` reads the labelled claims against the judged reps on the same diff. A
 false positive is a claim labelled false and judged true; a false negative is
 one labelled true and judged false. `run` prints the same figures after each
