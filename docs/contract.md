@@ -728,10 +728,18 @@ server is used as before, with optional `headers`:
 - `scope` requests scopes; `callback_port` fixes the loopback port the
   browser returns to (use it when the pre-registered client has a fixed
   redirect URI). Unknown keys exit 2.
-- Credentials go only over `https`, or to a loopback host. The authorization
-  endpoints the server names must be `https` too. `auth` on a stdio server, a
-  `url` over plain `http` elsewhere, or an `Authorization` header alongside
-  `auth` exit 2.
+- `authorization_server` names the authorization server when it is not on the
+  MCP server's origin. It is the only way to send credentials to another host.
+- Where credentials may go, the rule is: every request the authorization flow
+  makes must be `https` (or a loopback host). A `POST` (registration, the token
+  exchange, refresh; these carry the client secret, the code and the refresh
+  token) must go to the authorization server's origin. A `GET` (metadata
+  discovery) may go to the MCP server's origin or the authorization server's.
+  The authorization server is the MCP server's own origin, unless
+  `authorization_server` pins another one, in which case that one is used and
+  nothing else. A server's metadata cannot name a destination outside this rule.
+  `auth` on a stdio server, a `url` over plain `http` elsewhere, or an
+  `Authorization` header alongside `auth` exit 2.
 - The flow is the MCP authorization specification's: protected resource
   metadata (RFC 9728), authorization server metadata (RFC 8414), PKCE S256,
   and the resource indicator (RFC 8707). It is run by the MCP SDK's client.
@@ -761,12 +769,16 @@ for. A file readable by other users is refused until it is fixed. Delete the
 file to forget a server's authorization.
 
 The tokens never appear in argv, the session file, the event stream, stderr or
-logs. A session records the policy and the root, never the configuration. The
-SDK's own OAuth error text, which quotes the authorization server's reply, is
-replaced with fixed text.
+logs. A session records the policy and the root, never the configuration. A
+failure from an OAuth server reports its kind (for example "authorization
+failed" or the exception type), never the server's or the authorization
+server's text: an error can quote a credential, and the SDK's OAuth errors quote
+the authorization server's reply. A refresh, in a later process, goes to the
+authorization server the login used, which is kept in the token file.
 
 This is additive: the contract version does not change. The redaction rule set
-is unchanged, because tokens are kept out of events rather than matched.
+is unchanged. Tokens and server error text are kept out of events rather than
+matched, so the rule set does not carry the guarantee.
 
 Connections and child processes are closed on completion, error, cancellation
 or explicit generator close. Library consumers that stop iteration early must

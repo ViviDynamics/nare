@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import secrets
 import socket
 import stat
 import subprocess
 import sys
 import time
+import traceback
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -62,8 +64,15 @@ def start(tmp_path: Path) -> Iterator[Callable[..., Fake]]:
         code_mode: str = "ok",
         preregistered: str | None = None,
         redirect: str | None = None,
+        issuer_base: str | None = None,
+        token_endpoint: str | None = None,
+        echo_bearer: bool = False,
     ) -> Fake:
         port = free_port()
+
+        def fill(text: str | None) -> str | None:
+            return None if text is None else text.replace("{port}", str(port))
+
         log = tmp_path / f"fake-{port}.jsonl"
         argv = [
             sys.executable,
@@ -79,7 +88,18 @@ def start(tmp_path: Path) -> Iterator[Callable[..., Fake]]:
             code_mode,
         ]
         if preregistered is not None:
-            argv += ["--preregistered", preregistered, "--redirect", redirect or ""]
+            argv += [
+                "--preregistered",
+                preregistered,
+                "--redirect",
+                fill(redirect) or "",
+            ]
+        if issuer_base is not None:
+            argv += ["--issuer-base", fill(issuer_base) or ""]
+        if token_endpoint is not None:
+            argv += ["--token-endpoint", fill(token_endpoint) or ""]
+        if echo_bearer:
+            argv += ["--echo-bearer"]
         proc = subprocess.Popen(
             argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
@@ -461,6 +481,14 @@ def test_login_cli_reports_a_failure_on_stderr_only(
         {"url": "http://127.0.0.1:9/mcp", "auth": "yes"},
         {
             "url": "http://127.0.0.1:9/mcp",
+            "auth": {"client_id": "a", "authorization_server": "http://example.com"},
+        },
+        {
+            "url": "http://127.0.0.1:9/mcp",
+            "auth": {"authorization_server": "https://u:p@example.com"},
+        },
+        {
+            "url": "http://127.0.0.1:9/mcp",
             "headers": {"Authorization": "Bearer x"},
             "auth": {},
         },
@@ -511,23 +539,246 @@ def test_auth_over_plain_http_is_refused_off_loopback() -> None:
     Server(url="https://example.com/mcp", auth=mcp_auth.OAuthSettings())
 
 
-def test_discovered_authorization_server_must_be_https(home: Path) -> None:
-    async def present(_: str) -> None:
-        raise AssertionError("no browser in this test")
+# -- regression tests for the review of this change --------------------------
+# Each test drives the SDK's real flow against the fake server. Each one fails
+# when the fix it covers is removed.
 
-    async def receive() -> Any:
-        raise AssertionError("no callback in this test")
 
-    provider = mcp_auth.build_provider(
-        "remote",
-        "https://example.com/mcp",
-        mcp_auth.OAuthSettings(),
-        mcp_auth.Authorizer(
-            redirect_uri="http://127.0.0.1:1/callback", present=present, receive=receive
-        ),
+def events_of(fake: Fake, name: str) -> list[dict[str, Any]]:
+    return [e for e in fake.events() if e["event"] == name]
+
+
+def test_downgraded_token_endpoint_gets_no_credentials(
+    tmp_path: Path, home: Path, start: Callable[..., Fake]
+) -> None:
+    """The server publishes a plain-http token endpoint on another host. The
+    code, the verifier and the client credentials must not be posted there."""
+    fake = start(token_endpoint="http://0.0.0.0:{port}/token")
+    config = write_config(
+        tmp_path, {"remote": {"url": f"{fake.url}/mcp", "timeout": 5, "auth": {}}}
     )
-    with pytest.raises(mcp_auth.McpAuthError, match="https"):
-        provider._select_authorization_server(["http://attacker.example"])
-    assert provider._select_authorization_server(["https://auth.example"]) == (
-        "https://auth.example"
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+    with pytest.raises(mcp_auth.McpAuthError, match="must use https"):
+        login("remote", server)
+    assert events_of(fake, "grant") == []
+
+
+def test_hostile_authorization_server_gets_no_client_secret(
+    tmp_path: Path,
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    start: Callable[..., Fake],
+) -> None:
+    """The MCP server names an https authorization server on another origin.
+    Without a pinned authorization_server the login stops before any request
+    reaches it, so the pre-registered secret is never sent."""
+    secret = "hostile-secret-" + secrets.token_hex(8)
+    monkeypatch.setenv("NARE_TEST_CLIENT_SECRET", secret)
+    monkeypatch.setenv("FAKE_SERVER_CLIENT_SECRET", secret)
+    port = free_port()
+    fake = start(
+        preregistered="cli-h",
+        redirect=f"http://127.0.0.1:{port}/callback",
+        issuer_base="http://localhost:{port}",
     )
+    config = write_config(
+        tmp_path,
+        {
+            "remote": {
+                "url": f"{fake.url}/mcp",
+                "timeout": 5,
+                "auth": {
+                    "client_id": "cli-h",
+                    "client_secret_env": "NARE_TEST_CLIENT_SECRET",
+                    "callback_port": port,
+                },
+            }
+        },
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+    with pytest.raises(mcp_auth.McpAuthError, match="another origin"):
+        login("remote", server)
+    assert events_of(fake, "authorize") == []
+    assert events_of(fake, "grant") == []
+    assert (
+        secret not in token_file(home).read_text()
+        if token_file(home).exists()
+        else True
+    )
+
+
+def test_pinned_authorization_server_receives_the_secret(
+    tmp_path: Path,
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    start: Callable[..., Fake],
+) -> None:
+    """The same layout works when the configuration names the authorization
+    server it trusts, and the secret goes there."""
+    secret = "pinned-secret-" + secrets.token_hex(8)
+    monkeypatch.setenv("NARE_TEST_CLIENT_SECRET", secret)
+    monkeypatch.setenv("FAKE_SERVER_CLIENT_SECRET", secret)
+    port = free_port()
+    fake = start(
+        preregistered="cli-p",
+        redirect=f"http://127.0.0.1:{port}/callback",
+        issuer_base="http://localhost:{port}",
+    )
+    config = write_config(
+        tmp_path,
+        {
+            "remote": {
+                "url": f"{fake.url}/mcp",
+                "timeout": 5,
+                "auth": {
+                    "client_id": "cli-p",
+                    "client_secret_env": "NARE_TEST_CLIENT_SECRET",
+                    "callback_port": port,
+                    "authorization_server": fake.url.replace("127.0.0.1", "localhost"),
+                },
+            }
+        },
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+    assert login("remote", server) == ["remote__echo"]
+    assert len(events_of(fake, "grant")) == 1
+    assert secret not in token_file(home).read_text()
+
+
+def test_refresh_in_a_fresh_process_uses_the_stored_authorization_server(
+    tmp_path: Path,
+    home: Path,
+    start: Callable[..., Fake],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A refresh by a new process goes to the authorization server the login
+    used, not to the MCP server's origin, which would receive the refresh token."""
+    fake = start(access_ttl=2, issuer_base="http://localhost:{port}")
+    port = fake.url.rsplit(":", 1)[1]
+    config = write_config(
+        tmp_path,
+        {
+            "remote": {
+                "url": f"{fake.url}/mcp",
+                "timeout": 5,
+                "auth": {"authorization_server": f"http://localhost:{port}"},
+            }
+        },
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+    login("remote", server)
+    time.sleep(2.2)
+    model = MCPModel("remote__echo")
+    code, out, err = run_with(config, model, capsys)
+    assert code == 0, err
+    assert "hello" in model.messages[-1].content[0]["content"]
+    assert [g["grant"] for g in events_of(fake, "grant")] == [
+        "authorization_code",
+        "refresh_token",
+    ]
+
+
+def test_error_text_from_the_mcp_server_is_not_shown(
+    tmp_path: Path,
+    home: Path,
+    start: Callable[..., Fake],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An MCP server whose error quotes the bearer token must not leak it into
+    the tool result, the events or stderr."""
+    fake = start(echo_bearer=True)
+    config = write_config(
+        tmp_path, {"remote": {"url": f"{fake.url}/mcp", "timeout": 5, "auth": {}}}
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+    login("remote", server)
+    bearer = stored(home)["tokens"]["access_token"]
+    model = MCPModel("remote__echo")
+    code, out, err = run_with(config, model, capsys)
+    result = model.messages[-1].content[0]
+    assert result["is_error"], "the echoing server should make the call fail"
+    assert bearer not in out + err
+    assert bearer not in json.dumps(result)
+
+
+def test_error_chain_hides_the_authorization_server_reply(
+    tmp_path: Path, home: Path, start: Callable[..., Fake]
+) -> None:
+    """The raised error must not keep the authorization server's reply
+    reachable through its exception chain."""
+    fake = start(code_mode="reject")
+    config = write_config(
+        tmp_path, {"remote": {"url": f"{fake.url}/mcp", "timeout": 5, "auth": {}}}
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+    with pytest.raises(mcp_auth.McpAuthError) as caught:
+        login("remote", server)
+    seen: list[BaseException] = []
+    pending: list[BaseException] = [caught.value]
+    while pending:
+        link = pending.pop()
+        if link in seen:
+            continue
+        seen.append(link)
+        for linked in (link.__cause__, link.__context__):
+            if linked is not None:
+                pending.append(linked)
+        if isinstance(link, BaseExceptionGroup):
+            pending.extend(link.exceptions)
+    text = "".join(traceback.format_exception(caught.value))
+    assert all(
+        REPLY_SENTINEL not in str(e) and REPLY_SENTINEL not in repr(e) for e in seen
+    )
+    assert REPLY_SENTINEL not in text
+
+
+def test_log_scrub_keeps_the_reply_out_of_logs(
+    tmp_path: Path,
+    home: Path,
+    start: Callable[..., Fake],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The SDK logs the failed exchange with its exception. The reply it quotes
+    must not reach the log; removing the scrub filter makes this fail."""
+    fake = start(code_mode="reject")
+    config = write_config(
+        tmp_path, {"remote": {"url": f"{fake.url}/mcp", "timeout": 5, "auth": {}}}
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+    caplog.set_level(logging.DEBUG)
+    with pytest.raises(mcp_auth.McpAuthError):
+        login("remote", server)
+    assert "OAuth flow error" in caplog.text
+    assert REPLY_SENTINEL not in caplog.text
+
+
+def test_fresh_login_repairs_a_loose_token_file(
+    tmp_path: Path, home: Path, start: Callable[..., Fake]
+) -> None:
+    fake = start()
+    config = write_config(
+        tmp_path, {"remote": {"url": f"{fake.url}/mcp", "timeout": 5, "auth": {}}}
+    )
+    server = parse_servers(json.loads(config.read_text()))["remote"]
+    login("remote", server)
+    token_file(home).chmod(0o644)
+    assert login("remote", server) == ["remote__echo"]
+    assert stat.S_IMODE(token_file(home).stat().st_mode) == 0o600
+
+
+def test_oversized_loopback_request_is_refused_quietly(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def scenario() -> bytes:
+        async with mcp_auth._Loopback(None, 5) as loopback:
+            reader, writer = await asyncio.open_connection("127.0.0.1", loopback.port)
+            writer.write(b"GET /callback?" + b"a" * 70000)
+            await writer.drain()
+            reply = await reader.read()
+            writer.close()
+            return reply
+
+    caplog.set_level(logging.DEBUG)
+    reply = asyncio.run(scenario())
+    assert reply.startswith(b"HTTP/1.1 400")
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]

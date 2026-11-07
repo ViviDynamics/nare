@@ -8,11 +8,19 @@ token refresh all come from the MCP SDK's client provider. `nare run` never
 opens a browser: a server with no stored authorization, or whose refresh
 fails, stops the run before any model call and names the login command.
 
-Tokens and any dynamic client registration live in
-$NARE_HOME/mcp-auth/ALIAS.json, written 0600 in a 0700 folder. Nothing here
-goes into the session file or the event stream, and every error this module
-raises has fixed or redacted text, because the SDK's own OAuth errors carry
-the authorization server's reply.
+Where credentials may go is decided here, not by the server. Every request
+the SDK's authorization flow sends passes `_check_request`: it must be https
+(or loopback), a POST (which carries the client secret, the code and the
+tokens) must go to the authorization server's origin, and a GET may go to the
+MCP server's origin or that authorization server's. The authorization server
+is the MCP server's own origin, unless the configuration pins another one with
+`authorization_server`. Nothing else is trusted to name a destination.
+
+Tokens, the discovered authorization server metadata and any dynamic
+registration live in $NARE_HOME/mcp-auth/ALIAS.json, written 0600 in a 0700
+folder. Nothing here goes into the session file or the event stream. Errors
+that reach a caller say what kind of failure happened, never a reply from a
+server, because the SDK's OAuth errors quote the authorization server.
 """
 
 from __future__ import annotations
@@ -27,7 +35,7 @@ import re
 import stat
 import tempfile
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -36,9 +44,11 @@ from urllib.parse import parse_qs, urlsplit
 from nare.events import redact
 
 if TYPE_CHECKING:
+    import httpx2
     from mcp.shared.auth import (
         AuthorizationCodeResult,
         OAuthClientInformationFull,
+        OAuthMetadata,
         OAuthToken,
     )
 
@@ -51,12 +61,21 @@ DEFAULT_LOGIN_TIMEOUT = 300.0
 _EXPIRY_SKEW = 30.0
 _PLACEHOLDER_REDIRECT = "http://127.0.0.1/callback"
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
-_KEYS = frozenset({"client_id", "client_secret_env", "scope", "callback_port"})
+_KEYS = frozenset(
+    {"client_id", "client_secret_env", "scope", "callback_port", "authorization_server"}
+)
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+_LOGGERS = (
+    "mcp.client.auth.oauth2",
+    "mcp.client.auth.utils",
+    "mcp.client.streamable_http",
+    "mcp.shared._httpx_utils",
+)
 
 
 class McpAuthError(Exception):
-    """An authorization failure. Its text is fixed or redacted, so it can be
-    printed, recorded in a session and written to a log as it is."""
+    """An authorization failure. Its text is fixed, so it can be printed,
+    recorded in a session and written to a log as it is."""
 
 
 def login_hint(alias: str) -> str:
@@ -71,12 +90,15 @@ class OAuthSettings:
     the environment variable that holds its secret, so a secret never sits in
     the configuration file or on a command line. Without `client_id` the
     client is registered dynamically at login, when the server supports it.
+    `authorization_server` pins the authorization server when it is not on the
+    MCP server's origin; without it, the server's own origin is used.
     """
 
     client_id: str | None = None
     client_secret_env: str | None = None
     scope: str | None = None
     callback_port: int | None = None
+    authorization_server: str | None = None
 
     def __post_init__(self) -> None:
         if self.client_id is not None and (
@@ -99,57 +121,27 @@ class OAuthSettings:
             or not 1 <= port <= 65535
         ):
             raise ValueError("MCP auth callback_port must be 1-65535")
+        auth_server = self.authorization_server
+        if auth_server is not None:
+            parts = urlsplit(auth_server) if isinstance(auth_server, str) else None
+            if parts is None or not parts.hostname or parts.username or parts.password:
+                raise ValueError(
+                    "MCP auth authorization_server must be a URL without credentials"
+                )
+            if not secure_url(auth_server):
+                raise ValueError(
+                    "MCP auth authorization_server needs an https URL "
+                    "(or a loopback host)"
+                )
 
 
 def parse_oauth(value: Any) -> OAuthSettings:
     if not isinstance(value, dict) or set(value) - _KEYS:
         raise ValueError(
             "MCP auth must be an object with client_id, client_secret_env, "
-            "scope or callback_port"
+            "scope, callback_port or authorization_server"
         )
     return OAuthSettings(**value)
-
-
-def _leaves(exc: BaseException) -> list[BaseException]:
-    """The exceptions inside a task group's ExceptionGroup, however nested."""
-    if isinstance(exc, BaseExceptionGroup):
-        return [leaf for sub in exc.exceptions for leaf in _leaves(sub)]
-    return [exc]
-
-
-def failure(alias: str, exc: BaseException) -> BaseException:
-    """What a caller sees of an exception from an OAuth server.
-
-    The SDK's OAuth errors quote the token endpoint's reply, which the server
-    writes, so they become fixed text. The SDK raises them through anyio task
-    groups, so the groups are looked through first. Anything else keeps its
-    type and a redacted message.
-    """
-    from mcp.client.auth.exceptions import (
-        OAuthFlowError,
-        OAuthRegistrationError,
-        OAuthTokenError,
-    )
-
-    leaves = _leaves(exc)
-    for leaf in leaves:
-        if isinstance(leaf, McpAuthError):
-            return leaf
-    for leaf in leaves:
-        if isinstance(leaf, (OAuthFlowError, OAuthRegistrationError, OAuthTokenError)):
-            return McpAuthError(
-                f"MCP server {alias}: authorization failed; {login_hint(alias)}"
-            )
-    first = leaves[0]
-    if isinstance(first, TimeoutError):
-        return first
-    return McpAuthError(redact(f"MCP server {alias}: {type(first).__name__}: {first}"))
-
-
-# -- token storage -----------------------------------------------------------
-
-
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 def secure_url(url: str) -> bool:
@@ -162,11 +154,79 @@ def secure_url(url: str) -> bool:
     )
 
 
-def _require_secure(urls: list[str]) -> None:
-    if not all(secure_url(u) for u in urls):
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parts = urlsplit(url)
+    port = parts.port or {"https": 443, "http": 80}.get(parts.scheme)
+    return (parts.scheme, (parts.hostname or "").lower(), port)
+
+
+def _check_request(
+    alias: str,
+    request: httpx2.Request,
+    mcp_origin: tuple[str, str, int | None],
+    as_origin: tuple[str, str, int | None],
+) -> None:
+    """The one rule for where authorization traffic may go (see the module
+    docstring). It runs on every request the SDK's flow sends, so it covers
+    discovery, registration, the token exchange and refresh alike."""
+    url = str(request.url)
+    if not secure_url(url):
         raise McpAuthError(
-            "MCP authorization endpoints must use https (or a loopback host)"
+            f"MCP server {alias}: authorization requests must use https "
+            "(or a loopback host)"
         )
+    target = _origin(url)
+    if request.method == "POST":
+        allowed = target == as_origin
+    else:
+        allowed = target in (mcp_origin, as_origin)
+    if not allowed:
+        raise McpAuthError(
+            f"MCP server {alias}: authorization sent a request outside its "
+            "authorization "
+            "server; set authorization_server in its auth to allow it"
+        )
+
+
+def failure(alias: str, exc: BaseException) -> BaseException:
+    """What a caller sees of an exception from an OAuth server.
+
+    The SDK raises its errors through anyio task groups, so the groups are
+    looked through first. An OAuth error quotes the authorization server's
+    reply, and any other error may quote the MCP server's text, so neither
+    text is passed on: the caller gets the kind of failure. The returned
+    exception has no chained context. Callers raise it after their except
+    block, so Python sets no context on it.
+    """
+    from mcp.client.auth.exceptions import (
+        OAuthFlowError,
+        OAuthRegistrationError,
+        OAuthTokenError,
+    )
+
+    leaves = _leaves(exc)
+    for leaf in leaves:
+        if isinstance(leaf, McpAuthError):
+            return McpAuthError(str(leaf))
+    for leaf in leaves:
+        if isinstance(leaf, (OAuthFlowError, OAuthRegistrationError, OAuthTokenError)):
+            return McpAuthError(
+                f"MCP server {alias}: authorization failed; {login_hint(alias)}"
+            )
+    first = leaves[0]
+    if isinstance(first, TimeoutError):
+        return McpAuthError(f"MCP server {alias}: timed out")
+    return McpAuthError(f"MCP server {alias}: {type(first).__name__}")
+
+
+def _leaves(exc: BaseException) -> list[BaseException]:
+    """The exceptions inside a task group's ExceptionGroup, however nested."""
+    if isinstance(exc, BaseExceptionGroup):
+        return [leaf for sub in exc.exceptions for leaf in _leaves(sub)]
+    return [exc]
+
+
+# -- token storage -----------------------------------------------------------
 
 
 def _token_path(alias: str) -> Path:
@@ -188,7 +248,8 @@ class TokenFile:
 
     The file is bound to the server URL it was written for. A file for another
     URL is ignored and then replaced, so credentials never travel to a server
-    they were not issued by.
+    they were not issued by. A fresh login does not read the file at all, so a
+    file left loose by an earlier run does not block the login that repairs it.
     """
 
     def __init__(
@@ -198,6 +259,8 @@ class TokenFile:
         settings: OAuthSettings,
         secret: str | None,
         redirect_uri: str,
+        *,
+        fresh: bool = False,
     ) -> None:
         self.path = path
         self.server_url = server_url
@@ -206,11 +269,17 @@ class TokenFile:
         self.redirect_uri = redirect_uri
         self.tokens: OAuthToken | None = None
         self.expires_at: float | None = None
+        self.metadata: OAuthMetadata | None = None
         self._client: OAuthClientInformationFull | None = None
-        self._load()
+        if not fresh:
+            self._load()
 
     def _load(self) -> None:
-        from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+        from mcp.shared.auth import (
+            OAuthClientInformationFull,
+            OAuthMetadata,
+            OAuthToken,
+        )
 
         try:
             mode = os.stat(self.path).st_mode
@@ -219,7 +288,7 @@ class TokenFile:
         if stat.S_IMODE(mode) & 0o077:
             raise McpAuthError(
                 f"MCP token file {self.path.name} is readable by other users; "
-                "restrict it to 0600 or run nare mcp login again"
+                "run nare mcp login again to replace it"
             )
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
@@ -227,6 +296,8 @@ class TokenFile:
                 return
             if data.get("tokens") is not None:
                 self.tokens = OAuthToken.model_validate(data["tokens"])
+            if data.get("metadata") is not None:
+                self.metadata = OAuthMetadata.model_validate(data["metadata"])
             if data.get("client") is not None and self.settings.client_id is None:
                 self._client = OAuthClientInformationFull.model_validate(data["client"])
             expires = data.get("expires_at")
@@ -239,11 +310,12 @@ class TokenFile:
             ) from None
 
     def reset(self) -> None:
-        """Forget the tokens and any dynamic registration: a fresh login
-        registers again, because the registered redirect URI names a port
-        that the new login may not use."""
+        """Forget the tokens, the discovered metadata and any dynamic
+        registration: a fresh login registers again, because the registered
+        redirect URI names a port that the new login may not use."""
         self.tokens = None
         self.expires_at = None
+        self.metadata = None
         self._client = None
         self._save()
 
@@ -278,6 +350,16 @@ class TokenFile:
             self._client = client_info
             self._save()
 
+    def set_metadata(self, metadata: OAuthMetadata) -> None:
+        """Keep the authorization server's endpoints, so a refresh in a later
+        process goes where this one's did, not to the MCP server's origin."""
+        if self.metadata is not None and self.metadata.model_dump(
+            mode="json"
+        ) == metadata.model_dump(mode="json"):
+            return
+        self.metadata = metadata
+        self._save()
+
     def _save(self) -> None:
         payload = {
             "version": 1,
@@ -288,6 +370,11 @@ class TokenFile:
                 else None
             ),
             "expires_at": self.expires_at,
+            "metadata": (
+                self.metadata.model_dump(mode="json", exclude_none=True)
+                if self.metadata is not None
+                else None
+            ),
             "client": (
                 self._client.model_dump(mode="json", exclude_none=True)
                 if self._client is not None
@@ -296,6 +383,8 @@ class TokenFile:
         }
         folder = self.path.parent
         folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with contextlib.suppress(OSError):
+            os.chmod(folder, 0o700)
         fd, tmp = tempfile.mkstemp(dir=folder, prefix=".mcp-", suffix=".tmp")
         try:
             os.chmod(tmp, 0o600)
@@ -331,7 +420,7 @@ class Authorizer:
 
 
 def _install_log_scrub() -> None:
-    for name in ("mcp.client.auth.oauth2", "mcp.client.auth.utils"):
+    for name in _LOGGERS:
         logger = logging.getLogger(name)
         if not any(isinstance(f, _Scrub) for f in logger.filters):
             logger.addFilter(_Scrub())
@@ -371,9 +460,16 @@ def build_provider(
                 f"{settings.client_secret_env} is not set"
             )
     redirect = authorizer.redirect_uri if authorizer else _PLACEHOLDER_REDIRECT
-    storage = TokenFile(_token_path(alias), url, settings, secret, redirect)
-    present: Callable[[str], Awaitable[None]]
-    receive: Callable[[], Awaitable[AuthorizationCodeResult]]
+    storage = TokenFile(
+        _token_path(alias),
+        url,
+        settings,
+        secret,
+        redirect,
+        fresh=authorizer is not None,
+    )
+    present_handler: Callable[[str], Awaitable[None]]
+    receive_handler: Callable[[], Awaitable[AuthorizationCodeResult]]
     if authorizer is None:
         if storage.tokens is None:
             raise McpAuthError(
@@ -390,9 +486,10 @@ def build_provider(
                 f"MCP server {alias} needs authorization again; {login_hint(alias)}"
             )
 
+        present_handler, receive_handler = present, receive
     else:
         storage.reset()
-        present, receive = authorizer.present, authorizer.receive
+        present_handler, receive_handler = authorizer.present, authorizer.receive
 
     metadata = OAuthClientMetadata(
         redirect_uris=[_redirect(redirect)],
@@ -402,43 +499,62 @@ def build_provider(
         scope=settings.scope,
         client_name="nare",
     )
+    mcp_origin = _origin(url)
+    pinned = settings.authorization_server
+    as_origin = _origin(pinned) if pinned is not None else mcp_origin
 
     class _Provider(OAuthClientProvider):
         def _select_authorization_server(self, advertised: list[str]) -> str:
+            if pinned is not None:
+                return pinned
             chosen = super()._select_authorization_server(advertised)
-            _require_secure([chosen])
+            if _origin(chosen) != mcp_origin:
+                raise McpAuthError(
+                    f"MCP server {alias} names an authorization server on another "
+                    "origin; "
+                    "set authorization_server in its auth to allow it"
+                )
             return chosen
 
-        async def _handle_oauth_metadata_response(self, response: Any) -> None:
-            await super()._handle_oauth_metadata_response(response)
-            metadata = self.context.oauth_metadata
-            if metadata is not None:
-                _require_secure(
-                    [
-                        str(u)
-                        for u in (
-                            metadata.authorization_endpoint,
-                            metadata.token_endpoint,
-                            metadata.registration_endpoint,
-                        )
-                        if u is not None
-                    ]
-                )
+        async def _auth_flow(
+            self, request: httpx2.Request
+        ) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
+            # Every request the SDK's flow makes passes through here before it
+            # is sent. The original request is the MCP call itself, which the
+            # transport already addresses to the server.
+            flow = super()._auth_flow(request)
+            try:
+                outgoing = await flow.__anext__()
+                while True:
+                    if outgoing is not request:
+                        _check_request(alias, outgoing, mcp_origin, as_origin)
+                    response = yield outgoing
+                    if self.context.oauth_metadata is not None:
+                        storage.set_metadata(self.context.oauth_metadata)
+                    outgoing = await flow.asend(response)
+            except StopAsyncIteration:
+                return
+            finally:
+                await flow.aclose()
 
         async def _initialize(self) -> None:
             await super()._initialize()
-            # The SDK keeps no token expiry across a restart. Without it a
-            # stored token reads as valid, and the refresh is never tried before
-            # the server's 401 starts a full authorization.
+            # The SDK keeps no token expiry or endpoint metadata across a
+            # restart. Without the expiry a stored token reads as valid and the
+            # refresh is never tried before the server's 401 starts a full
+            # authorization; without the metadata the refresh goes to the
+            # MCP server's origin.
             if self.context.current_tokens is not None and storage.expires_at:
                 self.context.token_expiry_time = storage.expires_at - _EXPIRY_SKEW
+            if storage.metadata is not None and self.context.oauth_metadata is None:
+                self.context.oauth_metadata = storage.metadata
 
     return _Provider(
         server_url=url,
         client_metadata=metadata,
         storage=storage,
-        redirect_handler=present,
-        callback_handler=receive,
+        redirect_handler=present_handler,
+        callback_handler=receive_handler,
     )
 
 
@@ -485,7 +601,13 @@ class _Loopback:
                 status, body = "404 Not Found", "nare: not found"
             else:
                 status, body = self._deliver(parse_qs(parts.query))
-        except (asyncio.IncompleteReadError, ValueError, TimeoutError, OSError):
+        except (
+            asyncio.IncompleteReadError,
+            asyncio.LimitOverrunError,
+            ValueError,
+            TimeoutError,
+            OSError,
+        ):
             pass
         finally:
             data = body.encode()

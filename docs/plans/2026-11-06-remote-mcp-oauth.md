@@ -10,7 +10,7 @@ Out: a browser launched by nare (the login prints the URL; a headless host forwa
 - The MCP SDK already a dependency (`mcp>=2,<3`) ships a client OAuth provider that implements the current MCP authorization specification (protected resource metadata, authorization server metadata, PKCE S256, RFC 8707 resource, dynamic registration, refresh). It is used, not reimplemented. Its httpx client is `httpx2`, which nare already uses. No new third-party dependency.
 - Login is the only interactive step, run by a person. A run is headless: it refreshes or fails, and never waits for a browser.
 - The browser returns to a loopback listener on 127.0.0.1 (RFC 8252). A pre-registered client must accept that redirect; `callback_port` pins the port when it has to be exact.
-- Credentials go only over https, or to a loopback host for testing. The client secret comes from an environment variable, never from the file or argv.
+- Credentials go only over https, or to a loopback host for testing. The client secret comes from an environment variable, never from the file or argv. Credentials go to the MCP server's origin unless `authorization_server` pins the authorization server; a server's metadata cannot choose another destination.
 - Tokens are kept out of events by construction rather than by a new redaction rule. A rule change would bump the contract, and nothing in the event text needs one.
 - The contract stays at version 3: the change is additive (a config object and a new subcommand), and no existing field, event, status or exit code changes meaning.
 - The SDK's expiry does not allow for clock skew, so a stored token is treated as expired 30 seconds early, so a headless run refreshes before the server's 401 would ask for a browser.
@@ -23,7 +23,8 @@ Out: a browser launched by nare (the login prints the URL; a headless host forwa
 - [x] 5. Secret handling: failing tests show the client secret is absent from the live login process command line, and tokens are absent from events, stderr, logs and every file outside the token file; a token-endpoint reply is replaced with fixed text; a forged state is rejected and stores nothing.
 - [x] 6. CLI: `nare mcp login` prints the URL and result on stderr only; argument errors exit 2.
 - [x] 7. Docs: docs/contract.md section on configuration, login, token storage and the contract decision.
-- [ ] 8. Preflight, quality guard, self review, review gate, CI, merge.
+- [x] 8. Review round 1 (adversarial, secret handling): every request the SDK's authorization flow sends now passes one origin and scheme rule (`_check_request`), so metadata cannot downgrade or redirect credentials. The authorization server must be the MCP server's origin unless `authorization_server` pins another. Refresh restores the stored authorization server metadata. Non-OAuth errors report their type only. Errors carry no chained context to a reply. The SDK's streamable HTTP logger is scrubbed too. A fresh login repairs a loose token file, and an oversized loopback request gets a quiet 400. Each fix has a flow-level regression test; removing the fix fails it (checked by mutation, except the startup-path context mutation, which that scenario does not reach).
+- [ ] 9. Review round 2 (fresh adversarial reviewer), preflight, quality guard, PR, rebase, CI, merge.
 
 ## Review focus
 Secret handling end to end: argv, the session file, events, logs (the SDK logs with exception text, which the scrub filter removes), and file modes. The https rule for credentials and discovered endpoints. Refresh on a stored token at its boundary. The loopback listener: state is checked by the SDK, the listener accepts one redirect, and it binds 127.0.0.1 only.

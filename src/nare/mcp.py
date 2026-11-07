@@ -197,7 +197,9 @@ def _guarded(alias: str, tool: ExternalTool) -> ExternalTool:
         try:
             return await inner(args)
         except Exception as exc:
-            raise mcp_auth.failure(alias, exc) from None
+            err = mcp_auth.failure(alias, exc)
+        # Raised outside the handler, so no raw exception is kept as context.
+        raise err
 
     return replace(tool, call=call)
 
@@ -219,25 +221,50 @@ async def connect(
             # Each call keeps the server's own timeout: a short call deadline
             # must not fail a child that is still starting.
             budget = config.timeout if startup_timeout is None else startup_timeout
-            try:
-                await _start(stack, alias, config, budget, authorizer, tools)
-            except Exception as exc:
-                if config.auth is None:
-                    raise
-                raise mcp_auth.failure(alias, exc) from None
+            failed = await _start_or_fail(
+                stack, alias, config, budget, authorizer, tools
+            )
+            if failed is not None:
+                raise failed
         yield tools
     finally:
         # Close normally: passing GeneratorExit through SDK task groups wraps
         # an ordinary early close into an exception group. A close can also
         # re-raise an OAuth failure from a transport's task group, which must
         # be sanitized the same way as a startup failure.
-        try:
-            await stack.aclose()
-        except BaseException as exc:
-            oauth = [a for a, c in servers.items() if c.auth is not None]
-            if not oauth or not isinstance(exc, Exception | BaseExceptionGroup):
-                raise
-            raise mcp_auth.failure(", ".join(oauth), exc) from None
+        closed = await _close_or_fail(stack, servers)
+        if closed is not None:
+            raise closed
+
+
+async def _start_or_fail(
+    stack: AsyncExitStack,
+    alias: str,
+    config: Server,
+    budget: float,
+    authorizer: Authorizer | None,
+    tools: dict[str, ExternalTool],
+) -> BaseException | None:
+    try:
+        await _start(stack, alias, config, budget, authorizer, tools)
+    except Exception as exc:
+        if config.auth is None:
+            raise
+        return mcp_auth.failure(alias, exc)
+    return None
+
+
+async def _close_or_fail(
+    stack: AsyncExitStack, servers: Mapping[str, Server]
+) -> BaseException | None:
+    try:
+        await stack.aclose()
+    except BaseException as exc:
+        oauth = [alias for alias, c in servers.items() if c.auth is not None]
+        if not oauth or not isinstance(exc, Exception | BaseExceptionGroup):
+            raise
+        return mcp_auth.failure(", ".join(oauth), exc)
+    return None
 
 
 async def _start(
