@@ -1117,7 +1117,9 @@ def matrix(
     baselines.mkdir()
     for meta in metas:
         baseline_path(baselines, meta.model, "smoke").write_text(
-            dumps_baseline(meta, [summary("edit-docstring", 1.0)])
+            dumps_baseline(
+                meta, [replace(summary("edit-docstring", 1.0), tokens_log_sd=0.0)]
+            )
         )
     ran: list[Config] = []
 
