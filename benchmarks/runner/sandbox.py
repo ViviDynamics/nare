@@ -210,7 +210,8 @@ def run_agent(
         # environment: `--base-url` must steer the agent, not just the judge.
         env={
             "BENCH_PROMPT": case.prompt,
-            "BENCH_MODEL": config.model,
+            # The gateway's name for the model, which an alias withholds.
+            "BENCH_MODEL": config.gateway_model,
             "BENCH_MAX_TURNS": str(case.max_turns),
             "BENCH_LEFTOVERS": _LEFTOVERS,
             "NARE_PROVIDER": config.provider,

@@ -29,6 +29,41 @@ KEY_VARS = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 # old cap was 1024, and a reasoning judge ran out of it on real reps (#46).
 DEFAULT_JUDGE_MAX_TOKENS = 4096
 
+# A model whose gateway name is withheld from this repository. The baseline and
+# the results name it by its neutral id; the gateway's own name comes from the
+# environment variable here. Unset, a matrix run skips the model and says so.
+MODEL_ALIASES = {"glm-5.3-flash": "NARE_BENCH_GLM_MODEL"}
+
+
+def served_name(model: str, env: Mapping[str, str], *, required: bool) -> str:
+    """The name the gateway knows `model` by: the model itself, or for an
+    aliased model the value of its environment variable.
+
+    `required` is False for the subcommands that only read local files, which
+    never reach the gateway, so an unset alias is no reason to refuse them.
+    """
+    variable = MODEL_ALIASES.get(model)
+    if variable is None:
+        return model
+    value = env.get(variable)
+    if value:
+        return value
+    if required:
+        raise ConfigError(
+            f"{model!r} is served under a gateway name held outside this "
+            f"repository: set {variable} to it"
+        )
+    return model
+
+
+def unset_aliases(models: Sequence[str], env: Mapping[str, str]) -> list[str]:
+    """The aliased models among `models` whose gateway name is not set."""
+    return [
+        model
+        for model in models
+        if model in MODEL_ALIASES and not env.get(MODEL_ALIASES[model])
+    ]
+
 
 @dataclass(frozen=True)
 class Config:
@@ -59,6 +94,14 @@ class Config:
     # `bin/bench ab` used. `ab` gives each arm its own image and commit.
     image: str | None = None
     nare_commit: str = ""
+    # The gateway's name for the model, when `model` is an alias. Empty means
+    # the model is its own gateway name. Requests and the endpoint check use
+    # it; records, stamps and baselines keep `model`.
+    served_model: str = ""
+
+    @property
+    def gateway_model(self) -> str:
+        return self.served_model or self.model
 
 
 def judge_max_tokens_from(
@@ -157,6 +200,7 @@ def resolve_config(
     resolved_judge = judge_model or env.get("NARE_BENCH_JUDGE_MODEL") or None
     return Config(
         model=resolved_model,
+        served_model=served_name(resolved_model or "", env, required=need_key),
         provider=resolved_provider,
         # The one routing rule, for the single-model path and the matrix alike.
         base_url=route(base_url or env.get("NARE_BASE_URL") or None, resolved_provider),

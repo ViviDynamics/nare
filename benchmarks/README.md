@@ -115,8 +115,20 @@ ask, and it exits 2.
 
 The matrix for a tier is its set of baselines: each
 `baselines/*.<tier>.toml` names a model, its provider, its judge and its
-output cap. Adding a model to the matrix means blessing a baseline for it, and
-dropping one means deleting its baseline.
+output cap. Adding a model to the matrix means blessing a baseline for it.
+Dropping one means moving its baseline to `baselines/archive/`, which keeps
+its history and which the matrix does not read: the matrix globs the top
+level of `baselines/` only.
+
+A model whose gateway name is withheld from this repository is named by a
+neutral id in its baseline, and takes the gateway's name from an environment
+variable. `glm-5.3-flash` takes it from `NARE_BENCH_GLM_MODEL`
+(`MODEL_ALIASES` in `benchmarks/runner/config.py`). Its requests and the
+endpoint check use the gateway's name; its results, stamps and baseline use
+the neutral id. With the variable unset, `run --matrix` skips that model with
+a one-line note and runs the rest. A single run of it refuses until the
+variable is set. `bless` and `compare` read files only, so they need no
+variable.
 
     bin/bench run --matrix                            # every model, in turn
     bin/bench run --matrix --case ambiguous-request   # the cheap loop
