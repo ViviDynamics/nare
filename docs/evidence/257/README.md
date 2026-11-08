@@ -39,13 +39,18 @@ Nare-reported cost, summed over every rep of each run (no rep lacked a reported 
 - gpt-6.1-sol full: $2.2539 over 67 reps, about $0.034 per rep.
 - gpt-6-luna full: $0.1325 over 67 reps, about $0.002 per rep.
 
-Judge calls are not in the per-rep cost. This lane's total spend, every run included (the two full runs, the smoke matrix run, and the smoke runs for the three matrix models), is $2.56 by reported cost, against the $15 ceiling. The pilot on the sol full tier projected the cost: it ran first, and the luna cost was projected from the earlier smoke ratio.
+Judge calls are not in the per-rep cost. This lane's total spend, every run included (the two full runs, the smoke matrix run, and the smoke runs for the three matrix models), is $3.21 by reported cost, against the $15 ceiling. The GLM full run and its two retries add $0.33, $0.002 and $0.006. The pilot on the sol full tier projected the cost: it ran first, and the luna cost was projected from the earlier smoke ratio.
 
-## Third matrix model: not blessed here
+## Third matrix model: full tier not blessed
 
-The third matrix model is not in this note. Its smoke baseline and its end-to-end matrix check are in #256, and its full tier was not run. The reason is not run completion. The public repository's disclosure guard reports the model's served name as a private term, and blocks the pull request that carries it. Its full-tier numbers stay out of this note until that is resolved.
+`glm-5.3-flash` (its gateway name is held outside this repository, see #260) ran the full tier once: judge `claude-haiku-5-5`, five reps per case, run `2026-11-08T13-59-17Z` (67 reps, $0.33 reported cost). Fifteen of its seventeen cases completed. Two did not.
+
+- `bootstrap-without-database` and `expense-tracker-cli` returned HTTP 524 (a gateway origin timeout) on every rep of that run. Each got a retry, and each retry failed on every rep the same way. The bootstrap case sends prompts of up to about 118k tokens.
+- Per-case counts for the fifteen completed cases, from that run: ambiguous-after-reading 1/3, ambiguous-request 0/3, bash-timeout-recovery 4/4, context-overflow 5/5, context-overflow-small-window 3/3, edit-docstring 3/3, fix-failing-test 2/2, impossible-test 0/3, long-test-output 5/5, mcp-fanout 4/4, mcp-large-result 5/5, multi-file-rename 3/3, read-only-question 3/3, stale-backup-cleanup 3/3, typed-classify 3/3. A count below five is a case with errored reps.
+
+No full-tier baseline is committed for this model. A baseline of fifteen of seventeen cases would not measure the full tier, so none was written. Its smoke baseline is in place (#260). The open item is tracked in #262.
 
 ## Not blessed
 
 - Extended tier: opt-in, no baselines, unchanged.
-- The third matrix model's full tier: see above.
+- The third matrix model's full tier: see above. Its two failing cases are a gateway timeout, and the baseline waits on them (#262).
