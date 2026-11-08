@@ -95,6 +95,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--bash-network` | no | | With `--bash-sandbox`, let `bash` use the network ([Bash sandbox](#bash-sandbox)) |
 | `--resume` | yes | | Continue the session at a path. `nare tui --resume` with no path picks one of this directory's saved sessions; `nare run` needs the path |
 | `--mcp-config` | yes | | JSON file of MCP servers ([MCP tool sources](#mcp-tool-sources)) |
+| `--mcp-defer` | no | | Keep MCP tool definitions out of the request; the model searches, loads and calls them ([MCP tool deferral](#mcp-tool-deferral)) |
 | `--command-tools` | yes | | JSON file of tools this command line runs ([caller tools](#caller-tools)) |
 | `--image-input` | no | | Declare that the model accepts image input ([Read-only image input](#read-only-image-input)) |
 | `--session` | yes | | Write the session to a path |
@@ -706,6 +707,62 @@ content blocks are represented as JSON, rather than interpreted as model images.
 The standard [tool output cap](#the-tool-output-cap) applies, keeping the head and the tail. Session transcripts preserve results in
 the same way as built-ins; raw transcripts can contain secrets and should be
 handled as private artifacts.
+
+### MCP tool deferral
+
+`--mcp-defer` (library: `mcp_defer=True` on `nare.loop.run`) keeps MCP tool
+definitions out of the request. Each definition is a full JSON schema, and a
+server with many tools can fill the context before the model does any work.
+Off by default: a run without the flag sends the same request, writes the same
+session record and emits the same events as before. Deferral is also a no-op
+when no MCP tool is allowed, so the request is then identical with or without it.
+
+With deferral on, the request carries the built-in tools, the caller tools, and
+three fixed meta tools in this order, and no MCP definitions:
+
+- `mcp_search` with `query`. Lists the deferred tools whose name and description
+  contain every word of the query, case-insensitively, by name with a short
+  description. An empty query lists them. It returns at most 20 matches, sorted by
+  name, and says how many more there are. It loads nothing.
+- `mcp_load` with `names`, an array of up to 8 full names. Returns each tool's
+  `name`, `description` and `input_schema` as JSON, with unknown names under
+  `not_found`. A loaded tool stays loaded for the session.
+- `mcp_call` with `name`, the tool's full `alias__tool` name, and `arguments`, an
+  object. Runs a loaded tool. It is refused when the tool is not deferred in this
+  session, or was not loaded.
+
+A deferred tool's own name, sent directly, is refused with the way to load it.
+A tool the `--tools` allowlist excludes is never listed, loaded or run. A
+`mcp_call` goes through the same approval callback as any MCP call, with the
+tool's real name and its arguments, and a denial is an `is_error` tool result.
+
+The request's tools array stays the same from the first turn of a run to the last,
+and across a resume with the same configuration. A loaded definition arrives as a
+tool result at the end of the transcript, so the prefix that prompt caching reads
+does not change when a tool is loaded.
+
+Events: loading emits a `progress` event with `detail.mcp_defer.loaded`, the names
+loaded. Each `mcp_call` is a `tool_use` and a result event that name the real tool,
+as for any MCP call. A resume that drops loaded tools emits a `progress` event
+with `detail.mcp_defer.dropped` naming them.
+
+The session file records `mcp_loaded`, an object from each loaded tool's name to
+the SHA-256 of its schema when it was loaded. It is written only when non-empty,
+and reopened and forked sessions keep it. A session that loads tools cannot be
+read by a nare that predates this field, as with the other additive session
+fields.
+
+On resume, the loaded set is kept only for tools that are still deferred and whose
+schema digest is unchanged. Any other entry is dropped, with the event above, and
+the model loads that tool again. Turning deferral on or off on resume changes the
+tools array, so it is reported as a prefix change, `MCP tool deferral turned on`
+or `off`, and drops signed thinking as any tool change does. A changed definition
+does not change the array, so it drops only its loaded entry and keeps signed
+thinking.
+
+`nare contract` advertises the flag, the three tool names, the session field and
+the event detail under `mcp_deferral`. The flag, the tools, the field and the detail
+are additive, and keep the contract version.
 
 ### Remote servers with OAuth
 
@@ -2333,7 +2390,8 @@ Servers with automatic prefix caching (OpenAI, vLLM with prefix caching on,
 and others) need no marker, but they hit only on a stable prefix. nare keeps
 its own part stable: the system prompt is fixed for a run, and tools are
 offered in a fixed order (built-in tools first, then MCP tools in the order
-their servers list them). A caller keeps the rest stable: the same `--tools` and
+their servers list them, or with `--mcp-defer` the three meta tools in their place;
+see [MCP tool deferral](#mcp-tool-deferral)). A caller keeps the rest stable: the same `--tools` and
 the same MCP configuration across turns and resumes. A resume with no system
 option sends the system prompt the session recorded (see
 [System prompt input](#system-prompt-input)), so the system prompt stays stable

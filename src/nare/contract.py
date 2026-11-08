@@ -135,6 +135,7 @@ def describe() -> dict[str, Any]:
     a module-level import back into session would be a cycle. One definition of
     the version is worth a function-level import.
     """
+    from nare import mcp_defer
     from nare.caller_tools import COMMAND_TIMEOUT_DEFAULT
     from nare.loop import (
         CUTOFF_REASONS,
@@ -232,6 +233,21 @@ def describe() -> dict[str, Any]:
             "per": "invocation",
             "stop_reason": "tool_calls",
             "budget_keys": ["tool_calls", "used_tool_calls"],
+        },
+        # Additive: MCP tool definitions held back from the request. The model
+        # finds a tool with `mcp_search`, loads it with `mcp_load`, and calls it
+        # with `mcp_call`, whose `name` is the real `alias__tool`. The loaded set
+        # is in the session file and on a progress event's detail.
+        "mcp_deferral": {
+            "flag": "--mcp-defer",
+            "default": False,
+            "tools": list(mcp_defer.META_TOOLS),
+            "call_tool": mcp_defer.CALL,
+            "load_limit": mcp_defer.LOAD_LIMIT,
+            "search_limit": mcp_defer.SEARCH_LIMIT,
+            "session_field": "mcp_loaded",
+            "event": "progress",
+            "event_detail": "mcp_defer",
         },
         # Additive: how many times a failing --schema answer may be corrected.
         "schema_corrections": {
