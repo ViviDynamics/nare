@@ -528,7 +528,7 @@ def test_bin_bench_calibrate_import_runs_end_to_end(
     with source.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=REVIEW_COLUMNS)
         writer.writeheader()
-        row = {c: "" for c in REVIEW_COLUMNS}
+        row: dict[str, str | int] = {c: "" for c in REVIEW_COLUMNS}
         row.update(
             case=judged.id,
             claim=1,
