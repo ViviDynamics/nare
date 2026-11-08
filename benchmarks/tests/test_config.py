@@ -13,6 +13,7 @@ from benchmarks.runner.config import (
     require_judge,
     resolve_config,
     route,
+    unset_aliases,
 )
 
 
@@ -489,3 +490,74 @@ def test_a_baseline_without_a_model_or_judge_is_refused(
             base_url=None,
             env=MATRIX_ENV,
         )
+
+
+ALIAS_VAR = "NARE_BENCH_GLM_MODEL"
+
+
+def test_an_aliased_model_runs_under_its_gateway_name_and_keeps_its_own_id() -> None:
+    # The gateway's name for the model is withheld from the repository. The
+    # run sends it, and every record and baseline keeps the neutral id.
+    config = resolve_config(
+        model="glm-5.3-flash",
+        provider="openai",
+        base_url="https://proxy.example",
+        judge_model="claude-haiku-5-5",
+        env={"OPENAI_API_KEY": "k", ALIAS_VAR: "gateway-side-name"},
+    )
+    assert config.model == "glm-5.3-flash"
+    assert config.gateway_model == "gateway-side-name"
+
+
+def test_an_unset_alias_refuses_a_run_and_names_the_variable() -> None:
+    with pytest.raises(ConfigError, match=ALIAS_VAR):
+        resolve_config(
+            model="glm-5.3-flash",
+            provider="openai",
+            base_url=None,
+            judge_model="claude-haiku-5-5",
+            env={"OPENAI_API_KEY": "k"},
+        )
+
+
+def test_an_unset_alias_does_not_refuse_a_read_only_subcommand() -> None:
+    # bless and compare read files and never reach the gateway.
+    config = resolve_config(
+        model="glm-5.3-flash",
+        provider="openai",
+        base_url=None,
+        judge_model=None,
+        env={},
+        need_key=False,
+    )
+    assert (config.model, config.gateway_model) == ("glm-5.3-flash", "glm-5.3-flash")
+
+
+def test_a_matrix_baseline_for_an_alias_keeps_the_neutral_id() -> None:
+    config = baseline_config(
+        model="glm-5.3-flash",
+        provider="openai",
+        judge_model="claude-haiku-5-5",
+        max_tokens=None,
+        base_url="https://proxy.example",
+        env={"OPENAI_API_KEY": "k", ALIAS_VAR: "gateway-side-name"},
+    )
+    assert config.model == "glm-5.3-flash"
+    assert config.gateway_model == "gateway-side-name"
+    assert config.base_url == "https://proxy.example/v1"
+
+
+def test_a_model_without_an_alias_is_its_own_gateway_name() -> None:
+    config = resolve_config(
+        model="gpt-6-luna",
+        provider="openai",
+        base_url=None,
+        judge_model="claude-haiku-5-5",
+        env={"OPENAI_API_KEY": "k"},
+    )
+    assert config.gateway_model == "gpt-6-luna"
+
+
+def test_unset_aliases_names_only_the_withheld_models() -> None:
+    assert unset_aliases(["gpt-6-luna", "glm-5.3-flash"], {}) == ["glm-5.3-flash"]
+    assert unset_aliases(["glm-5.3-flash"], {ALIAS_VAR: "gateway-side-name"}) == []

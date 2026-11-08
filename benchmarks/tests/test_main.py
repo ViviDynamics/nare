@@ -1327,6 +1327,47 @@ def test_an_empty_matrix_exits_two(
     assert ran == []
 
 
+GLM = BaselineMeta("t", "abc1234", "openai", "glm-5.3-flash", SONNET)
+
+
+def test_an_unset_alias_skips_its_model_with_a_note_and_does_not_fail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv("NARE_BENCH_GLM_MODEL", raising=False)
+    ran = matrix(tmp_path, monkeypatch, GLM)
+    assert main(["run", "--matrix", "--case", "edit-docstring"]) == 0
+    assert ran == []
+    err = capsys.readouterr().err
+    assert err.count("skipped glm-5.3-flash") == 1
+    assert "NARE_BENCH_GLM_MODEL" in err
+
+
+def test_an_unset_alias_leaves_the_rest_of_the_matrix_to_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("NARE_BENCH_GLM_MODEL", raising=False)
+    ran = matrix(tmp_path, monkeypatch, HAIKU, GLM)
+    assert main(["run", "--matrix", "--case", "edit-docstring"]) == 0
+    assert [c.model for c in ran[1:]] == ["claude-haiku-5-5"]
+
+
+def test_an_aliased_model_runs_under_its_gateway_name_and_records_its_neutral_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NARE_BENCH_GLM_MODEL", "gateway-side-name")
+    ran = matrix(tmp_path, monkeypatch, GLM, served=("gateway-side-name", SONNET))
+    assert main(["run", "--matrix", "--case", "edit-docstring"]) == 0
+    assert [(c.model, c.gateway_model) for c in ran[1:]] == [
+        ("glm-5.3-flash", "gateway-side-name")
+    ]
+    results = tmp_path / "benchmarks" / "results"
+    assert [p.name for p in results.glob("*.jsonl")] == [
+        f"{MATRIX_STAMP}.glm-5-3-flash.jsonl"
+    ]
+
+
 def test_bless_stays_per_model() -> None:
     # Blessing the whole matrix at once would make it too easy to bless away
     # a regression.

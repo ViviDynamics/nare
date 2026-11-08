@@ -52,11 +52,13 @@ from benchmarks.runner.compare import (
 )
 from benchmarks.runner.config import (
     KEY_VARS,
+    MODEL_ALIASES,
     Config,
     ConfigError,
     baseline_config,
     require_judge,
     resolve_config,
+    unset_aliases,
 )
 from benchmarks.runner.grade import (
     CheckResult,
@@ -1808,7 +1810,7 @@ def served_check(matrix: Sequence[tuple[Path, Config]], base_url: str | None) ->
         names = served[key]
         if names is None:
             continue
-        if config.model not in names:
+        if config.gateway_model not in names:
             missing.append(f"{config.model!r} ({path.name})")
         if first and config.judge_model not in names:
             missing.append(f"{config.judge_model!r} (the judge, in {path.name})")
@@ -1843,6 +1845,19 @@ def run_matrix(args: argparse.Namespace, root: Path, cases: Sequence[Case]) -> i
             file=sys.stderr,
         )
         return 2
+    # A model whose gateway name is withheld runs only when its variable is set;
+    # otherwise it is skipped with a note, and the rest of the matrix still runs.
+    unset = set(unset_aliases([b.meta.model for _, b in matrix], os.environ))
+    for model in sorted(unset):
+        print(
+            f"bench: skipped {model}: set {MODEL_ALIASES[model]} to its gateway "
+            "name to run it",
+            file=sys.stderr,
+        )
+    matrix = [(path, b) for path, b in matrix if b.meta.model not in unset]
+    if not matrix:
+        print("bench: no matrix model left to run", file=sys.stderr)
+        return 0
     why = misnamed(matrix, args.tier) or mixed_judges(matrix)
     if why is not None:
         print(f"bench: {why}", file=sys.stderr)
