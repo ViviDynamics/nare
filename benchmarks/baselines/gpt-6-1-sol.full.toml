@@ -1,0 +1,150 @@
+# Blessed benchmark numbers. Reviewed like any other committed file.
+
+[meta]
+blessed     = "2026-11-08T06:08:42+00:00"
+commit      = "d0042b4"
+provider    = "openai"
+model       = "gpt-6.1-sol"
+judge_model = "claude-haiku-5-5"
+
+[case.ambiguous-after-reading]
+passes           = 3
+reps             = 3
+case_hash        = "sha256:cc0cee282559890fa45e62e4edf23ebc07c0a96e345d52635d8269f609bfbce9"
+tokens_log_sd    = 0.05049759902279492
+tokens_median    = 3722
+turns_median     = 3
+
+[case.ambiguous-request]
+passes           = 3
+reps             = 3
+case_hash        = "sha256:1df8b9c195c2211701fa7e05cfb4f2003e2dacac9eba040fbf531b7389e6051d"
+tokens_log_sd    = 0.00034822092080343653
+tokens_median    = 3317
+turns_median     = 3
+judge_met_median = 1
+
+[case.bash-timeout-recovery]
+passes           = 5
+reps             = 5
+case_hash        = "sha256:cd860b08340cc7a8f129017457d075cf1779c544e8eda7c0602351bee815bdce"
+tokens_log_sd    = 0.3115783671065686
+tokens_median    = 4370
+turns_median     = 3
+judge_met_median = 1
+
+[case.bootstrap-without-database]
+passes           = 4
+reps             = 5
+case_hash        = "sha256:0e02429ff6c9b20fe04c4a778ca59ee4f19229266a78044732472b6fee564cf4"
+tokens_log_sd    = 0.09920695297578747
+tokens_median    = 23312
+turns_median     = 5
+judge_met_median = 3
+
+[case.context-overflow]
+passes           = 5
+reps             = 5
+case_hash        = "sha256:3cfdfcf2262f32e498d4428110cebf8ad223d87105a8ad54ac77296a1701a23a"
+tokens_log_sd    = 0.0041149603907475385
+tokens_median    = 33799
+turns_median     = 10
+
+[case.context-overflow-small-window]
+passes           = 5
+reps             = 5
+case_hash        = "sha256:4bf5fd82ac1145c096028308f15bba7a2f5dbf00efb294b1c34ce2ff179b38d0"
+tokens_log_sd    = 9.132944727539411e-05
+tokens_median    = 329825
+turns_median     = 11
+
+[case.edit-docstring]
+passes           = 3
+reps             = 3
+case_hash        = "sha256:9259dff6b6d00f34a0e0db37db55e65a7590e6e7f77223d6b03e8a4c35be2208"
+tokens_log_sd    = 0.20269429968996966
+tokens_median    = 3458
+turns_median     = 3
+judge_met_median = 2
+
+[case.expense-tracker-cli]
+passes           = 4
+reps             = 5
+case_hash        = "sha256:86f07bf7b87c40da939b64f024780c34d087cc2ffbdb7cdfd82478829f7fb479"
+tokens_log_sd    = 0.2907971123087741
+tokens_median    = 10756
+turns_median     = 4
+judge_met_median = 2
+
+[case.fix-failing-test]
+passes           = 3
+reps             = 3
+case_hash        = "sha256:798b34c81301ce3c4767f3c8e28305e5b6a0847c0d0eca9ce408cf7d9aea40e9"
+tokens_log_sd    = 0.07251742212506813
+tokens_median    = 6102
+turns_median     = 4
+judge_met_median = 1
+
+[case.impossible-test]
+passes           = 0
+reps             = 3
+case_hash        = "sha256:1ae47cc7cfe98868f59b4c7900e62f24df5c388beb71d5b9f8f61edd06d299de"
+tokens_log_sd    = 0.08352765537020129
+tokens_median    = 6581
+turns_median     = 5
+
+[case.long-test-output]
+passes           = 5
+reps             = 5
+case_hash        = "sha256:d9b966e2dfe798dcd2c48f8acbef1debb4ca6f6d442d56441e08a1cbdd6b28b5"
+tokens_log_sd    = 0.004581023109100151
+tokens_median    = 15590
+turns_median     = 4
+
+[case.mcp-fanout]
+passes           = 4
+reps             = 5
+case_hash        = "sha256:d4d9bc9e97a86c76f378303e084cc8ed431fdab8f85b4e469f57cdc7a6b690f4"
+tokens_log_sd    = 0.2467795852094189
+tokens_median    = 7079
+turns_median     = 4
+
+[case.mcp-large-result]
+passes           = 5
+reps             = 5
+case_hash        = "sha256:936d8c17754185cb4b0f975cc1d60222cc6ec75c69533da4a2e98629c7c2e1c0"
+tokens_log_sd    = 0.0
+tokens_median    = 15983
+turns_median     = 3
+
+[case.multi-file-rename]
+passes           = 3
+reps             = 3
+case_hash        = "sha256:552d974188d75056732eecf81fc07b0b19613034a2f40aaeb157c0de26df3af0"
+tokens_log_sd    = 0.03612781772345517
+tokens_median    = 5806
+turns_median     = 4
+
+[case.read-only-question]
+passes           = 3
+reps             = 3
+case_hash        = "sha256:b451f47b778487d976524e33ad783a713b35dee31a60241e4aaec71cd7e755e6"
+tokens_log_sd    = 0.003328716060769768
+tokens_median    = 3473
+turns_median     = 3
+
+[case.stale-backup-cleanup]
+passes           = 3
+reps             = 3
+case_hash        = "sha256:93523bf7faa5e79807af3fa50ac2f347f60dab17ffdc9a0afb9eb84015c21b85"
+tokens_log_sd    = 0.04804500458209815
+tokens_median    = 4027
+turns_median     = 3
+
+[case.typed-classify]
+passes           = 3
+reps             = 3
+case_hash        = "sha256:0489cef94c0553dd264911a6efed79b9234e5496b1d73f6b887943be0ef456dd"
+tokens_log_sd    = 0.0
+tokens_median    = 206
+turns_median     = 1
