@@ -15,6 +15,7 @@ from anthropic import (
     DEFAULT_TIMEOUT,
     APIStatusError,
     AsyncAnthropic,
+    AsyncAnthropicBedrock,
     omit,
     transform_schema,
 )
@@ -308,13 +309,15 @@ def _count(node: dict[str, Any]) -> tuple[int, int]:
     return optional, unions
 
 
-def check_response_schema(schema: dict[str, Any]) -> None:
+def check_response_schema(schema: dict[str, Any], provider: str = "anthropic") -> None:
     """Refuse at startup a schema the anthropic rail cannot constrain.
 
     Anything Anthropic refuses would otherwise surface mid-run, as a 400 on the
-    correction turn after the run had spent its first answer.
+    correction turn after the run had spent its first answer. `provider` names
+    the rail in the message: bedrock sends the same body, so it has the same
+    limits.
     """
-    prefix = "--structured-output on the anthropic provider cannot send this schema"
+    prefix = f"--structured-output on the {provider} provider cannot send this schema"
     queue = [(schema, "")]
     while queue:
         node, path = queue.pop()
@@ -336,6 +339,8 @@ def check_response_schema(schema: dict[str, Any]) -> None:
 
 
 class AnthropicTransport:
+    # The provider name messages use; Claude on Bedrock overrides it.
+    provider = "anthropic"
     supports_image_input = True
     # A constrained turn carries no tools, on this rail as on the openai one,
     # so one rule covers which turns a caller's schema constrains.
@@ -358,11 +363,7 @@ class AnthropicTransport:
         request_timeout: float | None = None,
     ) -> None:
         timeout = checked_timeout(request_timeout)
-        if api_key is None and not os.environ.get("ANTHROPIC_API_KEY"):
-            raise ValueError(
-                "no Anthropic API key: set ANTHROPIC_API_KEY in the environment "
-                "(there is no --api-key flag; argv is world-readable)"
-            )
+        self._check_credentials(api_key)
         if temperature is not None:
             raise ValueError(
                 "anthropic no longer accepts temperature: the parameter was "
@@ -394,7 +395,7 @@ class AnthropicTransport:
             {"effort": effort} if effort is not None else None
         )
         self.thinking: dict[str, Any] | None = None
-        ceiling = nonstreaming_ceiling(model)
+        ceiling = min(NONSTREAMING_MAX_TOKENS, self._model_cap(model))
 
         if thinking_budget is not None:
             self.thinking = {"type": "enabled", "budget_tokens": thinking_budget}
@@ -436,16 +437,11 @@ class AnthropicTransport:
         self._discovery_base = base_url
         self.model = model
         self.system = system
-        # max_retries=0: the SDK's own retries were silent and uncounted, and
-        # stacked under nare's they made a caller's zero mean two.
-        # Unset keeps the SDK's own 600 seconds (5 to connect), and with it
-        # the SDK's nonstreaming checks, which nare repeats above anyway.
-        self._client = AsyncAnthropic(
+        self._client = self._build_client(
             api_key=api_key,
             base_url=base_url,
             http_client=http_client,
-            max_retries=0,
-            timeout=timeout if timeout is not None else DEFAULT_TIMEOUT,
+            timeout=timeout,
         )
 
         self._metadata = ModelMetadata(
@@ -453,6 +449,40 @@ class AnthropicTransport:
             self._discovery_base,
             self.model,
             {"x-api-key": self._client.api_key or ""},
+        )
+
+    # The vendor seams. Claude on Bedrock (transport/bedrock.py) overrides these
+    # and nothing else: the wire format, retries and stream handling stay here.
+
+    def _check_credentials(self, api_key: str | None) -> None:
+        if api_key is None and not os.environ.get("ANTHROPIC_API_KEY"):
+            raise ValueError(
+                "no Anthropic API key: set ANTHROPIC_API_KEY in the environment "
+                "(there is no --api-key flag; argv is world-readable)"
+            )
+
+    def _model_cap(self, model: str) -> int:
+        """The model's own non-streaming output cap, before the global one."""
+        return MODEL_NONSTREAMING_TOKENS.get(model, NONSTREAMING_MAX_TOKENS)
+
+    def _build_client(
+        self,
+        *,
+        api_key: str | None,
+        base_url: str | None,
+        http_client: httpx2.AsyncClient | None,
+        timeout: float | None,
+    ) -> AsyncAnthropic | AsyncAnthropicBedrock:
+        # max_retries=0: the SDK's own retries were silent and uncounted, and
+        # stacked under nare's they made a caller's zero mean two.
+        # Unset keeps the SDK's own 600 seconds (5 to connect), and with it
+        # the SDK's nonstreaming checks, which nare repeats above anyway.
+        return AsyncAnthropic(
+            api_key=api_key,
+            base_url=base_url,
+            http_client=http_client,
+            max_retries=0,
+            timeout=timeout if timeout is not None else DEFAULT_TIMEOUT,
         )
 
     def _warn_proxy_reasoning(self, content: list[dict[str, Any]]) -> None:
@@ -514,7 +544,7 @@ class AnthropicTransport:
         )
 
     def check_response_schema(self, schema: dict[str, Any]) -> None:
-        check_response_schema(schema)
+        check_response_schema(schema, self.provider)
 
     def _output_config(self, response_schema: dict[str, Any] | None) -> Any:
         config = dict(self.output_config or {})

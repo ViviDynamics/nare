@@ -58,7 +58,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--yes` | no | | Approve every tool call; required for unattended runs |
 | `--contract` | yes | | The contract version the caller speaks ([Refusing a contract](#refusing-a-contract-you-do-not-speak)) |
 | `--schema` | yes | | JSON Schema file the final answer must satisfy ([Answer schemas](#answer-schemas)) |
-| `--structured-output` | yes | `json_schema` | Constrain answers at decode time, on both rails ([Schema-constrained answers](#schema-constrained-answers)) |
+| `--structured-output` | yes | `json_schema` | Constrain answers at decode time, on the anthropic, bedrock and openai rails ([Schema-constrained answers](#schema-constrained-answers)) |
 | `--max-tool-calls` | yes | | Run at most this many tool calls in this invocation ([Budgets and partial results](#budgets-and-partial-results)) |
 | `--max-corrections` | yes | | Let a failing `--schema` answer be corrected up to this many times in the run, default 1 ([Schema corrections](#schema-corrections)) |
 | `--max-cutoffs` | yes | | Correct up to this many replies cut off at the output cap or by repeating one span, in this invocation ([Cut-off replies](#cut-off-replies)) |
@@ -71,17 +71,18 @@ keeps the contract version; removing or renaming one bumps it.
 | `--request-retry-seconds` | yes | | Longest wait between one request's retries |
 | `--proxy-num-retries` | yes | | Send `num_retries` to an OpenAI-compatible proxy |
 | `--cache-breakpoints` | no | | Mark prompt-cache breakpoints on the openai rail ([Prompt-cache breakpoints](#prompt-cache-breakpoints)) |
-| `--provider` | yes | `anthropic`, `openai`, `fake` | Model provider |
+| `--provider` | yes | `anthropic`, `bedrock`, `openai`, `fake` | Model provider (`bedrock` is Claude on Amazon Bedrock, signed with AWS credentials) |
 | `--replay` | yes | | JSON script of replies `--provider fake` replays ([Scripted runs](#scripted-runs)) |
 | `--model` | yes | | Model name |
-| `--base-url` | yes | | Override the provider endpoint |
+| `--base-url` | yes | | Override the provider endpoint (on `bedrock`, the Bedrock runtime endpoint) |
+| `--region` | yes | | AWS region for `--provider bedrock`; refused with any other provider |
 | `--temperature` | yes | | Sampling temperature; not accepted by the anthropic provider |
 | `--max-tokens` | yes | | Output token cap per response |
 | `--context-window` | yes | | Context window used for elision |
 | `--budget-tokens` | yes | | Cumulative session token budget ([Budgets and partial results](#budgets-and-partial-results)) |
 | `--budget-usd` | yes | | Cumulative session dollar budget |
 | `--effort` | yes | `low`, `medium`, `high`, `xhigh`, `max` | Reasoning effort ([Reasoning effort](#reasoning-effort)) |
-| `--thinking-budget` | yes | | A fixed thinking budget, anthropic only, for older models |
+| `--thinking-budget` | yes | | A fixed thinking budget, anthropic and bedrock only, for older models |
 | `--system` | yes | | Replace the default system prompt ([System prompt input](#system-prompt-input)) |
 | `--system-file` | yes | | `--system`, read from a UTF-8 file |
 | `--append-system` | yes | | Add text after the system prompt |
@@ -1330,8 +1331,16 @@ at decode time on the anthropic rail.
 ## The bash environment
 
 `bash` runs with nare's environment minus the provider credentials nare reads
-for its own requests: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and
-`OPENAI_API_KEY`. A command the model writes, `env` included, does not see
+for its own requests: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+`OPENAI_API_KEY`, and on the bedrock rail the AWS credential variables:
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`,
+`AWS_SECURITY_TOKEN`, `AWS_BEARER_TOKEN_BEDROCK`, `AWS_WEB_IDENTITY_TOKEN_FILE`,
+`AWS_CONTAINER_AUTHORIZATION_TOKEN` and `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`.
+Withholding is by variable only. The files those last two variables name, the
+shared credential and SSO cache files, and the instance metadata endpoint are
+not environment and stay reachable from a command the model writes, so a
+bedrock run in a pod or an instance still exposes its role to bash. Use a
+narrower role for a run whose model should not reach it. A command the model writes, `env` included, does not see
 them, so neither the transcript nor an instruction planted in a file the model
 reads can reach them. This is the same rule as for MCP stdio servers above:
 no child process nare starts inherits the model API keys. Every other variable
@@ -1679,8 +1688,8 @@ constrained. Transient means:
 | Connect error, connection reset or closed mid-response | `connection` |
 | A stream that ended before its completion marker | `stream` |
 | HTTP 429, 502, 503, 504, 529 | `status` |
-| anthropic rail: HTTP 500, which is Anthropic's `api_error` | `status` |
-| anthropic rail: an `overloaded_error` sent mid-stream | `overloaded` |
+| anthropic and bedrock rails: HTTP 500, which is Anthropic's `api_error` | `status` |
+| anthropic and bedrock rails: an `overloaded_error` sent mid-stream | `overloaded` |
 
 Everything else is permanent and ends the run on the first attempt: a 400,
 401, 403, 404 or 422, any other status, a stream that finished but lacks its
@@ -1746,6 +1755,7 @@ refusal does (`status=error`, `stop_reason` null, not retried).
 | Rail | `--effort LEVEL` sends | Notes |
 | --- | --- | --- |
 | anthropic | `output_config: {"effort": LEVEL}` and `thinking: {"type": "adaptive"}` | No `budget_tokens`. Adaptive thinking is sent because Opus 4.7 and 4.8 do not think without it; where thinking is always on it is the same as omitting it |
+| bedrock | `output_config: {"effort": LEVEL}` and `thinking: {"type": "adaptive"}` | The same request as the anthropic rail, sent to Bedrock. Not yet confirmed against a live Bedrock endpoint ([#269](https://github.com/ViviDynamics/nare/issues/269)) |
 | openai | `reasoning_effort: LEVEL` | Passed through. What a level means belongs to the server behind `--base-url`: one server may map an unknown level to its most expensive setting |
 
 Current Claude models refuse a fixed thinking budget with a 400. The older
@@ -2132,14 +2142,14 @@ does decode, such as a citation `[1]`, counts as a second document.
       --schema answer.schema.json --structured-output json_schema "..."
 
 `--structured-output json_schema` asks the backend to enforce the `--schema` at
-decode time on the turns where that is possible, on both rails. A constrained
+decode time on the turns where that is possible, on every rail but fake. A constrained
 turn sends **no tools** and the rail's own format. On the openai rail, the
 OpenAI-compatible response format:
 
     "response_format": {"type": "json_schema",
                         "json_schema": {"name": "answer", "schema": {...}, "strict": true}}
 
-On the anthropic rail, Anthropic's structured outputs, beside any
+On the anthropic and bedrock rails, Anthropic's structured outputs, beside any
 `output_config.effort`:
 
     "output_config": {"format": {"type": "json_schema", "schema": {...}}}
@@ -2176,6 +2186,9 @@ backend. A backend that cannot enforce some keyword refuses or ignores it under
 its own rules, and nare's validator still checks the answer.
 
 ### Keyword limits on the anthropic rail
+
+The bedrock rail sends the same body through the SDK's Bedrock client, so
+everything in this section applies to it too, and its refusals name `bedrock`.
 
 Anthropic refuses a keyword it cannot enforce with a 400 instead of ignoring
 it, so the anthropic rail sends the schema through the Anthropic SDK's own
@@ -2218,8 +2231,8 @@ that does not mark every property required with `additionalProperties` false.
 Such a refusal ends the run as a provider failure (`stop_reason` null), not as
 `schema_violation`. vLLM enforces the schema without that restriction.
 
-`--structured-output` without `--schema`, or with a schema the anthropic rail
-refuses, never starts (exit 2). The one exception is a resume whose budget is already
+`--structured-output` without `--schema`, or with a schema the anthropic or
+bedrock rail refuses, never starts (exit 2). The one exception is a resume whose budget is already
 spent: it reports that result without building a transport, so no model is
 called. In the library, `run(structured_output="json_schema")`
 raises `ValueError` before any turn when there is no schema, the transport

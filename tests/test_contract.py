@@ -229,7 +229,7 @@ def test_contract_describes_structured_output() -> None:
         "flag": "--structured-output",
         "modes": ["json_schema"],
         "requires": "--schema",
-        "providers": ["anthropic", "openai"],
+        "providers": ["anthropic", "bedrock", "openai"],
         "constrained_turns": ["schema_correction", "tool_free_run"],
         "anthropic_not_enforced_at_decode": describe()["structured_output"][
             "anthropic_not_enforced_at_decode"
@@ -325,7 +325,19 @@ def test_the_documented_contract_describes_tool_results() -> None:
 
 def test_contract_describes_the_bash_environment() -> None:
     assert describe()["bash_env"] == {
-        "withheld": ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY"],
+        "withheld": [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_BEARER_TOKEN_BEDROCK",
+            "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+            "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SECURITY_TOKEN",
+            "AWS_SESSION_TOKEN",
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            "OPENAI_API_KEY",
+        ],
         "opt_in_flag": "--bash-credentials",
         "policy_field": "bash_credentials",
     }

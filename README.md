@@ -36,10 +36,40 @@ For the terminal UI, install the extra:
 
 ## Providers
 
-Two rails. `--provider anthropic` (the default) speaks Anthropic's API and
-reads `ANTHROPIC_API_KEY`. `--provider openai` speaks Chat Completions, which
-is also what a LiteLLM proxy, vLLM, llama.cpp and Ollama speak, and reads
-`OPENAI_API_KEY`; point it anywhere with `--base-url`.
+Two model rails, and a third for Claude on AWS. `--provider anthropic` (the
+default) speaks Anthropic's API and reads `ANTHROPIC_API_KEY`. `--provider
+openai` speaks Chat Completions, which is also what a LiteLLM proxy, vLLM,
+llama.cpp and Ollama speak, and reads `OPENAI_API_KEY`; point it anywhere with
+`--base-url`. `--provider bedrock` is the Anthropic rail reached through AWS.
+
+### Claude on Amazon Bedrock
+
+`--provider bedrock` calls Claude on Amazon Bedrock directly, with no API key
+and no proxy. The request, streaming, tools, thinking, usage and retries are
+the anthropic rail's. Credentials come from the standard AWS chain: the
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` pair, `AWS_PROFILE` (SSO
+profiles included), IRSA web identity in EKS, or an instance role. An
+`AWS_BEARER_TOKEN_BEDROCK` bearer token works too. The region comes from
+`--region`, then `NARE_AWS_REGION`, `AWS_REGION`, `AWS_DEFAULT_REGION`, and the
+active profile's region in the AWS config file. A missing region or credential
+exits 2 and names both.
+
+    nare run --yes --provider bedrock --region us-east-1 \
+      --model us.anthropic.claude-sonnet-4-5-20250929-v1:0 "..."
+
+`--model` takes a Bedrock model or inference-profile ID. The base install does
+not carry the AWS signer: `pip install 'nare[bedrock]'` adds it, and the
+container image includes it. `--base-url` sets the Bedrock runtime endpoint,
+for a VPC interface endpoint. Context-window discovery is skipped, so pass
+`--context-window` when the model's window matters. `--structured-output` sends
+the anthropic rail's `output_config.format`, and `--temperature` is refused, as
+on the anthropic rail. Bash commands do not see the AWS credential variables, as they do not see
+the provider keys. The IAM actions the rail needs are `bedrock:InvokeModel` and
+`bedrock:InvokeModelWithResponseStream` on the model or inference profile.
+
+The rail is tested offline, with the real SDK client, real SigV4 signing and an
+AWS event stream, but it has not yet completed a turn against a live Bedrock
+endpoint ([#269](https://github.com/ViviDynamics/nare/issues/269)).
 
 For a LiteLLM proxy, `--proxy-num-retries 0` sends `num_retries: 0` on every
 OpenAI-compatible request, including streamed and schema-constrained turns.
@@ -93,7 +123,7 @@ error names the option to turn off. See
 There is no `--api-key` flag on either: argv is world-readable through `ps`
 and `/proc`.
 
-A third rail is for tests. `--provider fake --replay script.json` replays a
+The fake rail is for tests. `--provider fake --replay script.json` replays a
 scripted list of replies, with no key and no network, through the real tools,
 session file, events and exit codes, so a caller's CI can cover a blocked run,
 a truncated turn and a transport error. See
@@ -180,7 +210,7 @@ without promoting the invalid object. Any earlier schema-valid output remains
 available. A validating answer is parsed onto the session, carried
 in the `output` event's detail, and included in the final `result` line.
 
-`--structured-output json_schema` (both providers) also asks the backend to
+`--structured-output json_schema` (anthropic, bedrock and openai) also asks the backend to
 enforce that schema at decode time on the correction turn, which is then sent
 without tools, and on every turn of a run that offers no tools. Tool-using
 turns stay unconstrained, because a constrained request cannot call a tool, and
