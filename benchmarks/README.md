@@ -557,7 +557,9 @@ against it.
 
 The LLM judge's error rates are measured against a small set of claims that
 people have labelled, kept in `benchmarks/calibration/labels.jsonl`. Nothing
-in the harness labels them: two people do, blind to what the judge said.
+in the harness labels them: two people do, blind to what the judge said. A
+panel of models may label them too, and its labels are kept and scored apart
+from the human ones (see "Panel labels" below).
 
     bin/bench calibrate export --results benchmarks/results/<stamp>.jsonl \
         --sample 80 --seed 1 --out <a path outside the repo>.jsonl
@@ -645,6 +647,52 @@ file can be imported now and the other's later, with the same result as
 importing both at once. Importing the same file twice leaves the labels file
 byte-for-byte as it was.
 
+### Panel labels
+
+A panel of models can label claims too, and a careful panel is useful when
+labelling every claim twice by hand is the slow part. Its verdicts are recorded,
+but never as human labels. A row keeps them in its own `panel` entry:
+
+    {"case": "fix-failing-test", "claim": 1, "claim_text": "...",
+     "diff_sha256": "<64 hex>", "labels": {"a": null, "b": null},
+     "label": null, "adjudicated": false, "status": "pending",
+     "panel": {"label": false,
+               "passes": [{"name": "quick", "date": "2026-11-08",
+                           "models": [{"model": "<model>", "effort": "high"}]}],
+               "votes": {"quick": {"true": 0, "false": 1, "unknown": 0}}}}
+
+- `label` is the panel's `true` or `false`, or `null` for its `unknown`.
+- `passes` is the provenance: each pass the panel ran over the claim, its date,
+  and every model in it with its effort. `votes` is optional and gives how each
+  pass split; its counts add up to the pass's models.
+- The row's own `labels`, `label` and `status` stay human. A panel verdict never
+  fills `a` or `b`, never settles a row, and the name `panel`, or a model the
+  provenance names, is refused as a human reviewer.
+
+One human verdict and a panel verdict can sit on the same row. One human
+verdict is not a human label: the row stays `pending` and out of the human
+rates until a second human answers, as before. Meanwhile the row is scored
+against its panel label, and the human verdict counts in the agreement line.
+
+Panel verdicts are imported like human ones, with the panel's provenance:
+
+    bin/bench calibrate import <panel verdicts>.json \
+        --export <a path outside the repo>/candidates.jsonl \
+        --panel-provenance <a path outside the repo>/panel.json \
+        [--reviewer-a "Jason Berry"]
+
+- In a CSV, a `panel` column holds the panel's `true`, `false` or `unknown`.
+- In JSON, the entry's `reviewer` is `panel`, with an optional `votes` object:
+  `{"reviewer": "panel", "verdict": "false", "votes": {"quick": {"false": 4}}}`.
+  An entry whose reviewer is one of the panel's models is refused: one model's
+  verdict is neither a human's nor the panel's.
+- `--panel-provenance` is a JSON file, `{"passes": [...]}`, in the shape above.
+  Every panel verdict in one import gets it, so claims with a different panel
+  history are imported from a separate file.
+- `--reviewer-a` and `--reviewer-b` are needed only for the labellers the file
+  holds verdicts from, so a panel-only file, or one human plus the panel, needs
+  no made-up second name.
+
 The evidence paths in the export point into a results directory, which is not
 in the clone. Open the diff from the machine that ran the rep, or from the
 evidence copy your reviewers were given.
@@ -656,6 +704,12 @@ run. A claim with no judged rep on its diff is counted as unmatched, and the
 rates are kept per judge model, so a change of judge is measured again rather
 than assumed. The set is small, so the rates are a rough check, not a
 precision measurement.
+
+When the file holds panel labels, the report gives each judge one line against
+human-settled rows and one against panel rows, each with its own counts, and
+how many human verdicts agree with the panel where a claim has both. Human and
+panel labels are never pooled into one rate. A file with no panel labels
+reports exactly as it did before panel labels existed.
 
 It exits 0 when the comparison finished, even if some judges failed on some
 repetitions, since those failures are in the report; 1 when there is nothing

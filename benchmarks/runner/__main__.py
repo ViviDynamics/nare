@@ -281,7 +281,8 @@ def build_parser() -> argparse.ArgumentParser:
     health.add_argument("--results", help="results file (default: the newest)")
     calibration = sub.add_parser(
         "calibrate",
-        help="a human-labelled set that measures the llm judge's error rates",
+        help="a labelled set (human labels, and model-panel labels kept apart) "
+        "that measures the llm judge's error rates",
     )
     calibration.add_argument(
         "action",

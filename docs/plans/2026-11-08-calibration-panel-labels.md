@@ -50,5 +50,5 @@ Out: running the panel. How labels are produced stays outside nare.
   for missing provenance, a model or `panel` as a human, conflicting panel verdicts.
 - [x] 5. CLI: `--panel-provenance`, reviewer names only as needed, `check` and the
   import summary count panel labels.
-- [ ] 6. Docs: benchmarks README and the module docstrings say what a panel label is
+- [x] 6. Docs: benchmarks README and the module docstrings say what a panel label is
   and is not.

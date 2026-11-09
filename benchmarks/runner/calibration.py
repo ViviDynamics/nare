@@ -10,8 +10,21 @@ A row also has a status. A reviewer who cannot tell says `unknown`, which is no
 label: the row is kept, and it stays out of the rates. `calibration_import`
 writes these rows from the reviewers' verdicts.
 
+A row may also carry a `panel` entry: the verdict of a panel of models, with
+its provenance (each pass it ran, that pass's date, and its models and their
+effort, and optionally how each pass voted). A panel label is not a human label.
+It never fills slot `a` or `b`, never sets the row's `label` or `status`, and the
+panel or one of its models is refused as a human reviewer. How a panel is run is
+outside nare; this module only keeps its verdicts apart.
+
+A row is human-settled only by the two-human rule above. One human verdict is
+not a human label: the row stays `pending` and out of the human rates. If the
+row has a panel label, it is scored in the panel rates, and its human verdict
+is counted in how often humans and the panel agree.
+
 The judge's false-positive and false-negative rates are then read against the
-labels, for every judge model the labelled diffs were judged with.
+labels, for every judge model the labelled diffs were judged with: against
+human-settled rows and against panel rows separately, never pooled.
 """
 
 from __future__ import annotations
