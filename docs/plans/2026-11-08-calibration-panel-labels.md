@@ -42,9 +42,9 @@ Out: running the panel. How labels are produced stays outside nare.
 ## Tasks
 - [x] 1. Labels format: a `panel` entry loads and round-trips; a bad one is refused;
   a panel model or `panel` as a human reviewer is refused.
-- [ ] 2. Scoring: rates against panel rows, apart from human rows, and the agreement
+- [x] 2. Scoring: rates against panel rows, apart from human rows, and the agreement
   count; a single human verdict plus a panel verdict scores in the panel rates only.
-- [ ] 3. Report: separate human and panel lines with counts, and the agreement line;
+- [x] 3. Report: separate human and panel lines with counts, and the agreement line;
   a human-only file renders as before.
 - [ ] 4. Import: CSV `panel` column and JSON `panel` reviewer, with provenance; refusals
   for missing provenance, a model or `panel` as a human, conflicting panel verdicts.

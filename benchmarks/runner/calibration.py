@@ -462,32 +462,27 @@ class JudgeRates:
 
 @dataclass(frozen=True)
 class Calibration:
-    labelled: int  # rows with a label; rows without one are in no rate
-    unmatched: int  # labelled claims with no judged rep on that diff
+    labelled: int  # human-settled rows; rows without a human label are in no rate
+    unmatched: int  # human-settled claims with no judged rep on that diff
     by_judge: dict[str, JudgeRates] = field(default_factory=dict)
+    # The panel's lines, kept apart from the human ones. All zero and empty for
+    # a file with no panel entries.
+    panel_rows: int = 0  # rows with a panel entry, its unknowns included
+    panel_labelled: int = 0  # rows whose panel label is true or false
+    panel_unmatched: int = 0
+    panel_by_judge: dict[str, JudgeRates] = field(default_factory=dict)
+    agree: int = 0  # human verdicts that match the panel's label
+    compared: int = 0  # human true/false verdicts on rows with a panel label
 
 
-def calibrate(labels: Sequence[Label], records: Sequence[RepRecord]) -> Calibration:
-    """Every labelled claim against each rep judged on the same case and diff.
-
-    A diff judged by two reps counts twice, once per rep: that is how the judge's
-    consistency on one diff shows. A rep with no verdicts (the judge failed)
-    contributes nothing. A row with no label (unknown, or still waiting for a
-    reviewer) is kept in the file and counted nowhere here.
-    """
-    index: dict[tuple[str, str], list[RepRecord]] = {}
-    for rec in records:
-        if rec.diff_sha256 and rec.judge_claims is not None:
-            index.setdefault((rec.case, rec.diff_sha256), []).append(rec)
-
+def _score(
+    labelled: Sequence[tuple[Label, bool]],
+    index: Mapping[tuple[str, str], Sequence[RepRecord]],
+) -> tuple[int, dict[str, JudgeRates]]:
+    """(unmatched, rates per judge) for claims with the label to read them by."""
     by_judge: dict[str, JudgeRates] = {}
-    labelled = 0
     unmatched = 0
-    for lab in labels:
-        label = lab.label
-        if label is None:
-            continue
-        labelled += 1
+    for lab, label in labelled:
         matches = index.get((lab.case, lab.diff_sha256), [])
         if not matches:
             unmatched += 1
@@ -508,14 +503,76 @@ def calibrate(labels: Sequence[Label], records: Sequence[RepRecord]) -> Calibrat
             else:
                 rates.negatives += 1
                 rates.false_pos += verdict
-    return Calibration(labelled=labelled, unmatched=unmatched, by_judge=by_judge)
+    return unmatched, by_judge
+
+
+def calibrate(labels: Sequence[Label], records: Sequence[RepRecord]) -> Calibration:
+    """Every labelled claim against each rep judged on the same case and diff.
+
+    A diff judged by two reps counts twice, once per rep: that is how the judge's
+    consistency on one diff shows. A rep with no verdicts (the judge failed)
+    contributes nothing. A row with no label (unknown, or still waiting for a
+    reviewer) is kept in the file and counted nowhere here.
+
+    Human-settled labels and panel labels are scored separately, never pooled.
+    A row with one human verdict and a panel label is in the panel rates, and
+    its human verdict is counted in the agreement, not in the human rates.
+    """
+    index: dict[tuple[str, str], list[RepRecord]] = {}
+    for rec in records:
+        if rec.diff_sha256 and rec.judge_claims is not None:
+            index.setdefault((rec.case, rec.diff_sha256), []).append(rec)
+
+    human = [(lab, lab.label) for lab in labels if lab.label is not None]
+    panelled = [lab for lab in labels if lab.panel is not None]
+    by_panel = [
+        (lab, lab.panel.label)
+        for lab in panelled
+        if lab.panel is not None and lab.panel.label is not None
+    ]
+    agree = compared = 0
+    for lab, panel_label in by_panel:
+        for name in LABELLERS:
+            verdict = lab.labels.get(name)
+            if verdict is not None:
+                compared += 1
+                agree += verdict == panel_label
+    unmatched, by_judge = _score(human, index)
+    panel_unmatched, panel_by_judge = _score(by_panel, index)
+    return Calibration(
+        labelled=len(human),
+        unmatched=unmatched,
+        by_judge=by_judge,
+        panel_rows=len(panelled),
+        panel_labelled=len(by_panel),
+        panel_unmatched=panel_unmatched,
+        panel_by_judge=panel_by_judge,
+        agree=agree,
+        compared=compared,
+    )
 
 
 def _pct(part: int, whole: int) -> str:
     return "-" if whole == 0 else f"{part}/{whole} ({part / whole:.0%})"
 
 
+_LEGEND = (
+    "  FP: labelled false, judged true. FN: labelled true, judged false. "
+    "Unknown is counted in neither rate."
+)
+
+
+def _rates_cells(rates: JudgeRates) -> str:
+    return (
+        f"{rates.scored:>6} {rates.unknown:>7} "
+        f"{_pct(rates.false_pos, rates.negatives):>16} "
+        f"{_pct(rates.false_neg, rates.positives):>16}"
+    )
+
+
 def render_calibration(result: Calibration, source: Path) -> str:
+    if result.panel_rows:
+        return _render_with_panel(result, source)
     if result.labelled == 0:
         return f"calibration: no labelled claims yet ({source})"
     lines = [
@@ -523,19 +580,61 @@ def render_calibration(result: Calibration, source: Path) -> str:
         f"  {'judge':<30} {'scored':>6} {'unknown':>7} {'FP rate':>16} {'FN rate':>16}",
     ]
     for name, rates in sorted(result.by_judge.items()):
-        lines.append(
-            f"  {name or '(none)':<30} {rates.scored:>6} {rates.unknown:>7} "
-            f"{_pct(rates.false_pos, rates.negatives):>16} "
-            f"{_pct(rates.false_neg, rates.positives):>16}"
-        )
+        lines.append(f"  {name or '(none)':<30} {_rates_cells(rates)}")
     if not result.by_judge:
         lines.append("  no labelled claim has a judged rep on its diff yet")
     if result.unmatched:
         lines.append(
             f"  {result.unmatched} labelled claim(s) match no judged rep on their diff"
         )
-    lines.append(
-        "  FP: labelled false, judged true. FN: labelled true, judged false. "
-        "Unknown is counted in neither rate."
-    )
+    lines.append(_LEGEND)
+    return "\n".join(lines)
+
+
+def _render_with_panel(result: Calibration, source: Path) -> str:
+    """Human and panel rates on separate lines, each with its counts."""
+    lines = [
+        f"calibration: {result.labelled} human-settled and {result.panel_labelled} "
+        f"panel-labelled claim instance(s) ({source})",
+        "  panel labels are a model panel's verdicts, not human labels; "
+        "they are never pooled with them",
+        f"  {'judge':<30} {'labels':<6} {'scored':>6} {'unknown':>7} "
+        f"{'FP rate':>16} {'FN rate':>16}",
+    ]
+    judges = sorted(set(result.by_judge) | set(result.panel_by_judge))
+    for name in judges:
+        for source_name, table in (
+            ("human", result.by_judge),
+            ("panel", result.panel_by_judge),
+        ):
+            if name in table:
+                lines.append(
+                    f"  {name or '(none)':<30} {source_name:<6} "
+                    f"{_rates_cells(table[name])}"
+                )
+    if result.labelled and not result.by_judge:
+        lines.append("  no human-settled claim has a judged rep on its diff yet")
+    if result.panel_labelled and not result.panel_by_judge:
+        lines.append("  no panel-labelled claim has a judged rep on its diff yet")
+    if result.unmatched:
+        lines.append(
+            f"  {result.unmatched} human-settled claim(s) match no judged rep on "
+            "their diff"
+        )
+    if result.panel_unmatched:
+        lines.append(
+            f"  {result.panel_unmatched} panel-labelled claim(s) match no judged rep "
+            "on their diff"
+        )
+    if result.compared:
+        lines.append(
+            f"  human/panel agreement: {result.agree}/{result.compared} human "
+            f"verdict(s) agree with the panel ({result.agree / result.compared:.0%})"
+        )
+    else:
+        lines.append(
+            "  human/panel agreement: no claim has both a human verdict and a "
+            "panel label"
+        )
+    lines.append(_LEGEND)
     return "\n".join(lines)
