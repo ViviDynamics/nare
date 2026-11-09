@@ -238,3 +238,286 @@ def test_render_gives_the_rates_per_judge(tmp_path: Path) -> None:
     assert "judge-x" in text
     assert "1/1 (100%)" in text  # FN: one labelled true, judged false
     assert "1/1 (100%)" in text  # FP: one labelled false, judged true
+
+
+# Panel labels (#264): a model panel's verdict, kept apart from the human slots.
+
+PASSES = [
+    {
+        "name": "quick",
+        "date": "2026-11-08",
+        "models": [
+            {"model": "model-one", "effort": "high"},
+            {"model": "model-two", "effort": "high"},
+        ],
+    },
+    {
+        "name": "careful",
+        "date": "2026-11-08",
+        "models": [{"model": "model-one", "effort": "max"}],
+    },
+]
+
+
+def panel(label: bool | None = False, **overrides: object) -> dict[str, object]:
+    entry: dict[str, object] = {"label": label, "passes": PASSES}
+    entry.update(overrides)
+    return entry
+
+
+def panel_only(**overrides: object) -> dict[str, object]:
+    """A row no human has answered yet, with a panel verdict."""
+    row = label_row(
+        labels={"a": None, "b": None}, label=None, status="pending", panel=panel()
+    )
+    row.update(overrides)
+    return row
+
+
+def test_a_human_only_file_renders_exactly_as_before(tmp_path: Path) -> None:
+    labels = load_labels(
+        write(
+            tmp_path / "l.jsonl",
+            label_row(label=True),
+            label_row(
+                claim=2,
+                claim_text=CLAIMS[1],
+                label=False,
+                labels={"a": False, "b": False},
+            ),
+        )
+    )
+    text = render_calibration(
+        calibrate(labels, [rec(claims=[False, True])]), Path("labels.jsonl")
+    )
+    assert text == "\n".join(
+        [
+            "calibration: 2 labelled claim instance(s) (labels.jsonl)",
+            "  judge                          scored unknown          FP rate"
+            "          FN rate",
+            "  judge-x                             2       0       1/1 (100%)"
+            "       1/1 (100%)",
+            "  FP: labelled false, judged true. FN: labelled true, judged false. "
+            "Unknown is counted in neither rate.",
+        ]
+    )
+
+
+def test_a_panel_row_loads_with_its_provenance(tmp_path: Path) -> None:
+    votes = {"quick": {"false": 2}, "careful": {"false": 1}}
+    (lab,) = load_labels(
+        write(tmp_path / "l.jsonl", panel_only(panel=panel(votes=votes)))
+    )
+    assert lab.panel is not None
+    assert lab.panel.label is False
+    assert [p.name for p in lab.panel.passes] == ["quick", "careful"]
+    assert lab.panel.passes[0].models[1].model == "model-two"
+    assert lab.panel.passes[1].models[0].effort == "max"
+    assert lab.panel.votes["quick"] == {"true": 0, "false": 2, "unknown": 0}
+    # The human slots are untouched: no human label.
+    assert lab.label is None and lab.status == "pending"
+    assert lab.labels == {"a": None, "b": None}
+
+
+def test_a_panel_row_writes_back_the_same_line(tmp_path: Path) -> None:
+    from benchmarks.runner.calibration import label_row as row_of
+
+    votes = {"quick": {"true": 0, "false": 2, "unknown": 0}}
+    raw = panel_only(panel=panel(votes=votes))
+    (lab,) = load_labels(write(tmp_path / "l.jsonl", raw))
+    again = row_of(lab)
+    assert again["panel"] == {"label": False, "passes": PASSES, "votes": votes}
+    (back,) = load_labels(write(tmp_path / "m.jsonl", again))
+    assert back == lab.__class__(**{**back.__dict__, "line": lab.line})
+
+
+def test_a_human_row_writes_no_panel_key(tmp_path: Path) -> None:
+    from benchmarks.runner.calibration import label_row as row_of
+
+    (lab,) = load_labels(write(tmp_path / "l.jsonl", label_row()))
+    assert lab.panel is None
+    assert "panel" not in row_of(lab)
+
+
+@pytest.mark.parametrize(
+    "bad, why",
+    [
+        ("false", "panel must be"),
+        ({**panel(), "label": "false"}, "panel label must be true, false or null"),
+        (panel(passes=[]), "at least one pass"),
+        (panel(passes=[{**PASSES[0], "name": ""}]), "pass needs a name"),
+        (panel(passes=[PASSES[0], PASSES[0]]), "pass names must differ"),
+        (panel(passes=[{**PASSES[0], "date": "8 Nov"}]), "YYYY-MM-DD"),
+        (panel(passes=[{**PASSES[0], "models": []}]), "at least one model"),
+        (
+            panel(passes=[{**PASSES[0], "models": [{"model": "m"}]}]),
+            "model and its effort",
+        ),
+        (panel(votes={"later": {"false": 2}}), "not a pass"),
+        (panel(votes={"quick": {"false": 3}}), "add up to the pass's 2 model"),
+        (panel(votes={"quick": {"maybe": 2}}), "true, false and unknown"),
+        (panel(votes={"quick": {"false": -1, "true": 3}}), "counts"),
+        ({**panel(), "extra": 1}, "unexpected"),
+    ],
+)
+def test_a_panel_entry_that_breaks_the_format_is_refused(
+    tmp_path: Path, bad: object, why: str
+) -> None:
+    path = write(tmp_path / "l.jsonl", panel_only(panel=bad))
+    with pytest.raises(CalibrationError, match=why):
+        load_labels(path)
+
+
+def test_a_panel_verdict_is_never_a_human_label(tmp_path: Path) -> None:
+    # Not in labels: the human slots are exactly "a" and "b".
+    bad = label_row(labels={"a": True, "b": True, "panel": True})
+    with pytest.raises(CalibrationError, match='"a" and "b"'):
+        load_labels(write(tmp_path / "l.jsonl", bad))
+
+
+@pytest.mark.parametrize("name", ["panel", "Panel", "model-two"])
+def test_a_panel_or_one_of_its_models_is_never_a_human_reviewer(
+    tmp_path: Path, name: str
+) -> None:
+    row = label_row(
+        labels={"a": True, "b": None},
+        label=None,
+        status="pending",
+        reviewers={"a": name},
+        panel=panel(),
+    )
+    with pytest.raises(CalibrationError, match="not a human reviewer"):
+        load_labels(write(tmp_path / "l.jsonl", row))
+
+
+def test_panel_is_never_a_human_reviewer_even_without_a_panel_entry(
+    tmp_path: Path,
+) -> None:
+    row = label_row(reviewers={"a": "panel", "b": "Someone"})
+    with pytest.raises(CalibrationError, match="not a human reviewer"):
+        load_labels(write(tmp_path / "l.jsonl", row))
+
+
+def test_a_panel_row_is_scored_apart_from_the_human_rows(tmp_path: Path) -> None:
+    labels = load_labels(
+        write(
+            tmp_path / "l.jsonl",
+            label_row(label=True),  # human: labelled true, judged false, an FN
+            panel_only(claim=2, claim_text=CLAIMS[1]),  # panel false, judged true
+        )
+    )
+    result = calibrate(labels, [rec(claims=[False, True])])
+    assert result.labelled == 1  # human-settled rows only
+    human = result.by_judge["judge-x"]
+    assert (human.scored, human.false_neg, human.false_pos) == (1, 1, 0)
+    assert result.panel_labelled == 1
+    panel_rates = result.panel_by_judge["judge-x"]
+    assert (panel_rates.scored, panel_rates.negatives, panel_rates.false_pos) == (
+        1,
+        1,
+        1,
+    )
+
+
+def test_a_row_can_count_against_both_human_and_panel(tmp_path: Path) -> None:
+    row = label_row(panel=panel(label=True))  # two humans true, panel true
+    result = calibrate(
+        load_labels(write(tmp_path / "l.jsonl", row)), [rec(claims=[False, True])]
+    )
+    assert result.by_judge["judge-x"].false_neg == 1
+    assert result.panel_by_judge["judge-x"].false_neg == 1
+    assert (result.agree, result.compared) == (2, 2)
+
+
+def test_one_human_verdict_is_not_a_human_label_but_scores_with_the_panel(
+    tmp_path: Path,
+) -> None:
+    row = label_row(
+        labels={"a": False, "b": None},
+        label=None,
+        status="pending",
+        reviewers={"a": "A Person"},
+        panel=panel(label=False),
+    )
+    (lab,) = load_labels(write(tmp_path / "l.jsonl", row))
+    assert lab.status == "pending" and lab.label is None
+    result = calibrate([lab], [rec(claims=[True, True])])
+    assert result.labelled == 0 and result.by_judge == {}
+    assert result.panel_by_judge["judge-x"].false_pos == 1
+    assert (result.agree, result.compared) == (1, 1)
+
+
+def test_agreement_counts_each_human_verdict_and_skips_unknowns(
+    tmp_path: Path,
+) -> None:
+    rows = [
+        # disagree: a says true, b says false, panel false -> 1 of 2 agree
+        label_row(
+            labels={"a": True, "b": False},
+            label=None,
+            status="disagree",
+            panel=panel(label=False),
+        ),
+        # a unknown: no comparison; b true vs panel false -> 0 of 1
+        label_row(
+            claim=2,
+            claim_text=CLAIMS[1],
+            labels={"a": None, "b": True},
+            label=None,
+            status="unknown",
+            unknown_from=["a"],
+            panel=panel(label=False),
+        ),
+        # panel unknown: no comparison at all
+        label_row(diff_sha256=DIGEST_B, panel=panel(label=None)),
+    ]
+    result = calibrate(load_labels(write(tmp_path / "l.jsonl", *rows)), [])
+    assert (result.agree, result.compared) == (1, 3)
+    assert result.panel_labelled == 2  # the panel's unknown is no label
+
+
+def test_a_panel_row_with_no_judged_rep_is_panel_unmatched(tmp_path: Path) -> None:
+    labels = load_labels(write(tmp_path / "l.jsonl", panel_only()))
+    result = calibrate(labels, [])
+    assert result.panel_unmatched == 1 and result.unmatched == 0
+
+
+def test_render_gives_human_and_panel_lines_with_counts(tmp_path: Path) -> None:
+    labels = load_labels(
+        write(
+            tmp_path / "l.jsonl",
+            label_row(label=True, panel=panel(label=True)),
+            panel_only(claim=2, claim_text=CLAIMS[1]),
+        )
+    )
+    text = render_calibration(
+        calibrate(labels, [rec(claims=[False, True])]), Path("labels.jsonl")
+    )
+    lines = text.splitlines()
+    assert lines[0] == (
+        "calibration: 1 human-settled and 2 panel-labelled claim instance(s) "
+        "(labels.jsonl)"
+    )
+    assert any("not human labels" in line for line in lines)
+    human = next(line for line in lines if " human " in line and "judge-x" in line)
+    panel_line = next(line for line in lines if " panel " in line and "judge-x" in line)
+    assert human.split()[:4] == ["judge-x", "human", "1", "0"]
+    assert panel_line.split()[:4] == ["judge-x", "panel", "2", "0"]
+    assert "1/1 (100%)" in panel_line  # FP: panel false, judged true
+    assert (
+        "  human/panel agreement: 2/2 human verdict(s) agree with the panel (100%)"
+        in lines
+    )
+
+
+def test_render_says_when_no_human_verdict_meets_a_panel_label(
+    tmp_path: Path,
+) -> None:
+    labels = load_labels(write(tmp_path / "l.jsonl", panel_only()))
+    text = render_calibration(calibrate(labels, []), Path("labels.jsonl"))
+    assert text.splitlines()[0] == (
+        "calibration: 0 human-settled and 1 panel-labelled claim instance(s) "
+        "(labels.jsonl)"
+    )
+    assert "no claim has both a human verdict and a panel label" in text
+    assert "1 panel-labelled claim(s) match no judged rep on their diff" in text

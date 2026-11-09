@@ -10,12 +10,26 @@ A row also has a status. A reviewer who cannot tell says `unknown`, which is no
 label: the row is kept, and it stays out of the rates. `calibration_import`
 writes these rows from the reviewers' verdicts.
 
+A row may also carry a `panel` entry: the verdict of a panel of models, with
+its provenance (each pass it ran, that pass's date, and its models and their
+effort, and optionally how each pass voted). A panel label is not a human label.
+It never fills slot `a` or `b`, never sets the row's `label` or `status`, and the
+panel or one of its models is refused as a human reviewer. How a panel is run is
+outside nare; this module only keeps its verdicts apart.
+
+A row is human-settled only by the two-human rule above. One human verdict is
+not a human label: the row stays `pending` and out of the human rates. If the
+row has a panel label, it is scored in the panel rates, and its human verdict
+is counted in how often humans and the panel agree.
+
 The judge's false-positive and false-negative rates are then read against the
-labels, for every judge model the labelled diffs were judged with.
+labels, for every judge model the labelled diffs were judged with: against
+human-settled rows and against panel rows separately, never pooled.
 """
 
 from __future__ import annotations
 
+import datetime
 import json
 import random
 from collections.abc import Mapping, Sequence
@@ -38,8 +52,159 @@ PENDING = "pending"  # a labeller has not answered yet
 STATUSES = (AGREED, ADJUDICATED, DISAGREE, UNKNOWN, PENDING)
 
 
+# The panel's slot. It is never a human labeller, and never a reviewer's name.
+PANEL = "panel"
+_VOTE_KEYS = ("true", "false", "unknown")
+
+
 class CalibrationError(Exception):
     """A labels file that cannot be read, or does not follow the format."""
+
+
+@dataclass(frozen=True)
+class PanelModel:
+    model: str
+    effort: str
+
+
+@dataclass(frozen=True)
+class PanelPass:
+    """One pass of the panel over the claims: when, and which models at what effort."""
+
+    name: str
+    date: str  # YYYY-MM-DD
+    models: tuple[PanelModel, ...]
+
+
+@dataclass(frozen=True)
+class Panel:
+    """A model panel's verdict on one claim instance, with its provenance.
+
+    It is not a human label, and nothing here turns it into one: it never fills
+    a human slot, never sets a row's `label` or `status`, and is scored on its
+    own lines. `label` None is the panel's unknown.
+    """
+
+    label: bool | None
+    passes: tuple[PanelPass, ...]
+    votes: dict[str, dict[str, int]] = field(default_factory=dict)
+
+    @property
+    def models(self) -> set[str]:
+        return {m.model for p in self.passes for m in p.models}
+
+
+def parse_panel(raw: Any) -> Panel:
+    """A panel entry, or a CalibrationError saying what is wrong with it."""
+    if not isinstance(raw, dict):
+        raise CalibrationError("panel must be an object with a label and its passes")
+    extra = set(raw) - {"label", "passes", "votes"}
+    if extra:
+        raise CalibrationError(
+            f"panel has unexpected key(s) {', '.join(sorted(extra))}"
+        )
+    label = raw.get("label")
+    if label is not None and not isinstance(label, bool):
+        raise CalibrationError("panel label must be true, false or null")
+    passes = parse_passes(raw.get("passes"))
+    votes = raw.get("votes", {})
+    return Panel(label=label, passes=passes, votes=parse_votes(votes, passes))
+
+
+def parse_passes(raw: Any) -> tuple[PanelPass, ...]:
+    """The passes a panel ran: each with a name, a date and its models' effort."""
+    if not isinstance(raw, list) or not raw:
+        raise CalibrationError("panel passes must list at least one pass")
+    passes: list[PanelPass] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise CalibrationError("a panel pass must be an object")
+        name, date, models = entry.get("name"), entry.get("date"), entry.get("models")
+        if not isinstance(name, str) or not name:
+            raise CalibrationError("a panel pass needs a name")
+        if not isinstance(date, str) or not _is_date(date):
+            raise CalibrationError(f"panel pass {name!r}: date must be YYYY-MM-DD")
+        if not isinstance(models, list) or not models:
+            raise CalibrationError(f"panel pass {name!r} must list at least one model")
+        found: list[PanelModel] = []
+        for model in models:
+            if not (
+                isinstance(model, dict)
+                and set(model) == {"model", "effort"}
+                and all(isinstance(v, str) and v for v in model.values())
+            ):
+                raise CalibrationError(
+                    f"panel pass {name!r}: each model needs its model and its effort"
+                )
+            found.append(PanelModel(model=model["model"], effort=model["effort"]))
+        passes.append(PanelPass(name=name, date=date, models=tuple(found)))
+    if len({p.name for p in passes}) != len(passes):
+        raise CalibrationError("panel pass names must differ")
+    return tuple(passes)
+
+
+def parse_votes(raw: Any, passes: Sequence[PanelPass]) -> dict[str, dict[str, int]]:
+    """How each pass split, as counts of true, false and unknown. Optional."""
+    if not isinstance(raw, dict):
+        raise CalibrationError("panel votes must map a pass to its counts")
+    sizes = {p.name: len(p.models) for p in passes}
+    for name in raw:
+        if name not in sizes:
+            raise CalibrationError(f"panel votes name {name!r}, which is not a pass")
+    votes: dict[str, dict[str, int]] = {}
+    for name in [p.name for p in passes if p.name in raw]:  # in pass order
+        counts = raw[name]
+        if not isinstance(counts, dict) or not set(counts) <= set(_VOTE_KEYS):
+            raise CalibrationError(
+                f"panel votes for {name!r} count true, false and unknown only"
+            )
+        if not all(
+            isinstance(v, int) and not isinstance(v, bool) and v >= 0
+            for v in counts.values()
+        ):
+            raise CalibrationError(
+                f"panel votes for {name!r}: counts are whole numbers, 0 or more"
+            )
+        if sum(counts.values()) != sizes[name]:
+            raise CalibrationError(
+                f"panel votes for {name!r} must add up to the pass's "
+                f"{sizes[name]} model(s)"
+            )
+        votes[name] = {key: counts.get(key, 0) for key in _VOTE_KEYS}
+    return votes
+
+
+def passes_row(passes: Sequence[PanelPass]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": p.name,
+            "date": p.date,
+            "models": [{"model": m.model, "effort": m.effort} for m in p.models],
+        }
+        for p in passes
+    ]
+
+
+def panel_row(panel: Panel) -> dict[str, Any]:
+    row: dict[str, Any] = {"label": panel.label, "passes": passes_row(panel.passes)}
+    if panel.votes:
+        row["votes"] = panel.votes
+    return row
+
+
+def not_a_human(name: str, panel: Panel | None) -> bool:
+    """True when a reviewer name is the panel or one of its models."""
+    folded = name.strip().casefold()
+    models = {m.casefold() for m in panel.models} if panel else set()
+    return folded == PANEL or folded in models
+
+
+def _is_date(text: str) -> bool:
+    try:
+        datetime.date.fromisoformat(text)
+    except ValueError:
+        return False
+    return len(text) == 10
 
 
 def settle(
@@ -79,6 +244,7 @@ class Label:
     unknown_from: tuple[str, ...] = ()
     reviewers: dict[str, str] = field(default_factory=dict)
     notes: dict[str, str] = field(default_factory=dict)
+    panel: Panel | None = None
 
     @property
     def key(self) -> tuple[str, int, str]:
@@ -120,6 +286,18 @@ def _label_from(raw: Any, line: int) -> Label:
         set(notes) <= set(LABELLERS) and all(isinstance(v, str) for v in notes.values())
     ):
         raise fail('notes must hold text for "a" and/or "b"')
+    panel: Panel | None = None
+    if "panel" in raw:
+        try:
+            panel = parse_panel(raw["panel"])
+        except CalibrationError as exc:
+            raise fail(str(exc)) from exc
+    for slot, name in reviewers.items():
+        if not_a_human(name, panel):
+            raise fail(
+                f"reviewer {slot} is {name!r}, which is the panel or one of its "
+                "models and not a human reviewer"
+            )
 
     if status is None:
         # The original format, which has no status: both labellers answered.
@@ -169,6 +347,7 @@ def _label_from(raw: Any, line: int) -> Label:
         unknown_from=tuple(unknown_from),
         reviewers=dict(reviewers),
         notes=dict(notes),
+        panel=panel,
     )
 
 
@@ -193,6 +372,8 @@ def label_row(lab: Label) -> dict[str, Any]:
         }
     if lab.notes:
         row["notes"] = {n: lab.notes[n] for n in LABELLERS if n in lab.notes}
+    if lab.panel is not None:
+        row["panel"] = panel_row(lab.panel)
     return row
 
 
@@ -294,32 +475,27 @@ class JudgeRates:
 
 @dataclass(frozen=True)
 class Calibration:
-    labelled: int  # rows with a label; rows without one are in no rate
-    unmatched: int  # labelled claims with no judged rep on that diff
+    labelled: int  # human-settled rows; rows without a human label are in no rate
+    unmatched: int  # human-settled claims with no judged rep on that diff
     by_judge: dict[str, JudgeRates] = field(default_factory=dict)
+    # The panel's lines, kept apart from the human ones. All zero and empty for
+    # a file with no panel entries.
+    panel_rows: int = 0  # rows with a panel entry, its unknowns included
+    panel_labelled: int = 0  # rows whose panel label is true or false
+    panel_unmatched: int = 0
+    panel_by_judge: dict[str, JudgeRates] = field(default_factory=dict)
+    agree: int = 0  # human verdicts that match the panel's label
+    compared: int = 0  # human true/false verdicts on rows with a panel label
 
 
-def calibrate(labels: Sequence[Label], records: Sequence[RepRecord]) -> Calibration:
-    """Every labelled claim against each rep judged on the same case and diff.
-
-    A diff judged by two reps counts twice, once per rep: that is how the judge's
-    consistency on one diff shows. A rep with no verdicts (the judge failed)
-    contributes nothing. A row with no label (unknown, or still waiting for a
-    reviewer) is kept in the file and counted nowhere here.
-    """
-    index: dict[tuple[str, str], list[RepRecord]] = {}
-    for rec in records:
-        if rec.diff_sha256 and rec.judge_claims is not None:
-            index.setdefault((rec.case, rec.diff_sha256), []).append(rec)
-
+def _score(
+    labelled: Sequence[tuple[Label, bool]],
+    index: Mapping[tuple[str, str], Sequence[RepRecord]],
+) -> tuple[int, dict[str, JudgeRates]]:
+    """(unmatched, rates per judge) for claims with the label to read them by."""
     by_judge: dict[str, JudgeRates] = {}
-    labelled = 0
     unmatched = 0
-    for lab in labels:
-        label = lab.label
-        if label is None:
-            continue
-        labelled += 1
+    for lab, label in labelled:
         matches = index.get((lab.case, lab.diff_sha256), [])
         if not matches:
             unmatched += 1
@@ -340,14 +516,76 @@ def calibrate(labels: Sequence[Label], records: Sequence[RepRecord]) -> Calibrat
             else:
                 rates.negatives += 1
                 rates.false_pos += verdict
-    return Calibration(labelled=labelled, unmatched=unmatched, by_judge=by_judge)
+    return unmatched, by_judge
+
+
+def calibrate(labels: Sequence[Label], records: Sequence[RepRecord]) -> Calibration:
+    """Every labelled claim against each rep judged on the same case and diff.
+
+    A diff judged by two reps counts twice, once per rep: that is how the judge's
+    consistency on one diff shows. A rep with no verdicts (the judge failed)
+    contributes nothing. A row with no label (unknown, or still waiting for a
+    reviewer) is kept in the file and counted nowhere here.
+
+    Human-settled labels and panel labels are scored separately, never pooled.
+    A row with one human verdict and a panel label is in the panel rates, and
+    its human verdict is counted in the agreement, not in the human rates.
+    """
+    index: dict[tuple[str, str], list[RepRecord]] = {}
+    for rec in records:
+        if rec.diff_sha256 and rec.judge_claims is not None:
+            index.setdefault((rec.case, rec.diff_sha256), []).append(rec)
+
+    human = [(lab, lab.label) for lab in labels if lab.label is not None]
+    panelled = [lab for lab in labels if lab.panel is not None]
+    by_panel = [
+        (lab, lab.panel.label)
+        for lab in panelled
+        if lab.panel is not None and lab.panel.label is not None
+    ]
+    agree = compared = 0
+    for lab, panel_label in by_panel:
+        for name in LABELLERS:
+            verdict = lab.labels.get(name)
+            if verdict is not None:
+                compared += 1
+                agree += verdict == panel_label
+    unmatched, by_judge = _score(human, index)
+    panel_unmatched, panel_by_judge = _score(by_panel, index)
+    return Calibration(
+        labelled=len(human),
+        unmatched=unmatched,
+        by_judge=by_judge,
+        panel_rows=len(panelled),
+        panel_labelled=len(by_panel),
+        panel_unmatched=panel_unmatched,
+        panel_by_judge=panel_by_judge,
+        agree=agree,
+        compared=compared,
+    )
 
 
 def _pct(part: int, whole: int) -> str:
     return "-" if whole == 0 else f"{part}/{whole} ({part / whole:.0%})"
 
 
+_LEGEND = (
+    "  FP: labelled false, judged true. FN: labelled true, judged false. "
+    "Unknown is counted in neither rate."
+)
+
+
+def _rates_cells(rates: JudgeRates) -> str:
+    return (
+        f"{rates.scored:>6} {rates.unknown:>7} "
+        f"{_pct(rates.false_pos, rates.negatives):>16} "
+        f"{_pct(rates.false_neg, rates.positives):>16}"
+    )
+
+
 def render_calibration(result: Calibration, source: Path) -> str:
+    if result.panel_rows:
+        return _render_with_panel(result, source)
     if result.labelled == 0:
         return f"calibration: no labelled claims yet ({source})"
     lines = [
@@ -355,19 +593,61 @@ def render_calibration(result: Calibration, source: Path) -> str:
         f"  {'judge':<30} {'scored':>6} {'unknown':>7} {'FP rate':>16} {'FN rate':>16}",
     ]
     for name, rates in sorted(result.by_judge.items()):
-        lines.append(
-            f"  {name or '(none)':<30} {rates.scored:>6} {rates.unknown:>7} "
-            f"{_pct(rates.false_pos, rates.negatives):>16} "
-            f"{_pct(rates.false_neg, rates.positives):>16}"
-        )
+        lines.append(f"  {name or '(none)':<30} {_rates_cells(rates)}")
     if not result.by_judge:
         lines.append("  no labelled claim has a judged rep on its diff yet")
     if result.unmatched:
         lines.append(
             f"  {result.unmatched} labelled claim(s) match no judged rep on their diff"
         )
-    lines.append(
-        "  FP: labelled false, judged true. FN: labelled true, judged false. "
-        "Unknown is counted in neither rate."
-    )
+    lines.append(_LEGEND)
+    return "\n".join(lines)
+
+
+def _render_with_panel(result: Calibration, source: Path) -> str:
+    """Human and panel rates on separate lines, each with its counts."""
+    lines = [
+        f"calibration: {result.labelled} human-settled and {result.panel_labelled} "
+        f"panel-labelled claim instance(s) ({source})",
+        "  panel labels are a model panel's verdicts, not human labels; "
+        "they are never pooled with them",
+        f"  {'judge':<30} {'labels':<6} {'scored':>6} {'unknown':>7} "
+        f"{'FP rate':>16} {'FN rate':>16}",
+    ]
+    judges = sorted(set(result.by_judge) | set(result.panel_by_judge))
+    for name in judges:
+        for source_name, table in (
+            ("human", result.by_judge),
+            ("panel", result.panel_by_judge),
+        ):
+            if name in table:
+                lines.append(
+                    f"  {name or '(none)':<30} {source_name:<6} "
+                    f"{_rates_cells(table[name])}"
+                )
+    if result.labelled and not result.by_judge:
+        lines.append("  no human-settled claim has a judged rep on its diff yet")
+    if result.panel_labelled and not result.panel_by_judge:
+        lines.append("  no panel-labelled claim has a judged rep on its diff yet")
+    if result.unmatched:
+        lines.append(
+            f"  {result.unmatched} human-settled claim(s) match no judged rep on "
+            "their diff"
+        )
+    if result.panel_unmatched:
+        lines.append(
+            f"  {result.panel_unmatched} panel-labelled claim(s) match no judged rep "
+            "on their diff"
+        )
+    if result.compared:
+        lines.append(
+            f"  human/panel agreement: {result.agree}/{result.compared} human "
+            f"verdict(s) agree with the panel ({result.agree / result.compared:.0%})"
+        )
+    else:
+        lines.append(
+            "  human/panel agreement: no claim has both a human verdict and a "
+            "panel label"
+        )
+    lines.append(_LEGEND)
     return "\n".join(lines)

@@ -281,7 +281,8 @@ def build_parser() -> argparse.ArgumentParser:
     health.add_argument("--results", help="results file (default: the newest)")
     calibration = sub.add_parser(
         "calibrate",
-        help="a human-labelled set that measures the llm judge's error rates",
+        help="a labelled set (human labels, and model-panel labels kept apart) "
+        "that measures the llm judge's error rates",
     )
     calibration.add_argument(
         "action",
@@ -302,6 +303,11 @@ def build_parser() -> argparse.ArgumentParser:
     calibration.add_argument(
         "--reviewer-b",
         help="import: the name that is labeller b, as the page records it",
+    )
+    calibration.add_argument(
+        "--panel-provenance",
+        help="import: a JSON file of the model panel's passes (name, date, models "
+        "and effort), needed when the file holds panel verdicts",
     )
     calibration.add_argument(
         "--adjudicate",
@@ -1193,29 +1199,35 @@ def import_command(
     file is refused as a whole, with every row that is wrong, and writes nothing."""
     missing = [
         flag
-        for flag, value in (
-            ("FILE", args.file),
-            ("--export", args.export),
-            ("--reviewer-a", args.reviewer_a),
-            ("--reviewer-b", args.reviewer_b),
-        )
+        for flag, value in (("FILE", args.file), ("--export", args.export))
         if not value
     ]
+    if not (args.reviewer_a or args.reviewer_b or args.panel_provenance):
+        missing.append("--reviewer-a, --reviewer-b or --panel-provenance")
     if missing:
         print(
-            f"bench: import needs {', '.join(missing)}: the reviewed file, the export "
-            "it was reviewed against, and the two reviewers' names",
+            f"bench: import needs {'; '.join(missing)}: the reviewed file, the export "
+            "it was reviewed against, and the reviewers' names or the panel's "
+            "provenance",
             file=sys.stderr,
         )
         return 2
+    reviewers = {
+        name: value
+        for name, value in (("a", args.reviewer_a), ("b", args.reviewer_b))
+        if value
+    }
     try:
         result = import_reviews(
             source=Path(args.file),
             export_path=Path(args.export),
             labels_path=labels_path,
-            reviewers={"a": args.reviewer_a, "b": args.reviewer_b},
+            reviewers=reviewers,
             adjudicate=args.adjudicate,
             cases=cases,
+            panel_provenance=(
+                Path(args.panel_provenance) if args.panel_provenance else None
+            ),
         )
     except ImportRefused as exc:
         print(f"bench: {args.file} refused, nothing was written:", file=sys.stderr)
@@ -1226,13 +1238,17 @@ def import_command(
         print(f"bench: {exc}", file=sys.stderr)
         return 2
     counts = ", ".join(f"{n} {status}" for status, n in sorted(result.statuses.items()))
+    panel = f", {result.panel} panel verdict(s)" if result.panel else ""
     print(
-        f"calibration: imported {result.verdicts} verdict(s) and {result.decisions} "
-        f"decision(s) from {args.file}; {result.skipped} row(s) not reviewed yet, "
-        "skipped"
+        f"calibration: imported {result.verdicts} verdict(s){panel} and "
+        f"{result.decisions} decision(s) from {args.file}; {result.skipped} row(s) "
+        "not reviewed yet, skipped"
+    )
+    labelled = (
+        f"; {result.panel_labelled} panel-labelled" if result.panel_labelled else ""
     )
     print(
-        f"calibration: {labels_path}: {counts or 'no rows'}"
+        f"calibration: {labels_path}: {counts or 'no rows'}{labelled}"
         + ("" if result.changed else " (unchanged)")
     )
     return 0
@@ -1261,10 +1277,27 @@ def calibrate_command(args: argparse.Namespace, root: Path) -> int:
             return 1
         print(f"calibration: {len(labels)} labelled claim instance(s) check out")
         held = Counter(lab.status for lab in labels if lab.label is None)
+        human = "a human label (out of the human rates)"
         if held:
             print(
-                "calibration: kept without a label (out of the rates): "
+                "calibration: kept without "
+                + (
+                    human
+                    if any(lab.panel for lab in labels)
+                    else "a label (out of the rates)"
+                )
+                + ": "
                 + ", ".join(f"{n} {status}" for status, n in sorted(held.items()))
+            )
+        panelled = Counter(
+            {True: "true", False: "false", None: "unknown"}[lab.panel.label]
+            for lab in labels
+            if lab.panel is not None
+        )
+        if panelled:
+            print(
+                "calibration: panel labels (a model panel, not human): "
+                + ", ".join(f"{n} {value}" for value, n in sorted(panelled.items()))
             )
         return 0
     if args.action == "import":
