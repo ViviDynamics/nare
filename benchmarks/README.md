@@ -715,6 +715,34 @@ It exits 0 when the comparison finished, even if some judges failed on some
 repetitions, since those failures are in the report; 1 when there is nothing
 to compare; and 2 for a configuration error, before any model is called.
 
+### Judging the labelled solution and exploit diffs
+
+Labels name a diff by its SHA-256, so a new run, which makes new diffs, scores
+none of them. A case's own `solution/` and `exploit/` are the exception:
+applied in a fresh sandbox, they give the same diff byte for byte every time.
+`calibrate judge` re-judges those, so the judge can be scored on them whenever
+it or its model changes:
+
+    export ANTHROPIC_API_KEY=...        # OPENAI_API_KEY for NARE_PROVIDER=openai
+    export NARE_BENCH_JUDGE_MODEL=...   # or pass --judge-model
+    export NARE_BASE_URL=https://...    # only if you use a proxy
+    bin/bench calibrate judge [--repeats 3] [--out <path>.jsonl]
+    bin/bench calibrate score --results <that path>
+
+It captures the solution and exploit of every judged case a label names (it
+needs Docker, as `verify` does), keeps the attempts whose diff a label names,
+and judges each one `--repeats` times, one judge call per attempt per repeat.
+No call is spent on an attempt no label names. It writes one results line per
+judged attempt, recorded as model `reference:solution` or `reference:exploit`,
+to `benchmarks/results/calibration/<stamp>.jsonl` (or `--out`), outside the
+files `run`, `compare` and `bless` read as the newest run, and prints the
+calibration report for them. A judge that cannot answer is a line with no
+verdicts, which counts in no rate.
+
+Labels on an agent's rep diff are not reproduced this way. Score those with
+`calibrate score --results` on the results file their export came from, which
+already holds the judge's verdicts for every judged rep.
+
 ## Cases and their tiers
 
 Every case, with the tier it runs in. `smoke` cases are the cheap loop; `full`
