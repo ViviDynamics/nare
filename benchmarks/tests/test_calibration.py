@@ -238,3 +238,161 @@ def test_render_gives_the_rates_per_judge(tmp_path: Path) -> None:
     assert "judge-x" in text
     assert "1/1 (100%)" in text  # FN: one labelled true, judged false
     assert "1/1 (100%)" in text  # FP: one labelled false, judged true
+
+
+# Panel labels (#264): a model panel's verdict, kept apart from the human slots.
+
+PASSES = [
+    {
+        "name": "quick",
+        "date": "2026-11-08",
+        "models": [
+            {"model": "model-one", "effort": "high"},
+            {"model": "model-two", "effort": "high"},
+        ],
+    },
+    {
+        "name": "careful",
+        "date": "2026-11-08",
+        "models": [{"model": "model-one", "effort": "max"}],
+    },
+]
+
+
+def panel(label: bool | None = False, **overrides: object) -> dict[str, object]:
+    entry: dict[str, object] = {"label": label, "passes": PASSES}
+    entry.update(overrides)
+    return entry
+
+
+def panel_only(**overrides: object) -> dict[str, object]:
+    """A row no human has answered yet, with a panel verdict."""
+    row = label_row(
+        labels={"a": None, "b": None}, label=None, status="pending", panel=panel()
+    )
+    row.update(overrides)
+    return row
+
+
+def test_a_human_only_file_renders_exactly_as_before(tmp_path: Path) -> None:
+    labels = load_labels(
+        write(
+            tmp_path / "l.jsonl",
+            label_row(label=True),
+            label_row(
+                claim=2,
+                claim_text=CLAIMS[1],
+                label=False,
+                labels={"a": False, "b": False},
+            ),
+        )
+    )
+    text = render_calibration(
+        calibrate(labels, [rec(claims=[False, True])]), Path("labels.jsonl")
+    )
+    assert text == "\n".join(
+        [
+            "calibration: 2 labelled claim instance(s) (labels.jsonl)",
+            "  judge                          scored unknown          FP rate"
+            "          FN rate",
+            "  judge-x                             2       0       1/1 (100%)"
+            "       1/1 (100%)",
+            "  FP: labelled false, judged true. FN: labelled true, judged false. "
+            "Unknown is counted in neither rate.",
+        ]
+    )
+
+
+def test_a_panel_row_loads_with_its_provenance(tmp_path: Path) -> None:
+    votes = {"quick": {"false": 2}, "careful": {"false": 1}}
+    (lab,) = load_labels(
+        write(tmp_path / "l.jsonl", panel_only(panel=panel(votes=votes)))
+    )
+    assert lab.panel is not None
+    assert lab.panel.label is False
+    assert [p.name for p in lab.panel.passes] == ["quick", "careful"]
+    assert lab.panel.passes[0].models[1].model == "model-two"
+    assert lab.panel.passes[1].models[0].effort == "max"
+    assert lab.panel.votes["quick"] == {"true": 0, "false": 2, "unknown": 0}
+    # The human slots are untouched: no human label.
+    assert lab.label is None and lab.status == "pending"
+    assert lab.labels == {"a": None, "b": None}
+
+
+def test_a_panel_row_writes_back_the_same_line(tmp_path: Path) -> None:
+    from benchmarks.runner.calibration import label_row as row_of
+
+    votes = {"quick": {"true": 0, "false": 2, "unknown": 0}}
+    raw = panel_only(panel=panel(votes=votes))
+    (lab,) = load_labels(write(tmp_path / "l.jsonl", raw))
+    again = row_of(lab)
+    assert again["panel"] == {"label": False, "passes": PASSES, "votes": votes}
+    (back,) = load_labels(write(tmp_path / "m.jsonl", again))
+    assert back == lab.__class__(**{**back.__dict__, "line": lab.line})
+
+
+def test_a_human_row_writes_no_panel_key(tmp_path: Path) -> None:
+    from benchmarks.runner.calibration import label_row as row_of
+
+    (lab,) = load_labels(write(tmp_path / "l.jsonl", label_row()))
+    assert lab.panel is None
+    assert "panel" not in row_of(lab)
+
+
+@pytest.mark.parametrize(
+    "bad, why",
+    [
+        ("false", "panel must be"),
+        ({**panel(), "label": "false"}, "panel label must be true, false or null"),
+        (panel(passes=[]), "at least one pass"),
+        (panel(passes=[{**PASSES[0], "name": ""}]), "pass needs a name"),
+        (panel(passes=[PASSES[0], PASSES[0]]), "pass names must differ"),
+        (panel(passes=[{**PASSES[0], "date": "8 Nov"}]), "YYYY-MM-DD"),
+        (panel(passes=[{**PASSES[0], "models": []}]), "at least one model"),
+        (
+            panel(passes=[{**PASSES[0], "models": [{"model": "m"}]}]),
+            "model and its effort",
+        ),
+        (panel(votes={"later": {"false": 2}}), "not a pass"),
+        (panel(votes={"quick": {"false": 3}}), "add up to the pass's 2 model"),
+        (panel(votes={"quick": {"maybe": 2}}), "true, false and unknown"),
+        (panel(votes={"quick": {"false": -1, "true": 3}}), "counts"),
+        ({**panel(), "extra": 1}, "unexpected"),
+    ],
+)
+def test_a_panel_entry_that_breaks_the_format_is_refused(
+    tmp_path: Path, bad: object, why: str
+) -> None:
+    path = write(tmp_path / "l.jsonl", panel_only(panel=bad))
+    with pytest.raises(CalibrationError, match=why):
+        load_labels(path)
+
+
+def test_a_panel_verdict_is_never_a_human_label(tmp_path: Path) -> None:
+    # Not in labels: the human slots are exactly "a" and "b".
+    bad = label_row(labels={"a": True, "b": True, "panel": True})
+    with pytest.raises(CalibrationError, match='"a" and "b"'):
+        load_labels(write(tmp_path / "l.jsonl", bad))
+
+
+@pytest.mark.parametrize("name", ["panel", "Panel", "model-two"])
+def test_a_panel_or_one_of_its_models_is_never_a_human_reviewer(
+    tmp_path: Path, name: str
+) -> None:
+    row = label_row(
+        labels={"a": True, "b": None},
+        label=None,
+        status="pending",
+        reviewers={"a": name},
+        panel=panel(),
+    )
+    with pytest.raises(CalibrationError, match="not a human reviewer"):
+        load_labels(write(tmp_path / "l.jsonl", row))
+
+
+def test_panel_is_never_a_human_reviewer_even_without_a_panel_entry(
+    tmp_path: Path,
+) -> None:
+    row = label_row(reviewers={"a": "panel", "b": "Someone"})
+    with pytest.raises(CalibrationError, match="not a human reviewer"):
+        load_labels(write(tmp_path / "l.jsonl", row))

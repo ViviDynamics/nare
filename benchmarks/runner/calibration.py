@@ -16,6 +16,7 @@ labels, for every judge model the labelled diffs were judged with.
 
 from __future__ import annotations
 
+import datetime
 import json
 import random
 from collections.abc import Mapping, Sequence
@@ -38,8 +39,159 @@ PENDING = "pending"  # a labeller has not answered yet
 STATUSES = (AGREED, ADJUDICATED, DISAGREE, UNKNOWN, PENDING)
 
 
+# The panel's slot. It is never a human labeller, and never a reviewer's name.
+PANEL = "panel"
+_VOTE_KEYS = ("true", "false", "unknown")
+
+
 class CalibrationError(Exception):
     """A labels file that cannot be read, or does not follow the format."""
+
+
+@dataclass(frozen=True)
+class PanelModel:
+    model: str
+    effort: str
+
+
+@dataclass(frozen=True)
+class PanelPass:
+    """One pass of the panel over the claims: when, and which models at what effort."""
+
+    name: str
+    date: str  # YYYY-MM-DD
+    models: tuple[PanelModel, ...]
+
+
+@dataclass(frozen=True)
+class Panel:
+    """A model panel's verdict on one claim instance, with its provenance.
+
+    It is not a human label, and nothing here turns it into one: it never fills
+    a human slot, never sets a row's `label` or `status`, and is scored on its
+    own lines. `label` None is the panel's unknown.
+    """
+
+    label: bool | None
+    passes: tuple[PanelPass, ...]
+    votes: dict[str, dict[str, int]] = field(default_factory=dict)
+
+    @property
+    def models(self) -> set[str]:
+        return {m.model for p in self.passes for m in p.models}
+
+
+def parse_panel(raw: Any) -> Panel:
+    """A panel entry, or a CalibrationError saying what is wrong with it."""
+    if not isinstance(raw, dict):
+        raise CalibrationError("panel must be an object with a label and its passes")
+    extra = set(raw) - {"label", "passes", "votes"}
+    if extra:
+        raise CalibrationError(
+            f"panel has unexpected key(s) {', '.join(sorted(extra))}"
+        )
+    label = raw.get("label")
+    if label is not None and not isinstance(label, bool):
+        raise CalibrationError("panel label must be true, false or null")
+    passes = parse_passes(raw.get("passes"))
+    votes = raw.get("votes", {})
+    return Panel(label=label, passes=passes, votes=parse_votes(votes, passes))
+
+
+def parse_passes(raw: Any) -> tuple[PanelPass, ...]:
+    """The passes a panel ran: each with a name, a date and its models' effort."""
+    if not isinstance(raw, list) or not raw:
+        raise CalibrationError("panel passes must list at least one pass")
+    passes: list[PanelPass] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise CalibrationError("a panel pass must be an object")
+        name, date, models = entry.get("name"), entry.get("date"), entry.get("models")
+        if not isinstance(name, str) or not name:
+            raise CalibrationError("a panel pass needs a name")
+        if not isinstance(date, str) or not _is_date(date):
+            raise CalibrationError(f"panel pass {name!r}: date must be YYYY-MM-DD")
+        if not isinstance(models, list) or not models:
+            raise CalibrationError(f"panel pass {name!r} must list at least one model")
+        found: list[PanelModel] = []
+        for model in models:
+            if not (
+                isinstance(model, dict)
+                and set(model) == {"model", "effort"}
+                and all(isinstance(v, str) and v for v in model.values())
+            ):
+                raise CalibrationError(
+                    f"panel pass {name!r}: each model needs its model and its effort"
+                )
+            found.append(PanelModel(model=model["model"], effort=model["effort"]))
+        passes.append(PanelPass(name=name, date=date, models=tuple(found)))
+    if len({p.name for p in passes}) != len(passes):
+        raise CalibrationError("panel pass names must differ")
+    return tuple(passes)
+
+
+def parse_votes(raw: Any, passes: Sequence[PanelPass]) -> dict[str, dict[str, int]]:
+    """How each pass split, as counts of true, false and unknown. Optional."""
+    if not isinstance(raw, dict):
+        raise CalibrationError("panel votes must map a pass to its counts")
+    sizes = {p.name: len(p.models) for p in passes}
+    for name in raw:
+        if name not in sizes:
+            raise CalibrationError(f"panel votes name {name!r}, which is not a pass")
+    votes: dict[str, dict[str, int]] = {}
+    for name in [p.name for p in passes if p.name in raw]:  # in pass order
+        counts = raw[name]
+        if not isinstance(counts, dict) or not set(counts) <= set(_VOTE_KEYS):
+            raise CalibrationError(
+                f"panel votes for {name!r} count true, false and unknown only"
+            )
+        if not all(
+            isinstance(v, int) and not isinstance(v, bool) and v >= 0
+            for v in counts.values()
+        ):
+            raise CalibrationError(
+                f"panel votes for {name!r}: counts are whole numbers, 0 or more"
+            )
+        if sum(counts.values()) != sizes[name]:
+            raise CalibrationError(
+                f"panel votes for {name!r} must add up to the pass's "
+                f"{sizes[name]} model(s)"
+            )
+        votes[name] = {key: counts.get(key, 0) for key in _VOTE_KEYS}
+    return votes
+
+
+def passes_row(passes: Sequence[PanelPass]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": p.name,
+            "date": p.date,
+            "models": [{"model": m.model, "effort": m.effort} for m in p.models],
+        }
+        for p in passes
+    ]
+
+
+def panel_row(panel: Panel) -> dict[str, Any]:
+    row: dict[str, Any] = {"label": panel.label, "passes": passes_row(panel.passes)}
+    if panel.votes:
+        row["votes"] = panel.votes
+    return row
+
+
+def not_a_human(name: str, panel: Panel | None) -> bool:
+    """True when a reviewer name is the panel or one of its models."""
+    folded = name.strip().casefold()
+    models = {m.casefold() for m in panel.models} if panel else set()
+    return folded == PANEL or folded in models
+
+
+def _is_date(text: str) -> bool:
+    try:
+        datetime.date.fromisoformat(text)
+    except ValueError:
+        return False
+    return len(text) == 10
 
 
 def settle(
@@ -79,6 +231,7 @@ class Label:
     unknown_from: tuple[str, ...] = ()
     reviewers: dict[str, str] = field(default_factory=dict)
     notes: dict[str, str] = field(default_factory=dict)
+    panel: Panel | None = None
 
     @property
     def key(self) -> tuple[str, int, str]:
@@ -120,6 +273,18 @@ def _label_from(raw: Any, line: int) -> Label:
         set(notes) <= set(LABELLERS) and all(isinstance(v, str) for v in notes.values())
     ):
         raise fail('notes must hold text for "a" and/or "b"')
+    panel: Panel | None = None
+    if "panel" in raw:
+        try:
+            panel = parse_panel(raw["panel"])
+        except CalibrationError as exc:
+            raise fail(str(exc)) from exc
+    for slot, name in reviewers.items():
+        if not_a_human(name, panel):
+            raise fail(
+                f"reviewer {slot} is {name!r}, which is the panel or one of its "
+                "models and not a human reviewer"
+            )
 
     if status is None:
         # The original format, which has no status: both labellers answered.
@@ -169,6 +334,7 @@ def _label_from(raw: Any, line: int) -> Label:
         unknown_from=tuple(unknown_from),
         reviewers=dict(reviewers),
         notes=dict(notes),
+        panel=panel,
     )
 
 
@@ -193,6 +359,8 @@ def label_row(lab: Label) -> dict[str, Any]:
         }
     if lab.notes:
         row["notes"] = {n: lab.notes[n] for n in LABELLERS if n in lab.notes}
+    if lab.panel is not None:
+        row["panel"] = panel_row(lab.panel)
     return row
 
 
