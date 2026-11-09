@@ -300,7 +300,7 @@ def _from_json(
                 f"reviewer {PANEL!r}"
             )
             continue
-        if reviewer == PANEL:
+        if reviewer.strip().casefold() == PANEL:
             valid, value = _parse_verdict(entry["verdict"])
             if not valid:
                 found.append(f"{where}: verdict must be true, false or unknown")

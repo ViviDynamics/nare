@@ -879,3 +879,13 @@ def test_bin_bench_calibrate_import_needs_a_name_or_provenance(
     )
     assert code == 2
     assert "--reviewer-a, --reviewer-b or --panel-provenance" in capsys.readouterr().err
+
+
+def test_the_panel_reviewer_is_matched_whatever_its_case(
+    tmp_path: Path, export: Path, labels: Path, provenance: Path
+) -> None:
+    source = json_file(tmp_path, verdict("Panel", "true"))
+    run_panel(source, export, labels, provenance)
+    (lab,) = load_labels(labels)
+    assert lab.panel is not None and lab.panel.label is True
+    assert lab.labels == {"a": None, "b": None}
