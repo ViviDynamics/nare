@@ -6,8 +6,13 @@ instance that `calibrate export` wrote, on its case, claim number and diff
 SHA-256. A file is refused as a whole when any row does not match the export,
 the case or a reviewer, so nothing is written from a half-read file.
 
-Only the human columns and the JSON verdicts count. Draft columns such as
-`draft_label` are never read.
+Only the human columns, the `panel` column and the JSON verdicts count. Draft
+columns such as `draft_label` are never read.
+
+A panel verdict (the CSV `panel` column, or a JSON entry whose reviewer is
+`panel`) goes to the row's panel entry, with the provenance the
+`--panel-provenance` file gives, and never to a human slot. The panel, or a
+model named in its provenance, is refused as a human reviewer.
 """
 
 from __future__ import annotations
@@ -18,17 +23,23 @@ import os
 import tempfile
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from benchmarks.runner.calibration import (
     ADJUDICATED,
     LABELLERS,
+    PANEL,
     CalibrationError,
     Label,
+    Panel,
+    PanelPass,
     label_row,
     load_labels,
+    not_a_human,
+    parse_passes,
+    parse_votes,
     problems,
     settle,
 )
@@ -82,10 +93,28 @@ class Decision:
 
 
 @dataclass(frozen=True)
+class PanelVerdict:
+    """The model panel's verdict on one claim: never a human one."""
+
+    where: str
+    case: str
+    claim: int
+    diff_sha256: str
+    verdict: bool | None  # None is the panel's unknown
+    votes: Any  # the JSON entry's `votes`, checked against the passes; None if absent
+    claim_text: str | None
+
+    @property
+    def key(self) -> Key:
+        return (self.case, self.claim, self.diff_sha256)
+
+
+@dataclass(frozen=True)
 class Reviews:
     verdicts: list[Review]
     decisions: list[Decision]
-    skipped: int  # CSV rows with no human verdict yet
+    skipped: int  # CSV rows with no human or panel verdict yet
+    panel: list[PanelVerdict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -95,6 +124,8 @@ class ImportResult:
     skipped: int
     changed: bool
     statuses: Mapping[str, int]
+    panel: int = 0  # panel verdicts read
+    panel_labelled: int = 0  # rows whose panel label is true or false, after import
 
 
 def _parse_verdict(raw: object) -> tuple[bool, bool | None]:
@@ -122,16 +153,21 @@ def _parse_claim(raw: object) -> int | None:
     return number if number >= 1 else None
 
 
-def read_reviews(path: Path, reviewers: Mapping[str, str]) -> Reviews:
+def read_reviews(
+    path: Path,
+    reviewers: Mapping[str, str],
+    panel_models: frozenset[str] = frozenset(),
+) -> Reviews:
     """The verdicts in a reviewed CSV or JSON file, or a refusal naming every
-    row that is wrong."""
+    row that is wrong. `panel_models` are the models the panel provenance names,
+    whose own verdicts a JSON file may not give as a reviewer's."""
     if not path.is_file():
         raise CalibrationError(f"{path}: no such file")
     suffix = path.suffix.lower()
     if suffix == ".csv":
         return _from_csv(path)
     if suffix == ".json":
-        return _from_json(path, reviewers)
+        return _from_json(path, reviewers, panel_models)
     raise CalibrationError(f"{path}: import reads a .csv or a .json file")
 
 
@@ -139,6 +175,7 @@ def _from_csv(path: Path) -> Reviews:
     found: list[str] = []
     verdicts: list[Review] = []
     decisions: list[Decision] = []
+    panel: list[PanelVerdict] = []
     skipped = 0
     with path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
@@ -151,7 +188,8 @@ def _from_csv(path: Path) -> Reviews:
 
             human = {name: _cell(raw, f"human_{name}") for name in LABELLERS}
             decision_text = _cell(raw, "label").lower()
-            if not any(human.values()) and not decision_text:
+            panel_text = _cell(raw, PANEL)
+            if not any(human.values()) and not decision_text and not panel_text:
                 skipped += 1  # not reviewed yet; nothing here is a label
                 continue
             claim = _parse_claim(_cell(raw, "claim"))
@@ -182,6 +220,22 @@ def _from_csv(path: Path) -> Reviews:
                         claim_text=claim_text,
                     )
                 )
+            if panel_text:
+                valid, value = _parse_verdict(panel_text)
+                if not valid:
+                    found.append(f"{where}: panel must be true, false or unknown")
+                else:
+                    panel.append(
+                        PanelVerdict(
+                            where=where,
+                            case=case,
+                            claim=claim,
+                            diff_sha256=digest,
+                            verdict=value,
+                            votes=None,
+                            claim_text=claim_text,
+                        )
+                    )
             if decision_text:
                 if decision_text not in ("true", "false"):
                     found.append(f"{where}: label must be true or false")
@@ -198,10 +252,12 @@ def _from_csv(path: Path) -> Reviews:
                     )
     if found:
         raise ImportRefused(found)
-    return Reviews(verdicts=verdicts, decisions=decisions, skipped=skipped)
+    return Reviews(verdicts=verdicts, decisions=decisions, skipped=skipped, panel=panel)
 
 
-def _from_json(path: Path, reviewers: Mapping[str, str]) -> Reviews:
+def _from_json(
+    path: Path, reviewers: Mapping[str, str], panel_models: frozenset[str]
+) -> Reviews:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -209,8 +265,10 @@ def _from_json(path: Path, reviewers: Mapping[str, str]) -> Reviews:
     if not isinstance(data, list):
         raise CalibrationError(f"{path}: a JSON import is an array of verdicts")
     by_name = {name: labeller for labeller, name in reviewers.items()}
+    models = {m.casefold() for m in panel_models}
     found: list[str] = []
     verdicts: list[Review] = []
+    panel: list[PanelVerdict] = []
     for number, entry in enumerate(data, 1):
         where = f"entry {number}"
         if not isinstance(entry, dict):
@@ -234,7 +292,35 @@ def _from_json(path: Path, reviewers: Mapping[str, str]) -> Reviews:
         if not isinstance(digest, str) or not digest:
             found.append(f"{where}: needs diff_sha256")
             continue
-        labeller = by_name.get(str(entry["reviewer"]))
+        reviewer = str(entry["reviewer"])
+        if reviewer.strip().casefold() in models:
+            found.append(
+                f"{where}: reviewer {reviewer!r} is a model on the panel, and one "
+                "model's verdict is not a human one; give the panel's verdict as "
+                f"reviewer {PANEL!r}"
+            )
+            continue
+        if reviewer == PANEL:
+            valid, value = _parse_verdict(entry["verdict"])
+            if not valid:
+                found.append(f"{where}: verdict must be true, false or unknown")
+                continue
+            panel.append(
+                PanelVerdict(
+                    where=where,
+                    case=case,
+                    claim=claim,
+                    diff_sha256=digest,
+                    verdict=value,
+                    votes=entry.get("votes"),
+                    claim_text=None,
+                )
+            )
+            continue
+        if "votes" in entry:
+            found.append(f"{where}: votes are for the panel's verdict only")
+            continue
+        labeller = by_name.get(reviewer)
         if labeller is None:
             found.append(
                 f"{where}: reviewer {entry['reviewer']!r} is neither "
@@ -263,7 +349,24 @@ def _from_json(path: Path, reviewers: Mapping[str, str]) -> Reviews:
         )
     if found:
         raise ImportRefused(found)
-    return Reviews(verdicts=verdicts, decisions=[], skipped=0)
+    return Reviews(verdicts=verdicts, decisions=[], skipped=0, panel=panel)
+
+
+def read_provenance(path: Path) -> tuple[PanelPass, ...]:
+    """The panel's passes from a `--panel-provenance` file:
+    `{"passes": [{"name", "date", "models": [{"model", "effort"}]}]}`."""
+    if not path.is_file():
+        raise CalibrationError(f"{path}: no such provenance file")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise CalibrationError(f"{path}: not JSON ({exc.msg})") from exc
+    if not isinstance(data, dict) or set(data) != {"passes"}:
+        raise CalibrationError(f"{path}: provenance is an object with passes only")
+    try:
+        return parse_passes(data["passes"])
+    except CalibrationError as exc:
+        raise CalibrationError(f"{path}: {exc}") from exc
 
 
 def read_export(path: Path) -> dict[Key, dict[str, Any]]:
@@ -296,17 +399,26 @@ def apply_reviews(
     *,
     reviewers: Mapping[str, str],
     adjudicate: bool,
+    passes: Sequence[PanelPass] | None = None,
 ) -> list[Label]:
     """The labels file after the reviews, or a refusal. Pure.
 
     A reviewer's verdict replaces their earlier one on the same claim, and a
     labeller not in this file keeps theirs, so importing one reviewer's file
-    and then the other's gives the same rows as importing both at once.
+    and then the other's gives the same rows as importing both at once. A panel
+    verdict replaces the row's panel entry, with `passes` as its provenance, and
+    a row the file gives no panel verdict keeps its panel entry.
     """
     found: list[str] = []
     votes: dict[Key, dict[str, Review]] = {}
     order: list[Key] = []
     for review in reviews.verdicts:
+        if review.labeller not in reviewers:
+            found.append(
+                f"{review.where}: a verdict from human_{review.labeller} needs "
+                f"--reviewer-{review.labeller}, the name of the person behind it"
+            )
+            continue
         if review.key not in export:
             found.append(_not_in_export(review.where, review.key))
             continue
@@ -332,6 +444,29 @@ def apply_reviews(
         decisions.setdefault(entry.key, entry)
         if entry.key not in order:
             order.append(entry.key)
+
+    panels: dict[Key, Panel] = {}
+    if reviews.panel and passes is None:
+        found.append("panel verdicts need --panel-provenance, the panel's passes")
+    for given in reviews.panel:
+        if passes is None:
+            break
+        if given.key not in export:
+            found.append(_not_in_export(given.where, given.key))
+            continue
+        _check_claim_text(found, given.where, given.claim_text, export[given.key])
+        try:
+            split = parse_votes(given.votes if given.votes is not None else {}, passes)
+        except CalibrationError as exc:
+            found.append(f"{given.where}: {exc}")
+            continue
+        made = Panel(label=given.verdict, passes=tuple(passes), votes=split)
+        if given.key in panels and panels[given.key] != made:
+            found.append(f"{given.where}: a second, different panel verdict")
+            continue
+        panels[given.key] = made
+        if given.key not in order:
+            order.append(given.key)
 
     index: dict[Key, int] = {}
     for position, lab in enumerate(existing):
@@ -378,6 +513,19 @@ def apply_reviews(
                 f"disagree, and this claim is {status}"
             )
             continue
+        panel = panels.get(key, base.panel if base is not None else None)
+        clash = [
+            f"labeller {slot} is recorded as {name!r}, which is the panel or one "
+            "of its models and not a human reviewer"
+            for slot, name in sorted(names.items())
+            if not_a_human(name, panel)
+        ]
+        if clash:
+            case, claim, digest = key
+            found.extend(
+                f"{case} claim {claim} on diff {digest[:12]}: {text}" for text in clash
+            )
+            continue
         row = export[key]
         lab = Label(
             line=0,
@@ -392,6 +540,7 @@ def apply_reviews(
             unknown_from=tuple(sorted(unknown)),
             reviewers=names,
             notes=notes,
+            panel=panel,
         )
         if base is not None:
             out[index[key]] = lab
@@ -456,16 +605,47 @@ def import_reviews(
     reviewers: Mapping[str, str],
     adjudicate: bool,
     cases: Mapping[str, Case],
+    panel_provenance: Path | None = None,
 ) -> ImportResult:
     """Read a reviewed file and merge it into the labels file. Writes nothing and
-    raises if any row is refused."""
-    if len(set(reviewers.values())) != 2 or set(reviewers) != set(LABELLERS):
-        raise CalibrationError("--reviewer-a and --reviewer-b must name two people")
-    reviews = read_reviews(source, reviewers)
+    raises if any row is refused.
+
+    `reviewers` names the person behind `a`, `b` or both; a file may hold
+    verdicts only from labellers named here. `panel_provenance` is needed when
+    the file holds panel verdicts."""
+    if not set(reviewers) <= set(LABELLERS) or not all(reviewers.values()):
+        raise CalibrationError('reviewers are named for labellers "a" and "b" only')
+    if len(set(reviewers.values())) != len(reviewers):
+        raise CalibrationError(
+            "--reviewer-a and --reviewer-b must name two different people"
+        )
+    if not reviewers and panel_provenance is None:
+        raise CalibrationError(
+            "import needs --reviewer-a, --reviewer-b or --panel-provenance"
+        )
+    passes = read_provenance(panel_provenance) if panel_provenance else None
+    named = Panel(label=None, passes=passes) if passes else None
+    for slot, name in sorted(reviewers.items()):
+        if not_a_human(name, named):
+            raise CalibrationError(
+                f"--reviewer-{slot} {name!r} is the panel or one of its models, "
+                "not a human reviewer"
+            )
+    reviews = read_reviews(source, reviewers, frozenset(named.models if named else ()))
+    if reviews.panel and passes is None:
+        raise CalibrationError(
+            f"{source}: holds panel verdicts, which need --panel-provenance"
+        )
     export = read_export(export_path)
     existing = load_labels(labels_path)
     final = apply_reviews(
-        existing, reviews, export, cases, reviewers=reviewers, adjudicate=adjudicate
+        existing,
+        reviews,
+        export,
+        cases,
+        reviewers=reviewers,
+        adjudicate=adjudicate,
+        passes=passes,
     )
     changed = write_labels(labels_path, final)
     statuses = Counter(lab.status for lab in final)
@@ -475,4 +655,8 @@ def import_reviews(
         skipped=reviews.skipped,
         changed=changed,
         statuses=dict(statuses),
+        panel=len(reviews.panel),
+        panel_labelled=sum(
+            1 for lab in final if lab.panel is not None and lab.panel.label is not None
+        ),
     )
