@@ -254,9 +254,9 @@ def test_a_refused_schema_exits_two_before_any_request(
     assert seen == []
 
 
-def test_the_contract_lists_both_providers() -> None:
+def test_the_contract_lists_every_constraining_provider() -> None:
     structured = describe()["structured_output"]
-    assert structured["providers"] == ["anthropic", "openai"]
+    assert structured["providers"] == ["anthropic", "bedrock", "openai"]
     assert structured["anthropic_not_enforced_at_decode"] == [
         "minimum",
         "maximum",
