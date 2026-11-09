@@ -58,7 +58,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--yes` | no | | Approve every tool call; required for unattended runs |
 | `--contract` | yes | | The contract version the caller speaks ([Refusing a contract](#refusing-a-contract-you-do-not-speak)) |
 | `--schema` | yes | | JSON Schema file the final answer must satisfy ([Answer schemas](#answer-schemas)) |
-| `--structured-output` | yes | `json_schema` | Constrain answers at decode time, on both rails ([Schema-constrained answers](#schema-constrained-answers)) |
+| `--structured-output` | yes | `json_schema` | Constrain answers at decode time, on the anthropic, bedrock and openai rails ([Schema-constrained answers](#schema-constrained-answers)) |
 | `--max-tool-calls` | yes | | Run at most this many tool calls in this invocation ([Budgets and partial results](#budgets-and-partial-results)) |
 | `--max-corrections` | yes | | Let a failing `--schema` answer be corrected up to this many times in the run, default 1 ([Schema corrections](#schema-corrections)) |
 | `--max-cutoffs` | yes | | Correct up to this many replies cut off at the output cap or by repeating one span, in this invocation ([Cut-off replies](#cut-off-replies)) |
@@ -1755,7 +1755,7 @@ refusal does (`status=error`, `stop_reason` null, not retried).
 | Rail | `--effort LEVEL` sends | Notes |
 | --- | --- | --- |
 | anthropic | `output_config: {"effort": LEVEL}` and `thinking: {"type": "adaptive"}` | No `budget_tokens`. Adaptive thinking is sent because Opus 4.7 and 4.8 do not think without it; where thinking is always on it is the same as omitting it |
-| bedrock | `output_config: {"effort": LEVEL}` and `thinking: {"type": "adaptive"}` | The same request as the anthropic rail, sent to Bedrock. Bedrock's acceptance of `output_config.effort` is confirmed against a live endpoint before release |
+| bedrock | `output_config: {"effort": LEVEL}` and `thinking: {"type": "adaptive"}` | The same request as the anthropic rail, sent to Bedrock. Not yet confirmed against a live Bedrock endpoint ([#269](https://github.com/ViviDynamics/nare/issues/269)) |
 | openai | `reasoning_effort: LEVEL` | Passed through. What a level means belongs to the server behind `--base-url`: one server may map an unknown level to its most expensive setting |
 
 Current Claude models refuse a fixed thinking budget with a 400. The older
@@ -2142,14 +2142,14 @@ does decode, such as a citation `[1]`, counts as a second document.
       --schema answer.schema.json --structured-output json_schema "..."
 
 `--structured-output json_schema` asks the backend to enforce the `--schema` at
-decode time on the turns where that is possible, on both rails. A constrained
+decode time on the turns where that is possible, on every rail but fake. A constrained
 turn sends **no tools** and the rail's own format. On the openai rail, the
 OpenAI-compatible response format:
 
     "response_format": {"type": "json_schema",
                         "json_schema": {"name": "answer", "schema": {...}, "strict": true}}
 
-On the anthropic rail, Anthropic's structured outputs, beside any
+On the anthropic and bedrock rails, Anthropic's structured outputs, beside any
 `output_config.effort`:
 
     "output_config": {"format": {"type": "json_schema", "schema": {...}}}
@@ -2186,6 +2186,9 @@ backend. A backend that cannot enforce some keyword refuses or ignores it under
 its own rules, and nare's validator still checks the answer.
 
 ### Keyword limits on the anthropic rail
+
+The bedrock rail sends the same body through the SDK's Bedrock client, so
+everything in this section applies to it too, and its refusals name `bedrock`.
 
 Anthropic refuses a keyword it cannot enforce with a 400 instead of ignoring
 it, so the anthropic rail sends the schema through the Anthropic SDK's own
@@ -2228,8 +2231,8 @@ that does not mark every property required with `additionalProperties` false.
 Such a refusal ends the run as a provider failure (`stop_reason` null), not as
 `schema_violation`. vLLM enforces the schema without that restriction.
 
-`--structured-output` without `--schema`, or with a schema the anthropic rail
-refuses, never starts (exit 2). The one exception is a resume whose budget is already
+`--structured-output` without `--schema`, or with a schema the anthropic or
+bedrock rail refuses, never starts (exit 2). The one exception is a resume whose budget is already
 spent: it reports that result without building a transport, so no model is
 called. In the library, `run(structured_output="json_schema")`
 raises `ValueError` before any turn when there is no schema, the transport

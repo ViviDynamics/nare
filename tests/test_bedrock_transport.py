@@ -19,7 +19,7 @@ import httpx2
 import pytest
 from anthropic import APIError, AsyncAnthropicBedrock
 
-from nare.cli import build_parser, main, transport_from_args
+from nare.cli import build_parser, main, transport_from_args, validate_run_args
 from nare.loop import check_structured_output
 from nare.session import Message
 from nare.tools import _shell_env
@@ -398,13 +398,26 @@ def test_the_client_keeps_nares_timeout_and_no_sdk_retries() -> None:
     assert t._client.max_retries == 0
 
 
+SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"a": {"type": "string", "maxLength": 4}},
+    "required": ["a"],
+}
+
+
 @pytest.mark.usefixtures("aws_keys")
-def test_structured_output_is_refused_before_any_turn() -> None:
+def test_structured_output_is_offered_as_on_the_anthropic_rail() -> None:
     t = build()
-    assert t.supports_structured_output is False
-    schema = {"type": "object", "properties": {"a": {"type": "string"}}}
-    with pytest.raises(ValueError, match="does not support structured output"):
-        check_structured_output(t, schema, "json_schema")
+    assert t.supports_structured_output is True
+    check_structured_output(t, SCHEMA, "json_schema")
+
+
+@pytest.mark.usefixtures("aws_keys")
+def test_a_schema_anthropic_cannot_send_is_refused_naming_bedrock() -> None:
+    t = build()
+    a_map = {"type": "object", "additionalProperties": {"type": "string"}}
+    with pytest.raises(ValueError, match="on the bedrock provider cannot send"):
+        check_structured_output(t, a_map, "json_schema")
 
 
 # Model caps and discovery.
@@ -484,6 +497,31 @@ async def test_effort_reaches_the_wire() -> None:
     body = json.loads(captured[0].content)
     assert body["output_config"] == {"effort": "high"}
     assert body["thinking"] == {"type": "adaptive"}
+
+
+@pytest.mark.usefixtures("aws_keys")
+async def test_a_constrained_turn_sends_the_format_beside_effort() -> None:
+    captured: list[httpx2.Request] = []
+    t = build(effort="high", http_client=server(captured))
+    await t.turn(PROMPT, [], response_schema=SCHEMA)
+    body = json.loads(captured[0].content)
+    assert body["output_config"]["effort"] == "high"
+    assert body["output_config"]["format"]["type"] == "json_schema"
+    sent = body["output_config"]["format"]["schema"]
+    # The SDK's transform, as on the anthropic rail: closed, bounds described.
+    assert sent["additionalProperties"] is False
+    assert "maxLength" not in sent["properties"]["a"]
+    assert not body.get("tools")
+
+
+@pytest.mark.usefixtures("aws_keys")
+async def test_a_streamed_constrained_turn_sends_the_format() -> None:
+    captured: list[httpx2.Request] = []
+    t = build(streaming=True, http_client=server(captured, stream=True))
+    await collect(t.stream_turn(PROMPT, [], response_schema=SCHEMA))
+    assert captured[0].url.path == f"/model/{MODEL}/invoke-with-response-stream"
+    body = json.loads(captured[0].content)
+    assert body["output_config"]["format"]["type"] == "json_schema"
 
 
 @pytest.mark.usefixtures("aws_keys")
@@ -759,8 +797,8 @@ def test_cli_thinking_budget_is_accepted_on_bedrock(
     assert t.thinking == {"type": "enabled", "budget_tokens": 2048}
 
 
-def test_cli_structured_output_is_refused_on_bedrock(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_cli_structured_output_is_accepted_on_bedrock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     for name, value in {
         "AWS_ACCESS_KEY_ID": "AKIDOFFLINE",
@@ -768,11 +806,12 @@ def test_cli_structured_output_is_refused_on_bedrock(
     }.items():
         monkeypatch.setenv(name, value)
     schema = tmp_path / "schema.json"
-    schema.write_text('{"type": "object", "properties": {"a": {"type": "string"}}}')
-    code = main(
+    schema.write_text(json.dumps(SCHEMA))
+    args = build_parser().parse_args(
         ["run", "--yes", "--provider", "bedrock", "--region", "us-east-1",
          "--model", MODEL, "--structured-output", "json_schema",
          "--schema", str(schema), "go"],
     )  # fmt: skip
-    assert code == 2
-    assert "does not support structured output" in capsys.readouterr().err
+    validate_run_args(args)
+    t = transport_from_args(args)
+    check_structured_output(t, SCHEMA, args.structured_output)

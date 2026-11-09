@@ -229,7 +229,7 @@ def test_contract_describes_structured_output() -> None:
         "flag": "--structured-output",
         "modes": ["json_schema"],
         "requires": "--schema",
-        "providers": ["anthropic", "openai"],
+        "providers": ["anthropic", "bedrock", "openai"],
         "constrained_turns": ["schema_correction", "tool_free_run"],
         "anthropic_not_enforced_at_decode": describe()["structured_output"][
             "anthropic_not_enforced_at_decode"

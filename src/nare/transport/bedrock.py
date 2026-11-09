@@ -6,8 +6,9 @@ differs is the client (the SDK's Bedrock client, which signs with SigV4 or a
 bearer token), the region, the per-model output caps keyed by Bedrock model
 IDs, and context-window discovery, which Bedrock does not offer.
 
-Structured output is refused here: the schema field Bedrock accepts has not
-been checked against a live endpoint, so it is not claimed.
+Structured output is the anthropic rail's too: the SDK's Bedrock client sends
+the same body, so a constrained turn carries the same output_config.format,
+and a schema that rail cannot send is refused at startup the same way.
 """
 
 from __future__ import annotations
@@ -107,9 +108,7 @@ def _credentials_resolve(session: Any) -> bool:
 
 
 class BedrockTransport(AnthropicTransport):
-    # A constrained answer turn is refused rather than sent unverified; see the
-    # module docstring. The loop reads this flag and refuses before any request.
-    supports_structured_output = False
+    provider = "bedrock"
 
     def __init__(
         self,

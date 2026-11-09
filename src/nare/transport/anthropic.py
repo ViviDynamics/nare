@@ -309,13 +309,15 @@ def _count(node: dict[str, Any]) -> tuple[int, int]:
     return optional, unions
 
 
-def check_response_schema(schema: dict[str, Any]) -> None:
+def check_response_schema(schema: dict[str, Any], provider: str = "anthropic") -> None:
     """Refuse at startup a schema the anthropic rail cannot constrain.
 
     Anything Anthropic refuses would otherwise surface mid-run, as a 400 on the
-    correction turn after the run had spent its first answer.
+    correction turn after the run had spent its first answer. `provider` names
+    the rail in the message: bedrock sends the same body, so it has the same
+    limits.
     """
-    prefix = "--structured-output on the anthropic provider cannot send this schema"
+    prefix = f"--structured-output on the {provider} provider cannot send this schema"
     queue = [(schema, "")]
     while queue:
         node, path = queue.pop()
@@ -337,6 +339,8 @@ def check_response_schema(schema: dict[str, Any]) -> None:
 
 
 class AnthropicTransport:
+    # The provider name messages use; Claude on Bedrock overrides it.
+    provider = "anthropic"
     supports_image_input = True
     # A constrained turn carries no tools, on this rail as on the openai one,
     # so one rule covers which turns a caller's schema constrains.
@@ -540,7 +544,7 @@ class AnthropicTransport:
         )
 
     def check_response_schema(self, schema: dict[str, Any]) -> None:
-        check_response_schema(schema)
+        check_response_schema(schema, self.provider)
 
     def _output_config(self, response_schema: dict[str, Any] | None) -> Any:
         config = dict(self.output_config or {})

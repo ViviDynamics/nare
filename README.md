@@ -61,11 +61,15 @@ exits 2 and names both.
 not carry the AWS signer: `pip install 'nare[bedrock]'` adds it, and the
 container image includes it. `--base-url` sets the Bedrock runtime endpoint,
 for a VPC interface endpoint. Context-window discovery is skipped, so pass
-`--context-window` when the model's window matters. `--structured-output` is
-refused on this rail for now, and so is `--temperature`, as on the anthropic
-rail. Bash commands do not see the AWS credential variables, as they do not see
+`--context-window` when the model's window matters. `--structured-output` sends
+the anthropic rail's `output_config.format`, and `--temperature` is refused, as
+on the anthropic rail. Bash commands do not see the AWS credential variables, as they do not see
 the provider keys. The IAM actions the rail needs are `bedrock:InvokeModel` and
 `bedrock:InvokeModelWithResponseStream` on the model or inference profile.
+
+The rail is tested offline, with the real SDK client, real SigV4 signing and an
+AWS event stream, but it has not yet completed a turn against a live Bedrock
+endpoint ([#269](https://github.com/ViviDynamics/nare/issues/269)).
 
 For a LiteLLM proxy, `--proxy-num-retries 0` sends `num_retries: 0` on every
 OpenAI-compatible request, including streamed and schema-constrained turns.
@@ -206,7 +210,7 @@ without promoting the invalid object. Any earlier schema-valid output remains
 available. A validating answer is parsed onto the session, carried
 in the `output` event's detail, and included in the final `result` line.
 
-`--structured-output json_schema` (both providers) also asks the backend to
+`--structured-output json_schema` (anthropic, bedrock and openai) also asks the backend to
 enforce that schema at decode time on the correction turn, which is then sent
 without tools, and on every turn of a run that offers no tools. Tool-using
 turns stay unconstrained, because a constrained request cannot call a tool, and

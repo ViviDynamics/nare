@@ -370,7 +370,7 @@ def describe() -> dict[str, Any]:
             "flag": "--structured-output",
             "modes": ["json_schema"],
             "requires": "--schema",
-            "providers": ["anthropic", "openai"],
+            "providers": ["anthropic", "bedrock", "openai"],
             "constrained_turns": ["schema_correction", "tool_free_run"],
             # Sent through the SDK's transform, which moves these into
             # descriptions; nare's validator still enforces every one.
