@@ -743,6 +743,9 @@ Labels on an agent's rep diff are not reproduced this way. Score those with
 `calibrate score --results` on the results file their export came from, which
 already holds the judge's verdicts for every judged rep.
 
+The first scored run, `claude-haiku-5-5` against the panel labels, is in
+`docs/evidence/270/README.md`.
+
 ## Cases and their tiers
 
 Every case, with the tier it runs in. `smoke` cases are the cheap loop; `full`
