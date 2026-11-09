@@ -556,3 +556,326 @@ def test_bin_bench_calibrate_import_runs_end_to_end(
     assert code == 0
     assert "imported 2 verdict(s)" in capsys.readouterr().out
     assert [lab.status for lab in load_labels(labels)] == [AGREED]
+
+
+# Panel verdicts (#264): a model panel's verdict, never a human one.
+
+PASSES = [
+    {
+        "name": "quick",
+        "date": "2026-11-08",
+        "models": [
+            {"model": "model-one", "effort": "high"},
+            {"model": "model-two", "effort": "high"},
+        ],
+    },
+    {
+        "name": "careful",
+        "date": "2026-11-08",
+        "models": [{"model": "model-one", "effort": "max"}],
+    },
+]
+
+
+@pytest.fixture
+def provenance(tmp_path: Path) -> Path:
+    path = tmp_path / "provenance.json"
+    path.write_text(json.dumps({"passes": PASSES}), encoding="utf-8")
+    return path
+
+
+def run_panel(
+    source: Path,
+    export: Path,
+    labels: Path,
+    provenance: Path | None,
+    reviewers: dict[str, str] | None = None,
+) -> Any:
+    return import_reviews(
+        source=source,
+        export_path=export,
+        labels_path=labels,
+        reviewers=reviewers if reviewers is not None else {},
+        adjudicate=False,
+        cases=CASES,
+        panel_provenance=provenance,
+    )
+
+
+def panel_verdict(value: Any, claim: int = 1, **extra: Any) -> dict[str, Any]:
+    return verdict("panel", value, claim=claim, **extra)
+
+
+def test_a_json_panel_verdict_lands_in_the_panel_slot_only(
+    tmp_path: Path, export: Path, labels: Path, provenance: Path
+) -> None:
+    votes = {"quick": {"false": 2}, "careful": {"false": 1}}
+    source = json_file(tmp_path, panel_verdict("false", votes=votes))
+    result = run_panel(source, export, labels, provenance)
+    assert result.panel == 1 and result.verdicts == 0
+    (row,) = [json.loads(line) for line in labels.read_text().splitlines()]
+    assert row["labels"] == {"a": None, "b": None}
+    assert row["label"] is None and row["status"] == PENDING
+    assert "reviewers" not in row
+    assert row["panel"] == {
+        "label": False,
+        "passes": PASSES,
+        "votes": {
+            "quick": {"true": 0, "false": 2, "unknown": 0},
+            "careful": {"true": 0, "false": 1, "unknown": 0},
+        },
+    }
+    assert problems(load_labels(labels), CASES) == []
+
+
+def test_a_csv_panel_column_is_read_and_drafts_still_are_not(
+    tmp_path: Path, export: Path, labels: Path, provenance: Path
+) -> None:
+    columns = [*REVIEW_COLUMNS, "panel"]
+    source = tmp_path / "r.csv"
+    with source.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns)
+        writer.writeheader()
+        row: dict[str, str | int] = {c: "" for c in columns}
+        row.update(
+            case="fix",
+            claim=1,
+            claim_text=CLAIMS[0],
+            diff_sha256=DIGEST,
+            draft_label="true",
+            panel="false",
+        )
+        writer.writerow(row)
+    result = run_panel(source, export, labels, provenance)
+    assert result.panel == 1 and result.skipped == 0
+    (lab,) = load_labels(labels)
+    assert lab.panel is not None and lab.panel.label is False
+    assert lab.label is None and lab.labels == {"a": None, "b": None}
+
+
+def test_a_panel_verdict_without_provenance_is_refused(
+    tmp_path: Path, export: Path, labels: Path
+) -> None:
+    source = json_file(tmp_path, panel_verdict("true"))
+    with pytest.raises(CalibrationError, match="--panel-provenance"):
+        run_panel(source, export, labels, None, reviewers={"a": NAMES["a"]})
+    assert not labels.exists()
+
+
+def test_one_human_and_the_panel_on_one_claim(
+    tmp_path: Path, export: Path, labels: Path, provenance: Path
+) -> None:
+    source = json_file(tmp_path, verdict(NAMES["a"], "false"), panel_verdict("false"))
+    run_panel(source, export, labels, provenance, reviewers={"a": NAMES["a"]})
+    (lab,) = load_labels(labels)
+    assert lab.status == PENDING and lab.label is None  # one human is not a label
+    assert lab.labels == {"a": False, "b": None}
+    assert lab.reviewers == {"a": NAMES["a"]}
+    assert lab.panel is not None and lab.panel.label is False
+    record = RepRecord(
+        case="fix",
+        rep=0,
+        outcome="pass",
+        checks=(),
+        judge_met=None,
+        judge_why="",
+        status="done",
+        stop_reason="end_turn",
+        turns=1,
+        judge_model="judge-x",
+        judge_claims=[True, True],
+        diff_sha256=DIGEST,
+    )
+    result = calibrate([lab], [record])
+    assert result.labelled == 0 and result.panel_labelled == 1
+    assert result.panel_by_judge["judge-x"].false_pos == 1
+    assert (result.agree, result.compared) == (1, 1)
+
+
+def test_a_human_verdict_needs_its_reviewer_name(
+    tmp_path: Path, export: Path, labels: Path, provenance: Path
+) -> None:
+    source = review_csv(tmp_path, {"human_a": "true", "human_b": "true"})
+    with pytest.raises(ImportRefused, match="--reviewer-b"):
+        run_panel(source, export, labels, provenance, reviewers={"a": NAMES["a"]})
+    assert not labels.exists()
+
+
+@pytest.mark.parametrize("name", ["panel", "PANEL", "model-two"])
+def test_the_panel_or_a_panel_model_is_refused_as_a_human_reviewer(
+    tmp_path: Path, export: Path, labels: Path, provenance: Path, name: str
+) -> None:
+    source = review_csv(tmp_path, {"human_a": "true"})
+    with pytest.raises(CalibrationError, match="not a human reviewer"):
+        run_panel(source, export, labels, provenance, reviewers={"a": name})
+    assert not labels.exists()
+
+
+def test_panel_is_refused_as_a_reviewer_name_even_with_no_panel(
+    tmp_path: Path, export: Path, labels: Path
+) -> None:
+    source = review_csv(tmp_path, {"human_a": "true", "human_b": "true"})
+    with pytest.raises(CalibrationError, match="not a human reviewer"):
+        import_reviews(
+            source=source,
+            export_path=export,
+            labels_path=labels,
+            reviewers={"a": "panel", "b": NAMES["b"]},
+            adjudicate=False,
+            cases=CASES,
+        )
+
+
+def test_a_panel_models_own_verdict_is_refused(
+    tmp_path: Path, export: Path, labels: Path, provenance: Path
+) -> None:
+    source = json_file(tmp_path, verdict("model-one", "true"))
+    with pytest.raises(ImportRefused, match="model on the panel"):
+        run_panel(source, export, labels, provenance, reviewers={"a": NAMES["a"]})
+
+
+def test_two_different_panel_verdicts_on_one_claim_are_refused(
+    tmp_path: Path, export: Path, labels: Path, provenance: Path
+) -> None:
+    source = json_file(tmp_path, panel_verdict("true"), panel_verdict("false"))
+    with pytest.raises(ImportRefused, match="second, different panel verdict"):
+        run_panel(source, export, labels, provenance)
+    assert not labels.exists()
+
+
+def test_panel_votes_that_do_not_fit_the_passes_are_refused(
+    tmp_path: Path, export: Path, labels: Path, provenance: Path
+) -> None:
+    source = json_file(tmp_path, panel_verdict("true", votes={"quick": {"true": 5}}))
+    with pytest.raises(ImportRefused, match="entry 1: .*add up to"):
+        run_panel(source, export, labels, provenance)
+
+
+def test_votes_on_a_human_verdict_are_refused(
+    tmp_path: Path, export: Path, labels: Path, provenance: Path
+) -> None:
+    source = json_file(
+        tmp_path, verdict(NAMES["a"], "true", votes={"quick": {"true": 2}})
+    )
+    with pytest.raises(ImportRefused, match="votes are for the panel"):
+        run_panel(source, export, labels, provenance, reviewers={"a": NAMES["a"]})
+
+
+def test_a_bad_provenance_file_is_refused(
+    tmp_path: Path, export: Path, labels: Path
+) -> None:
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"passes": [{"name": "quick"}]}), encoding="utf-8")
+    source = json_file(tmp_path, panel_verdict("true"))
+    with pytest.raises(CalibrationError, match="date must be YYYY-MM-DD"):
+        run_panel(source, export, labels, bad)
+
+
+def test_a_later_human_import_keeps_the_panel_entry_and_settles_the_row(
+    tmp_path: Path, export: Path, labels: Path, provenance: Path
+) -> None:
+    run_panel(
+        json_file(tmp_path, panel_verdict("true"), name="p.json"),
+        export,
+        labels,
+        provenance,
+    )
+    run(review_csv(tmp_path, {"human_a": "true", "human_b": "true"}), export, labels)
+    (lab,) = load_labels(labels)
+    assert lab.status == AGREED and lab.label is True
+    assert lab.panel is not None and lab.panel.label is True
+
+
+def test_reimporting_a_panel_file_is_idempotent(
+    tmp_path: Path, export: Path, labels: Path, provenance: Path
+) -> None:
+    source = json_file(
+        tmp_path,
+        panel_verdict("true", votes={"quick": {"true": 2}}),
+        panel_verdict("unknown", claim=2),
+    )
+    run_panel(source, export, labels, provenance)
+    first = labels.read_bytes()
+    again = run_panel(source, export, labels, provenance)
+    assert labels.read_bytes() == first and again.changed is False
+    second = [lab for lab in load_labels(labels) if lab.claim == 2][0]
+    assert second.panel is not None and second.panel.label is None
+
+
+def test_bin_bench_calibrate_import_takes_panel_provenance(
+    tmp_path: Path,
+    labels: Path,
+    provenance: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from benchmarks.runner.__main__ import main
+    from benchmarks.runner.case import load_cases
+
+    real = {c.id: c for c in load_cases(Path("benchmarks/cases"))}
+    judged = next(c for c in real.values() if c.judge and c.judge.assertions)
+    assert judged.judge is not None
+    export_real = tmp_path / "real-export.jsonl"
+    export_real.write_text(
+        json.dumps(
+            {
+                "case": judged.id,
+                "claim": 1,
+                "claim_text": judged.judge.assertions[0],
+                "diff_sha256": DIGEST,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    source = json_file(
+        tmp_path,
+        {
+            "case": judged.id,
+            "claim": 1,
+            "diff_sha256": DIGEST,
+            "reviewer": NAMES["a"],
+            "verdict": "false",
+        },
+        {
+            "case": judged.id,
+            "claim": 1,
+            "diff_sha256": DIGEST,
+            "reviewer": "panel",
+            "verdict": "false",
+        },
+    )
+    common = ["--export", str(export_real), "--labels", str(labels)]
+    code = main(
+        [
+            "calibrate",
+            "import",
+            str(source),
+            *common,
+            "--reviewer-a",
+            NAMES["a"],
+            "--panel-provenance",
+            str(provenance),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "imported 1 verdict(s), 1 panel verdict(s) and 0 decision(s)" in out
+    assert "1 pending; 1 panel-labelled" in out
+    assert main(["calibrate", "check", "--labels", str(labels)]) == 0
+    checked = capsys.readouterr().out
+    assert "panel labels (a model panel, not human): 1 false" in checked
+    assert "kept without a human label (out of the human rates): 1 pending" in checked
+
+
+def test_bin_bench_calibrate_import_needs_a_name_or_provenance(
+    tmp_path: Path, export: Path, labels: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from benchmarks.runner.__main__ import main
+
+    source = json_file(tmp_path, panel_verdict("true"))
+    code = main(
+        ["calibrate", "import", str(source), "--export", str(export)]
+        + ["--labels", str(labels)]
+    )
+    assert code == 2
+    assert "--reviewer-a, --reviewer-b or --panel-provenance" in capsys.readouterr().err
