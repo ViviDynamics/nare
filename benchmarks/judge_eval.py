@@ -31,11 +31,11 @@ import os
 import statistics
 import time
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from benchmarks.runner.calibration_judge import capture_reference
 from benchmarks.runner.case import Case, load_cases
 from benchmarks.runner.compare import (
     Evidence,
@@ -51,7 +51,6 @@ from nare.transport import make_transport
 JEV_CUTOFF = 0.5
 JEV_UNKNOWN_BAND = (0.4, 0.6)
 JUDGE_MAX_TOKENS = 4096  # the benchmark's default judge cap
-CAPTURE_ATTEMPTS = 3
 
 # The designed answers. Solutions: every claim holds, so every claim is true.
 # Exploits: only the claims that exist to catch them, read from each case's
@@ -456,75 +455,6 @@ def write_calls(calls: Sequence[Call], path: Path) -> None:
             handle.write(json.dumps(call.__dict__, sort_keys=True) + "\n")
 
 
-class _CaptureRuntime:
-    """The runner's Docker runtime, keeping the diff and closing message it
-    takes. A checks-caught exploit never reaches the judge, so the judge
-    callback cannot be the capture point."""
-
-    def __init__(self) -> None:
-        from benchmarks.runner.reference import DockerRuntime
-
-        self._inner = DockerRuntime()
-        self.taken: str | None = None
-        self.closing: str | None = None
-
-    def sandbox(self, case: Case) -> AbstractContextManager[tuple[Path, Path]]:
-        return self._inner.sandbox(case)
-
-    def checkpoint(self, workdir: Path) -> None:
-        self._inner.checkpoint(workdir)
-
-    def apply(self, workdir: Path, artifacts: Path, directory: Path) -> int:
-        return self._inner.apply(workdir, artifacts, directory)
-
-    def write_out(self, workdir: Path, artifacts: Path, name: str, text: str) -> None:
-        self._inner.write_out(workdir, artifacts, name, text)
-        if name == "closing.txt":
-            self.closing = text
-
-    def diff(self, workdir: Path) -> str:
-        self.taken = self._inner.diff(workdir)
-        return self.taken
-
-    def check(self, workdir: Path, cmd: str, artifacts: Path) -> tuple[int, str]:
-        return self._inner.check(workdir, cmd, artifacts)
-
-
-def capture_reference(cases: Mapping[str, Case]) -> dict[tuple[str, str], Evidence]:
-    """Each judged case's solution and exploit, applied in a fresh sandbox.
-
-    The diff and closing message are taken the way a rep's are, by the runner's
-    own reference path. No judge is called here.
-    """
-    from benchmarks.runner.reference import run_reference
-
-    captured: dict[tuple[str, str], Evidence] = {}
-    for case_id in JUDGED_CASES:
-        case = cases[case_id]
-        for kind in ("solution", "exploit"):
-            directory = case.directory / kind
-            if not directory.is_dir():
-                continue
-            verdict = None
-            # A checkpoint can fail transiently under Docker (seen during #46:
-            # "is not a valid object" on a fresh copy), which run_reference
-            # reports as a verdict instead of raising. Retry, then give up loudly.
-            for _attempt in range(CAPTURE_ATTEMPTS):
-                runtime = _CaptureRuntime()
-                verdict = run_reference(case, directory, kind, runtime, None)
-                if runtime.taken is not None and runtime.closing is not None:
-                    captured[(case_id, kind)] = Evidence(
-                        runtime.taken, runtime.closing, []
-                    )
-                    break
-            if (case_id, kind) not in captured:
-                raise RuntimeError(
-                    f"{case_id} {kind}: no diff was captured: "
-                    f"{verdict.lines if verdict else ()}"
-                )
-    return captured
-
-
 # --- summary ------------------------------------------------------------
 
 
@@ -725,7 +655,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ]
 
     items: list[Item] = [
-        *reference_items(cases, capture_reference(cases)),
+        *reference_items(cases, capture_reference(cases, JUDGED_CASES)),
     ]
     for results in args.results:
         items += generated_items(Path(results), cases, {})

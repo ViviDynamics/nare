@@ -43,6 +43,11 @@ from benchmarks.runner.calibration import (
     render_calibration,
 )
 from benchmarks.runner.calibration_import import ImportRefused, import_reviews
+from benchmarks.runner.calibration_judge import (
+    capture_reference,
+    judge_references,
+    labelled_cases,
+)
 from benchmarks.runner.case import TIER_CHOICES, Case, CaseError, load_cases
 from benchmarks.runner.compare import (
     Judges,
@@ -286,9 +291,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     calibration.add_argument(
         "action",
-        choices=["export", "import", "check", "score"],
+        choices=["export", "import", "check", "score", "judge"],
         help="export blind rows to label; import reviewed verdicts; check the "
-        "labels file; score the judge",
+        "labels file; score the judge; judge the labelled solution and exploit "
+        "diffs",
     )
     calibration.add_argument(
         "file", nargs="?", help="import: the reviewed CSV or JSON file"
@@ -316,7 +322,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     calibration.add_argument("--results", help="results file (default: the newest)")
     calibration.add_argument("--labels", help=f"labels file (default: {LABELS_FILE})")
-    calibration.add_argument("--out", help="export: where to write the rows")
+    calibration.add_argument(
+        "--out",
+        help="export: where to write the rows; judge: where to write the judged "
+        "records (default: benchmarks/results/calibration/<stamp>.jsonl)",
+    )
+    calibration.add_argument(
+        "--judge-model",
+        help="judge: the judge model (default: NARE_BENCH_JUDGE_MODEL)",
+    )
+    calibration.add_argument(
+        "--repeats",
+        type=int,
+        default=1,
+        help="judge: how many times to judge each labelled attempt",
+    )
     calibration.add_argument(
         "--sample", type=int, help="export: at most this many rows, chosen at random"
     )
@@ -1255,9 +1275,9 @@ def import_command(
 
 
 def calibrate_command(args: argparse.Namespace, root: Path) -> int:
-    """`calibrate export|check|score`. Reads the labelled set and results, and
-    never calls a model: labelling is a person's job, and so is the scoring's
-    input."""
+    """`calibrate export|import|check|score|judge`. Only `judge` calls a model,
+    the judge, on the cases' own solution and exploit diffs; the rest read the
+    labelled set and results. Labelling is never the harness's job."""
     labels_path = Path(args.labels) if args.labels else root / LABELS_FILE
     try:
         cases = {c.id: c for c in load_cases(root / "benchmarks" / "cases")}
@@ -1302,6 +1322,8 @@ def calibrate_command(args: argparse.Namespace, root: Path) -> int:
         return 0
     if args.action == "import":
         return import_command(args, cases, labels_path)
+    if args.action == "judge":
+        return calibrate_judge(args, root, cases, labels_path)
     results_file = Path(args.results) if args.results else latest_results(root)
     if results_file is None or not results_file.is_file():
         print("bench: no results to read; run `bin/bench run` first", file=sys.stderr)
@@ -1325,6 +1347,82 @@ def calibrate_command(args: argparse.Namespace, root: Path) -> int:
         print(f"bench: {labels_path}: {exc}", file=sys.stderr)
         return 2
     print(render_calibration(calibrate(labels, records), labels_path))
+    return 0
+
+
+def calibrate_judge(
+    args: argparse.Namespace, root: Path, cases: Mapping[str, Case], labels_path: Path
+) -> int:
+    """`calibrate judge`: judge each labelled case's solution and exploit, the
+    diffs that reproduce exactly, and write records `calibrate score` reads.
+
+    Only an attempt whose diff a label names is judged. Everything that can be
+    refused is refused, with exit 2, before a sandbox is built or a model called.
+    """
+    judge_model = args.judge_model or os.environ.get("NARE_BENCH_JUDGE_MODEL")
+    if not judge_model:
+        print(
+            "bench: calibrate judge needs a judge model: pass --judge-model or set "
+            "NARE_BENCH_JUDGE_MODEL",
+            file=sys.stderr,
+        )
+        return 2
+    if args.repeats < 1:
+        print("bench: --repeats must be at least 1", file=sys.stderr)
+        return 2
+    try:
+        labels = load_labels(labels_path)
+    except CalibrationError as exc:
+        print(f"bench: {labels_path}: {exc}", file=sys.stderr)
+        return 2
+    wanted = labelled_cases(labels, cases)
+    if not wanted:
+        print(
+            f"bench: {labels_path}: no labelled judged case to judge", file=sys.stderr
+        )
+        return 1
+    try:
+        # No agent runs, so the judge stands in for the model, as in verify.
+        config = resolve_config(
+            model=judge_model,
+            provider=None,
+            base_url=None,
+            judge_model=judge_model,
+            env=os.environ,
+        )
+        build_image(root)
+        captured = capture_reference(cases, wanted)
+    except (ConfigError, SandboxError, RuntimeError) as exc:
+        print(f"bench: {exc}", file=sys.stderr)
+        return 2
+    judged = judge_references(
+        captured,
+        labels,
+        cases,
+        judge_from(lambda: judge_transport(config)),
+        judge_model=judge_model,
+        judge_max_tokens=config.judge_max_tokens,
+        repeats=args.repeats,
+    )
+    out = (
+        Path(args.out)
+        if args.out
+        else root / "benchmarks" / "results" / "calibration" / f"{new_stamp()}.jsonl"
+    )
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _write_records(out, judged.records)
+    failed = sum(1 for rec in judged.records if rec.judge_failed)
+    print(
+        f"calibration: judged {len(judged.records)} attempt(s) with {judge_model}"
+        + (f", {failed} without an answer" if failed else "")
+        + (
+            f"; {len(judged.skipped)} attempt(s) not judged: no label names their diff"
+            if judged.skipped
+            else ""
+        )
+        + f" -> {out}"
+    )
+    print(render_calibration(calibrate(labels, judged.records), labels_path))
     return 0
 
 
