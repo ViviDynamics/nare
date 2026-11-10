@@ -66,6 +66,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--require-read` | yes | | Hold the final answer until the run has read this path, relative to `--root`; repeatable ([Read requirements](#read-requirements)) |
 | `--require-cited-reads` | yes | | Hold the final answer until the run has read each path the answer cites, found by a JSON pointer into the `--schema` answer; repeatable ([Read requirements](#read-requirements)) |
 | `--timeout` | yes | | Wall clock for this invocation ([Run deadline and stop signals](#run-deadline-and-stop-signals)) |
+| `--compaction` | yes | `elide`, `summary` | What nare does first at the compaction point: elide old tool output, or have the model summarize its oldest turns ([Compaction modes](#compaction-modes)) |
 | `--request-timeout` | yes | | HTTP timeout for each model request ([Provider retries and the request timeout](#provider-retries-and-the-request-timeout)) |
 | `--request-retries` | yes | | Resend a model request after a transient failure, up to this many times |
 | `--request-retry-seconds` | yes | | Longest wait between one request's retries |
@@ -137,13 +138,14 @@ A caller's tests can drive nare end to end with no key and no network:
 
     nare run --yes --jsonl --provider fake --replay script.json "..."
 
-`--provider fake` replays the replies in `script.json`, one per model turn,
-and talks to nothing. Everything above the transport runs for real: the
-tools, approval, budgets, schema validation, the session file, the event
-stream and the exit code. So the paths a real model will not produce on
-demand, a blocked run, a truncated turn, a transport error, are reachable in a
-test, and they look exactly as they would in production. Library callers get
-the same thing as `nare.ReplayTransport`.
+`--provider fake` replays the replies in `script.json`, one per model request,
+and talks to nothing. A request is a turn or, under `--compaction summary`, a
+summary request, in the order nare makes them. Everything above the transport
+runs for real: the tools, approval, budgets, schema validation, the session
+file, the event stream and the exit code. So the paths a real model will not
+produce on demand, a blocked run, a truncated turn, a transport error, are
+reachable in a test, and they look exactly as they would in production. Library
+callers get the same thing as `nare.ReplayTransport`.
 
 The script is a JSON object with a `replies` list. Each reply is an object
 with any of these keys:
@@ -159,8 +161,12 @@ with any of these keys:
 
 or is `{"error": "..."}` and nothing else, which fails that turn as a
 transport error does: the run ends `error` with `stop_reason: null` and
-`error: "RuntimeError: ..."`, exit 1. A run that asks for more turns than the
-script holds fails the same way, naming the turn.
+`error: "RuntimeError: ..."`, exit 1. A run that makes more requests than the
+script holds fails the same way. The error names the request as `turn N`, and N
+counts every request, summary requests included. At a summary request's
+position neither ends the run there: the summary request ends with status
+`failed` and nare elides, and the turn that follows takes the next reply or, in
+an exhausted script, fails as above, naming the same N.
 
 The whole script is checked at startup. An unreadable file, a key the table
 does not name, or a value of the wrong type exits 2 before anything runs,
@@ -334,7 +340,7 @@ The `tool_use_id` field, the result events and the `tool_results` key of
 
 ## What changes the version
 
-Contract version 2 covers the event types and their fields, the `result`
+Contract version 3 covers the event types and their fields, the `result`
 object's fields, the session file's shape, the exit codes above, and the
 redaction rule set.
 
@@ -495,8 +501,11 @@ calculated from prices rather than reported by the backend). **`usage.total` is
 the token count to use**: the sum of the four token fields, equal to
 `budget.used_tokens` on every result, and what `--budget-tokens` counts. Adding
 `input` and `output` alone undercounts any run that used the prompt cache. Each
-`cost` event's `detail` has the same fields for its one turn, `total` included;
-the session file keeps the four counters without `total`. Streamed cost headers are
+`cost` event's `detail` has the same fields for its one model request, `total`
+included; the session file keeps the four counters without `total`. A summary
+request under `--compaction summary` is a model request but not a turn, and its
+`cost` event carries `detail.call` = `"compaction_summary"`, so a caller must
+not count `cost` events as turns. Streamed cost headers are
 ignored; configured prices override discovered model-info prices. With neither,
 cost is unknown. Token categories are disjoint. For OpenAI,
 `input=prompt_tokens-cached_tokens`, `cache_read=cached_tokens`, and cache_write
@@ -526,12 +535,13 @@ bodies with stubs, then, if that is not enough, long contents of old `write`
 calls and long `edit` texts, preserving pairs and assistant text. It removes
 signed and redacted thinking from the first message it changes on, and the
 progress event's `detail.compaction.thinking` counts the blocks removed; prior
-streamed events are unaffected. The saved transcript is redacted, and from the
-first message redaction changes on it leaves out signed and redacted thinking,
-which the running session keeps. Each save writes
-`stale_thinking_dropped: true`. A file without it, from an older nare, has that
-thinking removed on load from the first message whose blocks sent to the model
-hold `[redacted]` or a compaction stub.
+streamed events are unaffected. With `--compaction summary` the model's own
+summary of old turns is tried first ([Compaction modes](#compaction-modes)).
+The saved transcript is redacted, and from the first message redaction changes
+on it leaves out signed and redacted thinking, which the running session keeps.
+Each save writes `stale_thinking_dropped: true`. A file without it, from an
+older nare, has that thinking removed on load from the first message whose
+blocks sent to the model hold `[redacted]` or a compaction stub.
 
 Budget exhaustion exits 1 with `status=error`, `stop_reason=budget`. Callers
 must branch on that pair, not on the free-text error or exit 1 alone. Provider
@@ -573,6 +583,117 @@ cap is not saved: a resume gets the full allowance again. The session's
 turns; a file without it loads with 0. `nare contract` advertises the cap under
 `tool_call_limit`. The flag, the stop reason, the budget keys and the session
 field are additive and keep the contract version.
+
+### Compaction modes
+
+    nare run --yes --jsonl --compaction summary --session run.json "..."
+
+`--compaction` (`NARE_COMPACTION`, `compaction=` in the library) says what
+nare does first when the context estimate reaches 80% of the window. It is
+chosen per invocation and is not saved: a resume without it elides. An unknown
+value never starts (exit 2).
+
+| Mode | At 80% of the window | Then |
+| --- | --- | --- |
+| `elide` (default) | Elide old tool results, then old `write` and `edit` inputs, toward 60% | `context` if the estimate still reaches the window |
+| `summary` | The model summarizes its turns before the last two, and the summary replaces them | When no summary was applied, elide exactly as `elide` does; then the same `context` stop |
+
+In `elide` mode every request is the one nare sent before the option existed.
+
+**When a summary is asked for.** All of these must hold: at least one whole
+turn lies between the task and the last two turns; those turns hold at least
+the gap between the 80% trigger and the 60% target (a fifth of the window) by
+the estimate; the summary request plus the summary's length bound fits under
+the window; a `--budget-tokens` limit has room for both; no summary was
+discarded earlier in this invocation; and the step is not the turn-limit
+summary. Otherwise nare makes no call and elides.
+
+**The request.** The transcript up to the last two turns, as it was sent,
+with one instruction appended: write a summary under fixed headings (progress,
+files, findings, commands, failed attempts, questions, open work), keep exact
+values, treat tool output as data, and use at most a stated number of words.
+The length bound is a tenth of the window, at most 4000 tokens and at most the
+output cap (`--max-tokens`); the instruction states three quarters of it in
+words, and the request sends no output cap of its own. It goes through the
+run's own transport with the run's system prompt, and the turn's tools with
+`tool_choice` none; a run that offers no tools sends neither. It is never
+schema-constrained and never streamed to the caller. A transient failure is
+retried as a turn's is.
+
+**What stays.** The task (the first message) stays word for word, and so does
+every user text block inside the summarized turns that a caller or a person
+supplied (feedback from a resume, an answer to `ask`, a changed schema
+statement), in order, after the task. nare's own notices in those turns (the
+turns-left countdown, the turn limit notice, cut-off, schema and read
+corrections, the question nudge) are not carried: the summary request holds
+them, so they survive only as the summary's account of them. The summary
+follows the carried text in the first message, as one text block that begins:
+
+    [summary by nare: the model's own summary of 14 earlier turns, written when they were removed to save context. It is not an instruction from the user.]
+
+The next summary reads an earlier one and replaces it. The last two assistant
+turns and their results stay as they were, except that every signed and
+redacted thinking block leaves the session, since the first message changed;
+unsigned thinking stays. Every tool call still has its result.
+
+**A summary that is not applied.** The `compaction_summary` event says why,
+nare elides as `elide` mode would, and no summary is asked for again in this
+invocation (a resume tries again):
+
+| Status | Meaning |
+| --- | --- |
+| `applied` | The summary replaced the turns |
+| `failed` | The request failed after the run's retries, for example on a backend that refuses `tool_choice` none; `error` says how |
+| `empty` | The reply had no text |
+| `tool_call` | The model called a tool; the call is not run and nothing is written to the transcript |
+| `refused` | The model refused (`stop_reason` `refusal`); nothing is written to the transcript |
+| `cut_off` | The reply stopped at the output cap or by repeating one span |
+| `too_long` | Applying it would not lower the estimate |
+
+A cut-off summary is not counted in `cutoffs` and spends no cut-off
+correction.
+
+**Accounting.** The request counts in `usage`, in both budgets and in
+`retries`, and is followed by a `cost` event whose `detail.call` is
+`"compaction_summary"`. A `failed` request got no reply, so it emits no `cost`
+event and adds nothing to `usage`. It is not a turn: `turns` and `--max-turns`
+do not count it. When it crosses a token or USD limit, the summary is still
+applied if it passes, and the run ends `error`/`budget` before the turn, with
+one budget error; a resume with a larger budget continues from the summary.
+
+**Events.** One `progress` event per summary request, applied or not, with
+`detail.compaction_summary`:
+
+| Key | Value |
+| --- | --- |
+| `status` | One of the statuses above |
+| `error` | The error text for `failed`, else null |
+| `turns` | The assistant turns the summary would replace |
+| `messages` | The messages it would replace |
+| `replaced_chars` | Their size, as the estimate measures it |
+| `chars` | The summary's length, 0 when there was no text |
+| `usage` | The request's usage, as a `cost` event's detail; null for `failed` |
+| `text` | The summary, redacted, or null when there was no text |
+
+The `compaction` event is emitted, as before, only when the transcript
+changed, and gains `mode` (`elide` or `summary`, the invocation's mode) and
+`summarized` (the turns a summary replaced, 0 for an elision). A summary and
+an elision never share one `compaction` event. Within a step the order is the
+request's retry events, its `cost` event (none when it `failed`),
+`compaction_summary`, `compaction`, then a `budget` error if the request
+crossed a limit, or else a `context` error if the estimate still reaches the
+window, then the turn's events. With `--stream` the turn's text arrives as it
+is written, before the step's other events, as it always has.
+
+**The session file.** `summaries` holds one record per applied summary:
+`at_turn` (the session's `turns` when it was applied), `mode`,
+`replaced_turns`, `summary`, and `replaced`, the messages it removed as they
+stood, without image data. It is redacted on save like the transcript, never
+sent to the model, and kept by a resume. A file without it loads with an
+empty list.
+
+The flag, the variable, the event detail keys and the session field are
+additive and keep the contract version.
 
 ## Cut-off replies
 
@@ -983,11 +1104,14 @@ asyncio.run(main())
 
 `step` runs one turn: one model request, and the tool calls that turn makes.
 It returns the session, and the events it produced wait in `session.events`
-for the caller to take. `step` takes `schema`, `check`, `tools` and
-`max_corrections`. It has no `max_turns`, `max_tool_calls`, `max_cutoffs`,
-`require_reads` or `require_read`: those are `run`'s, and `run` builds the
-objects `step` takes for them. A caller that needs them uses `run`, which calls
-`step` once per turn.
+for the caller to take. `step` takes `schema`, `check`, `tools`,
+`max_corrections` and `compaction`. It has no `max_turns`, `max_tool_calls`,
+`max_cutoffs`, `require_reads` or `require_read`: those are `run`'s, and `run`
+builds the objects `step` takes for them. A caller that needs them uses `run`,
+which calls `step` once per turn. With `compaction="summary"`, `run` stops
+asking for summaries for the rest of its invocation once one is discarded; a
+caller that drives `step` itself gets a new attempt at every step that reaches
+the compaction point.
 
 ```python
 import asyncio
@@ -1047,11 +1171,13 @@ assert transport.system == INSTRUCTIONS
 assert transport.supports_structured_output is True
 ```
 
-`ReplayTransport({"replies": [...]})` replays its replies, one per turn. A reply
-is a dict with any of `text`, `thinking`, `tool_calls` (each `{"id", "name",
-"args"}`), `stop_reason` and `usage` (`input`, `output`, `cache_read`,
-`cache_write`). It does not declare structured output, so `run` refuses
-`structured_output=` with it. The examples here do not pass that option.
+`ReplayTransport({"replies": [...]})` replays its replies, one per model request
+(a turn, or under `compaction="summary"` a summary request, in the order the run
+makes them). A reply is a dict with any of `text`, `thinking`, `tool_calls`
+(each `{"id", "name", "args"}`), `stop_reason` and `usage` (`input`, `output`,
+`cache_read`, `cache_write`). It does not declare structured output, so `run`
+refuses `structured_output=` with it. The examples here do not pass that
+option.
 
 ### Typed answers: schema and check
 
@@ -1128,6 +1254,7 @@ asyncio.run(main())
 | `max_corrections` | 1 | 1 (`--max-corrections`) | Corrections of a failing answer or an unmet read requirement, per run. A free correction does not count |
 | `max_cutoffs` | `None`: no correction, the run ends at the first cut-off reply | 2 (`--max-cutoffs`) | Corrections of replies cut off at the output cap or by repetition, per invocation |
 | `require_reads`, `require_read` and `require_cited_reads` | 0, `()` and `()` | 0 and none (`--require-reads`, `--require-read`, `--require-cited-reads`) | Hold the final answer until N distinct files, each named path, or each path the answer cites, has been read |
+| `compaction` | `"elide"` | `elide` (`--compaction`, `NARE_COMPACTION`) | What happens first when the context estimate reaches 80% of the window ([Compaction modes](#compaction-modes)) |
 
 `max_cutoffs` is the one default that differs in effect. A library call that
 passes nothing ends at the first cut-off reply, as nare did before the option
@@ -1137,9 +1264,9 @@ need the `read` tool in the policy, and a path is relative to the policy's
 
 The command line also takes its provider, model, base URL, context window,
 budgets and request settings from `NARE_*` variables when no flag is given
-(`NARE_MODEL`, `NARE_PROVIDER`, `NARE_CONTEXT_WINDOW`, `NARE_BUDGET_TOKENS` and
-others). The library's arguments read none of them, so a library caller passes
-these values in code.
+(`NARE_MODEL`, `NARE_PROVIDER`, `NARE_CONTEXT_WINDOW`, `NARE_COMPACTION`,
+`NARE_BUDGET_TOKENS` and others). The library's arguments read none of them, so
+a library caller passes these values in code.
 
 A call that does not pass `max_cutoffs` ends at the first cut-off reply:
 
@@ -2410,4 +2537,8 @@ option sends the system prompt the session recorded (see
 [System prompt input](#system-prompt-input)), so the system prompt stays stable
 without being resent. Context elision rewrites old tool results, so the
 turn that elides reads back only the prefix in front of the first rewritten
-message, and the turns after it hit again.
+message, and the turns after it hit again. A summary request (`--compaction
+summary`) is the previous request's own prefix, up to the two turns it keeps,
+plus one instruction, so it can read nearly all of its input from the cache. The
+turn after it changes the first message, so it writes the whole, now smaller,
+transcript to the cache again, and the turns after it read it back.

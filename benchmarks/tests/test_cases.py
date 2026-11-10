@@ -674,6 +674,52 @@ def test_the_context_case_does_not_count_a_look_at_findings_as_a_write(
     assert context_reads_check(tmp_path, session) == 0
 
 
+def summarized_session(
+    replaced: list[list[dict[str, Any]]], kept: list[list[dict[str, Any]]]
+) -> str:
+    """A session under --compaction summary: the turns a summary replaced are in
+    summaries[].replaced, oldest first, and only the rest are in messages."""
+    return json.dumps(
+        {
+            "summaries": [
+                {
+                    "replaced_turns": len(replaced),
+                    "summary": "Read logs 1 to 5.",
+                    "replaced": [m for turn in replaced for m in turn],
+                }
+            ],
+            "messages": [m for turn in kept for m in turn],
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "case_id", ["context-overflow", "context-overflow-small-window"]
+)
+def test_the_context_cases_count_reads_a_summary_replaced(
+    tmp_path: Path, case_id: str
+) -> None:
+    reads = eight_reads()
+    session = summarized_session(reads[:5], [*reads[5:], write_findings(8)])
+    (tmp_path / "session.json").write_text(session)
+    assert run_here(check_with(case_id, "/out/session.json"), tmp_path, tmp_path) == 0
+
+
+@pytest.mark.parametrize(
+    "case_id", ["context-overflow", "context-overflow-small-window"]
+)
+def test_the_context_cases_still_fail_a_log_missing_from_both(
+    tmp_path: Path, case_id: str
+) -> None:
+    # Log 2 is in neither the archive nor the transcript.
+    reads = eight_reads()
+    session = summarized_session(
+        [reads[0], *reads[2:5]], [*reads[5:], write_findings(8)]
+    )
+    (tmp_path / "session.json").write_text(session)
+    assert run_here(check_with(case_id, "/out/session.json"), tmp_path, tmp_path) != 0
+
+
 @pytest.mark.parametrize(
     "closing",
     [

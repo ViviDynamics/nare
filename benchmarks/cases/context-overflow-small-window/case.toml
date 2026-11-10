@@ -32,7 +32,11 @@ cmd = '''
 python3 -I - <<'EOF'
 import json, re, sys
 calls, results = [], {}
-for message in json.load(open("/out/session.json"))["messages"]:
+session = json.load(open("/out/session.json"))
+# Under --compaction summary, the turns a summary replaced are kept in
+# summaries[].replaced, oldest first, ahead of what messages still holds.
+archived = [m for s in session.get("summaries") or [] for m in s.get("replaced") or []]
+for message in archived + session["messages"]:
     for block in message["content"]:
         if block.get("type") == "tool_use":
             calls.append(block)

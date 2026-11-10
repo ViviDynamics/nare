@@ -356,6 +356,7 @@ and [offline CLI evidence](docs/evidence/41/README.md).
 | `--budget-tokens N` | `NARE_BUDGET_TOKENS` | Positive integer cumulative token limit |
 | `--budget-usd X` | `NARE_BUDGET_USD` | Finite positive cumulative dollar limit |
 | `--context-window N` | `NARE_CONTEXT_WINDOW` | Positive integer context window; otherwise backend, otherwise 32000 |
+| `--compaction MODE` | `NARE_COMPACTION` | `nare run` only: `elide` (default) or `summary`, what happens first at the compaction point (below). `nare tui` has no such flag and ignores the variable: it always elides |
 | Input/output prices | `NARE_PRICE_IN`, `NARE_PRICE_OUT` | Both needed, dollars per million tokens |
 | Cache prices | `NARE_PRICE_CACHE_READ`, `NARE_PRICE_CACHE_WRITE` | Optional dollars per million tokens |
 
@@ -410,6 +411,20 @@ calling the model. This character-based estimate can undercount; a provider
 can still reject context as `max_tokens`.
 With a configured base URL, window discovery uses `/v1/model/info` with a
 5 second timeout; failures use 32000. Direct endpoints make no discovery request.
+
+`--compaction summary` (or `NARE_COMPACTION=summary`) has the model summarize
+first. At the same 80% point, one extra request, accounted like a turn but not
+counted as one, asks the model for a summary of its turns before the last two,
+with the run's tools offered and `tool_choice` none. The summary replaces those
+turns in the first message, labelled as the model's own, after the task and
+what a caller or a person said in them (feedback on a resume, answers to
+`ask`), which is kept word for word. nare's own notices in those turns, such as
+the turns-left countdown and corrections, are left to the summary. When the
+summary request fails or its reply is discarded, nare elides as above and does
+not ask again in that run. When no summary is worth asking for, nare elides and
+may ask at a later step. The session file keeps the replaced turns in
+`summaries`. The mode is not saved: a resume without the flag elides. See
+[the contract](docs/contract.md#compaction-modes).
 
 nare validates the subset of JSON Schema that generators emit (types,
 properties and maps, enums and `const`, bounds, composition and local `$ref`),

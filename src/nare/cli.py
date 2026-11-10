@@ -23,6 +23,7 @@ from typing import Any
 from nare import __version__, mcp_auth
 from nare.accounting import Prices, finite_number, prices_from_env
 from nare.caller_tools import command_tools
+from nare.compact import COMPACTION_MODES
 from nare.contract import (
     CONTRACT_VERSION,
     EXIT_CODES,
@@ -299,6 +300,19 @@ def build_parser() -> argparse.ArgumentParser:
             "model or tool call in flight, kills the bash commands this run "
             "started, saves the session and writes a result with stop_reason "
             "timeout. SIGTERM and SIGINT do the same with stop_reason interrupted"
+        ),
+    )
+    run_parser.add_argument(
+        "--compaction",
+        choices=COMPACTION_MODES,
+        # Empty counts as unset. argparse does not check a default against
+        # choices, so main() refuses an unknown NARE_COMPACTION itself.
+        default=os.environ.get("NARE_COMPACTION") or "elide",
+        help=(
+            "what nare does first at the compaction point: elide shortens old "
+            "tool output (default); summary has the model summarize its oldest "
+            "turns, which the summary replaces, and elides only when that is "
+            "skipped or fails. Per invocation, not saved (env: NARE_COMPACTION)"
         ),
     )
     add_run_flags(run_parser)
@@ -1023,6 +1037,7 @@ async def _execute(
                 max_tool_calls=args.max_tool_calls,
                 max_corrections=corrections_limit,
                 max_cutoffs=args.max_cutoffs,
+                compaction=args.compaction,
                 require_reads=args.require_reads or 0,
                 require_read=args.require_read or (),
                 require_cited_reads=args.require_cited_reads or (),
@@ -1239,6 +1254,11 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
             raise ValueError("--max-corrections must be a positive integer")
         if args.max_cutoffs < 0:
             raise ValueError("--max-cutoffs must be a nonnegative integer")
+        if args.compaction not in COMPACTION_MODES:
+            raise ValueError(
+                f"--compaction must be one of {', '.join(COMPACTION_MODES)}, "
+                f"not {args.compaction!r} (from NARE_COMPACTION)"
+            )
         prices = validate_run_args(args)
         if args.prompt_file is not None:
             try:

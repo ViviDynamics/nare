@@ -391,3 +391,25 @@ def test_the_documented_contract_describes_tool_argument_checks() -> None:
     assert "## Tool arguments" in text
     assert "bash: timeout: expected integer, got string" in text
     assert "edit: missing required parameter new" in text
+
+
+def test_the_documented_contract_describes_compaction_modes() -> None:
+    from nare.compact import COMPACTION_MODES
+    from nare.loop import SUMMARY_STATUSES
+
+    text = (Path(__file__).parent.parent / "docs" / "contract.md").read_text(
+        encoding="utf-8"
+    )
+    assert "Contract version 3 covers" in text
+    assert "Contract version 2 covers" not in text
+    section = text.split("### Compaction modes", 1)[1].split("\n## ", 1)[0]
+    for mode in COMPACTION_MODES:
+        assert f"| `{mode}`" in section
+    for status in SUMMARY_STATUSES:
+        assert f"| `{status}` |" in section
+    for key in ("status", "error", "turns", "messages", "replaced_chars", "chars"):
+        assert f"| `{key}` |" in section
+    for key in ("usage", "text"):
+        assert f"| `{key}` |" in section
+    assert "[summary by nare:" in section
+    assert "`summaries`" in section

@@ -15,6 +15,7 @@ import pytest
 from nare.session import Message, Usage
 from nare.transport import Delta, Reply, ToolCall, Transport, make_transport
 from nare.transport.replay import ReplayTransport, load_script
+from test_summary_compaction import at_trigger, drain
 
 HELLO = [Message("user", [{"type": "text", "text": "hello"}])]
 
@@ -206,3 +207,51 @@ def test_public_api_exports_it() -> None:
     import nare
 
     assert nare.ReplayTransport is ReplayTransport
+
+
+async def test_a_summary_request_takes_the_next_reply() -> None:
+    s = at_trigger()
+    transport = ReplayTransport({"replies": [{"text": "S"}, {"text": "done"}]})
+    await drain(s, transport, compaction="summary")
+    assert s.status == "done"
+    assert s.summaries[0]["summary"] == "S"
+
+
+async def test_a_script_one_reply_short_names_the_request_it_lacks() -> None:
+    s = at_trigger()
+    transport = ReplayTransport({"replies": [{"text": "S"}]})
+    await drain(s, transport, compaction="summary")
+    assert (s.status, s.stop_reason) == ("error", None)
+    assert s.error == "RuntimeError: replay script has no reply for turn 2: it holds 1"
+    assert s.summaries[0]["summary"] == "S"
+
+
+async def test_an_error_at_a_summary_request_fails_only_that_request() -> None:
+    s = at_trigger()
+    transport = ReplayTransport({"replies": [{"error": "boom"}, {"text": "done"}]})
+    events = await drain(s, transport, compaction="summary")
+    [asked] = [
+        e.detail["compaction_summary"]
+        for e in events
+        if e.type == "progress" and "compaction_summary" in e.detail
+    ]
+    assert (asked["status"], asked["error"]) == ("failed", "RuntimeError: boom")
+    # No reply arrived, so no cost: the one cost event is the turn's.
+    assert [e.detail.get("call") for e in events if e.type == "cost"] == [None]
+    assert (s.status, s.summaries) == ("done", [])
+
+
+async def test_a_script_exhausted_at_a_summary_request_fails_the_turn_after() -> None:
+    s = at_trigger()
+    transport = ReplayTransport({"replies": [{"text": "used"}]})
+    await transport.turn(HELLO, [])  # an earlier request took the only reply
+    events = await drain(s, transport, compaction="summary")
+    [asked] = [
+        e.detail["compaction_summary"]
+        for e in events
+        if e.type == "progress" and "compaction_summary" in e.detail
+    ]
+    lacking = "RuntimeError: replay script has no reply for turn 2: it holds 1"
+    assert (asked["status"], asked["error"]) == ("failed", lacking)
+    assert [e for e in events if e.type == "cost"] == []
+    assert (s.status, s.stop_reason, s.error) == ("error", None, lacking)

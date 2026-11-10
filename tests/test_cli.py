@@ -23,8 +23,9 @@ from nare.cli import (
     transport_from_args,
 )
 from nare.events import Event
-from nare.session import loads
+from nare.session import dumps, loads
 from nare.transport.anthropic import AnthropicTransport
+from test_summary_compaction import WINDOW, at_trigger
 
 
 def parse(*argv: str) -> argparse.Namespace:
@@ -724,3 +725,54 @@ def test_a_streamed_turn_is_saved_only_once_its_calls_have_results(
     assert main(argv, transport=fake) == 0
     snap = loads((tmp_path / "snap.json").read_text())
     assert [m.role for m in snap.messages] == ["user", "assistant", "user"]
+
+
+def test_compaction_is_elide_unless_the_environment_or_the_flag_says(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NARE_COMPACTION", raising=False)
+    assert parse("go").compaction == "elide"
+    monkeypatch.setenv("NARE_COMPACTION", "")  # empty is unset
+    assert parse("go").compaction == "elide"
+    monkeypatch.setenv("NARE_COMPACTION", "summary")
+    assert parse("go").compaction == "summary"
+    assert parse("go", "--compaction", "elide").compaction == "elide"
+
+
+def test_an_unknown_compaction_flag_exits_2() -> None:
+    with pytest.raises(SystemExit) as exited:
+        parse("go", "--compaction", "hybrid")
+    assert exited.value.code == 2
+
+
+def test_an_unknown_compaction_from_the_environment_never_starts(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("NARE_COMPACTION", "hybrid")
+    fake = FakeProvider([text_reply("done")])
+    assert main(["run", "--yes", "--jsonl", "go"], transport=fake) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "--compaction must be one of elide, summary, not 'hybrid'" in err
+    assert fake.calls == []
+
+
+def test_the_compaction_flag_reaches_the_run(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "s.json"
+    path.write_text(dumps(at_trigger()), encoding="utf-8")
+    fake = FakeProvider([text_reply("S"), text_reply("done")])
+    argv = ["run", "--yes", "--jsonl", "--compaction", "summary"]
+    argv += ["--context-window", str(WINDOW), "--resume", str(path)]
+    assert main(argv, transport=fake) == 0
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [
+        line["detail"]["compaction_summary"]["status"]
+        for line in lines
+        if "compaction_summary" in line.get("detail", {})
+    ] == ["applied"]
+    assert loads(path.read_text(encoding="utf-8")).summaries[0]["summary"] == "S"

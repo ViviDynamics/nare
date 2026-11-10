@@ -26,8 +26,19 @@ from typing import Any, Literal, cast
 from nare import mcp_defer as deferral
 from nare.accounting import Prices, finite_number, turn_usage
 from nare.caller_tools import Tool, external_tools
-from nare.compact import compact, context_chars, estimate
+from nare.compact import (
+    COMPACTION_MODES,
+    CompactionMode,
+    CompactionReport,
+    SummaryPlan,
+    apply_summary,
+    compact,
+    context_chars,
+    estimate,
+    plan_summary,
+)
 from nare.corrections import (
+    CORRECTION_LEAD,
     SCHEMA_CORRECTIONS_DEFAULT,
     charge,
     check_max_corrections,
@@ -39,7 +50,13 @@ from nare.mcp import Server, connect
 from nare.reads import NO_READS, ReadRequirement, cited_unmet, read_record, unmet
 from nare.reads import build as build_reads
 from nare.schema import DuplicateKeyError, SchemaError, extract_json, validate
-from nare.session import Message, Session, append_user_text, drop_signed_thinking
+from nare.session import (
+    Message,
+    Session,
+    Usage,
+    append_user_text,
+    drop_signed_thinking,
+)
 from nare.tools import (
     READ_ONLY_TOOLS,
     Approve,
@@ -64,6 +81,15 @@ from nare.transport import (
 )
 
 MAX_TURNS_DEFAULT = 50
+
+# What the model is told as the turn limit nears, and when it is reached. With
+# WRAP_UP_TURNS or fewer turns left, a run with tools is told the count.
+WRAP_UP_TURNS = 5
+WRAP_UP = "{} turns left: wrap up and summarise."
+TURN_LIMIT = (
+    "Turn limit reached. Tools are disabled. Summarise what was done, "
+    "what remains, and any processes left running."
+)
 
 # The constrained-answer modes a transport can be asked for. One today: the
 # OpenAI-compatible json_schema response format.
@@ -272,6 +298,22 @@ def check_max_cutoffs(value: int | None) -> None:
         raise ValueError("max_cutoffs must be a nonnegative integer")
 
 
+@dataclass
+class SummaryTier:
+    """--compaction summary for one invocation: on until a summary is not
+    applied, then off, so a model that cannot summarize is asked once. Not
+    saved: a resume tries again."""
+
+    failed: bool = False
+
+
+def check_compaction(value: object) -> None:
+    if value not in COMPACTION_MODES:
+        raise ValueError(
+            f"compaction must be one of {', '.join(COMPACTION_MODES)}, not {value!r}"
+        )
+
+
 # An ask beside other calls is not a question about the request: the turn has
 # already acted on one reading of it. Honouring it told the caller that work
 # was waiting on them when it was finished.
@@ -305,22 +347,41 @@ def asks_in_prose(text: str) -> bool:
     return _SENTENCE_QUESTION.search(prose) is not None
 
 
+def _history(s: Session) -> Iterable[tuple[Any, list[Any]]]:
+    """Every message the session has held, as (role, blocks): the turns a
+    summary replaced, from its archive, then the transcript. A record a file
+    holds in another shape adds nothing."""
+    for archived in s.summaries:
+        replaced = archived.get("replaced") if isinstance(archived, dict) else None
+        for message in replaced if isinstance(replaced, list) else ():
+            if isinstance(message, dict) and isinstance(message.get("content"), list):
+                yield message.get("role"), message["content"]
+    for message in s.messages:
+        yield message.role, message.content
+
+
 def _wrote_a_file(s: Session) -> bool:
-    """Whether a write or edit has succeeded in this session."""
+    """Whether a write or edit has succeeded in this session, including in the
+    turns a summary has since replaced."""
+    blocks = [
+        (role, block)
+        for role, content in _history(s)
+        for block in content
+        if isinstance(block, dict)
+    ]
     writes = {
         block.get("id")
-        for message in s.messages
-        if message.role == "assistant"
-        for block in message.content
-        if block.get("type") == "tool_use" and block.get("name") in ("write", "edit")
+        for role, block in blocks
+        if role == "assistant"
+        and block.get("type") == "tool_use"
+        and block.get("name") in ("write", "edit")
     }
     return any(
-        block.get("type") == "tool_result"
+        role == "user"
+        and block.get("type") == "tool_result"
         and block.get("tool_use_id") in writes
         and not block.get("is_error")
-        for message in s.messages
-        if message.role == "user"
-        for block in message.content
+        for role, block in blocks
     )
 
 
@@ -704,6 +765,12 @@ async def _with_retries(
             await retry.sleep(wait)
 
 
+# How a read correction begins; the reads still owed follow it.
+READS_HELD = (
+    "Your final answer came before the reads it must rest on. Before you answer, "
+)
+
+
 def _hold_for_reads(
     s: Session, reads: ReadRequirement, max_corrections: int, answer: Any = None
 ) -> bool:
@@ -732,11 +799,7 @@ def _hold_for_reads(
         s.error = "final answer before the required reads: " + "; ".join(gaps)
         s.events.append(Event("error", s.error))
         return True
-    append_user_text(
-        s,
-        "Your final answer came before the reads it must rest on. Before you "
-        "answer, " + "; ".join(gaps) + ".",
-    )
+    append_user_text(s, READS_HELD + "; ".join(gaps) + ".")
     s.events.append(
         Event(
             "progress",
@@ -745,6 +808,186 @@ def _hold_for_reads(
         )
     )
     return True
+
+
+# The `cost` event's `detail.call` for a request that is not a turn.
+SUMMARY_CALL = "compaction_summary"
+
+# The user text the loop writes about the run itself, from the texts that write
+# it. A summary reads these and does not carry them into the first message:
+# carried, every countdown and correction would stay beside the task for good.
+# The schema statements are not among them: they state the caller's schema.
+_NOTICES = frozenset(
+    {
+        QUESTION_NUDGE,
+        TURN_LIMIT,
+        *(WRAP_UP.format(n) for n in range(1, WRAP_UP_TURNS + 1)),
+        *_CUTOFF_GUIDANCE.values(),
+        *(guidance + _CALLS_NOT_RUN for guidance in _CUTOFF_GUIDANCE.values()),
+    }
+)
+# The notices whose end is filled in: the reads owed, the schema's complaints.
+_NOTICE_LEADS = (READS_HELD, CORRECTION_LEAD)
+
+
+def loop_notice(text: str) -> bool:
+    """Whether a user text block is one of the loop's own notices, not text a
+    caller or a person supplied (a prompt, feedback, an answer to `ask`, a
+    queued line, a schema statement)."""
+    return text in _NOTICES or text.startswith(_NOTICE_LEADS)
+
+
+# How a summary request ended. All but `applied` leave the session as `elide`
+# would.
+SummaryStatus = Literal[
+    "applied", "failed", "empty", "tool_call", "refused", "cut_off", "too_long"
+]
+SUMMARY_STATUSES: tuple[SummaryStatus, ...] = (
+    "applied",
+    "failed",
+    "empty",
+    "tool_call",
+    "refused",
+    "cut_off",
+    "too_long",
+)
+
+
+def _cost_event(usage: Usage, call: str | None = None) -> Event:
+    """One request's cost. `call` names a request that is not a turn."""
+    detail = usage.wire()
+    if call is not None:
+        detail["call"] = call
+    return Event(
+        "cost",
+        f"{usage.input} in / {usage.output} out, "
+        + (f"${usage.cost:.6f}" if usage.cost is not None else "cost unknown")
+        + (" (estimate)" if usage.estimated else ""),
+        detail,
+    )
+
+
+def _turns(n: int) -> str:
+    return f"{n} turn" if n == 1 else f"{n} turns"
+
+
+def _compaction_text(report: CompactionReport) -> str:
+    """The compaction event's text. A summary that was not applied leaves an
+    elision, whose text is the one `elide` mode writes."""
+    if report.summarized:
+        done = f"summarized {_turns(report.summarized)}"
+    else:
+        done = f"elided {report.elided} tool results" + (
+            f" and {report.inputs} tool inputs" if report.inputs else ""
+        )
+    return (
+        f"compacted: {done}"
+        + (f", dropped {report.thinking} thinking blocks" if report.thinking else "")
+        + f", ~{report.before:.0f} -> ~{report.after:.0f} tokens"
+    )
+
+
+async def _summarize(
+    s: Session,
+    transport: Transport,
+    policy: Policy,
+    plan: SummaryPlan,
+    tier: SummaryTier,
+    *,
+    window: int,
+    prices: Prices | None,
+    retry: RetryPolicy,
+    on_event: Callable[[Event], None] | None,
+) -> tuple[CompactionReport | None, bool]:
+    """Ask the model for the summary `plan` describes, and apply it.
+
+    Returns the report when the summary was applied, and whether a reply was
+    accounted. The request is not a turn: it counts in `usage` and `retries`,
+    and the transcript changes only through `apply_summary`. It is never
+    streamed, so no delta of it reaches the caller. A summary that is not
+    applied turns `tier` off and leaves the session as `elide` would. A request
+    that raises is one of those, but cancellation is not an `Exception`, so a
+    deadline or a stop signal still ends the run.
+    """
+    request = (
+        plan.request
+        if policy.image_input
+        else _without_images(plan.request, policy.image_model)
+    )
+    offered = policy.schemas()
+
+    async def attempt() -> Reply:
+        # As the turn-limit summary does: the turn's tools stay on the wire, so
+        # the prefix the signed thinking binds to is the one it was made
+        # against, and tool_choice none forbids calls. A run that offers no
+        # tools sends its ordinary request.
+        if offered:
+            return await cast(ToolChoiceTransport, transport).turn(
+                request, offered, tool_choice="none"
+            )
+        return await transport.turn(request, offered)
+
+    status: SummaryStatus
+    error: str | None = None
+    usage: Usage | None = None
+    text = ""
+    report = None
+    try:
+        reply = await _with_retries(s, transport, attempt, retry, on_event)
+    except Exception as exc:
+        status = "failed"
+        error = f"{type(exc).__name__}: {exc}"
+    else:
+        usage = turn_usage(reply, prices)
+        s.usage += usage
+        s.events.append(_cost_event(usage, SUMMARY_CALL))
+        text = _final_text(reply.content).strip()
+        if reply.tool_calls:
+            status = "tool_call"
+        elif reply.stop_reason == "refusal":
+            # Its text says no, and would stand in for the turns it replaces.
+            status = "refused"
+        elif reply.stop_reason in CUTOFF_REASONS:
+            status = "cut_off"
+        elif not text:
+            status = "empty"
+        else:
+            report = apply_summary(
+                s,
+                plan,
+                text,
+                window,
+                image_input=policy.image_input,
+                notice=loop_notice,
+            )
+            status = "applied" if report is not None else "too_long"
+    if status != "applied":
+        tier.failed = True
+    if status == "applied":
+        notice = (
+            f"compaction summary: {_turns(plan.turns)} into ~{len(text) / 4:.0f} tokens"
+        )
+    else:
+        notice = f"compaction summary discarded ({status}); eliding instead"
+    s.events.append(
+        Event(
+            "progress",
+            notice,
+            {
+                "compaction_summary": {
+                    "status": status,
+                    "error": error,
+                    "turns": plan.turns,
+                    "messages": plan.messages,
+                    "replaced_chars": plan.replaced_chars,
+                    "chars": len(text),
+                    "usage": usage.wire() if usage is not None else None,
+                    "text": text or None,
+                }
+            },
+        )
+    )
+    return report, status != "failed"
 
 
 async def step(
@@ -767,7 +1010,12 @@ async def step(
     tools: Sequence[Tool] = (),
     summary: bool = False,
     question_nudge: bool = False,
+    compaction: CompactionMode = "elide",
+    summary_tier: SummaryTier | None = None,
 ) -> Session:
+    # As run() does: a caller that drives step() itself with a typo is told,
+    # rather than getting elide.
+    check_compaction(compaction)
     if tools:
         # The allowlist is the policy's, as for built-ins: a registered tool is
         # offered only when `policy.tools` names it. `pending` is kept, so a name
@@ -776,22 +1024,48 @@ async def step(
             policy,
             external={**policy.external, **external_tools(tools)},
         )
-    report = compact(s, context_window, image_input=policy.image_input)
-    if report is not None:
-        s.events.append(
-            Event(
-                "progress",
-                f"compacted: elided {report.elided} tool results"
-                + (f" and {report.inputs} tool inputs" if report.inputs else "")
-                + (
-                    f", dropped {report.thinking} thinking blocks"
-                    if report.thinking
-                    else ""
-                )
-                + f", ~{report.before:.0f} -> ~{report.after:.0f} tokens",
-                {"compaction": asdict(report)},
-            )
+    report: CompactionReport | None = None
+    tier = summary_tier if summary_tier is not None else SummaryTier()
+    # Not on the turn-limit summary: the run ends after that call, and a
+    # resume compacts on its first step anyway. Not once a summary has not
+    # been applied in this invocation.
+    spent = False
+    if compaction == "summary" and not summary and not tier.failed:
+        cap = getattr(transport, "max_tokens", None)
+        plan = plan_summary(
+            s,
+            context_window,
+            image_input=policy.image_input,
+            output_cap=(
+                cap
+                if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0
+                else None
+            ),
         )
+        if plan is not None:
+            report, spent = await _summarize(
+                s,
+                transport,
+                policy,
+                plan,
+                tier,
+                window=context_window,
+                prices=prices,
+                retry=retry,
+                on_event=on_event,
+            )
+    if report is None:
+        report = compact(s, context_window, image_input=policy.image_input)
+    if report is not None:
+        report = replace(report, mode=compaction)
+        s.events.append(
+            Event("progress", _compaction_text(report), {"compaction": asdict(report)})
+        )
+    # A summary request that crossed a limit has still been kept when it passed
+    # its checks, and the turn is not sent. Checked before the context size, so
+    # the run ends `budget` even when the estimate still reaches the window.
+    if spent and check_budget(s):
+        return s
     size = estimate(s, image_input=policy.image_input)
     if size >= context_window:
         s.status = "error"
@@ -917,15 +1191,7 @@ async def step(
             s.events.append(Event("progress", block.get("text", "")))
         elif block.get("type") == "thinking":
             s.events.append(Event("thinking", block.get("thinking", "")))
-    s.events.append(
-        Event(
-            "cost",
-            f"{usage.input} in / {usage.output} out, "
-            + (f"${usage.cost:.6f}" if usage.cost is not None else "cost unknown")
-            + (" (estimate)" if usage.estimated else ""),
-            usage.wire(),
-        )
-    )
+    s.events.append(_cost_event(usage))
 
     # A tool turn can carry already valid findings alongside its calls. Keep
     # the latest schema-valid document without claiming the task completed.
@@ -1204,6 +1470,8 @@ async def _live_step(
     check: Check | None = None,
     summary: bool = False,
     question_nudge: bool = False,
+    compaction: CompactionMode = "elide",
+    summary_tier: SummaryTier | None = None,
 ) -> AsyncGenerator[Event, None]:
     queue: asyncio.Queue[Event] = asyncio.Queue()
     buffers: dict[Literal["progress", "thinking"], LiveText] = {
@@ -1248,6 +1516,8 @@ async def _live_step(
             check=check,
             summary=summary,
             question_nudge=question_nudge,
+            compaction=compaction,
+            summary_tier=summary_tier,
         )
     )
     waiter: asyncio.Task[Event] | None = None
@@ -1303,6 +1573,7 @@ async def _run(
     check: Check | None = None,
     inbox: Callable[[], list[str]] | None = None,
     question_nudge: bool = False,
+    compaction: CompactionMode = "elide",
 ) -> AsyncGenerator[Event, None]:
     """Advance the session to a terminal status, yielding events as they occur.
 
@@ -1418,6 +1689,7 @@ async def _run(
     # Per invocation too, for the same reason.
     tool_calls = ToolCallLimit(max_tool_calls) if max_tool_calls is not None else None
     cutoffs = CutoffLimit(max_cutoffs) if max_cutoffs is not None else None
+    summary_tier = SummaryTier() if compaction == "summary" else None
     while session.status == "working":
         if inbox is not None:
             # What a person typed while the last step ran. It follows that
@@ -1433,13 +1705,9 @@ async def _run(
             remaining = max_turns - (session.turns - budget_from)
             summary = remaining <= 0
             if summary:
-                append_user_text(
-                    session,
-                    "Turn limit reached. Tools are disabled. Summarise what was done, "
-                    "what remains, and any processes left running.",
-                )
-            elif remaining <= 5:
-                warning = f"{remaining} turns left: wrap up and summarise."
+                append_user_text(session, TURN_LIMIT)
+            elif remaining <= WRAP_UP_TURNS:
+                warning = WRAP_UP.format(remaining)
                 # Only a run with tools, built-in or MCP, has anything to wrap
                 # up. A tool-free run's every turn is an answer: the text
                 # would be an instruction its caller never wrote, ahead of
@@ -1470,6 +1738,8 @@ async def _run(
                             check=check,
                             summary=summary,
                             question_nudge=question_nudge,
+                            compaction=compaction,
+                            summary_tier=summary_tier,
                         )
                     ) as stream:
                         async for event in stream:
@@ -1492,8 +1762,15 @@ async def _run(
                         check=check,
                         summary=summary,
                         question_nudge=question_nudge,
+                        compaction=compaction,
+                        summary_tier=summary_tier,
                     )
-                if session.status not in ("done", "blocked"):
+                # A summary request that crossed a limit already ended the
+                # step with `budget`; checking again would report it twice.
+                if (
+                    session.status not in ("done", "blocked")
+                    and session.stop_reason != "budget"
+                ):
                     check_budget(session)
                 if (
                     session.status == "working"
@@ -1557,6 +1834,7 @@ async def run(
     inbox: Callable[[], list[str]] | None = None,
     tools: Sequence[Tool] = (),
     question_nudge: bool = False,
+    compaction: CompactionMode = "elide",
 ) -> AsyncGenerator[Event, None]:
     check_structured_output(transport, schema, structured_output)
     # Refused before any call: a bad registration is the caller's error, not a
@@ -1575,6 +1853,7 @@ async def run(
     check_max_tool_calls(max_tool_calls)
     check_max_corrections(max_corrections)
     check_max_cutoffs(max_cutoffs)
+    check_compaction(compaction)
     # No policy: read-only tools, whatever approver is passed. Only an explicit
     # policy enables write, edit or bash; the approver gates what it allows.
     base = Policy(tools=READ_ONLY_TOOLS) if policy is None else policy
@@ -1639,6 +1918,7 @@ async def run(
                     check=check,
                     inbox=inbox,
                     question_nudge=question_nudge,
+                    compaction=compaction,
                 )
             ) as stream:
                 async for event in stream:
