@@ -4,7 +4,8 @@
 **Status:** Reviewed by the maintainer 2026-11-05: approved with one change
 and one addition (the decisions below). Built on branch
 feat/42-summary-compaction, 2026-11-05, and amended during the build where
-marked. The benchmark (section 15) has not been run.
+marked. The benchmark (section 15) ran on 2026-11-10; its results, and
+the two changes made to its plan, close section 15.
 **Issue:** #42
 **Scope:** One opt-in compaction mode, `--compaction summary`, in which the
 model writes a summary of the oldest turns and that summary replaces them,
@@ -898,6 +899,70 @@ small runner change for a later issue if these numbers are wanted routinely.
   `summary` is better, worse or indistinguishable on one task shape. Proposing
   a new default, for all runs or per model, is a separate issue and wants the
   long-session case too.
+
+### Results, 2026-11-10
+
+Run after code review on `gpt-6-luna` with the judge `claude-haiku-5-5`, the
+model and cost the maintainer confirmed (decision 8). Two changes to the plan
+above were made before any rep was paid for:
+
+- **The case.** `context-overflow-small-window` (#158, added after this spec)
+  at its own `--context-window 48000`, not `context-overflow` at 32000. Its
+  logs are hex, so the estimate grows as the tokenizer counts and the case
+  compacts from the fourth read; the dot logs of `context-overflow` tokenize
+  far below the estimate. The model's committed full baseline is an `elide`
+  run of this case, so it served as the reference and no local baseline was
+  blessed.
+- **The check.** Both context cases read each log's call from `messages`
+  only, so a read a summary replaced counted as never made: the risk the #151
+  bullet above names. The check now reads `summaries[].replaced` first, and
+  `elide` grading is unchanged.
+
+Each arm is two `run`s of five reps. In each arm one `run` saw a failure in
+its first five, and the runner replaced those five with a re-confirmation at
+ten, so each arm pools 15 kept reps.
+
+| | `elide` | `summary` |
+| --- | --- | --- |
+| Execution pass | 14/15 | 13/15 |
+| Total tokens per rep, median | 366,666 | 365,939 |
+| Cache read per rep, median | 332,619 | 329,140 |
+| Output per rep, median | 2,445 | 2,137 |
+| Dollars per rep, median | $0.0053 | $0.0050 |
+| Dollars, 15 reps | $0.195 | $0.219 |
+| Turns, median | 12 | 12 |
+| Compactions, median | 6 | 6 |
+| Repeated bash commands, total | 4 | 14 |
+| Stop reasons | `end_turn` 15 | `end_turn` 13, `max_turns` 2 |
+| Summary requests | none | 3, all `applied`, $0.0022 together |
+
+The pass rates cannot be told apart: Fisher's exact test, two-sided, gives
+p = 1.0.
+
+- **The summary tier seldom engaged.** 12 of 15 `summary` reps made no
+  summary request and elided as `elide` does. The first compaction comes after
+  the third read, when the turns a summary could replace hold one log: about
+  7,200 tokens by the estimate, under the gate's fifth of the window (9,600).
+  That step elides instead, and since elision then runs every step, the
+  replaceable turns never again hold enough. On a run that adds one large
+  output per turn, `summary` behaves as `elide` unless one output exceeds a
+  fifth of the window.
+- **When it engaged, the summary was faithful.** In all 3, the summary text
+  kept every sentinel its replaced turns held.
+- **The failures are the same in both arms, and not the summary's.** All three
+  read the eight logs, found the early results elided, and read them again.
+  The `elide` failure re-read log 1 after writing `findings.json`. The two
+  `summary` failures re-read from log 1 and ran out of turns; each summary was
+  applied during that second pass, after the elision that started it. Those
+  two reps hold 11 of the `summary` arm's 14 repeated commands.
+- **The smoke tier is inert under `summary`.** No smoke rep compacted or made
+  a summary request, and `run` reported no regressions against the committed
+  smoke baseline.
+
+`elide` stays the default and `summary` stays opt-in, as section 4 has it. On
+this case the benchmark cannot separate the tiers, because the gate keeps the
+summary from running. Whether the gate should let it engage on this task
+shape is a follow-up issue.
 
 ## 16. Testing
 
