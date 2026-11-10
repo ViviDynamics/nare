@@ -325,3 +325,76 @@ async def test_streamed_price_estimates_enforce_usd_budget(
     assert session.turns == 1
     assert session.usage.cost == pytest.approx(0.000030 if override else 15)
     assert any("USD budget exhausted" in e.text for e in events)
+
+
+async def test_discovery_is_cached_per_process_across_transports() -> None:
+    requests: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request.url.path)
+        return httpx2.Response(
+            200,
+            json={
+                "data": [{"model_name": "m", "model_info": {"max_input_tokens": 999}}]
+            },
+        )
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    first = OpenAITransport(
+        model="m",
+        api_key="offline",
+        base_url="https://offline.test/v1",
+        http_client=client,
+    )
+    second = OpenAITransport(
+        model="m",
+        api_key="offline",
+        base_url="https://offline.test",
+        http_client=client,
+    )
+    assert await first.context_window() == 999
+    assert await second.context_window() == 999
+    assert requests == ["/v1/model/info"]
+
+
+async def test_failed_discovery_is_cached_per_process() -> None:
+    requests: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request.url.path)
+        raise httpx2.ReadTimeout("offline timeout", request=request)
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    for _ in range(2):
+        transport = OpenAITransport(
+            model="m",
+            api_key="offline",
+            base_url="https://offline.test/v1",
+            http_client=client,
+        )
+        assert await transport.context_window() is None
+    assert requests == ["/v1/model/info"]
+
+
+async def test_discovery_cache_is_keyed_by_model() -> None:
+    requests: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request.url.path)
+        return httpx2.Response(
+            200,
+            json={
+                "data": [
+                    {"model_name": "m", "model_info": {"max_input_tokens": 1000}},
+                    {"model_name": "n", "model_info": {"max_input_tokens": 2000}},
+                ]
+            },
+        )
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    base = "https://offline.test/v1"
+    m = OpenAITransport(model="m", api_key="offline", base_url=base, http_client=client)
+    n = OpenAITransport(model="n", api_key="offline", base_url=base, http_client=client)
+    assert await m.context_window() == 1000
+    assert await n.context_window() == 2000
+    assert len(requests) == 2

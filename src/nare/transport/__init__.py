@@ -396,6 +396,12 @@ def reported_cost(
     return cost if math.isfinite(cost) and cost >= 0 else None
 
 
+# Discovered model info per (gateway, model), for the whole process. A failed
+# lookup is stored as {} too, so a gateway that is down costs one timeout per
+# process, not one per transport.
+_DISCOVERED: dict[tuple[str, str], dict[str, Any]] = {}
+
+
 class ModelMetadata:
     """One best-effort discovery shared by window sizing and price estimates."""
 
@@ -410,16 +416,18 @@ class ModelMetadata:
         self.base_url = base_url
         self.model = model
         self.headers = headers
-        self.loaded = False
         self.info: dict[str, Any] = {}
 
     async def load(self) -> None:
-        if self.loaded:
-            return
-        self.loaded = True
         if self.base_url is None:
             return
         base = self.base_url.rstrip("/").removesuffix("/v1")
+        key = (base, self.model)
+        if key not in _DISCOVERED:
+            _DISCOVERED[key] = await self._fetch(base)
+        self.info = _DISCOVERED[key]
+
+    async def _fetch(self, base: str) -> dict[str, Any]:
         try:
             response = await self.client.get(
                 f"{base}/v1/model/info", headers=self.headers, timeout=5.0
@@ -429,13 +437,13 @@ class ModelMetadata:
                 if entry.get("model_name") == self.model:
                     info = entry.get("model_info")
                     if isinstance(info, dict):
-                        self.info = info
-                        return
+                        return info
             raise ValueError("model info missing/invalid")
         except (httpx2.HTTPError, ValueError, TypeError, AttributeError) as exc:
             logging.getLogger(__name__).warning(
                 "context window discovery failed: %s", exc
             )
+            return {}
 
     async def context_window(self) -> int | None:
         await self.load()
