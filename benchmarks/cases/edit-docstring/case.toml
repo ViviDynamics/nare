@@ -14,7 +14,7 @@ status = "done"
 
 [judge]
 assertions = [
-  "The docstring describes what foo does, rather than only restating its name.",
+  "foo's own docstring says what foo computes, not only that it sums or restates the function's name.",
   "The behaviour of foo() is unchanged.",
 ]
-min_met = 1
+min_met = 2
