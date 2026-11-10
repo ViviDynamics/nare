@@ -28,10 +28,14 @@ from nare.accounting import Prices, finite_number, turn_usage
 from nare.caller_tools import Tool, external_tools
 from nare.compact import (
     COMPACTION_MODES,
+    TARGET,
+    TRIGGER,
     CompactionMode,
+    CompactionPoint,
     CompactionReport,
     SummaryPlan,
     apply_summary,
+    check_compaction_point,
     compact,
     context_chars,
     estimate,
@@ -312,6 +316,13 @@ def check_compaction(value: object) -> None:
         raise ValueError(
             f"compaction must be one of {', '.join(COMPACTION_MODES)}, not {value!r}"
         )
+
+
+def compaction_point(trigger: float, target: float) -> CompactionPoint:
+    """The validated point for one invocation (issue #43). Refused before any
+    turn, as an unknown --compaction is."""
+    check_compaction_point(trigger, target)
+    return CompactionPoint(trigger, target)
 
 
 # An ask beside other calls is not a question about the request: the turn has
@@ -1012,10 +1023,13 @@ async def step(
     question_nudge: bool = False,
     compaction: CompactionMode = "elide",
     summary_tier: SummaryTier | None = None,
+    compaction_trigger: float = TRIGGER,
+    compaction_target: float = TARGET,
 ) -> Session:
     # As run() does: a caller that drives step() itself with a typo is told,
     # rather than getting elide.
     check_compaction(compaction)
+    point = compaction_point(compaction_trigger, compaction_target)
     if tools:
         # The allowlist is the policy's, as for built-ins: a registered tool is
         # offered only when `policy.tools` names it. `pending` is kept, so a name
@@ -1036,6 +1050,7 @@ async def step(
             s,
             context_window,
             image_input=policy.image_input,
+            point=point,
             output_cap=(
                 cap
                 if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0
@@ -1055,7 +1070,7 @@ async def step(
                 on_event=on_event,
             )
     if report is None:
-        report = compact(s, context_window, image_input=policy.image_input)
+        report = compact(s, context_window, image_input=policy.image_input, point=point)
     if report is not None:
         report = replace(report, mode=compaction)
         s.events.append(
@@ -1472,6 +1487,8 @@ async def _live_step(
     question_nudge: bool = False,
     compaction: CompactionMode = "elide",
     summary_tier: SummaryTier | None = None,
+    compaction_trigger: float = TRIGGER,
+    compaction_target: float = TARGET,
 ) -> AsyncGenerator[Event, None]:
     queue: asyncio.Queue[Event] = asyncio.Queue()
     buffers: dict[Literal["progress", "thinking"], LiveText] = {
@@ -1517,6 +1534,8 @@ async def _live_step(
             summary=summary,
             question_nudge=question_nudge,
             compaction=compaction,
+            compaction_trigger=compaction_trigger,
+            compaction_target=compaction_target,
             summary_tier=summary_tier,
         )
     )
@@ -1574,6 +1593,8 @@ async def _run(
     inbox: Callable[[], list[str]] | None = None,
     question_nudge: bool = False,
     compaction: CompactionMode = "elide",
+    compaction_trigger: float = TRIGGER,
+    compaction_target: float = TARGET,
 ) -> AsyncGenerator[Event, None]:
     """Advance the session to a terminal status, yielding events as they occur.
 
@@ -1739,6 +1760,8 @@ async def _run(
                             summary=summary,
                             question_nudge=question_nudge,
                             compaction=compaction,
+                            compaction_trigger=compaction_trigger,
+                            compaction_target=compaction_target,
                             summary_tier=summary_tier,
                         )
                     ) as stream:
@@ -1763,6 +1786,8 @@ async def _run(
                         summary=summary,
                         question_nudge=question_nudge,
                         compaction=compaction,
+                        compaction_trigger=compaction_trigger,
+                        compaction_target=compaction_target,
                         summary_tier=summary_tier,
                     )
                 # A summary request that crossed a limit already ended the
@@ -1835,6 +1860,8 @@ async def run(
     tools: Sequence[Tool] = (),
     question_nudge: bool = False,
     compaction: CompactionMode = "elide",
+    compaction_trigger: float = TRIGGER,
+    compaction_target: float = TARGET,
 ) -> AsyncGenerator[Event, None]:
     check_structured_output(transport, schema, structured_output)
     # Refused before any call: a bad registration is the caller's error, not a
@@ -1854,6 +1881,7 @@ async def run(
     check_max_corrections(max_corrections)
     check_max_cutoffs(max_cutoffs)
     check_compaction(compaction)
+    check_compaction_point(compaction_trigger, compaction_target)
     # No policy: read-only tools, whatever approver is passed. Only an explicit
     # policy enables write, edit or bash; the approver gates what it allows.
     base = Policy(tools=READ_ONLY_TOOLS) if policy is None else policy
@@ -1919,6 +1947,8 @@ async def run(
                     inbox=inbox,
                     question_nudge=question_nudge,
                     compaction=compaction,
+                    compaction_trigger=compaction_trigger,
+                    compaction_target=compaction_target,
                 )
             ) as stream:
                 async for event in stream:

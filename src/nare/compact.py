@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+import math
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
 from typing import Any, Literal
@@ -22,6 +23,49 @@ SUMMARY_PREFIX = "[summary by nare:"
 # Compaction starts at TRIGGER of the window and elision stops at TARGET.
 TRIGGER = 0.8
 TARGET = 0.6
+
+
+@dataclass(frozen=True)
+class CompactionPoint:
+    """Where compaction starts and where elision stops, as shares of the window.
+
+    The defaults are TRIGGER and TARGET. Issue #43: local models can degrade well
+    before the window is full, so a caller may compact earlier. The summary gate
+    follows the point: it asks for a summary when the replaced turns free the gap
+    between the trigger and the target.
+    """
+
+    trigger: float = TRIGGER
+    target: float = TARGET
+
+
+DEFAULT_POINT = CompactionPoint()
+
+
+def check_compaction_point(
+    trigger: float,
+    target: float,
+    *,
+    names: Sequence[str] = ("compaction trigger", "compaction target"),
+) -> None:
+    """Raise ValueError unless 0 < target < trigger <= 1. `names` label the two
+    values in the message, so the command line can name its flags."""
+    trigger_name, target_name = names
+    for name, value in ((trigger_name, trigger), (target_name, target)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{name} must be a number, not {value!r}")
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be a finite number, not {value!r}")
+    if not 0 < trigger <= 1:
+        raise ValueError(
+            f"{trigger_name} must be above 0 and at most 1, not {trigger!r}"
+        )
+    if not 0 < target < trigger:
+        raise ValueError(
+            f"{target_name} {target!r} must be above 0 and below "
+            f"{trigger_name} {trigger!r}"
+        )
+
 
 CompactionMode = Literal["elide", "summary"]
 COMPACTION_MODES: tuple[CompactionMode, ...] = ("elide", "summary")
@@ -140,10 +184,14 @@ def _drop_thinking(s: Session, start: int) -> int:
 
 
 def compact(
-    s: Session, window: int, *, image_input: bool = True
+    s: Session,
+    window: int,
+    *,
+    image_input: bool = True,
+    point: CompactionPoint = DEFAULT_POINT,
 ) -> CompactionReport | None:
     before = estimate(s, image_input=image_input)
-    if before < window * TRIGGER:
+    if before < window * point.trigger:
         return None
     assistant_indices = [i for i, m in enumerate(s.messages) if m.role == "assistant"]
     protected_from = assistant_indices[-2] if len(assistant_indices) >= 2 else 0
@@ -164,7 +212,7 @@ def compact(
         if i == 0 or i >= protected_from:
             continue
         for block in message.content:
-            if estimate(s, image_input=image_input) <= window * TARGET:
+            if estimate(s, image_input=image_input) <= window * point.target:
                 break
             if (
                 block.get("type") != "tool_result"
@@ -188,7 +236,9 @@ def compact(
                 block.pop("image", None)
             elided += 1
             thinking += _drop_thinking(s, i)
-    inputs, dropped = _elide_inputs(s, window, protected_from, image_input=image_input)
+    inputs, dropped = _elide_inputs(
+        s, window, protected_from, image_input=image_input, point=point
+    )
     thinking += dropped
     # A model-written summary, when the mode asks for one, is planned by
     # plan_summary(), applied by apply_summary() and requested by loop.step().
@@ -246,16 +296,17 @@ def plan_summary(
     *,
     image_input: bool = True,
     output_cap: int | None = None,
+    point: CompactionPoint = DEFAULT_POINT,
 ) -> SummaryPlan | None:
     """Plan a summary of the oldest turns, or None when one is not worth a call.
 
     Pure: it reads the session and makes no request. The gates run cheapest
     first, so the copy of the transcript is made only once the turns to replace
-    are known to buy back the gap between TRIGGER and TARGET.
+    are known to buy back the gap between the point's trigger and target.
     """
     if unanswered(s.messages):
         return None
-    if estimate(s, image_input=image_input) < window * TRIGGER:
+    if estimate(s, image_input=image_input) < window * point.trigger:
         return None
     assistant = [i for i, m in enumerate(s.messages) if m.role == "assistant"]
     if len(assistant) < 2:
@@ -266,7 +317,7 @@ def plan_summary(
         return None
     replaced_chars = context_chars(s.messages[1:cut], image_input=image_input)
     # Turns that free less than the gap would be compacted again next step.
-    if replaced_chars / 4 < window * (TRIGGER - TARGET):
+    if replaced_chars / 4 < window * (point.trigger - point.target):
         return None
     bound = summary_bound(window, output_cap)
     request = deepcopy(s.messages[:cut])
@@ -406,7 +457,12 @@ def apply_summary(
 
 
 def _elide_inputs(
-    s: Session, window: int, protected_from: int, *, image_input: bool
+    s: Session,
+    window: int,
+    protected_from: int,
+    *,
+    image_input: bool,
+    point: CompactionPoint = DEFAULT_POINT,
 ) -> tuple[int, int]:
     """Elide old write contents and edit texts, oldest first.
 
@@ -460,7 +516,7 @@ def _elide_inputs(
             # estimate() serializes the whole session; run per block it cost
             # ~3.9 s per model call on a 280-turn session even with nothing
             # left to elide, so it runs only when this call can be elided.
-            if estimate(s, image_input=image_input) <= window * TARGET:
+            if estimate(s, image_input=image_input) <= window * point.target:
                 return inputs, thinking
             args.update(pending)
             inputs += 1

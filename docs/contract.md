@@ -67,6 +67,8 @@ keeps the contract version; removing or renaming one bumps it.
 | `--require-cited-reads` | yes | | Hold the final answer until the run has read each path the answer cites, found by a JSON pointer into the `--schema` answer; repeatable ([Read requirements](#read-requirements)) |
 | `--timeout` | yes | | Wall clock for this invocation ([Run deadline and stop signals](#run-deadline-and-stop-signals)) |
 | `--compaction` | yes | `elide`, `summary` | What nare does first at the compaction point: elide old tool output, or have the model summarize its oldest turns ([Compaction modes](#compaction-modes)) |
+| `--compaction-trigger` | yes | | The share of the window where compaction starts, default `0.8`; with `--compaction-target`, `0 < target < trigger <= 1` ([Compaction modes](#compaction-modes)) |
+| `--compaction-target` | yes | | The share that elision stops at, default `0.6`; below the trigger ([Compaction modes](#compaction-modes)) |
 | `--request-timeout` | yes | | HTTP timeout for each model request ([Provider retries and the request timeout](#provider-retries-and-the-request-timeout)) |
 | `--request-retries` | yes | | Resend a model request after a transient failure, up to this many times |
 | `--request-retry-seconds` | yes | | Longest wait between one request's retries |
@@ -589,11 +591,22 @@ field are additive and keep the contract version.
     nare run --yes --jsonl --compaction summary --session run.json "..."
 
 `--compaction` (`NARE_COMPACTION`, `compaction=` in the library) says what
-nare does first when the context estimate reaches 80% of the window. It is
-chosen per invocation and is not saved: a resume without it elides. An unknown
-value never starts (exit 2).
+nare does first when the context estimate reaches the trigger, 80% of the window
+by default. It is chosen per invocation and is not saved: a resume without it
+elides. An unknown value never starts (exit 2).
 
-| Mode | At 80% of the window | Then |
+`--compaction-trigger` and `--compaction-target` (`NARE_COMPACTION_TRIGGER`,
+`NARE_COMPACTION_TARGET`, `compaction_trigger=` and `compaction_target=` in the
+library) set the two shares: compaction starts at the trigger (default `0.8`),
+and elision stops at the target (default `0.6`). Both are fractions of the
+window and must satisfy `0 < target < trigger <= 1`; a value outside that, or a
+target not below the trigger, never starts (exit 2). Passing neither changes
+nothing. They are not saved, and `nare tui` has neither flag and always uses the
+defaults. A `summary` request is asked for only when the turns it replaces free
+at least the gap between the trigger and the target, a fifth of the window by
+default, so a smaller gap admits summaries the default refuses.
+
+| Mode | At the trigger (80% of the window by default) | Then |
 | --- | --- | --- |
 | `elide` (default) | Elide old tool results, then old `write` and `edit` inputs, toward 60% | `context` if the estimate still reaches the window |
 | `summary` | The model summarizes its turns before the last two, and the summary replaces them | When no summary was applied, elide exactly as `elide` does; then the same `context` stop |
@@ -602,7 +615,7 @@ In `elide` mode every request is the one nare sent before the option existed.
 
 **When a summary is asked for.** All of these must hold: at least one whole
 turn lies between the task and the last two turns; those turns hold at least
-the gap between the 80% trigger and the 60% target (a fifth of the window) by
+the gap between the trigger and the target (a fifth of the window by default) by
 the estimate; the summary request plus the summary's length bound fits under
 the window; a `--budget-tokens` limit has room for both; no summary was
 discarded earlier in this invocation; and the step is not the turn-limit
@@ -1254,7 +1267,9 @@ asyncio.run(main())
 | `max_corrections` | 1 | 1 (`--max-corrections`) | Corrections of a failing answer or an unmet read requirement, per run. A free correction does not count |
 | `max_cutoffs` | `None`: no correction, the run ends at the first cut-off reply | 2 (`--max-cutoffs`) | Corrections of replies cut off at the output cap or by repetition, per invocation |
 | `require_reads`, `require_read` and `require_cited_reads` | 0, `()` and `()` | 0 and none (`--require-reads`, `--require-read`, `--require-cited-reads`) | Hold the final answer until N distinct files, each named path, or each path the answer cites, has been read |
-| `compaction` | `"elide"` | `elide` (`--compaction`, `NARE_COMPACTION`) | What happens first when the context estimate reaches 80% of the window ([Compaction modes](#compaction-modes)) |
+| `compaction` | `"elide"` | `elide` (`--compaction`, `NARE_COMPACTION`) | What happens first when the context estimate reaches the trigger, 80% of the window by default ([Compaction modes](#compaction-modes)) |
+| `compaction_trigger` | `0.8` | `0.8` (`--compaction-trigger`, `NARE_COMPACTION_TRIGGER`) | The share of the window where compaction starts ([Compaction modes](#compaction-modes)) |
+| `compaction_target` | `0.6` | `0.6` (`--compaction-target`, `NARE_COMPACTION_TARGET`) | The share that elision stops at, below the trigger ([Compaction modes](#compaction-modes)) |
 
 `max_cutoffs` is the one default that differs in effect. A library call that
 passes nothing ends at the first cut-off reply, as nare did before the option
@@ -1265,7 +1280,7 @@ need the `read` tool in the policy, and a path is relative to the policy's
 The command line also takes its provider, model, base URL, context window,
 budgets and request settings from `NARE_*` variables when no flag is given
 (`NARE_MODEL`, `NARE_PROVIDER`, `NARE_CONTEXT_WINDOW`, `NARE_COMPACTION`,
-`NARE_BUDGET_TOKENS` and others). The library's arguments read none of them, so
+`NARE_COMPACTION_TRIGGER`, `NARE_BUDGET_TOKENS` and others). The library's arguments read none of them, so
 a library caller passes these values in code.
 
 A call that does not pass `max_cutoffs` ends at the first cut-off reply:
