@@ -1,8 +1,8 @@
 # Blessed benchmark numbers. Reviewed like any other committed file.
 
 [meta]
-blessed     = "2026-11-07T12:54:09+00:00"
-commit      = "5a68886"
+blessed     = "2026-11-10T13:50:53+00:00"
+commit      = "e90cd5c"
 provider    = "openai"
 model       = "gpt-6.1-sol"
 judge_model = "claude-haiku-5-5"
@@ -27,9 +27,9 @@ judge_met_median = 1
 [case.edit-docstring]
 passes           = 3
 reps             = 3
-case_hash        = "sha256:9259dff6b6d00f34a0e0db37db55e65a7590e6e7f77223d6b03e8a4c35be2208"
-tokens_log_sd    = 0.00016684013096580143
-tokens_median    = 3460
+case_hash        = "sha256:accf1094e73c5e244633ae1199b97051baf53b795ae2fdd281237e97cb98bc64"
+tokens_log_sd    = 0.18442108298396837
+tokens_median    = 3458
 turns_median     = 3
 judge_met_median = 2
 
