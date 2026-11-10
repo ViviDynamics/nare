@@ -16,14 +16,19 @@ import math
 import os
 import signal
 import sys
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
 from nare import __version__, mcp_auth
 from nare.accounting import Prices, finite_number, prices_from_env
 from nare.caller_tools import command_tools
-from nare.compact import COMPACTION_MODES
+from nare.compact import (
+    COMPACTION_MODES,
+    TARGET,
+    TRIGGER,
+    check_compaction_point,
+)
 from nare.contract import (
     CONTRACT_VERSION,
     EXIT_CODES,
@@ -315,6 +320,32 @@ def build_parser() -> argparse.ArgumentParser:
             "skipped or fails. Per invocation, not saved (env: NARE_COMPACTION)"
         ),
     )
+    # argparse applies type= to a string default, so an environment value is
+    # parsed here, and an empty one is unset, as for --compaction.
+    run_parser.add_argument(
+        "--compaction-trigger",
+        type=_share_of("NARE_COMPACTION_TRIGGER"),
+        metavar="SHARE",
+        default=os.environ.get("NARE_COMPACTION_TRIGGER") or TRIGGER,
+        help=(
+            "the share of the context window at which compaction starts, "
+            f"0 < target < trigger <= 1 (default {TRIGGER}). Lower it for a "
+            "model that degrades before its window is full. A lower trigger needs "
+            "a lower --compaction-target too. Per invocation, not saved "
+            "(env: NARE_COMPACTION_TRIGGER)"
+        ),
+    )
+    run_parser.add_argument(
+        "--compaction-target",
+        type=_share_of("NARE_COMPACTION_TARGET"),
+        metavar="SHARE",
+        default=os.environ.get("NARE_COMPACTION_TARGET") or TARGET,
+        help=(
+            "the share of the context window that elision stops at, below "
+            f"--compaction-trigger (default {TARGET}). Per invocation, not "
+            "saved (env: NARE_COMPACTION_TARGET)"
+        ),
+    )
     add_run_flags(run_parser)
     run_parser.add_argument("--fork", action="store_true", help=FORK_HELP)
 
@@ -332,6 +363,21 @@ def build_parser() -> argparse.ArgumentParser:
     add_run_flags(tui_parser)
     tui_parser.add_argument("--fork", action="store_true", help=FORK_HELP)
     return parser
+
+
+def _share_of(name: str) -> Callable[[str], float]:
+    """A --compaction-trigger or --compaction-target value. The message names the
+    environment variable too, since argparse also parses a value taken from it."""
+
+    def share(text: str) -> float:
+        try:
+            return float(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(
+                f"not a number: {text!r} (the flag, or {name} when unset)"
+            ) from None
+
+    return share
 
 
 def add_run_flags(parser: argparse.ArgumentParser) -> None:
@@ -1038,6 +1084,8 @@ async def _execute(
                 max_corrections=corrections_limit,
                 max_cutoffs=args.max_cutoffs,
                 compaction=args.compaction,
+                compaction_trigger=args.compaction_trigger,
+                compaction_target=args.compaction_target,
                 require_reads=args.require_reads or 0,
                 require_read=args.require_read or (),
                 require_cited_reads=args.require_cited_reads or (),
@@ -1259,6 +1307,11 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
                 f"--compaction must be one of {', '.join(COMPACTION_MODES)}, "
                 f"not {args.compaction!r} (from NARE_COMPACTION)"
             )
+        check_compaction_point(
+            args.compaction_trigger,
+            args.compaction_target,
+            names=("--compaction-trigger", "--compaction-target"),
+        )
         prices = validate_run_args(args)
         if args.prompt_file is not None:
             try:

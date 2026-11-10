@@ -357,6 +357,8 @@ and [offline CLI evidence](docs/evidence/41/README.md).
 | `--budget-usd X` | `NARE_BUDGET_USD` | Finite positive cumulative dollar limit |
 | `--context-window N` | `NARE_CONTEXT_WINDOW` | Positive integer context window; otherwise backend, otherwise 32000 |
 | `--compaction MODE` | `NARE_COMPACTION` | `nare run` only: `elide` (default) or `summary`, what happens first at the compaction point (below). `nare tui` has no such flag and ignores the variable: it always elides |
+| `--compaction-trigger SHARE` | `NARE_COMPACTION_TRIGGER` | `nare run` only: the share of the window where compaction starts, default `0.8`. Must satisfy `0 < target < trigger <= 1` |
+| `--compaction-target SHARE` | `NARE_COMPACTION_TARGET` | `nare run` only: the share that elision stops at, default `0.6`. Must be below the trigger |
 | Input/output prices | `NARE_PRICE_IN`, `NARE_PRICE_OUT` | Both needed, dollars per million tokens |
 | Cache prices | `NARE_PRICE_CACHE_READ`, `NARE_PRICE_CACHE_WRITE` | Optional dollars per million tokens |
 
@@ -399,7 +401,10 @@ run started, saves the session and writes the result line with
 resumes from its last completed turn.
 
 Before each model call, old tool output is elided if estimated context reaches
-80% of the window, stopping at 60% where possible. If that is not enough, long
+80% of the window, stopping at 60% where possible. `--compaction-trigger` and
+`--compaction-target` (or their environment variables) move those two shares,
+so a model that degrades before its window is full can be compacted earlier.
+The defaults are the ones above. If that is not enough, long
 contents of old `write` calls and long `edit` texts are elided next. The task,
 assistant text, the last two turns, error results, ask results and the inputs
 of failed calls are protected. Every tool call keeps its result. Signed and
@@ -414,9 +419,10 @@ With a configured base URL, window discovery uses `/v1/model/info` with a
 gateway and model, failures included. Direct endpoints make no discovery request.
 
 `--compaction summary` (or `NARE_COMPACTION=summary`) has the model summarize
-first. At the same 80% point, one extra request, accounted like a turn but not
+first. At the same trigger (80% by default), one extra request, accounted like a turn but not
 counted as one, asks the model for a summary of its turns before the last two,
-with the run's tools offered and `tool_choice` none. The summary replaces those
+but only when those turns free at least the gap between the trigger and the
+target (a fifth of the window by default), with the run's tools offered and `tool_choice` none. The summary replaces those
 turns in the first message, labelled as the model's own, after the task and
 what a caller or a person said in them (feedback on a resume, answers to
 `ask`), which is kept word for word. nare's own notices in those turns, such as
