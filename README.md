@@ -410,7 +410,8 @@ still reaches the window, nare stops with `stop_reason=context` without
 calling the model. This character-based estimate can undercount; a provider
 can still reject context as `max_tokens`.
 With a configured base URL, window discovery uses `/v1/model/info` with a
-5 second timeout; failures use 32000. Direct endpoints make no discovery request.
+5 second timeout; failures use 32000. The lookup runs once per process for each
+gateway and model, failures included. Direct endpoints make no discovery request.
 
 `--compaction summary` (or `NARE_COMPACTION=summary`) has the model summarize
 first. At the same 80% point, one extra request, accounted like a turn but not
