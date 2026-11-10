@@ -68,7 +68,8 @@ with tempfile.TemporaryDirectory() as tmp:
            loaded.get("recent") == [{"path": "c.txt", "opened": "2026-10-01T09:00:00"}])
     expect("v2 keeps display settings", loaded.get("theme") == "light" and loaded.get("font_size") == 16)
     code, out = show(v2)
-    expect("show reads a version 2 file", code == 0 and "recent: c.txt" in out and "font size: 16" in out)
+    expect("show reads a version 2 file", code == 0)
+    expect("show keeps its lines for version 2", out.splitlines() == ["theme: light", "font size: 16", "recent: c.txt"])
 
     v2_bare = os.path.join(tmp, "v2_bare.json")
     with open(v2_bare, "w") as f:
@@ -101,7 +102,6 @@ PYEOF
 assertions = [
   "The diff makes save write the version 2 layout, with the display settings under a display key and each recent file as an object.",
   "The diff keeps loading version 1 files, so a file in the old flat layout still loads and is upgraded in memory.",
-  "The diff leaves the output of the show command the same for the same settings.",
   "The diff does not change the existing test that checks the default theme.",
 ]
-min_met = 4
+min_met = 3
