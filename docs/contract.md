@@ -602,9 +602,13 @@ and elision stops at the target (default `0.6`). Both are fractions of the
 window and must satisfy `0 < target < trigger <= 1`; a value outside that, or a
 target not below the trigger, never starts (exit 2). Passing neither changes
 nothing. They are not saved, and `nare tui` has neither flag and always uses the
-defaults. A `summary` request is asked for only when the turns it replaces free
-at least the gap between the trigger and the target, a fifth of the window by
-default, so a smaller gap admits summaries the default refuses.
+defaults. A `summary` request is asked for only when the turns it replaces hold
+more than the summary's length bound plus a margin: the margin is a quarter of
+the gap between the trigger and the target, and the bound is a tenth of the
+window, at most 4,000 tokens. By default that is 6,400 tokens at a 48,000-token
+window (4,000 plus 2,400), and 15% of the window for windows of 40,000 tokens or
+fewer. A smaller gap shrinks the margin and admits summaries the default
+refuses.
 
 | Mode | At the trigger (80% of the window by default) | Then |
 | --- | --- | --- |
@@ -614,10 +618,10 @@ default, so a smaller gap admits summaries the default refuses.
 In `elide` mode every request is the one nare sent before the option existed.
 
 **When a summary is asked for.** All of these must hold: at least one whole
-turn lies between the task and the last two turns; those turns hold at least
-the gap between the trigger and the target (a fifth of the window by default) by
-the estimate; the summary request plus the summary's length bound fits under
-the window; a `--budget-tokens` limit has room for both; no summary was
+turn lies between the task and the last two turns; those turns hold, by the
+estimate, more than the summary's length bound plus a quarter of the gap between
+the trigger and the target (6,400 tokens at a 48,000-token window by default);
+the summary request plus the summary's length bound fits under the window; a `--budget-tokens` limit has room for both; no summary was
 discarded earlier in this invocation; and the step is not the turn-limit
 summary. Otherwise nare makes no call and elides.
 

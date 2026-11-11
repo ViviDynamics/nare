@@ -421,8 +421,9 @@ gateway and model, failures included. Direct endpoints make no discovery request
 `--compaction summary` (or `NARE_COMPACTION=summary`) has the model summarize
 first. At the same trigger (80% by default), one extra request, accounted like a turn but not
 counted as one, asks the model for a summary of its turns before the last two,
-but only when those turns free at least the gap between the trigger and the
-target (a fifth of the window by default), with the run's tools offered and `tool_choice` none. The summary replaces those
+but only when those turns hold more than the summary's length bound plus a
+quarter of the gap between the trigger and the target (6,400 tokens at a
+48,000-token window by default), with the run's tools offered and `tool_choice` none. The summary replaces those
 turns in the first message, labelled as the model's own, after the task and
 what a caller or a person said in them (feedback on a resume, answers to
 `ask`), which is kept word for word. nare's own notices in those turns, such as

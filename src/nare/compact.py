@@ -31,8 +31,8 @@ class CompactionPoint:
 
     The defaults are TRIGGER and TARGET. Issue #43: local models can degrade well
     before the window is full, so a caller may compact earlier. The summary gate
-    follows the point: it asks for a summary when the replaced turns free the gap
-    between the trigger and the target.
+    follows the point: its margin is a share of the gap between the trigger and
+    the target (see summary_floor).
     """
 
     trigger: float = TRIGGER
@@ -263,6 +263,30 @@ def summary_bound(window: int, output_cap: int | None = None) -> int:
     return bound if output_cap is None else min(bound, output_cap)
 
 
+# The summary gate (#275): the replaced turns must hold more than the summary's
+# length bound plus this share of the gap between the trigger and the target.
+# The margin covers what a summary adds beyond its bound: the label (about 40
+# tokens by the estimate) and the estimate's error on the summary text. A
+# quarter of the gap is 2,400 tokens at the default point on a 48,000 window and
+# 400 on an 8,000 window, well above the label, and still small enough that
+# turns too small to be worth a call are refused. See the summary compaction
+# spec, section 4.
+SUMMARY_MARGIN = 0.25
+
+
+def summary_floor(
+    window: int,
+    output_cap: int | None = None,
+    *,
+    point: CompactionPoint = DEFAULT_POINT,
+) -> float:
+    """The fewest tokens (by the estimate) the replaced turns must hold for a
+    summary to be asked for: the summary's bound plus SUMMARY_MARGIN of the gap
+    between the point's trigger and target."""
+    margin = SUMMARY_MARGIN * window * (point.trigger - point.target)
+    return summary_bound(window, output_cap) + margin
+
+
 def summary_instruction(bound: int) -> str:
     """The instruction that ends a summary request. A token is about three
     quarters of a word, and the model counts words better than tokens."""
@@ -302,7 +326,8 @@ def plan_summary(
 
     Pure: it reads the session and makes no request. The gates run cheapest
     first, so the copy of the transcript is made only once the turns to replace
-    are known to buy back the gap between the point's trigger and target.
+    are known to hold more than summary_floor(), so that a summary can free more
+    than its bound and label add. apply_summary() still refuses one that does not.
     """
     if unanswered(s.messages):
         return None
@@ -316,8 +341,8 @@ def plan_summary(
     if turns == 0 or s.messages[cut - 1].role != "user":
         return None
     replaced_chars = context_chars(s.messages[1:cut], image_input=image_input)
-    # Turns that free less than the gap would be compacted again next step.
-    if replaced_chars / 4 < window * (point.trigger - point.target):
+    floor = summary_floor(window, output_cap, point=point)
+    if replaced_chars / 4 <= floor:
         return None
     bound = summary_bound(window, output_cap)
     request = deepcopy(s.messages[:cut])

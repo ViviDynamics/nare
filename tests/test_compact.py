@@ -19,6 +19,7 @@ from nare.compact import (
     estimate,
     plan_summary,
     summary_bound,
+    summary_floor,
     summary_instruction,
 )
 from nare.loop import run
@@ -559,18 +560,58 @@ def test_no_whole_turn_before_the_last_two_gives_no_plan() -> None:
     assert plan_summary(s, int(estimate(s) / TRIGGER)) is None
 
 
-def test_old_turns_smaller_than_the_trigger_to_target_gap_give_no_plan() -> None:
-    # A large protected tail and small old turns: a summary of them would buy
-    # less room than a call is worth, and the next step would compact again.
+def test_old_turns_at_the_floor_give_no_plan_and_one_token_more_gives_one() -> None:
+    # #275: the replaced turns must hold more than summary_floor(), the summary's
+    # bound plus a quarter of the trigger-to-target gap. A large protected tail
+    # and small old turns still give no plan, since a summary would free too
+    # little to be worth a call.
+    window = 8000
+    floor = summary_floor(window)
+    assert floor == summary_bound(window) + 0.25 * window * (TRIGGER - TARGET)
+    assert floor == 1200  # 800 for the bound, 400 for the margin
     s = new_session("go")
     s.messages = transcript()
     for i in (2, 4, 6, 8):
         s.messages[i].content[0]["content"] = "ok"
     for i in (10, 12):
         s.messages[i].content[0]["content"] = "x" * 14000
-    assert estimate(s) >= 8000 * TRIGGER
-    assert context_chars(s.messages[1:9]) / 4 < 8000 * (TRIGGER - TARGET)
-    assert plan_summary(s, 8000) is None
+    assert estimate(s) >= window * TRIGGER
+    # Grow the first old result so the replaced turns hold exactly the floor.
+    pad = int(floor * 4) - context_chars(s.messages[1:9])
+    s.messages[2].content[0]["content"] = "y" * (2 + pad)
+    assert context_chars(s.messages[1:9]) / 4 == floor
+    assert plan_summary(s, window) is None
+    s.messages[2].content[0]["content"] += "yyyy"
+    plan = plan_summary(s, window)
+    assert plan is not None and plan.turns == 4
+
+
+def test_one_large_output_per_turn_is_worth_a_summary() -> None:
+    # #275: a run that adds one large output per turn (the benchmark's hex logs,
+    # about 7,200 tokens each by the estimate) at a 48,000 window. The first
+    # compaction finds one such turn to replace, and the tokenizer has counted
+    # the run above the estimate, as it did on the benchmark. The turn is over
+    # the floor (9,600 would have refused it) and the summary frees more than
+    # its own bound.
+    window = 48000
+    log = "h" * 28800
+    s = new_session("go")
+    s.messages = [Message("user", [{"type": "text", "text": "task"}])]
+    for turn in range(1, 4):
+        call = {"type": "tool_use", "id": f"c{turn}", "name": "read", "input": {}}
+        result = {"type": "tool_result", "tool_use_id": f"c{turn}", "content": log}
+        s.messages += [Message("assistant", [call]), Message("user", [result])]
+    s.last_input_tokens = 40000  # past 80% of the window (38,400)
+    s.last_input_messages = len(s.messages)
+    s.last_input_chars = context_chars(s.messages)
+    replaced = context_chars(s.messages[1:3]) / 4
+    assert 7000 < replaced < window * (TRIGGER - TARGET)  # the old gate refused it
+    assert replaced > summary_floor(window)
+    plan = plan_summary(s, window)
+    assert plan is not None and plan.turns == 1
+    text = "S" * 4 * summary_bound(window)  # a summary at its full bound
+    report = apply_summary(s, plan, text, window)
+    assert report is not None and report.after < report.before
 
 
 def test_a_request_that_does_not_fit_the_window_gives_no_plan() -> None:
@@ -579,7 +620,7 @@ def test_a_request_that_does_not_fit_the_window_gives_no_plan() -> None:
     for i in (10, 12):
         s.messages[i].content[0]["content"] = "ok"
     window = int(estimate(s)) + 100
-    assert context_chars(s.messages[1:9]) / 4 >= window * (TRIGGER - TARGET)
+    assert context_chars(s.messages[1:9]) / 4 > summary_floor(window)
     assert context_chars(s.messages[:9]) / 4 + summary_bound(window) >= window
     assert plan_summary(s, window) is None
 
