@@ -539,3 +539,24 @@ def test_the_agent_script_passes_its_parameters_to_nare_unexpanded(
     assert args[args.index("m") + 1 : args.index("--")] == given
     assert args[-1] == "do it"
     assert not (work / "pwned").exists()
+
+
+def test_the_agent_runs_under_the_scaled_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    from benchmarks.runner import sandbox as mod
+
+    seen: list[object] = []
+
+    def fake_run(*args: object, **kwargs: object) -> tuple[int, str, str, bool]:
+        seen.append(args[2])
+        return 0, "", "", False
+
+    monkeypatch.setattr(mod, "_docker_run", fake_run)
+    case = make_case(tmp_path)
+    assert case.timeout == 120
+    mod.run_agent(case, tmp_path, tmp_path, replace(CONFIG, timeout_scale=2.0))
+    mod.run_agent(case, tmp_path, tmp_path, CONFIG)
+    assert seen == [240, 120]

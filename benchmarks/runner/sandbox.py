@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from benchmarks.runner.case import Case
-from benchmarks.runner.config import Config
+from benchmarks.runner.config import Config, scaled_timeout
 from benchmarks.runner.nare_args import INPUTS
 from nare.session import new_session, save
 
@@ -202,7 +202,7 @@ def run_agent(
     code, out, err, timed_out = _docker_run(
         workdir,
         ["sh", "-c", _AGENT_SCRIPT, "nare-bench", *config.run_args.passed, *case.args],
-        case.timeout,
+        scaled_timeout(case.timeout, config.timeout_scale),
         artifacts=artifacts,
         image=config.image or IMAGE,
         inputs=config.run_args.inputs,
