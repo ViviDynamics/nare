@@ -1,0 +1,167 @@
+# Blessed benchmark numbers. Reviewed like any other committed file.
+
+[meta]
+blessed     = "2026-11-11T06:31:44+00:00"
+commit      = "66c42f3"
+provider    = "openai"
+model       = "glm-5.3-flash"
+judge_model = "claude-haiku-5-5"
+
+[case.ambiguous-after-reading]
+passes           = 0
+reps             = 3
+case_hash        = "sha256:cc0cee282559890fa45e62e4edf23ebc07c0a96e345d52635d8269f609bfbce9"
+timeout_scale    = 2.0
+tokens_log_sd    = 0.13105739380222203
+tokens_median    = 17889
+turns_median     = 8
+
+[case.ambiguous-request]
+passes           = 0
+reps             = 3
+case_hash        = "sha256:1df8b9c195c2211701fa7e05cfb4f2003e2dacac9eba040fbf531b7389e6051d"
+timeout_scale    = 2.0
+tokens_log_sd    = 0.011909175679905782
+tokens_median    = 6352
+turns_median     = 4
+judge_met_median = 0
+
+[case.bash-timeout-recovery]
+passes           = 5
+reps             = 5
+case_hash        = "sha256:cd860b08340cc7a8f129017457d075cf1779c544e8eda7c0602351bee815bdce"
+timeout_scale    = 2.0
+tokens_log_sd    = 0.03763195434529976
+tokens_median    = 9276
+turns_median     = 5
+judge_met_median = 1
+
+[case.bootstrap-without-database]
+passes           = 4
+reps             = 5
+case_hash        = "sha256:0e02429ff6c9b20fe04c4a778ca59ee4f19229266a78044732472b6fee564cf4"
+timeout_scale    = 2.0
+tokens_log_sd    = 0.6552066776886721
+tokens_median    = 84849
+turns_median     = 14
+judge_met_median = 3
+
+[case.context-overflow]
+passes           = 5
+reps             = 5
+case_hash        = "sha256:1225103b1d4b625e39a33bea972be2ea9729e49ac2e31c7f6e2f95c41d1c9254"
+timeout_scale    = 2.0
+tokens_log_sd    = 0.31091774056540583
+tokens_median    = 45974
+turns_median     = 12
+
+[case.context-overflow-small-window]
+passes           = 5
+reps             = 5
+case_hash        = "sha256:18dc347b945c82fc058a510a448d6678118afa5ae5e8d8116a0a25015ea8c30d"
+timeout_scale    = 2.0
+tokens_log_sd    = 0.04317915970099072
+tokens_median    = 355313
+turns_median     = 13
+
+[case.edit-docstring]
+passes           = 3
+reps             = 3
+case_hash        = "sha256:accf1094e73c5e244633ae1199b97051baf53b795ae2fdd281237e97cb98bc64"
+timeout_scale    = 2.0
+tokens_log_sd    = 0.22400523403363215
+tokens_median    = 8370
+turns_median     = 5
+judge_met_median = 2
+
+[case.expense-tracker-cli]
+passes           = 1
+reps             = 4
+case_hash        = "sha256:86f07bf7b87c40da939b64f024780c34d087cc2ffbdb7cdfd82478829f7fb479"
+timeout_scale    = 2.0
+tokens_log_sd    = 0.3062602587518105
+tokens_median    = 73556
+turns_median     = 12
+judge_met_median = 2
+
+[case.fix-failing-test]
+passes           = 3
+reps             = 3
+case_hash        = "sha256:798b34c81301ce3c4767f3c8e28305e5b6a0847c0d0eca9ce408cf7d9aea40e9"
+timeout_scale    = 2.0
+tokens_log_sd    = 0.1731812572404292
+tokens_median    = 10941
+turns_median     = 6
+judge_met_median = 1
+
+[case.impossible-test]
+passes           = 1
+reps             = 3
+case_hash        = "sha256:1ae47cc7cfe98868f59b4c7900e62f24df5c388beb71d5b9f8f61edd06d299de"
+timeout_scale    = 2.0
+tokens_log_sd    = 0.3292337228528419
+tokens_median    = 8521
+turns_median     = 5
+
+[case.long-test-output]
+passes           = 5
+reps             = 5
+case_hash        = "sha256:d9b966e2dfe798dcd2c48f8acbef1debb4ca6f6d442d56441e08a1cbdd6b28b5"
+timeout_scale    = 2.0
+tokens_log_sd    = 0.47405441108612834
+tokens_median    = 8237
+turns_median     = 5
+
+[case.mcp-fanout]
+passes           = 5
+reps             = 5
+case_hash        = "sha256:d4d9bc9e97a86c76f378303e084cc8ed431fdab8f85b4e469f57cdc7a6b690f4"
+timeout_scale    = 2.0
+tokens_log_sd    = 0.09389035019838408
+tokens_median    = 8143
+turns_median     = 4
+
+[case.mcp-large-result]
+passes           = 5
+reps             = 5
+case_hash        = "sha256:936d8c17754185cb4b0f975cc1d60222cc6ec75c69533da4a2e98629c7c2e1c0"
+timeout_scale    = 2.0
+tokens_log_sd    = 0.001105773112257175
+tokens_median    = 17003
+turns_median     = 3
+
+[case.multi-file-rename]
+passes           = 3
+reps             = 3
+case_hash        = "sha256:552d974188d75056732eecf81fc07b0b19613034a2f40aaeb157c0de26df3af0"
+timeout_scale    = 2.0
+tokens_log_sd    = 0.11694350244973127
+tokens_median    = 9566
+turns_median     = 5
+
+[case.read-only-question]
+passes           = 3
+reps             = 3
+case_hash        = "sha256:b451f47b778487d976524e33ad783a713b35dee31a60241e4aaec71cd7e755e6"
+timeout_scale    = 2.0
+tokens_log_sd    = 0.1909969669536478
+tokens_median    = 5169
+turns_median     = 3
+
+[case.stale-backup-cleanup]
+passes           = 3
+reps             = 3
+case_hash        = "sha256:93523bf7faa5e79807af3fa50ac2f347f60dab17ffdc9a0afb9eb84015c21b85"
+timeout_scale    = 2.0
+tokens_log_sd    = 0.005697691869470241
+tokens_median    = 8053
+turns_median     = 5
+
+[case.typed-classify]
+passes           = 3
+reps             = 3
+case_hash        = "sha256:0489cef94c0553dd264911a6efed79b9234e5496b1d73f6b887943be0ef456dd"
+timeout_scale    = 2.0
+tokens_log_sd    = 0.03484883154670832
+tokens_median    = 318
+turns_median     = 1
