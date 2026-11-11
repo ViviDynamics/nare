@@ -205,6 +205,14 @@ def build_parser() -> argparse.ArgumentParser:
             "named (verify without --tier checks every case)",
         )
         child.add_argument("--case", action="append", help="limit to this case id")
+        if name == "run":
+            child.add_argument(
+                "--timeout-scale",
+                type=_positive_scale,
+                default=None,
+                help="multiply each case's timeout by this, for this run only (a "
+                "number above 0, for example 2); the baseline records it per case",
+            )
         if name == "verify":
             child.add_argument(
                 "--judge",
@@ -686,6 +694,7 @@ def _errored_rep(
         nare_args=list(config.run_args.recorded),
         nare_files=dict(config.run_args.files),
         context_window=use.window,
+        timeout_scale=config.timeout_scale,
         compactions=use.compactions,
         tool_health=health,
         cost=None if line is None else line.cost,
@@ -838,6 +847,7 @@ async def run_rep(
         nare_args=list(config.run_args.recorded),
         nare_files=dict(config.run_args.files),
         context_window=use.window,
+        timeout_scale=config.timeout_scale,
         compactions=use.compactions,
         judge_failed=gating and outcome == "error",
         judge_claims=met,
@@ -1767,6 +1777,17 @@ def ab_command(args: argparse.Namespace, root: Path, config: Config) -> int:
     return 0
 
 
+def _positive_scale(text: str) -> float:
+    """--timeout-scale: a number above zero, as argparse wants it."""
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {text!r}") from None
+    if not value > 0:
+        raise argparse.ArgumentTypeError(f"must be above 0: {text!r}")
+    return value
+
+
 def run_model(
     root: Path, cases: Sequence[Case], config: Config, name: str
 ) -> tuple[Transport, list[RepRecord]]:
@@ -2270,6 +2291,13 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    if getattr(args, "timeout_scale", None) is not None and args.matrix:
+        print(
+            "bench: --timeout-scale is for a single run; --matrix runs each "
+            "baseline as it was blessed",
+            file=sys.stderr,
+        )
+        return 2
 
     root = repo_root()
     if args.command == "compare-judges":
@@ -2389,7 +2417,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"({config.model!r}), so its reps grade themselves",
                 file=sys.stderr,
             )
-        config = replace(config, run_args=run_args)
+        config = replace(
+            config,
+            run_args=run_args,
+            timeout_scale=args.timeout_scale or 1.0,
+        )
         baseline_file = baseline_path(
             root / "benchmarks" / "baselines", config.model, args.tier
         )

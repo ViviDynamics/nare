@@ -623,3 +623,40 @@ def test_a_no_change_matrix_false_alarm_rate_is_the_documented_one() -> None:
     per_run = 1 - (1 - per_cell) ** cells
     assert per_cell == pytest.approx(0.0122, abs=0.0002)
     assert abs(flagged / runs - per_run) < 0.05
+
+
+def test_a_case_timeout_scale_is_written_and_read_back_only_when_set(
+    tmp_path: Path,
+) -> None:
+    from benchmarks.runner.report import dumps_baseline, load_baseline
+
+    meta = BaselineMeta(
+        blessed="t", commit="c", provider="openai", model="m", judge_model="j"
+    )
+    scaled = CaseSummary(
+        case="slow",
+        passes=3,
+        fails=2,
+        errors=0,
+        pass_rate=0.6,
+        inconclusive=False,
+        tokens_median=None,
+        turns_median=None,
+        judge_met_median=None,
+        timeout_scale=2.0,
+    )
+    plain = replace(scaled, case="fast", timeout_scale=1.0)
+    text = dumps_baseline(meta, [scaled, plain])
+    assert text.count("timeout_scale") == 1
+    path = tmp_path / "b.toml"
+    path.write_text(text, encoding="utf-8")
+    loaded = load_baseline(path).cases
+    assert loaded["slow"].timeout_scale == 2.0
+    assert loaded["fast"].timeout_scale == 1.0
+
+
+def test_a_summary_takes_the_timeout_scale_its_reps_ran_under() -> None:
+    from benchmarks.runner.report import summarize
+
+    reps = [replace(record("slow", rep=i), timeout_scale=2.0) for i in range(3)]
+    assert summarize(reps)[0].timeout_scale == 2.0

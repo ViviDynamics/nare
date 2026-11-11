@@ -1357,3 +1357,18 @@ def test_the_baselines_table_names_each_baselines_variant(
         .out.splitlines()[-1]
         .endswith("Run arguments: claude-haiku-5-5: none; gpt-5-nano: --effort low.")
     )
+
+
+def test_a_timeout_scale_survives_a_results_file(tmp_path: Path) -> None:
+    ran = replace(record("demo", model="m"), timeout_scale=2.0)
+    assert read_results(write_results(tmp_path, [ran])) == [ran]
+
+
+def test_the_timeout_scale_must_be_positive_and_is_not_for_the_matrix(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as refused:
+        main(["run", "--timeout-scale", "0"])
+    assert refused.value.code == 2
+    assert main(["run", "--matrix", "--timeout-scale", "2"]) == 2
+    assert "--timeout-scale" in capsys.readouterr().err

@@ -561,3 +561,28 @@ def test_a_model_without_an_alias_is_its_own_gateway_name() -> None:
 def test_unset_aliases_names_only_the_withheld_models() -> None:
     assert unset_aliases(["gpt-6-luna", "glm-5.3-flash"], {}) == ["glm-5.3-flash"]
     assert unset_aliases(["glm-5.3-flash"], {ALIAS_VAR: "gateway-side-name"}) == []
+
+
+def test_a_timeout_scale_defaults_to_one_and_leaves_the_case_timeout_alone() -> None:
+    from benchmarks.runner.config import scaled_timeout
+
+    assert (
+        Config(
+            model="m",
+            provider="anthropic",
+            base_url=None,
+            judge_model=None,
+            api_key=None,
+            api_key_var="K",
+        ).timeout_scale
+        == 1.0
+    )
+    assert scaled_timeout(900, 1.0) == 900
+
+
+def test_a_timeout_scale_multiplies_the_case_timeout_in_whole_seconds() -> None:
+    from benchmarks.runner.config import scaled_timeout
+
+    assert scaled_timeout(1800, 2.0) == 3600
+    assert scaled_timeout(900, 0.5) == 450
+    assert scaled_timeout(1, 0.1) == 1

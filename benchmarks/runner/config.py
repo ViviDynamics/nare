@@ -98,10 +98,19 @@ class Config:
     # the model is its own gateway name. Requests and the endpoint check use
     # it; records, stamps and baselines keep `model`.
     served_model: str = ""
+    # A multiplier on each case's own timeout, for this run: 1.0 is the timeout
+    # as the case writes it. It changes only which reps can finish within it, so
+    # every rep and every baseline case records the scale it ran under.
+    timeout_scale: float = 1.0
 
     @property
     def gateway_model(self) -> str:
         return self.served_model or self.model
+
+
+def scaled_timeout(seconds: int, scale: float) -> int:
+    """A case's timeout under a run's scale, in whole seconds, at least one."""
+    return max(1, round(seconds * scale))
 
 
 def judge_max_tokens_from(

@@ -74,6 +74,8 @@ class RepRecord:
     nare_files: dict[str, str] = field(default_factory=dict)
     context_window: dict[str, int | str] | None = None
     compactions: int | None = None
+    # The multiplier the run put on the case's timeout (config.timeout_scale).
+    timeout_scale: float = 1.0
     # The judge could not settle this rep (no answer, a refused reply, or an
     # "unknown" verdict that decides nothing). Such a rep is an error, and it
     # counts against the pass rate; an infrastructure error does not.
@@ -117,6 +119,9 @@ class CaseSummary:
     # denominator, so a judge that fails on the reps the agent did worst
     # cannot make the rate look better.
     judge_errors: int = 0
+    # The multiplier the case's reps ran under. A case is one scale, so a
+    # baseline states it per case; 1.0 is the case's timeout as written.
+    timeout_scale: float = 1.0
     # Dollars over the reps whose cost was reported, the count of reps that
     # were not, and whether any reported cost was an estimate.
     cost: float | None = None
@@ -163,9 +168,13 @@ def summarize(records: Sequence[RepRecord]) -> list[CaseSummary]:
         totals = [sum(r.usage.get(f, 0) for f in USAGE_FIELDS) for r in judged]
         positive = [math.log(t) for t in totals if t > 0]
         costs = [r.cost for r in reps if r.cost is not None]
+        scales = {r.timeout_scale for r in reps}
+        if len(scales) != 1:
+            raise ValueError(f"{case}: reps ran under timeout scales {sorted(scales)}")
         summaries.append(
             CaseSummary(
                 case=case,
+                timeout_scale=scales.pop(),
                 passes=passes,
                 fails=fails,
                 errors=errors,
@@ -301,6 +310,8 @@ def dumps_baseline(meta: BaselineMeta, summaries: Sequence[CaseSummary]) -> str:
         ]
         if summary.case_hash:
             lines.append(f"case_hash        = {_toml_str(summary.case_hash)}")
+        if summary.timeout_scale != 1.0:
+            lines.append(f"timeout_scale    = {summary.timeout_scale!r}")
         if summary.tokens_log_sd is not None:
             lines.append(f"tokens_log_sd    = {summary.tokens_log_sd!r}")
         for key, value in (
@@ -343,6 +354,7 @@ def load_baseline(path: Path) -> Baseline:
             passes=passes,
             fails=reps - passes,
             errors=0,
+            timeout_scale=float(body.get("timeout_scale", 1.0)),
             pass_rate=rate,
             inconclusive=False,
             tokens_median=body.get("tokens_median"),
