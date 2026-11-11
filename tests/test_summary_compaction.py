@@ -946,3 +946,118 @@ async def test_step_refuses_an_unknown_mode_before_any_call() -> None:
         compaction="elide",
     )
     assert named.calls == default.calls and named.choices == default.choices
+
+
+def one_large_output_per_turn() -> Session:
+    """#275: a task, then three turns that each read one 28,800-character log
+    (about 7,200 tokens by the estimate), at a 48,000 window. The tokenizer has
+    counted the run at 40,000, past the trigger. The turn to replace is the
+    first read: one log, over the floor and under the old gap."""
+    s = new_session("go", session_id="l")
+    s.messages = [Message("user", [{"type": "text", "text": "task"}])]
+    for turn in range(1, 4):
+        call = {"type": "tool_use", "id": f"c{turn}", "name": "read", "input": {}}
+        result = {
+            "type": "tool_result",
+            "tool_use_id": f"c{turn}",
+            "content": "h" * 28800,
+        }
+        s.messages += [Message("assistant", [call]), Message("user", [result])]
+    s.last_input_tokens = 40000
+    s.last_input_messages = len(s.messages)
+    s.last_input_chars = context_chars(s.messages)
+    return s
+
+
+LARGE_WINDOW = 48000
+
+
+async def test_one_large_output_per_turn_engages_the_summary_tier() -> None:
+    s = one_large_output_per_turn()
+    before = copy.deepcopy(s.messages)
+    fake = FakeProvider(
+        [summary_reply("Findings: log one held 7 errors."), text_reply("done")]
+    )
+    events = await drain(s, fake, context_window=LARGE_WINDOW, compaction="summary")
+    assert fake.choices == ["none", None]  # the summary request, then the turn
+    [applied] = s.summaries
+    assert applied["replaced_turns"] == 1
+    # The replaced messages are the first read's call and its result.
+    assert [m["content"][0]["type"] for m in applied["replaced"]] == [
+        "tool_use",
+        "tool_result",
+    ]
+    assert (
+        applied["replaced"][1]["content"][0]["content"]
+        == before[2].content[0]["content"]
+    )
+    assert s.messages[0].content[-1]["text"].endswith("held 7 errors.")
+    [notice] = [e for e in events if "compaction" in e.detail]
+    assert notice.detail["compaction"]["mode"] == "summary"
+    assert notice.detail["compaction"]["summarized"] == 1
+    assert s.status == "done"
+
+
+async def test_one_large_output_per_turn_elide_mode_is_unchanged() -> None:
+    default = FakeProvider([text_reply("done")])
+    elide = FakeProvider([text_reply("done")])
+    first, second = one_large_output_per_turn(), one_large_output_per_turn()
+    await drain(first, default, context_window=LARGE_WINDOW)
+    await drain(second, elide, context_window=LARGE_WINDOW, compaction="elide")
+    assert elide.calls == default.calls
+    assert elide.choices == default.choices == [None]
+    assert second.messages == first.messages
+    assert second.summaries == [] == first.summaries
+
+
+class ByChoice(FakeProvider):
+    """Answers a summary request (tool_choice none) with a summary, and any
+    other request with the next scripted reply. Each turn reports the input it
+    was sent (chars / 4, as the estimate counts it), so the estimate sees the
+    run grow as a real provider's usage would; FakeProvider reports 10."""
+
+    def __init__(self, replies: list[Reply], summary: Reply) -> None:
+        super().__init__(replies)
+        self.summary = summary
+
+    async def turn(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        tool_choice: str | None = None,
+    ) -> Reply:
+        sent = context_chars(messages, image_input=False) // 4
+        if tool_choice == "none":
+            reply = self.summary
+            self.calls.append(
+                ([Message(m.role, list(m.content)) for m in messages], list(tools))
+            )
+            self.choices.append(tool_choice)
+        else:
+            reply = await super().turn(messages, tools, tool_choice=tool_choice)
+        return replace(reply, usage=Usage(input=sent, output=reply.usage.output))
+
+
+async def test_a_run_that_reads_a_large_log_each_turn_summarizes_and_finishes(
+    tmp_path: Path,
+) -> None:
+    for n in range(1, 7):
+        (tmp_path / f"log{n}.txt").write_text("h" * 28800, encoding="utf-8")
+    replies = [
+        tool_reply("read", {"path": f"log{n}.txt"}, call_id=f"r{n}")
+        for n in range(1, 7)
+    ]
+    fake = ByChoice([*replies, text_reply("done")], summary_reply("Findings: S"))
+    s = new_session("task")
+    events = await drain(
+        s,
+        fake,
+        context_window=LARGE_WINDOW,
+        compaction="summary",
+        policy=Policy(tools=frozenset({"read"}), root=tmp_path),
+    )
+    assert "none" in fake.choices  # at least one summary request was made
+    assert s.summaries and s.summaries[0]["mode"] == "summary"
+    assert s.status == "done"
+    assert [e for e in events if e.type == "error"] == []

@@ -54,9 +54,11 @@ outcome, and argued in the section named.
    (sections 5 and 7).
    *Narrowed in the build (2026-11-05):* nare's own loop notices are not carried; see section 5.
 5. **When a call is worth making.** *Approved 2026-11-05.* Only when the
-   turns it would replace hold at least the gap between the trigger and the
-   target (20% of the window), only when a token budget has room for it, and
-   never on the turn-limit summary step. One failed summary turns the tier off
+   turns it would replace hold more than the summary's floor (its length bound
+   plus a quarter of the gap between the trigger and the target), only when a
+   token budget has room for it, and never on the turn-limit summary step.
+   *Amended for #275 (2026-11-11):* the floor replaces "at least the gap"; see
+   section 4. One failed summary turns the tier off
    for the rest of the invocation (sections 4 and 8).
 6. **Accounting and events.** *Approved 2026-11-05.* The call counts in
    `usage`, in both budgets and in `retries`, emits a `cost` event and its own
@@ -280,6 +282,34 @@ still reaches the window (`src/nare/loop.py:759-765`). So when the summary
 does not help, `summary` costs `elide` plus the tokens of at most one failed
 call per invocation, since a failure turns the tier off (section 8).
 
+*Amended for #275 (2026-11-11).* The gate was "at least the gap between the
+trigger and the target". On a run that adds one large output per turn it never
+opened: the benchmark's first compaction found one log, 7,200 tokens by the
+estimate, under the gap of 9,600 at a 48,000 window, so the step elided and the
+run never reached the tier again (section 15, "Results, 2026-11-10"). The rule
+is now stated as what a summary must free. A summary takes at most its bound
+(its `max_tokens`), and its label adds about 40 tokens by the estimate. So the
+replaced turns must hold more than the bound plus a margin:
+
+    floor = bound + SUMMARY_MARGIN * window * (trigger - target)     SUMMARY_MARGIN = 0.25
+
+The margin is a quarter of the gap, for three reasons. It covers the label and
+the estimate's error (the estimate is a heuristic, not a tokenizer), with room:
+2,400 tokens at the default point on a 48,000 window, against the label's 40.
+It admits the benchmark's one-log turn, 7,200 tokens over a floor of 6,400. And
+it stays under the gap, so a turn too small to be worth a call is still refused.
+The other values were weighed. No margin (the bare bound, 4,000) leaves nothing
+for the label. The whole gap (bound plus gap, 13,600) refuses the one-log turn
+again, which is the defect. A point's margin follows its own trigger and target,
+so #43's configurable point moves it with no change. The apply step still
+refuses a summary that does not lower the estimate, so the margin decides when
+a call is worth making, and that check decides whether the summary is applied.
+
+The cost is more summary calls and earlier re-compaction, as the issue expects.
+On the 2026-11-10 case the first compaction now asks for a summary; the three
+summary calls of that run cost $0.0022 together. Whether the tier then does
+better on the task is the re-run's question (section 15), not this rule's.
+
 **Why the summary comes before elision.** Three reasons. The issue asks for a
 summary instead of elision, and the benchmark can compare the two on the
 existing case only if the summary fires where elision fires today (section
@@ -299,11 +329,12 @@ it. It is deferred, with its reasoning, to section 21.
 
 - At least one whole assistant turn lies outside the protected set, after the
   first message.
-- The turns it would replace hold, by the estimate, at least the gap between
-  the trigger and the target (today 20% of the window). Below that, a summary
-  of up to a tenth of the window buys less room than a call is worth, and the
-  next step would compact again. This is what stops a summary on every turn
-  when the protected tail alone is large.
+- The turns it would replace hold, by the estimate, more than the summary's
+  floor: its length bound plus a margin of a quarter of the gap between the
+  trigger and the target (`summary_floor()`, amended for #275 below). Below
+  that, a summary frees too little to be worth a call, and the next step would
+  compact again. This is what stops a summary on every turn when the protected
+  tail alone is large.
 - The summary request plus the length bound fits under the window (section 6).
 - A token budget, when set, has room for the request plus the length bound
   (section 9).
@@ -964,6 +995,10 @@ this case the benchmark cannot separate the tiers, because the gate keeps the
 summary from running. Whether the gate should let it engage on this task
 shape is a follow-up issue.
 
+*Follow-up (#275, 2026-11-11).* The gate now opens on this case: its first
+compaction asks for a summary (section 4, amended). The re-run on the same case
+with the same model and reps is pending and reports in its own subsection.
+
 ## 16. Testing
 
 All deterministic, with `FakeProvider` (`tests/fake_provider.py`, which already
@@ -983,8 +1018,10 @@ Pinned in `tests/test_compact.py` (pure):
 - The range: cut at the second-to-last assistant message; message 0 kept; an
   earlier summary block found by its prefix and replaced; user text carried in
   order; images not carried; a transcript ending in unanswered calls refused.
-- The gate: no whole turn outside the protected set, a range below the
-  trigger-to-target gap, and a request that does not fit, each give no plan.
+- The gate: no whole turn outside the protected set, a range at or below the
+  summary floor (section 4, #275), and a request that does not fit, each give
+  no plan. One large output per turn, replaced one turn at a time, gives a plan
+  and applies (#275).
 - After applying, every `tool_use` id has exactly one `tool_result` after it
   and every result has its call, checked through the anthropic rail's wire
   conversion and the openai rail's `messages_from`.
@@ -1061,8 +1098,9 @@ Roughly 290 lines of source, plus tests.
 
 - **#43, a configurable compaction point.** Every rule here is stated against
   the trigger and the target, not against 80 and 60, so when #43 makes them
-  configurable the gate (the gap between them) follows with no change. Source 1 had to re-tune its masking
-  window for a second scaffold, which supports #43's per-model benchmark.
+  configurable the gate follows with no change: its margin is a share of the gap
+  between them (section 4). Source 1 had to re-tune its masking window for a
+  second scaffold, which supports #43's per-model benchmark.
 - **#44, the model's real window.** The modes use whatever window `run()`
   resolved. A better window changes when compaction fires, not how.
 - **Server-side compaction and context editing.** Anthropic's API can write

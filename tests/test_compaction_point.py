@@ -129,10 +129,10 @@ def test_a_lower_target_elides_further_than_the_default() -> None:
     assert low_report.after <= window * 0.3
 
 
-def test_the_summary_gap_is_the_trigger_minus_the_target() -> None:
-    # The gate asks for a summary only when the replaced turns free the gap
-    # between trigger and target (spec 2026-11-05, and #275, which is not fixed
-    # here). A point with a smaller gap admits turns the default refuses.
+def test_the_summary_margin_follows_the_trigger_and_target() -> None:
+    # #275: the summary floor is the bound plus a quarter of the gap between the
+    # point's trigger and target. A point with a smaller gap has a smaller margin,
+    # so it admits turns the default refuses.
     s = new_session("go")
     s.messages = transcript()
     for i in (2, 4, 6, 8):
@@ -140,9 +140,11 @@ def test_the_summary_gap_is_the_trigger_minus_the_target() -> None:
     for i in (10, 12):
         s.messages[i].content[0]["content"] = "x" * 14000
     replaced = context_chars(s.messages[1:9]) / 4
-    window = int(replaced / 0.15)  # the replaced turns are 15% of the window
+    # Default floor: a tenth of the window plus 0.05 of it (0.15 in all). The
+    # (0.8, 0.7) point: a tenth plus 0.025 (0.125). Pick a window between them.
+    window = int(replaced / 0.14)
     assert estimate(s) >= 0.8 * window
-    assert plan_summary(s, window) is None  # default gap is 20%
+    assert plan_summary(s, window) is None
     assert plan_summary(s, window, point=CompactionPoint(0.8, 0.7)) is not None
 
 
