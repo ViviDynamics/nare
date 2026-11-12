@@ -68,8 +68,17 @@ the provider keys. The IAM actions the rail needs are `bedrock:InvokeModel` and
 `bedrock:InvokeModelWithResponseStream` on the model or inference profile.
 
 The rail is tested offline, with the real SDK client, real SigV4 signing and an
-AWS event stream, but it has not yet completed a turn against a live Bedrock
-endpoint ([#269](https://github.com/ViviDynamics/nare/issues/269)).
+AWS event stream. Against a self-hosted Bedrock-compatible endpoint, the wire path
+is verified: SigV4 signing, the InvokeModel request bodies, tool calls and their
+results, structured output, effort, thinking, the turn-limit summary request and
+usage ([evidence](docs/evidence/269/README.md)). Streaming did not complete on that
+endpoint, because its stream framing differs from AWS's.
+
+Against AWS Bedrock itself, no turn has completed yet, so none of these features is
+verified there. Still open on AWS: streaming, prompt-cache counters, cut-off stop
+reasons, a fixed thinking budget on Haiku 4.5, and bash credential withholding
+([#301](https://github.com/ViviDynamics/nare/issues/301), tracking
+[#269](https://github.com/ViviDynamics/nare/issues/269)).
 
 For a LiteLLM proxy, `--proxy-num-retries 0` sends `num_retries: 0` on every
 OpenAI-compatible request, including streamed and schema-constrained turns.
