@@ -27,6 +27,7 @@ from typing import Any, Literal, cast
 from nare import mcp_defer as deferral
 from nare.accounting import Prices, finite_number, turn_usage
 from nare.caller_tools import Tool, external_tools
+from nare.capacity import Change, Grant, RouteLimiter
 from nare.compact import (
     COMPACTION_MODES,
     TARGET,
@@ -191,6 +192,10 @@ class CapacityQueue:
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
     rng: random.Random = field(default_factory=random.Random, repr=False)
     refused: int = 0
+    # The route's adaptive limit (nare.capacity), shared by every run that
+    # holds this queue. None: no limit, only the queue. A refusal cuts it
+    # whether or not the queue admits the refusal.
+    limiter: RouteLimiter | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -217,11 +222,85 @@ class CapacityQueue:
         return float(base * self.rng.uniform(0.5, 1.0))
 
 
+def limit_event(change: Change) -> Event:
+    """A change of the route's limit, with its reason. The detail carries no
+    route name: it is a host and model, and events go to logs."""
+    if change.reason == "refusal":
+        text = (
+            f"capacity limit cut from {change.limit_before} to "
+            f"{change.limit_after} after a refusal; requests in flight drain"
+        )
+    else:
+        text = (
+            f"capacity limit raised from {change.limit_before} to "
+            f"{change.limit_after} after a quiet period"
+        )
+    return Event(
+        "progress",
+        text,
+        {
+            "capacity_limit": {
+                "limit": change.limit_after,
+                "previous": change.limit_before,
+                "reason": change.reason,
+            }
+        },
+    )
+
+
 def fresh_queue(queue: CapacityQueue | None) -> CapacityQueue | None:
     """A queue with the same limits and no refusals yet, for one run."""
     if queue is None:
         return None
     return replace(queue, refused=0)
+
+
+async def _admitted(
+    s: Session,
+    limiter: RouteLimiter,
+    attempt: Callable[[], Awaitable[Reply]],
+    on_event: Callable[[Event], None] | None,
+) -> Reply:
+    """One attempt under the route's limit. The slot is held only while the
+    attempt is in flight, so a refused request that waits holds nothing."""
+    grant: Grant = await limiter.acquire()
+    s.capacity_limit = grant.limit
+    s.capacity_slot_wait += grant.waited
+    events: list[Event] = []
+    for note in grant.notes:
+        events.append(
+            Event(
+                "progress",
+                note,
+                {"capacity_limit": {"limit": grant.limit, "reason": "declared"}},
+            )
+        )
+    for change in grant.changes:
+        events.append(limit_event(change))
+    if grant.waited > 0:
+        events.append(
+            Event(
+                "progress",
+                f"waited {grant.waited:g}s for a request slot under limit "
+                f"{grant.limit}",
+                {
+                    "capacity_limit": {
+                        "limit": grant.limit,
+                        "reason": "slot",
+                        "waited": grant.waited,
+                    }
+                },
+            )
+        )
+    for event in events:
+        if on_event is not None:
+            on_event(event)
+        else:
+            s.events.append(event)
+    try:
+        return await attempt()
+    finally:
+        grant.release()
 
 
 @dataclass
@@ -819,19 +898,35 @@ async def _with_retries(
     """
     classify = getattr(transport, "transient", None) or transient
     markers: tuple[str, ...] = getattr(transport, "capacity_markers", ())
+    limiter = capacity.limiter if capacity is not None else None
+
+    async def admitted() -> Reply:
+        if limiter is None:
+            return await attempt()
+        return await _admitted(s, limiter, attempt, on_event)
+
     made = 0
     waited = 0.0
     queued = 0
     queued_wait = 0.0
     while True:
         try:
-            return await attempt()
+            return await admitted()
         except Exception as exc:
             if capacity is not None:
                 refusal = capacity_refusal(
                     exc, markers, emitted=emitted is not None and emitted.any
                 )
                 if refusal is not None:
+                    if limiter is not None:
+                        cut_to = limiter.refused()
+                        if cut_to is not None:
+                            s.capacity_limit = cut_to.limit_after
+                            event = limit_event(cut_to)
+                            if on_event is not None:
+                                on_event(event)
+                            else:
+                                s.events.append(event)
                     wait = capacity.wait(queued + 1, refusal.retry_after)
                     if (
                         queued_wait + wait <= capacity.max_wait

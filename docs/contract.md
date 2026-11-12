@@ -75,6 +75,11 @@ keeps the contract version; removing or renaming one bumps it.
 | `--capacity-queue` | yes | | Wait out a provider capacity refusal and resend the same request, not a retry ([capacity queueing](#capacity-queueing)) |
 | `--capacity-wait-seconds` | yes | | Most seconds one request may spend queued on capacity refusals |
 | `--capacity-refusals` | yes | | Most capacity refusals one run queues |
+| `--capacity-adaptive` | yes | | Adapt the in-flight limit on the provider route to capacity refusals ([Adaptive capacity](#adaptive-capacity)) |
+| `--capacity-ceiling` | yes | | Most requests in flight on the route, and the limit's ceiling. Needs `--capacity-adaptive` |
+| `--capacity-floor` | yes | | The lowest limit a refusal can cut to. Needs `--capacity-adaptive` |
+| `--capacity-quiet-seconds` | yes | | Seconds without a refusal before the limit rises by one. Needs `--capacity-adaptive` |
+| `--capacity-shared-dir` | yes | | A local directory where nare processes that name it share one limit per route. Needs `--capacity-adaptive` |
 | `--proxy-num-retries` | yes | | Send `num_retries` to an OpenAI-compatible proxy |
 | `--cache-breakpoints` | no | | Mark prompt-cache breakpoints on the openai rail ([Prompt-cache breakpoints](#prompt-cache-breakpoints)) |
 | `--provider` | yes | `anthropic`, `bedrock`, `openai`, `fake` | Model provider (`bedrock` is Claude on Amazon Bedrock, signed with AWS credentials) |
@@ -1947,6 +1952,89 @@ the session's life) and `capacity_wait_seconds`. Neither is part of `turns`,
 `retries` or `usage`: a queued refusal is not a request that was sent. A session
 file without them loads as 0. The flags, event detail, result and session fields
 are additive and keep the contract version.
+
+
+## Adaptive capacity
+
+```sh
+nare run --yes --jsonl --provider openai --capacity-queue --capacity-adaptive \
+  --capacity-ceiling 8 --capacity-shared-dir /var/tmp/nare-capacity "..."
+```
+
+Queueing waits out a refusal at the same concurrency that produced it.
+Adaptive capacity changes the concurrency. It keeps a limit on the number of
+model requests in flight on each provider route, and it moves that limit from
+the refusals the queue already classifies:
+
+- a qualifying refusal (see [Capacity queueing](#capacity-queueing)) cuts the
+  limit to half, never below `--capacity-floor`. One burst of refusals cuts once:
+  a refusal within five seconds of the last cut does not cut again, but it still
+  restarts the quiet period;
+- after `--capacity-quiet-seconds` with no refusal and no earlier raise, the
+  limit rises by one, never above `--capacity-ceiling`.
+
+This is additive-increase, multiplicative-decrease (AIMD). A request holds a
+slot only while it is in flight. A request waiting out a refusal holds none, and
+a request that finds the limit full waits for a slot. Lowering the limit does not
+stop requests already in flight; they finish, and new ones wait for the lower
+limit.
+
+The limit is one value per route. A route is the provider, `--base-url` and
+`--model`; the key is a hash, so the base URL does not show in the path. Without
+`--capacity-shared-dir` the limit belongs to one process, which is what the
+Python API gets when concurrent runs share one `CapacityQueue`. With it, every
+nare process on the host that names the same directory shares the limit and the
+slots. Each slot is a file locked with `flock`, and the kernel drops that lock
+when its holder exits, so a process that crashes frees its slot. The directory
+must be on a local filesystem, because network filesystems do not reliably
+support `flock`; nare does not check this. The state file is replaced atomically,
+and a state file that does not parse is started again at the route's start
+limit. Processes that share a directory should agree on the floor and ceiling:
+each one clamps the shared limit to its own bounds, so mismatched bounds make the
+limit move between them.
+
+Preflight discovery is a seam, not a feature yet. A transport may declare the
+concurrency its route allows through `declared_concurrency()`. The limit then
+starts there, and a configured ceiling above it produces a `progress` note. The
+openai rail declares none: a proxy's `max_parallel_requests` appears only in a
+refusal, and no provider-agnostic way to read declared limits exists, so the
+limit starts at the ceiling and learns from refusals.
+
+From Python, a caller passes a `RouteLimiter` (from `nare.capacity`) as
+`CapacityQueue(limiter=...)` on `run()` or `step()`. Concurrent runs that share
+one queue share its limit. `SharedStore(directory, ceiling)` gives the shared
+form.
+
+Adaptive capacity is opt-in and needs `--capacity-queue`. The modes are:
+
+| Mode | Flags | Behavior |
+| --- | --- | --- |
+| off | neither | a refusal fails the request, as it always has |
+| fixed | `--capacity-queue` | queue refusals at the run's own concurrency (#288) |
+| adaptive | `--capacity-queue --capacity-adaptive` | queue refusals and adjust the route's limit |
+
+Evaluation gates that must not adapt use fixed mode.
+
+Each change of the limit emits a `progress` event with `detail.capacity_limit`
+and its reason, `refusal` or `quiet`. A request that waited for a slot emits one
+with reason `slot` and the seconds it waited. Neither carries the route name.
+
+```json
+{"type": "progress", "text": "capacity limit cut from 8 to 4 after a refusal; requests in flight drain",
+ "detail": {"capacity_limit": {"limit": 4, "previous": 8, "reason": "refusal"}}}
+```
+
+The `result` line and the session file carry `capacity_limit` (the limit this
+session last saw, or null without adaptive capacity) and
+`capacity_slot_wait_seconds`, the seconds spent waiting for a slot. Neither is
+part of `turns`, `retries`, `capacity_refusals` or `usage`. A session file
+without them loads with null and 0. The flags, environment variables, event
+detail and result fields are additive and keep the contract version.
+
+Environment: `NARE_CAPACITY_ADAPTIVE`, `NARE_CAPACITY_CEILING`,
+`NARE_CAPACITY_FLOOR`, `NARE_CAPACITY_QUIET_SECONDS` and
+`NARE_CAPACITY_SHARED_DIR`. `nare contract` advertises them under
+`capacity_adaptive`.
 
 ## Reasoning effort
 
