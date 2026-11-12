@@ -85,8 +85,10 @@ def flags_of(parser: argparse.ArgumentParser) -> dict[str, dict[str, Any]]:
     """Every option a parser accepts, by its long name, in parser order.
 
     Read from the parser itself, so a new flag is listed the moment it exists.
-    Defaults are left out on purpose: several come from the environment, and
-    the contract says what this build accepts, not how this machine is set.
+    The parser's defaults are left out on purpose: several come from the
+    environment, and the contract says what this build accepts, not how this
+    machine is set. Some built-in defaults are advertised in their feature's
+    own entry instead (compaction, request_retries, capacity_queue and others).
     """
     flags: dict[str, dict[str, Any]] = {}
     for action in parser._actions:
@@ -138,6 +140,7 @@ def describe() -> dict[str, Any]:
     from nare import mcp_defer
     from nare.caller_tools import COMMAND_TIMEOUT_DEFAULT
     from nare.capacity import CEILING_DEFAULT, FLOOR_DEFAULT, QUIET_SECONDS_DEFAULT
+    from nare.compact import COMPACTION_DEFAULT, COMPACTION_MODES, TARGET, TRIGGER
     from nare.loop import (
         CAPACITY_REFUSALS_DEFAULT,
         CAPACITY_WAIT_DEFAULT,
@@ -501,6 +504,32 @@ def describe() -> dict[str, Any]:
             "result_field": "capacity_limit",
             "session_field": "capacity_limit",
             "slot_wait_result_field": "capacity_slot_wait_seconds",
+        },
+        # Additive (#300): the built-in compaction defaults, the values a run
+        # uses when neither a flag nor its environment variable names one. They
+        # are the build's, never this machine's environment, so a caller that
+        # pins behavior across upgrades can record them and see one change.
+        "compaction": {
+            "flags": {
+                "mode": "--compaction",
+                "trigger": "--compaction-trigger",
+                "target": "--compaction-target",
+            },
+            "env": {
+                "mode": "NARE_COMPACTION",
+                "trigger": "NARE_COMPACTION_TRIGGER",
+                "target": "NARE_COMPACTION_TARGET",
+            },
+            "default": {
+                "mode": COMPACTION_DEFAULT,
+                "trigger": TRIGGER,
+                "target": TARGET,
+            },
+            "modes": list(COMPACTION_MODES),
+            "unit": "share of the context window",
+            "valid": "0 < target < trigger <= 1",
+            "per": "invocation",
+            "saved": False,
         },
         "request_timeout": {
             "flag": "--request-timeout",

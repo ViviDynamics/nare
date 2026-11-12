@@ -29,6 +29,7 @@ from nare.accounting import Prices, finite_number, turn_usage
 from nare.caller_tools import Tool, external_tools
 from nare.capacity import Change, Grant, RouteLimiter
 from nare.compact import (
+    COMPACTION_DEFAULT,
     COMPACTION_MODES,
     TARGET,
     TRIGGER,
@@ -1240,7 +1241,7 @@ async def step(
     tools: Sequence[Tool] = (),
     summary: bool = False,
     question_nudge: bool = False,
-    compaction: CompactionMode = "elide",
+    compaction: CompactionMode = COMPACTION_DEFAULT,
     summary_tier: SummaryTier | None = None,
     compaction_trigger: float = TRIGGER,
     compaction_target: float = TARGET,
@@ -1711,7 +1712,7 @@ async def _live_step(
     check: Check | None = None,
     summary: bool = False,
     question_nudge: bool = False,
-    compaction: CompactionMode = "elide",
+    compaction: CompactionMode = COMPACTION_DEFAULT,
     summary_tier: SummaryTier | None = None,
     compaction_trigger: float = TRIGGER,
     compaction_target: float = TARGET,
@@ -1820,7 +1821,7 @@ async def _run(
     check: Check | None = None,
     inbox: Callable[[], list[str]] | None = None,
     question_nudge: bool = False,
-    compaction: CompactionMode = "elide",
+    compaction: CompactionMode = COMPACTION_DEFAULT,
     compaction_trigger: float = TRIGGER,
     compaction_target: float = TARGET,
     capacity: CapacityQueue | None = None,
@@ -2092,7 +2093,7 @@ async def run(
     inbox: Callable[[], list[str]] | None = None,
     tools: Sequence[Tool] = (),
     question_nudge: bool = False,
-    compaction: CompactionMode = "elide",
+    compaction: CompactionMode = COMPACTION_DEFAULT,
     compaction_trigger: float = TRIGGER,
     compaction_target: float = TARGET,
     capacity: CapacityQueue | None = None,

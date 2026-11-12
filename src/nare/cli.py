@@ -35,6 +35,7 @@ from nare.capacity import (
     route_dir,
 )
 from nare.compact import (
+    COMPACTION_DEFAULT,
     COMPACTION_MODES,
     TARGET,
     TRIGGER,
@@ -349,7 +350,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=COMPACTION_MODES,
         # Empty counts as unset. argparse does not check a default against
         # choices, so main() refuses an unknown NARE_COMPACTION itself.
-        default=os.environ.get("NARE_COMPACTION") or "elide",
+        default=os.environ.get("NARE_COMPACTION") or COMPACTION_DEFAULT,
         help=(
             "what nare does first at the compaction point: elide shortens old "
             "tool output (default); summary has the model summarize its oldest "

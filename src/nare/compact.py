@@ -69,6 +69,8 @@ def check_compaction_point(
 
 CompactionMode = Literal["elide", "summary"]
 COMPACTION_MODES: tuple[CompactionMode, ...] = ("elide", "summary")
+# The mode a run uses when neither --compaction nor NARE_COMPACTION names one.
+COMPACTION_DEFAULT: CompactionMode = "elide"
 
 # The most tokens a summary may take, before the window and the transport's
 # own output cap lower it.

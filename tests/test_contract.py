@@ -432,3 +432,103 @@ def test_the_documented_contract_describes_streamed_reported_cost() -> None:
     assert "Streamed cost headers are ignored" not in text
     assert "`usage.cost` on the final usage chunk" in text
     assert "`reported_cost`" in text
+
+
+COMPACTION_ENV = (
+    "NARE_COMPACTION",
+    "NARE_COMPACTION_TRIGGER",
+    "NARE_COMPACTION_TARGET",
+)
+
+
+def test_contract_advertises_the_built_in_compaction_defaults() -> None:
+    """#300: a caller that pins behavior across upgrades reads the values a run
+    uses when it passes no flag, and notices when a release changes one."""
+    entry = describe()["compaction"]
+
+    assert entry["default"] == {"mode": "elide", "trigger": 0.8, "target": 0.6}
+    assert entry["flags"] == {
+        "mode": "--compaction",
+        "trigger": "--compaction-trigger",
+        "target": "--compaction-target",
+    }
+    assert entry["env"] == {
+        "mode": "NARE_COMPACTION",
+        "trigger": "NARE_COMPACTION_TRIGGER",
+        "target": "NARE_COMPACTION_TARGET",
+    }
+    assert entry["modes"] == ["elide", "summary"]
+    assert entry["valid"] == "0 < target < trigger <= 1"
+    assert entry["unit"] == "share of the context window"
+    assert entry["per"] == "invocation"
+    assert entry["saved"] is False
+    for name in entry["flags"].values():
+        assert name in describe()["flags"]
+
+
+def test_the_advertised_compaction_defaults_are_what_a_run_uses(
+    monkeypatch: Any,
+) -> None:
+    import inspect
+
+    import nare
+    from nare.cli import build_parser
+
+    for name in COMPACTION_ENV:
+        monkeypatch.delenv(name, raising=False)
+    default = describe()["compaction"]["default"]
+
+    args = build_parser().parse_args(["run", "task"])
+    assert (args.compaction, args.compaction_trigger, args.compaction_target) == (
+        default["mode"],
+        default["trigger"],
+        default["target"],
+    )
+    params = inspect.signature(nare.run).parameters
+    assert params["compaction"].default == default["mode"]
+    assert params["compaction_trigger"].default == default["trigger"]
+    assert params["compaction_target"].default == default["target"]
+
+
+def test_the_compaction_defaults_do_not_follow_the_environment(
+    monkeypatch: Any,
+) -> None:
+    """The contract says what this build does, not how this machine is set."""
+    for name in COMPACTION_ENV:
+        monkeypatch.delenv(name, raising=False)
+    unset = describe()["compaction"]
+    monkeypatch.setenv("NARE_COMPACTION", "summary")
+    monkeypatch.setenv("NARE_COMPACTION_TRIGGER", "0.5")
+    monkeypatch.setenv("NARE_COMPACTION_TARGET", "0.3")
+
+    assert describe()["compaction"] == unset
+
+
+def test_the_documented_contract_advertises_the_compaction_defaults() -> None:
+    text = (Path(__file__).parent.parent / "docs" / "contract.md").read_text(
+        encoding="utf-8"
+    )
+    flags = text.split("## Run flags", 1)[1].split("\n## ", 1)[0]
+    assert "Defaults are not listed" not in flags
+    assert "under `compaction`" in flags
+    assert "not yet advertised" in flags
+    section = text.split("### Compaction modes", 1)[1].split("\n## ", 1)[0]
+    block = section.split('```json\n"compaction": ', 1)[1].split("\n```", 1)[0]
+    assert json.loads(block) == describe()["compaction"]
+
+
+def test_a_run_follows_the_advertised_compaction_environment(monkeypatch: Any) -> None:
+    """Each variable the entry names is one `nare run` reads."""
+    from nare.cli import build_parser
+
+    entry = describe()["compaction"]
+    values = {"mode": "summary", "trigger": 0.5, "target": 0.3}
+    for key, name in entry["env"].items():
+        monkeypatch.setenv(name, str(values[key]))
+    args = build_parser().parse_args(["run", "task"])
+
+    assert (args.compaction, args.compaction_trigger, args.compaction_target) == (
+        values["mode"],
+        values["trigger"],
+        values["target"],
+    )

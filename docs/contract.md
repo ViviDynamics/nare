@@ -46,8 +46,13 @@ comparing release numbers:
 argument; `choices` is the list of accepted values, or `null` when any value
 of the option's type is accepted. The key is read from the argument parser
 when `nare contract` runs, so it cannot drift from what `nare run` accepts.
-Defaults are not listed: several come from the environment. The positional
-prompt is advertised under `prompt_input`. A new flag is a new entry here and
+A flag's entry carries no default, because several defaults come from the
+environment. Some built-in defaults, the values a run uses when neither the flag
+nor its environment variable is set, are advertised in their feature's own
+entry instead: compaction under `compaction` ([Compaction
+modes](#compaction-modes)), and `request_retries`, `capacity_queue` and others.
+Some are not yet advertised, among them `--max-turns`, `--provider` and
+`--model`. The positional prompt is advertised under `prompt_input`. A new flag is a new entry here and
 keeps the contract version; removing or renaming one bumps it.
 
 | Flag | Takes a value | Choices | What it does |
@@ -623,6 +628,33 @@ window, at most 4,000 tokens. By default that is 6,400 tokens at a 48,000-token
 window (4,000 plus 2,400), and 15% of the window for windows of 40,000 tokens or
 fewer. A smaller gap shrinks the margin and admits summaries the default
 refuses.
+
+`nare contract` advertises the built-in defaults under `compaction`, so a
+caller that pins behavior across upgrades can record the values a run uses when
+it passes no flag, and see when a release changes one:
+
+```json
+"compaction": {
+  "flags": {"mode": "--compaction", "trigger": "--compaction-trigger",
+            "target": "--compaction-target"},
+  "env": {"mode": "NARE_COMPACTION", "trigger": "NARE_COMPACTION_TRIGGER",
+          "target": "NARE_COMPACTION_TARGET"},
+  "default": {"mode": "elide", "trigger": 0.8, "target": 0.6},
+  "modes": ["elide", "summary"],
+  "unit": "share of the context window",
+  "valid": "0 < target < trigger <= 1",
+  "per": "invocation",
+  "saved": false
+}
+```
+
+`default` is the build's, not the machine's: a `NARE_COMPACTION`,
+`NARE_COMPACTION_TRIGGER` or `NARE_COMPACTION_TARGET` set where `nare contract`
+runs does not change it, though it does change what a run on that machine uses.
+The entry is additive and keeps the contract version. A changed default is not
+among the changes that bump the version ([What changes the
+version](#what-changes-the-version)), so a caller that depends on one compares
+`default`, not the version.
 
 | Mode | At the trigger (80% of the window by default) | Then |
 | --- | --- | --- |
