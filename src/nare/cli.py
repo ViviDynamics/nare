@@ -23,7 +23,12 @@ from typing import Any
 
 from nare import __version__, mcp_auth
 from nare.accounting import Prices, finite_number, prices_from_env
-from nare.caller_tools import command_tools
+from nare.caller_tools import (
+    COMMAND_TIMEOUT_DEFAULT,
+    command_check,
+    command_tools,
+    parse_check_command,
+)
 from nare.capacity import (
     CEILING_DEFAULT,
     FLOOR_DEFAULT,
@@ -59,6 +64,7 @@ from nare.loop import (
     RETRY_SECONDS_DEFAULT,
     STRUCTURED_OUTPUT_MODES,
     CapacityQueue,
+    Check,
     RetryPolicy,
     budget_record,
     check_budget,
@@ -287,6 +293,28 @@ def build_parser() -> argparse.ArgumentParser:
             "(default 1). A correction is free, and does not count, when the "
             "answer has fewer distinct errors than any earlier one; free corrections "
             "need N above 1. Each correction names the earlier fixes to keep"
+        ),
+    )
+    run_parser.add_argument(
+        "--check-command",
+        metavar="ARGV",
+        help=(
+            "a caller check this command line runs on a final answer that passes "
+            "--schema: a JSON array argv, run without a shell, in --root, without "
+            'the provider credentials, such as \'["python3", "check.py"]\'. It '
+            'reads {"answer", "reads"} as JSON on stdin and prints a JSON list '
+            "of errors; its errors are corrected like schema errors, under "
+            "--max-corrections. A non-zero exit, a timeout or other output ends "
+            "the run with an error"
+        ),
+    )
+    run_parser.add_argument(
+        "--check-timeout",
+        type=float,
+        metavar="SECONDS",
+        help=(
+            "how long --check-command may run on one answer before it is killed "
+            f"(default {COMMAND_TIMEOUT_DEFAULT:g})"
         ),
     )
     run_parser.add_argument(
@@ -1040,6 +1068,27 @@ def validate_run_args(args: argparse.Namespace) -> Prices | None:
     return prices_from_env()
 
 
+def check_from_args(
+    args: argparse.Namespace, schema: dict[str, Any] | None
+) -> Check | None:
+    """The run's check from --check-command and --check-timeout (#296), or None.
+    A malformed argv or timeout, or a check without a schema, is refused here,
+    before any turn."""
+    if args.check_command is None:
+        if args.check_timeout is not None:
+            raise ValueError("--check-timeout requires --check-command")
+        return None
+    argv = parse_check_command(args.check_command)
+    if schema is None:
+        raise ValueError("--check-command requires --schema")
+    timeout = COMMAND_TIMEOUT_DEFAULT
+    if args.check_timeout is not None:
+        timeout = finite_number(args.check_timeout, "--check-timeout")
+    return command_check(
+        argv, timeout=timeout, root=None if args.root is None else Path(args.root)
+    )
+
+
 def fork_with_note(session: Session, source: str | Path | None) -> Session:
     """A fork of `session` that says so in its events. The original is only read:
     the caller decides where the fork is written."""
@@ -1279,6 +1328,7 @@ async def _execute(
                 require_reads=args.require_reads or 0,
                 require_read=args.require_read or (),
                 require_cited_reads=args.require_cited_reads or (),
+                check=getattr(args, "check", None),
                 # Headless only: a person reading a TUI reply can answer it.
                 question_nudge=True,
             )
@@ -1528,6 +1578,7 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
             raise ValueError("--require-reads must be a positive integer")
         if args.require_cited_reads and schema is None:
             raise ValueError("--require-cited-reads requires --schema")
+        args.check = check_from_args(args, schema)
         if reads_required:
             # Refused here, before any turn, as a bad path, pointer or missing
             # tool is.

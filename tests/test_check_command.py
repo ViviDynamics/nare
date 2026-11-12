@@ -3,6 +3,7 @@ built on."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -252,3 +253,105 @@ def test_a_check_command_parses_to_its_argv() -> None:
         "check.py",
         "--strict",
     ]
+
+
+# The command line: --check-command and --check-timeout on `nare run`.
+
+REFUSE_BOB = (
+    "got = json.load(sys.stdin)\n"
+    "bad = got['answer']['name'] == 'bob'\n"
+    "print(json.dumps([{'code': 'name_unknown', 'location': ['name'], "
+    "'message': 'no such person: bob', 'guidance': 'name someone in NOTES.txt'}] "
+    "if bad else []))\n"
+)
+
+
+def cli_run(tmp_path: Path, extra: list[str], replies: list[Any]) -> tuple[int, Any]:
+    from nare.cli import main
+
+    schema = tmp_path / "person.json"
+    schema.write_text(json.dumps(PERSON), encoding="utf-8")
+    code = main(
+        ["run", "who?", "--yes", "--jsonl", "--schema", str(schema), *extra],
+        transport=FakeProvider(replies),
+    )
+    return code, schema
+
+
+def result_line(out: str) -> dict[str, Any]:
+    last: dict[str, Any] = json.loads(out.strip().splitlines()[-1])
+    return last
+
+
+def test_a_check_command_corrects_an_answer_in_the_session(
+    tmp_path: Path, capsys: Any
+) -> None:
+    argv = json.dumps(script(tmp_path, REFUSE_BOB))
+
+    code, _ = cli_run(
+        tmp_path,
+        ["--check-command", argv],
+        [text_reply('{"name": "bob"}'), text_reply('{"name": "ada"}')],
+    )
+
+    out = capsys.readouterr().out
+    assert code == 0
+    result = result_line(out)
+    assert result["status"] == "done"
+    assert result["output"] == {"name": "ada"}
+    events = [json.loads(line) for line in out.strip().splitlines()]
+    [correction] = [e for e in events if "schema correction" in e.get("text", "")]
+    assert correction["detail"]["errors"][0]["code"] == "name_unknown"
+
+
+def test_a_failing_check_command_ends_the_run_as_a_raising_check(
+    tmp_path: Path, capsys: Any
+) -> None:
+    argv = json.dumps(
+        script(tmp_path, "sys.stderr.write('no manifest'); sys.exit(3)\n")
+    )
+
+    code, _ = cli_run(
+        tmp_path, ["--check-command", argv], [text_reply('{"name": "ada"}')]
+    )
+
+    result = result_line(capsys.readouterr().out)
+    assert code == 1
+    assert result["status"] == "error"
+    assert result["stop_reason"] is None
+    assert result["error"] == (
+        "check raised CheckCommandFailed: exit status 3: no manifest"
+    )
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["--check-command", "python3 check.py"], "--check-command takes a JSON array"),
+        (["--check-timeout", "5"], "--check-timeout requires --check-command"),
+        (["--check-command", '["true"]', "--check-timeout", "0"], "--check-timeout"),
+        (["--check-command", '["true"]', "--check-timeout", "nan"], "--check-timeout"),
+    ],
+)
+def test_bad_check_flags_never_start(
+    tmp_path: Path, capsys: Any, args: list[str], message: str
+) -> None:
+    code, _ = cli_run(tmp_path, args, [text_reply('{"name": "ada"}')])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert message in captured.err
+
+
+def test_a_check_command_without_a_schema_never_starts(capsys: Any) -> None:
+    from nare.cli import main
+
+    code = main(
+        ["run", "go", "--yes", "--check-command", '["true"]'],
+        transport=FakeProvider([text_reply("done")]),
+    )
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "--check-command requires --schema" in captured.err

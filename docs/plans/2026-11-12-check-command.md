@@ -40,7 +40,7 @@ Python `check` behaves; a check for the TUI.
 - [x] 2. `command_check(argv, timeout, root)`: tests for pass, errors, string
       errors, non-zero exit, bad JSON, non-list, timeout kills the group,
       cancellation kills the group, cwd is the root, credentials withheld.
-- [ ] 3. CLI: `--check-command` and `--check-timeout` parse, refuse bad values
+- [x] 3. CLI: `--check-command` and `--check-timeout` parse, refuse bad values
       and a missing `--schema` (exit 2), and an end-to-end fake-provider run
       whose first answer the command refuses and whose corrected answer passes.
 - [ ] 4. Contract entry and docs: `check_command` in `describe()`, flags table
