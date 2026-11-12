@@ -631,6 +631,7 @@ class TuiApp(App[None]):
                 tools=self.args.command_tools,
                 mcp_allow_all=self.args.tools is None,
                 retry=getattr(self.args, "retry", None),
+                capacity=getattr(self.args, "capacity", None),
                 inbox=self._take_queued,
             ):
                 self._event(event)

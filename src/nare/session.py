@@ -139,6 +139,12 @@ class Session:
     # Cut-off replies (the output cap, or a repetition) over the session's life,
     # as `retries` counts failed requests. A file without it loads with 0.
     cutoffs: int = 0
+    # Capacity refusals queued over the session's life, and the seconds spent
+    # waiting on them. Kept apart from `retries` and from `turns`: a refused
+    # request was never dispatched, so it is neither a retry nor a turn, and it
+    # has no usage. A file without them loads as 0.
+    capacity_refusals: int = 0
+    capacity_wait: float = 0.0
     last_input_tokens: int = 0
     last_input_messages: int = 0
     last_input_chars: int = 0

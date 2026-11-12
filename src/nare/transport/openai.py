@@ -266,6 +266,9 @@ def response_format_from(schema: dict[str, Any]) -> dict[str, Any]:
 
 class OpenAITransport:
     supports_image_input = True
+    # The proxy's capacity markers (see nare.transport.capacity_refusal): a 429
+    # whose body names one of these was refused before dispatch, and may queue.
+    capacity_markers: tuple[str, ...] = ("max_parallel_requests",)
     # A constrained turn carries no tools: measured on vLLM, a request with
     # both cannot call a tool, and the model invents an answer instead.
     supports_structured_output = True
