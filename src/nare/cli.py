@@ -1087,9 +1087,14 @@ def cited_read_map_from_args(args: argparse.Namespace) -> Any:
     if not args.require_cited_reads:
         raise ValueError("--cited-read-map requires --require-cited-reads")
     try:
-        return json.loads(Path(args.cited_read_map).read_text(encoding="utf-8"))
+        loaded = json.loads(Path(args.cited_read_map).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ValueError(f"--cited-read-map {args.cited_read_map}: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise ValueError(
+            f"--cited-read-map {args.cited_read_map} must hold a JSON object"
+        )
+    return loaded
 
 
 def check_from_args(

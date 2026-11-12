@@ -764,10 +764,13 @@ def test_an_unmapped_citation_is_compared_as_cited(root: Path) -> None:
     [
         (["a.txt"], "cited read map must be an object"),
         ({"": "a.txt"}, "cited read map has an empty key"),
+        ({"  ": "a.txt"}, "cited read map has an empty key"),
+        ({1: "a.txt"}, "cited read map key 1 is not a string"),
         ({"src/x.py": ""}, "cited read map entry src/x.py"),
         ({"src/x.py": []}, "cited read map entry src/x.py"),
         ({"src/x.py": ["a.txt", 3]}, "cited read map entry src/x.py"),
         ({"src/x.py": "../outside.txt"}, "is outside the root"),
+        ({"a{0}b": "../outside.txt"}, r"path \.\./outside\.txt for a\{0\}b is outside"),
     ],
 )
 def test_a_malformed_cited_read_map_is_refused(
@@ -873,6 +876,8 @@ def test_the_cli_takes_a_cited_read_map_file(
     ("content", "pointer", "message"),
     [
         ("not json", True, "--cited-read-map"),
+        ("null", True, "must hold a JSON object"),
+        ('["a.txt"]', True, "must hold a JSON object"),
         ('{"src/x.py": "../outside.txt"}', True, "is outside the root"),
         ('{"src/x.py": "a.txt"}', False, "--cited-read-map requires --require-cited"),
     ],
@@ -922,3 +927,17 @@ def test_the_documented_contract_describes_the_cited_read_map() -> None:
     assert "`cited_read_map`" in flat
     assert "which the answer cites as" in flat
     assert "under `cited_reads.map`" in flat
+
+
+def test_a_read_requirement_with_a_map_still_hashes(root: Path) -> None:
+    from nare.reads import NO_READS, build
+
+    requirement = build(
+        0, [], root=root, cited=["/checks/*/path"], cited_map={"src/x.py": "a.txt"}
+    )
+
+    assert isinstance(hash(requirement), int)
+    assert isinstance(hash(NO_READS), int)
+    assert requirement == build(
+        0, [], root=root, cited=["/checks/*/path"], cited_map={"src/x.py": ["a.txt"]}
+    )
