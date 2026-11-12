@@ -137,6 +137,7 @@ def describe() -> dict[str, Any]:
     """
     from nare import mcp_defer
     from nare.caller_tools import COMMAND_TIMEOUT_DEFAULT
+    from nare.capacity import CEILING_DEFAULT, FLOOR_DEFAULT, QUIET_SECONDS_DEFAULT
     from nare.loop import (
         CAPACITY_REFUSALS_DEFAULT,
         CAPACITY_WAIT_DEFAULT,
@@ -462,6 +463,44 @@ def describe() -> dict[str, Any]:
             "event_detail": "capacity",
             "result_field": "capacity_refusals",
             "session_field": "capacity_refusals",
+        },
+        # Additive: the adaptive limit per provider route (issue 289). Needs the
+        # queue above; off unless enabled. The limit is one value per route and
+        # is shared across processes only when a shared directory is named.
+        "capacity_adaptive": {
+            "flags": {
+                "enable": "--capacity-adaptive",
+                "ceiling": "--capacity-ceiling",
+                "floor": "--capacity-floor",
+                "quiet_seconds": "--capacity-quiet-seconds",
+                "shared_dir": "--capacity-shared-dir",
+            },
+            "env": {
+                "enable": "NARE_CAPACITY_ADAPTIVE",
+                "ceiling": "NARE_CAPACITY_CEILING",
+                "floor": "NARE_CAPACITY_FLOOR",
+                "quiet_seconds": "NARE_CAPACITY_QUIET_SECONDS",
+                "shared_dir": "NARE_CAPACITY_SHARED_DIR",
+            },
+            "default": {
+                "enable": False,
+                "ceiling": CEILING_DEFAULT,
+                "floor": FLOOR_DEFAULT,
+                "quiet_seconds": QUIET_SECONDS_DEFAULT,
+                "shared_dir": None,
+            },
+            "modes": {
+                "off": "neither flag",
+                "fixed": "--capacity-queue alone (the queue, no limit)",
+                "adaptive": "--capacity-queue with --capacity-adaptive",
+            },
+            "per": "model_request",
+            "providers": ["openai"],
+            "event": "progress",
+            "event_detail": "capacity_limit",
+            "result_field": "capacity_limit",
+            "session_field": "capacity_limit",
+            "slot_wait_result_field": "capacity_slot_wait_seconds",
         },
         "request_timeout": {
             "flag": "--request-timeout",

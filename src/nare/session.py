@@ -145,6 +145,11 @@ class Session:
     # has no usage. A file without them loads as 0.
     capacity_refusals: int = 0
     capacity_wait: float = 0.0
+    # The route's adaptive limit as this session last saw it (None: no limit),
+    # and the seconds it waited for a request slot under that limit. Waiting
+    # for a slot is not a capacity refusal, and is kept apart from both.
+    capacity_limit: int | None = None
+    capacity_slot_wait: float = 0.0
     last_input_tokens: int = 0
     last_input_messages: int = 0
     last_input_chars: int = 0

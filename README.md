@@ -96,6 +96,12 @@ not a retry: it has its own limits (`--capacity-wait-seconds`,
 `--capacity-refusals`) and its own counts in the `result` line. See
 [capacity queueing](docs/contract.md#capacity-queueing).
 
+`--capacity-adaptive` (with `--capacity-queue`) goes further: it keeps a limit on
+the requests in flight to each provider route and cuts it on refusals, then
+raises it again after a quiet period. `--capacity-shared-dir` shares that limit
+across the nare processes on one host. See
+[adaptive capacity](docs/contract.md#adaptive-capacity).
+
 `--effort` takes `low`, `medium`, `high`, `xhigh` or `max`. On the anthropic
 rail it sends `output_config.effort` with adaptive thinking; on the openai rail
 it is passed through as `reasoning_effort`, and what a level means is the

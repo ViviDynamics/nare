@@ -327,6 +327,14 @@ class OpenAITransport:
             {"authorization": f"Bearer {self._key}"},
         )
 
+    def declared_concurrency(self) -> int | None:
+        """No provider-agnostic limit can be read from a Chat Completions endpoint.
+        A proxy's max_parallel_requests appears only in a refusal, and each
+        proxy exposes its limits through its own API, so none is discovered here
+        (issue 289 reports this gap). The adaptive limiter starts at its ceiling
+        and learns from refusals."""
+        return None
+
     async def context_window(self) -> int | None:
         return await self._metadata.context_window()
 

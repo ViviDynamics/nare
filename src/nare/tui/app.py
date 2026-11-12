@@ -45,6 +45,7 @@ from textual.worker import Worker, WorkerCancelled
 from nare.accounting import Prices
 from nare.cli import (
     adopt_system,
+    capacity_for_run,
     fork_with_note,
     policy_from_args,
     transport_from_args,
@@ -343,6 +344,8 @@ class TuiApp(App[None]):
         self.transport = transport
         self.policy = policy
         self.args = args
+        # One per app, not per turn: an in-process limit must outlive the turns.
+        self.capacity = capacity_for_run(args, transport)
         self.prices = prices
         self.prompt = prompt
         self.root = str(Path(args.root or ".").resolve())
@@ -631,7 +634,7 @@ class TuiApp(App[None]):
                 tools=self.args.command_tools,
                 mcp_allow_all=self.args.tools is None,
                 retry=getattr(self.args, "retry", None),
-                capacity=getattr(self.args, "capacity", None),
+                capacity=self.capacity,
                 inbox=self._take_queued,
             ):
                 self._event(event)

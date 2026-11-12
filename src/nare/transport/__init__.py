@@ -146,6 +146,24 @@ def capacity_refusal(
     return None
 
 
+def declared_concurrency(transport: object) -> int | None:
+    """The in-flight requests a transport's provider declares for its route, or
+    None when it declares none (or the transport has no such hook).
+
+    The hook is `declared_concurrency()` on the transport: synchronous and
+    cheap, so a transport that must ask the network caches the answer. The
+    adaptive limiter starts at this value and warns when the configured
+    ceiling is above it.
+    """
+    hook = getattr(transport, "declared_concurrency", None)
+    if not callable(hook):
+        return None
+    value: object = hook()
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
+
+
 class StreamDropped(RuntimeError):
     """A streamed response ended before its completion marker arrived."""
 
@@ -413,6 +431,7 @@ __all__ = [
     "Transient",
     "Transport",
     "capacity_refusal",
+    "declared_concurrency",
     "make_transport",
     "transient",
 ]

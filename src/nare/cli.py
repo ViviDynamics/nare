@@ -17,12 +17,23 @@ import os
 import signal
 import sys
 from collections.abc import AsyncIterator, Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from nare import __version__, mcp_auth
 from nare.accounting import Prices, finite_number, prices_from_env
 from nare.caller_tools import command_tools
+from nare.capacity import (
+    CEILING_DEFAULT,
+    FLOOR_DEFAULT,
+    QUIET_SECONDS_DEFAULT,
+    Aimd,
+    LocalStore,
+    RouteLimiter,
+    SharedStore,
+    route_dir,
+)
 from nare.compact import (
     COMPACTION_MODES,
     TARGET,
@@ -71,7 +82,12 @@ from nare.session import (
     unanswered,
 )
 from nare.tools import TOOLS, Policy, approve_all, stop_group
-from nare.transport import EFFORTS, Transport, make_transport
+from nare.transport import (
+    EFFORTS,
+    Transport,
+    declared_concurrency,
+    make_transport,
+)
 
 log = logging.getLogger(__name__)
 
@@ -110,6 +126,15 @@ def stream_from_env(env: Mapping[str, str]) -> bool:
 def capacity_queue_from_env(env: Mapping[str, str]) -> bool:
     """NARE_CAPACITY_QUEUE, as --capacity-queue's default reads it."""
     return env.get("NARE_CAPACITY_QUEUE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def capacity_adaptive_from_env(env: Mapping[str, str]) -> bool:
+    """NARE_CAPACITY_ADAPTIVE, as --capacity-adaptive's default reads it."""
+    return env.get("NARE_CAPACITY_ADAPTIVE", "").strip().lower() in (
         "1",
         "true",
         "yes",
@@ -451,6 +476,52 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
         f"as it would without the queue (default {CAPACITY_REFUSALS_DEFAULT}; "
         "needs --capacity-queue; env: NARE_CAPACITY_REFUSALS)",
     )
+    # Adaptive limiting is opt-in on top of the queue. Off, and with the queue
+    # alone, a run behaves as #288 made it.
+    parser.add_argument(
+        "--capacity-adaptive",
+        action="store_true",
+        default=capacity_adaptive_from_env(os.environ),
+        help="adapt the in-flight limit on this provider route: a capacity "
+        "refusal cuts it, a quiet period raises it by one; needs "
+        "--capacity-queue; off by default (env: NARE_CAPACITY_ADAPTIVE)",
+    )
+    parser.add_argument(
+        "--capacity-ceiling",
+        type=int,
+        metavar="N",
+        default=os.environ.get("NARE_CAPACITY_CEILING"),
+        help="most requests in flight on the route, and the limit's ceiling "
+        f"(default {CEILING_DEFAULT}; needs --capacity-adaptive; "
+        "env: NARE_CAPACITY_CEILING)",
+    )
+    parser.add_argument(
+        "--capacity-floor",
+        type=int,
+        metavar="N",
+        default=os.environ.get("NARE_CAPACITY_FLOOR"),
+        help="the lowest limit a refusal can cut to "
+        f"(default {FLOOR_DEFAULT}; needs --capacity-adaptive; "
+        "env: NARE_CAPACITY_FLOOR)",
+    )
+    parser.add_argument(
+        "--capacity-quiet-seconds",
+        type=float,
+        metavar="SECONDS",
+        default=os.environ.get("NARE_CAPACITY_QUIET_SECONDS"),
+        help="seconds without a refusal before the limit rises by one "
+        f"(default {QUIET_SECONDS_DEFAULT:g}; needs --capacity-adaptive; "
+        "env: NARE_CAPACITY_QUIET_SECONDS)",
+    )
+    parser.add_argument(
+        "--capacity-shared-dir",
+        metavar="PATH",
+        default=os.environ.get("NARE_CAPACITY_SHARED_DIR"),
+        help="a local directory where every nare process on this host that "
+        "names it shares one limit for the route (POSIX file locks; not on "
+        "network filesystems; needs --capacity-adaptive; "
+        "env: NARE_CAPACITY_SHARED_DIR)",
+    )
     parser.add_argument(
         "--proxy-num-retries",
         type=int,
@@ -738,6 +809,33 @@ def adopt_system(args: argparse.Namespace, session: Session) -> None:
     session.system = sent
 
 
+def capacity_for_run(
+    args: argparse.Namespace, transport: Transport | None
+) -> CapacityQueue | None:
+    """The run's capacity queue, with the route's adaptive limiter attached when
+    --capacity-adaptive asks for one. Built once per process, so the in-process
+    limit outlives the runs that share it (the TUI keeps one across turns)."""
+    queue: CapacityQueue | None = getattr(args, "capacity", None)
+    policy: Aimd | None = getattr(args, "capacity_policy", None)
+    if queue is None or policy is None or transport is None:
+        return queue
+    route = f"{args.provider}|{args.base_url or ''}|{args.model}"
+    store = (
+        SharedStore(route_dir(Path(args.capacity_shared_dir), route), policy.ceiling)
+        if args.capacity_shared_dir is not None
+        else LocalStore()
+    )
+    return replace(
+        queue,
+        limiter=RouteLimiter(
+            route,
+            store=store,
+            policy=policy,
+            declared=declared_concurrency(transport),
+        ),
+    )
+
+
 def transport_from_args(args: argparse.Namespace) -> Transport:
     """Everything vendor-shaped is bound here and never reaches the loop."""
     return make_transport(
@@ -896,6 +994,34 @@ def validate_run_args(args: argparse.Namespace) -> Prices | None:
         )
     else:
         args.capacity = None
+    adaptive_only = (
+        args.capacity_ceiling,
+        args.capacity_floor,
+        args.capacity_quiet_seconds,
+        args.capacity_shared_dir,
+    )
+    if args.capacity_adaptive and not args.capacity_queue:
+        raise ValueError("--capacity-adaptive needs --capacity-queue")
+    if not args.capacity_adaptive:
+        if any(value is not None for value in adaptive_only):
+            raise ValueError(
+                "--capacity-ceiling, --capacity-floor, --capacity-quiet-seconds "
+                "and --capacity-shared-dir need --capacity-adaptive"
+            )
+        args.capacity_policy = None
+    else:
+        # Aimd checks the bounds, so a bad value is refused before any call.
+        args.capacity_policy = Aimd(
+            floor=FLOOR_DEFAULT if args.capacity_floor is None else args.capacity_floor,
+            ceiling=CEILING_DEFAULT
+            if args.capacity_ceiling is None
+            else args.capacity_ceiling,
+            quiet=QUIET_SECONDS_DEFAULT
+            if args.capacity_quiet_seconds is None
+            else float(args.capacity_quiet_seconds),
+        )
+        if args.capacity_shared_dir is not None and sys.platform == "win32":
+            raise ValueError("--capacity-shared-dir needs POSIX file locks")
     args.mcp_servers = (
         parse_servers(json.loads(Path(args.mcp_config).read_text(encoding="utf-8")))
         if args.mcp_config
@@ -993,6 +1119,8 @@ def _emit_result(
                     "retries": session.retries,
                     "capacity_refusals": session.capacity_refusals,
                     "capacity_wait_seconds": round(session.capacity_wait, 3),
+                    "capacity_limit": session.capacity_limit,
+                    "capacity_slot_wait_seconds": round(session.capacity_slot_wait, 3),
                     "cutoffs": session.cutoffs,
                     "contract": CONTRACT_VERSION,
                     "nare": __version__,
@@ -1140,7 +1268,7 @@ async def _execute(
                 tools=args.command_tools,
                 structured_output=args.structured_output,
                 retry=args.retry,
-                capacity=args.capacity,
+                capacity=capacity_for_run(args, transport),
                 max_tool_calls=args.max_tool_calls,
                 max_corrections=corrections_limit,
                 max_cutoffs=args.max_cutoffs,
