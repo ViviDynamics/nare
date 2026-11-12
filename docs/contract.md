@@ -72,6 +72,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--require-reads` | yes | | Hold the final answer until the run has read at least this many distinct files ([Read requirements](#read-requirements)) |
 | `--require-read` | yes | | Hold the final answer until the run has read this path, relative to `--root`; repeatable ([Read requirements](#read-requirements)) |
 | `--require-cited-reads` | yes | | Hold the final answer until the run has read each path the answer cites, found by a JSON pointer into the `--schema` answer; repeatable ([Read requirements](#read-requirements)) |
+| `--cited-read-map` | yes | | JSON file mapping a cited value to the `--root`-relative path, or paths, whose read satisfies it; needs `--require-cited-reads` ([Read requirements](#read-requirements)) |
 | `--timeout` | yes | | Wall clock for this invocation ([Run deadline and stop signals](#run-deadline-and-stop-signals)) |
 | `--compaction` | yes | `elide`, `summary` | What nare does first at the compaction point: elide old tool output, or have the model summarize its oldest turns ([Compaction modes](#compaction-modes)) |
 | `--compaction-trigger` | yes | | The share of the window where compaction starts, default `0.8`; with `--compaction-target`, `0 < target < trigger <= 1` ([Compaction modes](#compaction-modes)) |
@@ -1319,6 +1320,7 @@ asyncio.run(main())
 | `max_corrections` | 1 | 1 (`--max-corrections`) | Corrections of a failing answer or an unmet read requirement, per run. A free correction does not count |
 | `max_cutoffs` | `None`: no correction, the run ends at the first cut-off reply | 2 (`--max-cutoffs`) | Corrections of replies cut off at the output cap or by repetition, per invocation |
 | `require_reads`, `require_read` and `require_cited_reads` | 0, `()` and `()` | 0 and none (`--require-reads`, `--require-read`, `--require-cited-reads`) | Hold the final answer until N distinct files, each named path, or each path the answer cites, has been read |
+| `cited_read_map` | `None` | none (`--cited-read-map`) | Which `--root`-relative path, or paths, satisfies each cited value; an unmapped value is compared as cited |
 | `compaction` | `"elide"` | `elide` (`--compaction`, `NARE_COMPACTION`) | What happens first when the context estimate reaches the trigger, 80% of the window by default ([Compaction modes](#compaction-modes)) |
 | `compaction_trigger` | `0.8` | `0.8` (`--compaction-trigger`, `NARE_COMPACTION_TRIGGER`) | The share of the window where compaction starts ([Compaction modes](#compaction-modes)) |
 | `compaction_target` | `0.6` | `0.6` (`--compaction-target`, `NARE_COMPACTION_TARGET`) | The share that elision stops at, below the trigger ([Compaction modes](#compaction-modes)) |
@@ -2391,6 +2393,30 @@ root, does not. A read with `offset` or `limit` counts as a read of its file. A
 link inside the root counts as its target, and a link that points outside it is
 refused at startup. Without `--root` a path may be any path the read tool
 accepts. A requirement needs the `read` tool.
+
+**A path map.** An answer may cite a file under another name than it was read
+by: a logical repository path, say, for a file the caller captured into the
+root under an artifact name. `--cited-read-map FILE` (`cited_read_map={...}` in
+Python) maps each such cited value to the path that satisfies it:
+
+```json
+{"src/app.py": ["head/0001.py", "base/0001.py"], "README.md": "head/0002.md"}
+```
+
+A key is a cited string, matched exactly as the answer holds it. A value is one
+`--root`-relative path (or absolute inside the root), or a list of them, any one
+of which satisfies the citation once read. A cited value with no entry is
+compared as cited, as without a map. The correction names the path to read, so
+the model knows what to open: "read head/0002.md, which the answer cites as
+README.md", or "read one of head/0001.py, base/0001.py, which the answer cites
+as src/app.py". A file that is not a JSON object, an empty key, a value that is
+not a path or a non-empty list of paths, a mapped path outside the root, or a
+map without `--require-cited-reads` is refused at startup (exit 2, or
+`ValueError` in Python). The map checks only that the mapped file was read; the
+revision, digest or line range a citation names is a caller check's business
+([A check from the command line](#a-check-from-the-command-line)). `nare
+contract` advertises the map under `cited_reads.map`. It is additive and keeps
+the contract version.
 
 A held answer is a correction, charged against the same budget as schema
 corrections (`--max-corrections`), and the model is told what is missing. A

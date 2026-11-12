@@ -363,6 +363,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_parser.add_argument(
+        "--cited-read-map",
+        metavar="FILE",
+        help=(
+            "JSON file mapping a value the answer cites to the --root-relative "
+            "path, or list of paths, whose read satisfies it, for an answer that "
+            "cites files under other names than they were read. Any one listed "
+            "path counts; an unmapped value is compared as cited. Needs "
+            "--require-cited-reads"
+        ),
+    )
+    run_parser.add_argument(
         "--timeout",
         type=float,
         metavar="SECONDS",
@@ -1068,6 +1079,24 @@ def validate_run_args(args: argparse.Namespace) -> Prices | None:
     return prices_from_env()
 
 
+def cited_read_map_from_args(args: argparse.Namespace) -> Any:
+    """The --cited-read-map file's JSON (#297), or None. Its shape and paths
+    are checked by build_reads with the rest of the read requirement."""
+    if args.cited_read_map is None:
+        return None
+    if not args.require_cited_reads:
+        raise ValueError("--cited-read-map requires --require-cited-reads")
+    try:
+        loaded = json.loads(Path(args.cited_read_map).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"--cited-read-map {args.cited_read_map}: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise ValueError(
+            f"--cited-read-map {args.cited_read_map} must hold a JSON object"
+        )
+    return loaded
+
+
 def check_from_args(
     args: argparse.Namespace, schema: dict[str, Any] | None
 ) -> Check | None:
@@ -1281,6 +1310,7 @@ async def _execute(
     schema: dict[str, Any] | None,
     prices: Prices | None,
     check: Check | None = None,
+    cited_read_map: Any = None,
 ) -> int:
     saved_turns = -1
     groups_from = len(session.process_groups)
@@ -1329,6 +1359,7 @@ async def _execute(
                 require_reads=args.require_reads or 0,
                 require_read=args.require_read or (),
                 require_cited_reads=args.require_cited_reads or (),
+                cited_read_map=cited_read_map,
                 check=check,
                 # Headless only: a person reading a TUI reply can answer it.
                 question_nudge=True,
@@ -1579,6 +1610,7 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
             raise ValueError("--require-reads must be a positive integer")
         if args.require_cited_reads and schema is None:
             raise ValueError("--require-cited-reads requires --schema")
+        cited_read_map = cited_read_map_from_args(args)
         check = check_from_args(args, schema)
         if reads_required:
             # Refused here, before any turn, as a bad path, pointer or missing
@@ -1588,6 +1620,7 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
                 args.require_read or [],
                 root=Path(args.root).resolve() if args.root else None,
                 cited=args.require_cited_reads or [],
+                cited_map=cited_read_map,
             )
             if "read" not in tools_from_args(args):
                 raise ValueError(
@@ -1611,7 +1644,16 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
 
     try:
         return asyncio.run(
-            _execute(session, transport, args, policy, schema, prices, check)
+            _execute(
+                session,
+                transport,
+                args,
+                policy,
+                schema,
+                prices,
+                check,
+                cited_read_map,
+            )
         )
     except KeyboardInterrupt:
         print("nare: interrupted", file=sys.stderr)

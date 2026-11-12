@@ -2094,6 +2094,7 @@ async def run(
     require_reads: int = 0,
     require_read: Sequence[str] = (),
     require_cited_reads: Sequence[str] = (),
+    cited_read_map: Mapping[str, str | Sequence[str]] | None = None,
     check: Check | None = None,
     inbox: Callable[[], list[str]] | None = None,
     tools: Sequence[Tool] = (),
@@ -2131,6 +2132,7 @@ async def run(
         list(require_read),
         root=policy.root if policy is not None else None,
         cited=list(require_cited_reads),
+        cited_map=cited_read_map,
     )
     if reads.active and "read" not in base.tools:
         raise ValueError("a read requirement needs the read tool")

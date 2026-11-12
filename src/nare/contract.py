@@ -290,6 +290,20 @@ def describe() -> dict[str, Any]:
             "correction": {"kind": "reads", "budget": "shared with schema corrections"},
             "stop_reason": "reads_required",
             "result": "reads",
+            # Additive (#297): for an answer that cites files under other names
+            # than they were read.
+            "map": {
+                "flag": "--cited-read-map",
+                "argument": "cited_read_map",
+                "requires": "--require-cited-reads",
+                "shape": (
+                    "JSON object: cited value to a root-relative path or list of paths"
+                ),
+                "keys": "matched exactly as the answer holds them",
+                "satisfied_by": "any one listed path read",
+                "unmapped": "compared as cited",
+                "outside_root": "refused before the run",
+            },
         },
         # Additive (#296): a caller check the command line runs, for a caller
         # that cannot import nare. Its errors are corrected in the session, as
