@@ -303,6 +303,7 @@ def describe() -> dict[str, Any]:
             "runs_on": "a final answer that passes the schema",
             "cwd": "--root, else the current directory",
             "credentials": "withheld",
+            "sandbox": "not confined by --bash-sandbox",
             "stdin": {
                 "answer": "the parsed answer",
                 "reads": "the run's read records",

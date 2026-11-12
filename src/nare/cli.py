@@ -1280,6 +1280,7 @@ async def _execute(
     policy: Policy,
     schema: dict[str, Any] | None,
     prices: Prices | None,
+    check: Check | None = None,
 ) -> int:
     saved_turns = -1
     groups_from = len(session.process_groups)
@@ -1328,7 +1329,7 @@ async def _execute(
                 require_reads=args.require_reads or 0,
                 require_read=args.require_read or (),
                 require_cited_reads=args.require_cited_reads or (),
-                check=getattr(args, "check", None),
+                check=check,
                 # Headless only: a person reading a TUI reply can answer it.
                 question_nudge=True,
             )
@@ -1578,7 +1579,7 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
             raise ValueError("--require-reads must be a positive integer")
         if args.require_cited_reads and schema is None:
             raise ValueError("--require-cited-reads requires --schema")
-        args.check = check_from_args(args, schema)
+        check = check_from_args(args, schema)
         if reads_required:
             # Refused here, before any turn, as a bad path, pointer or missing
             # tool is.
@@ -1609,7 +1610,9 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         return NEVER_STARTED
 
     try:
-        return asyncio.run(_execute(session, transport, args, policy, schema, prices))
+        return asyncio.run(
+            _execute(session, transport, args, policy, schema, prices, check)
+        )
     except KeyboardInterrupt:
         print("nare: interrupted", file=sys.stderr)
         return 130

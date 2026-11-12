@@ -143,6 +143,49 @@ def _kill_group(process: asyncio.subprocess.Process) -> None:
         os.killpg(process.pid, signal.SIGKILL)
 
 
+async def _run_command(
+    command: Sequence[str],
+    payload: bytes,
+    *,
+    timeout: float,
+    root: Path | None,
+    credentials: bool,
+    failure: type[Exception],
+) -> tuple[int, bytes, bytes]:
+    """Run a caller's argv, no shell, with `payload` on stdin, in `root` when
+    there is one, in its own process group, with nare's environment minus the
+    provider credentials unless `credentials`. A command that cannot start or
+    runs past `timeout` raises `failure`, killed with its group first. A
+    cancelled run (a quit, an interrupt, a deadline) kills the group too, so
+    the command never outlives it, then passes the cancellation on.
+    """
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=None if root is None else str(root.resolve()),
+            env=_shell_env(credentials),
+            start_new_session=True,
+        )
+    except OSError as exc:
+        raise failure(f"cannot start {command[0]}: {exc.strerror}") from None
+    try:
+        out, err = await asyncio.wait_for(process.communicate(payload), timeout)
+    except TimeoutError:
+        _kill_group(process)
+        await process.wait()
+        raise failure(f"timed out after {timeout:g} seconds") from None
+    except asyncio.CancelledError:
+        _kill_group(process)
+        # Reaped, bounded, so the cancellation is not held up by the process.
+        with suppress(Exception):
+            await asyncio.wait_for(process.wait(), 5)
+        raise
+    return process.returncode or 0, out, err
+
+
 def _command_call(
     command: Sequence[str], timeout: float, root: Path | None, credentials: bool
 ) -> Callable[[dict[str, Any]], Awaitable[str]]:
@@ -152,35 +195,18 @@ def _command_call(
     """
 
     async def call(args: dict[str, Any]) -> str:
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=None if root is None else str(root.resolve()),
-                env=_shell_env(credentials),
-                start_new_session=True,
-            )
-        except OSError as exc:
-            raise ToolError(f"cannot start {command[0]}: {exc.strerror}") from None
-        try:
-            out, err = await asyncio.wait_for(
-                process.communicate(json.dumps(args).encode("utf-8")), timeout
-            )
-        except TimeoutError:
-            _kill_group(process)
-            await process.wait()
-            raise ToolError(f"timed out after {timeout:g} seconds") from None
-        except asyncio.CancelledError:
-            # A cancelled run (a quit, an interrupt, a deadline) must not leave
-            # the command running in its group.
-            _kill_group(process)
-            raise
+        code, out, err = await _run_command(
+            command,
+            json.dumps(args).encode("utf-8"),
+            timeout=timeout,
+            root=root,
+            credentials=credentials,
+            failure=ToolError,
+        )
         text = out.decode("utf-8", "replace")
-        if process.returncode != 0:
+        if code != 0:
             detail = err.decode("utf-8", "replace").strip() or text.strip()
-            status = f"exit status {process.returncode}"
+            status = f"exit status {code}"
             raise ToolError(f"{status}: {detail}" if detail else status)
         return text
 
@@ -216,6 +242,27 @@ def parse_check_command(text: str) -> list[str]:
     return argv
 
 
+def _check_error_shape(n: int, item: Any) -> None:
+    """Refuse an item of a check command's list that is not an error, so a
+    malformed verdict ends the run with a reason, not a mangled correction."""
+    if isinstance(item, str):
+        return
+    if not isinstance(item, dict):
+        raise CheckCommandFailed(f"error {n} is not a string or an object")
+    for key in ("code", "message"):
+        if not isinstance(item.get(key), str):
+            raise CheckCommandFailed(f"error {n} has no string {key}")
+    location = item.get("location", [])
+    if not isinstance(location, list) or not all(
+        isinstance(part, (str, int)) and not isinstance(part, bool) for part in location
+    ):
+        raise CheckCommandFailed(
+            f"error {n} location is not a list of keys and indexes"
+        )
+    if item.get("guidance") is not None and not isinstance(item["guidance"], str):
+        raise CheckCommandFailed(f"error {n} guidance is not a string")
+
+
 def command_check(
     command: Sequence[str], *, timeout: float, root: Path | None
 ) -> Callable[[Any, list[dict[str, Any]]], Awaitable[list[Any]]]:
@@ -233,36 +280,17 @@ def command_check(
     argv = list(command)
 
     async def check(answer: Any, reads: list[dict[str, Any]]) -> list[Any]:
-        stdin = json.dumps({"answer": answer, "reads": reads}).encode("utf-8")
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *argv,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=None if root is None else str(root.resolve()),
-                env=_shell_env(False),
-                start_new_session=True,
-            )
-        except OSError as exc:
-            raise CheckCommandFailed(
-                f"cannot start {argv[0]}: {exc.strerror}"
-            ) from None
-        try:
-            out, err = await asyncio.wait_for(process.communicate(stdin), timeout)
-        except TimeoutError:
-            _kill_group(process)
-            await process.wait()
-            raise CheckCommandFailed(f"timed out after {timeout:g} seconds") from None
-        except asyncio.CancelledError:
-            # A deadline or a signal: the check must not outlive the run.
-            _kill_group(process)
-            with suppress(Exception):
-                await asyncio.wait_for(process.wait(), 5)
-            raise
-        if process.returncode != 0:
+        code, out, err = await _run_command(
+            argv,
+            json.dumps({"answer": answer, "reads": reads}).encode("utf-8"),
+            timeout=timeout,
+            root=root,
+            credentials=False,
+            failure=CheckCommandFailed,
+        )
+        if code != 0:
             detail = err.decode("utf-8", "replace").strip()[:_CHECK_DETAIL_CHARS]
-            status = f"exit status {process.returncode}"
+            status = f"exit status {code}"
             raise CheckCommandFailed(f"{status}: {detail}" if detail else status)
         try:
             found = json.loads(out.decode("utf-8", "replace"))
@@ -271,13 +299,7 @@ def command_check(
         if not isinstance(found, list):
             raise CheckCommandFailed("stdout is not a JSON list of errors")
         for n, item in enumerate(found):
-            if isinstance(item, str):
-                continue
-            if not isinstance(item, dict):
-                raise CheckCommandFailed(f"error {n} is not a string or an object")
-            for key in ("code", "message"):
-                if not isinstance(item.get(key), str):
-                    raise CheckCommandFailed(f"error {n} has no string {key}")
+            _check_error_shape(n, item)
         return found
 
     return check

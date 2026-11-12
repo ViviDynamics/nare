@@ -169,6 +169,18 @@ async def test_a_command_check_runs_in_the_root_without_provider_credentials(
         ("print('[3]')\n", "error 0 is not a string or an object"),
         ('print(\'[{"message": "m"}]\')\n', "error 0 has no string code"),
         ('print(\'["ok", {"code": "c"}]\')\n', "error 1 has no string message"),
+        (
+            'print(\'[{"code": "c", "message": "m", "location": "ab"}]\')\n',
+            "error 0 location is not a list of keys and indexes",
+        ),
+        (
+            'print(\'[{"code": "c", "message": "m", "location": [{}]}]\')\n',
+            "error 0 location is not a list of keys and indexes",
+        ),
+        (
+            'print(\'[{"code": "c", "message": "m", "guidance": 5}]\')\n',
+            "error 0 guidance is not a string",
+        ),
     ],
 )
 async def test_a_command_check_that_fails_raises(
@@ -371,6 +383,7 @@ def test_the_contract_advertises_the_check_command() -> None:
         "runs_on": "a final answer that passes the schema",
         "cwd": "--root, else the current directory",
         "credentials": "withheld",
+        "sandbox": "not confined by --bash-sandbox",
         "stdin": {"answer": "the parsed answer", "reads": "the run's read records"},
         "stdout": (
             "JSON list of errors: {code, message, location?, guidance?} or strings"

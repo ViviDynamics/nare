@@ -2448,7 +2448,8 @@ network does not hold the run, and a deadline or signal cancels it.
 
 ```sh
 nare run --yes --jsonl --schema finding.json --tools read --root capture \
-  --check-command '["python3", "check_citations.py"]' --check-timeout 60 "..."
+  --check-command '["python3", "/opt/reviewer/check_citations.py"]' \
+  --check-timeout 60 "..."
 ```
 
 `nare run` does not load caller Python, so a caller that cannot import nare
@@ -2474,6 +2475,13 @@ holding anything but errors ends the run as a raising check does: `status`
 `check raised CheckCommandFailed: <why>`, such as
 `check raised CheckCommandFailed: exit status 3: <stderr>`. A timeout, the run
 deadline or a signal kills the command's process group.
+
+**Keep the check out of the model's reach.** The command runs as you, and like
+a command tool it is not confined by `--bash-sandbox`. A check the model can
+rewrite is no check: with `write` or `edit` allowed, the model can change any
+file under `--root`, including a script there that the argv names. Name the
+script by an absolute path outside `--root`, and keep the data it reads (a
+manifest, a capture) where the model cannot write it either.
 
 `--check-command` requires `--schema`, and `--check-timeout` requires
 `--check-command`; a malformed argv or a timeout that is not a positive finite
