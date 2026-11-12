@@ -43,6 +43,6 @@ Python `check` behaves; a check for the TUI.
 - [x] 3. CLI: `--check-command` and `--check-timeout` parse, refuse bad values
       and a missing `--schema` (exit 2), and an end-to-end fake-provider run
       whose first answer the command refuses and whose corrected answer passes.
-- [ ] 4. Contract entry and docs: `check_command` in `describe()`, flags table
+- [x] 4. Contract entry and docs: `check_command` in `describe()`, flags table
       rows, the caller-check section no longer says the command line takes no
       check.

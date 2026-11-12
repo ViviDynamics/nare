@@ -1496,9 +1496,7 @@ async def step(
         errors = _answer_errors(text, schema)
         if not errors and check is not None:
             try:
-                errors = await _check_errors(
-                    extract_json(text), check, read_record(s)
-                )
+                errors = await _check_errors(extract_json(text), check, read_record(s))
             except CheckRaised as exc:
                 s.status = "error"
                 s.stop_reason = None

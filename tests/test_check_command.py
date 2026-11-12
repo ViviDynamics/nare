@@ -355,3 +355,67 @@ def test_a_check_command_without_a_schema_never_starts(capsys: Any) -> None:
     captured = capsys.readouterr()
     assert code == 2
     assert "--check-command requires --schema" in captured.err
+
+
+def test_the_contract_advertises_the_check_command() -> None:
+    from nare.contract import describe
+
+    entry = describe()["check_command"]
+
+    assert entry == {
+        "flag": "--check-command",
+        "argv": "JSON array of strings, run without a shell",
+        "timeout_flag": "--check-timeout",
+        "default_timeout": 30.0,
+        "requires": "--schema",
+        "runs_on": "a final answer that passes the schema",
+        "cwd": "--root, else the current directory",
+        "credentials": "withheld",
+        "stdin": {"answer": "the parsed answer", "reads": "the run's read records"},
+        "stdout": (
+            "JSON list of errors: {code, message, location?, guidance?} or strings"
+        ),
+        "passes": "an empty list",
+        "budget": "--max-corrections, shared with schema corrections",
+        "failure": {
+            "when": ["non-zero exit", "timeout", "stdout not a list of errors"],
+            "status": "error",
+            "stop_reason": None,
+            "error_prefix": "check raised CheckCommandFailed: ",
+        },
+    }
+    for flag in (entry["flag"], entry["timeout_flag"]):
+        assert flag in describe()["flags"]
+
+
+def test_the_documented_contract_describes_the_check_command() -> None:
+    text = (Path(__file__).parent.parent / "docs" / "contract.md").read_text(
+        encoding="utf-8"
+    )
+    flat = " ".join(text.split())
+
+    assert "The command line takes no check" not in flat
+    assert "`--check-command`" in flat
+    assert "check raised CheckCommandFailed:" in flat
+    assert '{"answer": ..., "reads": [...]}' in flat
+    assert "advertises this under `check_command`" in flat
+
+
+def test_the_run_deadline_stops_a_slow_check_command(
+    tmp_path: Path, capsys: Any
+) -> None:
+    import time
+
+    argv = json.dumps(script(tmp_path, "time.sleep(60)\nprint('[]')\n"))
+    started = time.monotonic()
+
+    code, _ = cli_run(
+        tmp_path,
+        ["--check-command", argv, "--check-timeout", "120", "--timeout", "1"],
+        [text_reply('{"name": "ada"}')],
+    )
+
+    result = result_line(capsys.readouterr().out)
+    assert time.monotonic() - started < 15
+    assert result["stop_reason"] == "timeout"
+    assert code == 1

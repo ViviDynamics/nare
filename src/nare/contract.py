@@ -291,6 +291,34 @@ def describe() -> dict[str, Any]:
             "stop_reason": "reads_required",
             "result": "reads",
         },
+        # Additive (#296): a caller check the command line runs, for a caller
+        # that cannot import nare. Its errors are corrected in the session, as
+        # a Python check's are.
+        "check_command": {
+            "flag": "--check-command",
+            "argv": "JSON array of strings, run without a shell",
+            "timeout_flag": "--check-timeout",
+            "default_timeout": COMMAND_TIMEOUT_DEFAULT,
+            "requires": "--schema",
+            "runs_on": "a final answer that passes the schema",
+            "cwd": "--root, else the current directory",
+            "credentials": "withheld",
+            "stdin": {
+                "answer": "the parsed answer",
+                "reads": "the run's read records",
+            },
+            "stdout": (
+                "JSON list of errors: {code, message, location?, guidance?} or strings"
+            ),
+            "passes": "an empty list",
+            "budget": "--max-corrections, shared with schema corrections",
+            "failure": {
+                "when": ["non-zero exit", "timeout", "stdout not a list of errors"],
+                "status": "error",
+                "stop_reason": None,
+                "error_prefix": "check raised CheckCommandFailed: ",
+            },
+        },
         "deadline": {
             "flag": "--timeout",
             "signals": list(STOP_SIGNALS),

@@ -66,6 +66,8 @@ keeps the contract version; removing or renaming one bumps it.
 | `--structured-output` | yes | `json_schema` | Constrain answers at decode time, on the anthropic, bedrock and openai rails ([Schema-constrained answers](#schema-constrained-answers)) |
 | `--max-tool-calls` | yes | | Run at most this many tool calls in this invocation ([Budgets and partial results](#budgets-and-partial-results)) |
 | `--max-corrections` | yes | | Let a failing `--schema` answer be corrected up to this many times in the run, default 1 ([Schema corrections](#schema-corrections)) |
+| `--check-command` | yes | | A caller check the command line runs: a JSON array argv whose errors are corrected like schema errors ([A check from the command line](#a-check-from-the-command-line)) |
+| `--check-timeout` | yes | | How long `--check-command` may run on one answer, default 30 seconds ([A check from the command line](#a-check-from-the-command-line)) |
 | `--max-cutoffs` | yes | | Correct up to this many replies cut off at the output cap or by repeating one span, in this invocation ([Cut-off replies](#cut-off-replies)) |
 | `--require-reads` | yes | | Hold the final answer until the run has read at least this many distinct files ([Read requirements](#read-requirements)) |
 | `--require-read` | yes | | Hold the final answer until the run has read this path, relative to `--root`; repeatable ([Read requirements](#read-requirements)) |
@@ -2438,8 +2440,46 @@ errors, under the same budget. The text of a turn that calls tools is never
 checked, and while a check is set such a turn keeps no output. A check that raises ends the run with
 `status` `error`, `stop_reason` null, and an error event reading
 `check raised <Type>: <message>`; nare does not hand the exception to the
-caller. `check` requires `schema`. The command line takes no check: it needs
-code, which `nare run` does not load.
+caller. `check` requires `schema`. A check may be a coroutine function, or
+return an awaitable: nare awaits it, so a check that waits on a process or the
+network does not hold the run, and a deadline or signal cancels it.
+
+### A check from the command line
+
+```sh
+nare run --yes --jsonl --schema finding.json --tools read --root capture \
+  --check-command '["python3", "check_citations.py"]' --check-timeout 60 "..."
+```
+
+`nare run` does not load caller Python, so a caller that cannot import nare
+(another Python, another language) names a command instead. `--check-command`
+takes the argv as a JSON array of non-empty strings, run without a shell, in
+`--root` when there is one, in its own process group, with nare's environment
+minus the provider credentials, as a command tool runs (`--bash-credentials`
+does not reach it). It runs where a Python check runs: on a final answer that
+passes `--schema`, never on a turn that calls tools.
+
+The command reads one JSON object on stdin, `{"answer": ..., "reads": [...]}`:
+the parsed answer, and the run's read records, as a Python check with two
+parameters receives them. It prints a JSON list of errors on stdout: objects
+with `code` and `message`, and optional `location` (a list) and `guidance`, or
+plain strings. An empty list passes. Its errors go into the same correction as
+schema errors, under `--max-corrections`, with the transcript still cached and
+the tools still offered.
+
+The command must give a verdict. A non-zero exit, a run past
+`--check-timeout` (default 30 seconds), stdout that is not JSON, or a list
+holding anything but errors ends the run as a raising check does: `status`
+`error`, `stop_reason` null, and an error reading
+`check raised CheckCommandFailed: <why>`, such as
+`check raised CheckCommandFailed: exit status 3: <stderr>`. A timeout, the run
+deadline or a signal kills the command's process group.
+
+`--check-command` requires `--schema`, and `--check-timeout` requires
+`--check-command`; a malformed argv or a timeout that is not a positive finite
+number never starts (exit 2). Neither is saved: a resume without the flag runs
+no check. `nare contract` advertises this under `check_command`. The flags and
+the entry are additive and keep the contract version.
 
 ### Finding the document in an answer
 
