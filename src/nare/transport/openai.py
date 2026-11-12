@@ -39,6 +39,7 @@ from nare.transport import (
     ToolCall,
     checked_timeout,
     reported_cost,
+    usage_cost,
 )
 
 log = logging.getLogger(__name__)
@@ -531,7 +532,7 @@ class OpenAITransport:
                     "choices": [{"message": message, "finish_reason": finish}],
                     "usage": usage,
                 },
-                cost=reported_cost(response.headers, streamed=True),
+                cost=usage_cost(usage),
             )
             if looped:
                 # The stop was ours, so the provider's finish reason says nothing.

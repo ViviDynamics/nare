@@ -455,6 +455,21 @@ def reported_cost(
     return cost if math.isfinite(cost) and cost >= 0 else None
 
 
+def usage_cost(usage: Mapping[str, Any] | None) -> float | None:
+    """The dollar cost a proxy puts on a stream's final usage chunk.
+
+    The stream's cost header precedes final usage, so `reported_cost` ignores
+    it; a LiteLLM proxy also writes the charge into the last usage chunk as
+    `usage.cost`, which is final when the stream ends. Anything but a finite,
+    non-negative number is no report.
+    """
+    raw = (usage or {}).get("cost")
+    if isinstance(raw, bool) or not isinstance(raw, int | float):
+        return None
+    cost = float(raw)
+    return cost if math.isfinite(cost) and cost >= 0 else None
+
+
 # Discovered model info per (gateway, model), for the whole process. A failed
 # lookup is stored as {} too, so a gateway that is down costs one timeout per
 # process, not one per transport.
