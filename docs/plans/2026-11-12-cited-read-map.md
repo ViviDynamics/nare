@@ -32,4 +32,4 @@ Out: checking the cited revision, digest or line range (a caller check, see
       path and accepted once it is read; the map without pointers is refused.
 - [x] 3. `--cited-read-map FILE`: end to end, and exit 2 for a malformed file,
       a path outside the root, and the flag without `--require-cited-reads`.
-- [ ] 4. Contract `cited_reads.map` and docs.
+- [x] 4. Contract `cited_reads.map` and docs.

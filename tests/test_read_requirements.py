@@ -892,3 +892,33 @@ def test_the_cli_refuses_a_bad_cited_read_map(
     assert code == 2
     assert captured.out == ""
     assert message in captured.err
+
+
+def test_the_contract_advertises_the_cited_read_map() -> None:
+    from nare.contract import describe
+
+    entry = describe()["cited_reads"]["map"]
+
+    assert entry == {
+        "flag": "--cited-read-map",
+        "argument": "cited_read_map",
+        "requires": "--require-cited-reads",
+        "shape": "JSON object: cited value to a root-relative path or list of paths",
+        "keys": "matched exactly as the answer holds them",
+        "satisfied_by": "any one listed path read",
+        "unmapped": "compared as cited",
+        "outside_root": "refused before the run",
+    }
+    assert entry["flag"] in describe()["flags"]
+
+
+def test_the_documented_contract_describes_the_cited_read_map() -> None:
+    text = (Path(__file__).parent.parent / "docs" / "contract.md").read_text(
+        encoding="utf-8"
+    )
+    flat = " ".join(text.split())
+
+    assert "`--cited-read-map`" in flat
+    assert "`cited_read_map`" in flat
+    assert "which the answer cites as" in flat
+    assert "under `cited_reads.map`" in flat
