@@ -30,6 +30,7 @@ change without notice. See "Which models the endpoint serves" below.
     bin/bench run --tier smoke          # measure
     bin/bench bless --tier smoke        # promote the numbers to a baseline
     bin/bench run --tier extended       # the opt-in real-work tier, only when named
+    bin/bench run --tier sweep          # the opt-in experiment cases, only when named
 
 `run` compares against `baselines/<model>.<tier>.toml` and exits 1 on a
 confirmed regression. Only a guard cell can regress: one blessed at 0.9 or
@@ -767,9 +768,18 @@ The matrix judge is `claude-haiku-5-5` (#239). Each baseline records its judge
 in `[meta]`, and `run --matrix` refuses a matrix whose baselines name more than
 one judge, so re-bless every matrix model together when the judge changes.
 
-`bin/bench verify` with no `--tier` checks every case, extended included. CI
-runs `bin/bench verify --tier full`, which does not reach the extended tier, so
-run `bin/bench verify --tier extended` after changing one of its cases.
+**The sweep tier (#43)** is opt-in too. A case in it is the instrument for one
+experiment, not a measure of general quality: `deploy-feed-window` exists to
+rank compaction points, and a model's pass rate on it only means something next
+to its rate at another point. `sweep` runs only when named, `bin/bench run
+--tier sweep`, and `full` never includes it, so the matrix and its baselines
+do not grow by a case nobody asked to measure. It has no baselines. Its
+defaults are those of `full`: five repetitions and a 15-minute timeout.
+
+`bin/bench verify` with no `--tier` checks every case, extended and sweep
+included. CI runs `bin/bench verify --tier full`, which reaches neither, so run
+`bin/bench verify --tier extended` or `--tier sweep` after changing one of their
+cases.
 
 | Case | Tier | What it measures |
 | --- | --- | --- |
@@ -779,6 +789,7 @@ run `bin/bench verify --tier extended` after changing one of its cases.
 | `bootstrap-without-database` | full | bootstraps a service without a database, and says what it did not test |
 | `context-overflow` | full | eight logs read in separate calls, on the default window |
 | `context-overflow-small-window` | full | the same task on a 48,000-token window, one read at a time, so it compacts |
+| `deploy-feed-window` | sweep | a paged feed that hands each page out once, about 0.6 of a 64,000-token window: sixteen live builds among decoys |
 | `edit-docstring` | smoke | adds a docstring that says what the function does |
 | `expense-tracker-cli` | full | builds a small CLI with tests, and stops |
 | `fix-failing-test` | smoke | fixes the code, not the test |
@@ -795,7 +806,7 @@ run `bin/bench verify --tier extended` after changing one of its cases.
 | `stale-backup-cleanup` | smoke | fixes a bug and leaves an unrelated backup file alone |
 | `typed-classify` | smoke | a tool-free schema answer over twelve items |
 
-Three cases use what the others do not:
+Four cases use what the others do not:
 
 - **MCP** (`mcp-fanout`, `mcp-large-result`): the case's args pass `--mcp-config`
   with a stdio server in its fixture (`fanout_server.py`, built on the `mcp`
@@ -805,6 +816,14 @@ Three cases use what the others do not:
 - **Window** (`context-overflow-small-window`): `--context-window 48000` makes
   the hex logs compact from the fourth read, so the check reads nare's elision
   stubs. Its logs are hex, not dots, because a tokenizer squeezes dots.
+- **Command tool** (`deploy-feed-window`): `--command-tools tools.json` defines
+  `next_page`, which runs `feed.py` with the call's arguments on stdin. Each
+  page is handed out once, so a page compaction elided cannot be fetched again,
+  and `--tools read,write,next_page` leaves no bash to run the feed around the
+  tool. The feed sits under the default trigger and over the lower ones, so the
+  points differ in what they elide; sweep the point with run arguments:
+  `bin/bench run --tier sweep --case deploy-feed-window -- --compaction-trigger
+  0.3 --compaction-target 0.225`.
 
 ## Writing a case
 

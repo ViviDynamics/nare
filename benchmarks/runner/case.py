@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-Tier = Literal["smoke", "full", "extended"]
+Tier = Literal["smoke", "full", "extended", "sweep"]
 CheckKind = Literal["bash", "result"]
 
 # Fields that would pin a case to one operator's environment. Rejected by
@@ -36,9 +36,13 @@ TIER_DEFAULTS: dict[str, TierDefaults] = {
     # Opt-in (#97): real work, several files and layers, run only when named.
     # Fewer reps than full, because each rep is far longer and dearer.
     "extended": TierDefaults(reps=3, timeout=1800),
+    # Opt-in (#43): a case built as one experiment's instrument, such as the
+    # compaction point sweep. It runs only when named and has no baselines.
+    "sweep": TierDefaults(reps=5, timeout=900),
 }
 
-# Every tier a run can name. `full` covers smoke and full; `extended` only when named.
+# Every tier a run can name. `full` covers smoke and full; `extended` and
+# `sweep` run only when named.
 TIER_CHOICES: tuple[str, ...] = tuple(TIER_DEFAULTS)
 
 
@@ -209,8 +213,9 @@ def load_case(directory: Path) -> Case:
     )
 
 
-# The tiers `full` covers. `extended` is not among them: it runs only when
-# named, so `full` results, baselines and CI stay what they were (#97).
+# The tiers `full` covers. `extended` and `sweep` are not among them: they run
+# only when named, so `full` results, baselines and CI stay what they were
+# (#97, #43).
 _FULL_TIERS = ("smoke", "full")
 
 
@@ -220,7 +225,7 @@ def load_cases(root: Path, tier: str | None = None) -> list[Case]:
     None is every case, in every tier. `full` is every smoke and full case,
     not only the full-tagged ones: the tiers differ by scale, so a smoke result
     predicts a full result. A case is tagged with the smallest tier it belongs
-    to. `extended` is its own tier and is never part of `full`.
+    to. `extended` and `sweep` are tiers of their own, never part of `full`.
     """
     if not root.is_dir():
         return []

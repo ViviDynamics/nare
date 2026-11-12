@@ -199,10 +199,10 @@ def build_parser() -> argparse.ArgumentParser:
             "--tier",
             choices=TIER_CHOICES,
             # verify is free, so it checks every case unless asked otherwise:
-            # no tier at all, extended included.
+            # no tier at all, extended and sweep included.
             default=None if name == "verify" else "smoke",
-            help="which tier; full is smoke and full, extended runs only when "
-            "named (verify without --tier checks every case)",
+            help="which tier; full is smoke and full, extended and sweep run "
+            "only when named (verify without --tier checks every case)",
         )
         child.add_argument("--case", action="append", help="limit to this case id")
         if name == "run":

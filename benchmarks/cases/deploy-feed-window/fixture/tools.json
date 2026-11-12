@@ -1,0 +1,16 @@
+{
+  "next_page": {
+    "description": "Return the next page of the deploy feed. Call it with no cursor for the first page, then with the cursor printed at the end of each page for the page after it. The feed hands each page out once: a cursor works one time, and a page is never handed out again.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": "string",
+          "description": "The cursor printed at the end of the last page. Leave it out for the first page."
+        }
+      }
+    },
+    "command": ["python3", "feed.py"],
+    "timeout": 10
+  }
+}
