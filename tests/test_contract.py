@@ -511,6 +511,24 @@ def test_the_documented_contract_advertises_the_compaction_defaults() -> None:
     flags = text.split("## Run flags", 1)[1].split("\n## ", 1)[0]
     assert "Defaults are not listed" not in flags
     assert "under `compaction`" in flags
+    assert "not yet advertised" in flags
     section = text.split("### Compaction modes", 1)[1].split("\n## ", 1)[0]
-    assert '"compaction": {' in section
-    assert '"default": {"mode": "elide", "trigger": 0.8, "target": 0.6}' in section
+    block = section.split('```json\n"compaction": ', 1)[1].split("\n```", 1)[0]
+    assert json.loads(block) == describe()["compaction"]
+
+
+def test_a_run_follows_the_advertised_compaction_environment(monkeypatch: Any) -> None:
+    """Each variable the entry names is one `nare run` reads."""
+    from nare.cli import build_parser
+
+    entry = describe()["compaction"]
+    values = {"mode": "summary", "trigger": 0.5, "target": 0.3}
+    for key, name in entry["env"].items():
+        monkeypatch.setenv(name, str(values[key]))
+    args = build_parser().parse_args(["run", "task"])
+
+    assert (args.compaction, args.compaction_trigger, args.compaction_target) == (
+        values["mode"],
+        values["trigger"],
+        values["target"],
+    )

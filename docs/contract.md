@@ -47,11 +47,12 @@ argument; `choices` is the list of accepted values, or `null` when any value
 of the option's type is accepted. The key is read from the argument parser
 when `nare contract` runs, so it cannot drift from what `nare run` accepts.
 A flag's entry carries no default, because several defaults come from the
-environment. A built-in default, the value a run uses when neither the flag nor
-its environment variable is set, is advertised in the feature's own entry: the
-compaction defaults under `compaction` ([Compaction modes](#compaction-modes)),
-and others such as `request_retries` and `capacity_queue`. The positional
-prompt is advertised under `prompt_input`. A new flag is a new entry here and
+environment. Some built-in defaults, the values a run uses when neither the flag
+nor its environment variable is set, are advertised in their feature's own
+entry instead: compaction under `compaction` ([Compaction
+modes](#compaction-modes)), and `request_retries`, `capacity_queue` and others.
+Some are not yet advertised, among them `--max-turns`, `--provider` and
+`--model`. The positional prompt is advertised under `prompt_input`. A new flag is a new entry here and
 keeps the contract version; removing or renaming one bumps it.
 
 | Flag | Takes a value | Choices | What it does |

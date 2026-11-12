@@ -87,8 +87,8 @@ def flags_of(parser: argparse.ArgumentParser) -> dict[str, dict[str, Any]]:
     Read from the parser itself, so a new flag is listed the moment it exists.
     The parser's defaults are left out on purpose: several come from the
     environment, and the contract says what this build accepts, not how this
-    machine is set. A built-in default is advertised in its feature's own
-    entry instead (compaction, request_retries, capacity_queue and others).
+    machine is set. Some built-in defaults are advertised in their feature's
+    own entry instead (compaction, request_retries, capacity_queue and others).
     """
     flags: dict[str, dict[str, Any]] = {}
     for action in parser._actions:
