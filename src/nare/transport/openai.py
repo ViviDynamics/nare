@@ -532,7 +532,7 @@ class OpenAITransport:
                     "choices": [{"message": message, "finish_reason": finish}],
                     "usage": usage,
                 },
-                cost=usage_cost(usage),
+                cost=usage_cost(response.headers, usage),
             )
             if looped:
                 # The stop was ours, so the provider's finish reason says nothing.

@@ -519,7 +519,9 @@ not count `cost` events as turns. A backend-reported cost wins and is not
 estimated. A non-streamed reply reads it from the response headers. A stream's
 headers arrive before final usage, so they are ignored; a streamed openai-rail
 turn instead takes `usage.cost` on the final usage chunk, which a LiteLLM proxy
-sends when the request asks for usage. The `reported_cost` entry of
+sends when the request asks for usage. As with the headers, only a LiteLLM
+response (one carrying `x-litellm-*` headers) is read, since another gateway's
+`usage.cost` may count in other units. The `reported_cost` entry of
 `nare contract` lists these sources. Without a reported cost, configured prices
 override discovered model-info prices. With neither, cost is unknown. Token categories are disjoint. For OpenAI,
 `input=prompt_tokens-cached_tokens`, `cache_read=cached_tokens`, and cache_write
@@ -1790,9 +1792,13 @@ complete, using the existing allowlist and approval. Incomplete or nonobject
 JSON arguments return a named tool error without invoking the tool, even if
 a provider marks its stream complete; reported usage is retained. Usage is normalized once
 from final provider usage, including disjoint cache counts; repeated usage
-snapshots are not added together. Cost uses the same response headers or price
-configuration as nonstreaming. Session transcripts and final outcomes are the
-same for equivalent streamed and nonstreamed replies.
+snapshots are not added together. Cost uses the same price configuration as
+nonstreaming, but a stream's cost headers arrive before final usage and are
+ignored; a streamed openai-rail reply from a LiteLLM proxy reports its cost
+through `usage.cost` on the final usage chunk instead (see
+[Budgets and partial results](#budgets-and-partial-results)). Session
+transcripts and final outcomes are the same for equivalent streamed and
+nonstreamed replies.
 
 OpenAI-compatible streaming requests ask for `stream_options.include_usage`.
 Missing/incomplete final usage, stop reason or stream completion marker is a

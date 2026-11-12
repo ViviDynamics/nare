@@ -432,6 +432,7 @@ def _openai_chunks_with_usage_cost(cost: Any) -> list[bytes]:
         (None, None),
         (float("nan"), None),
         (float("inf"), None),
+        pytest.param(10**400, None, id="overflow"),
     ],
 )
 async def test_streamed_openai_reads_cost_from_final_usage(
@@ -499,3 +500,25 @@ async def test_streamed_usage_cost_is_reported_not_estimated(priced: bool) -> No
     assert session.usage.estimated is False
     assert "estimate" not in next(e.text for e in events if e.type == "cost")
     assert "~$" not in status_line("m", 1, 50, session.usage, None, "done").plain
+
+
+async def test_streamed_usage_cost_needs_a_litellm_response() -> None:
+    """The header cost is read only from a LiteLLM proxy, so the stream's body
+    cost is too: another gateway's `usage.cost` may be in other units."""
+    from test_streaming import Bytes
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=Bytes(_openai_chunks_with_usage_cost(1250)),
+        )
+
+    transport = OpenAITransport(
+        model="m",
+        api_key="offline",
+        streaming=True,
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+    )
+    reply = await transport.turn([Message("user", [])], [])
+    assert reply.cost is None

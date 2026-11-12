@@ -417,6 +417,7 @@ def test_the_documented_contract_describes_compaction_modes() -> None:
 
 def test_contract_describes_reported_cost_sources() -> None:
     assert describe()["reported_cost"] == {
+        "proxy": "litellm",
         "headers": ["x-litellm-response-cost", "x-litellm-response-cost-original"],
         "header_rails": ["anthropic", "openai"],
         "streamed": {"openai": "usage.cost"},
