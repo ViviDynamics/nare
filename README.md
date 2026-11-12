@@ -526,6 +526,13 @@ A caller can also register its own tools. The Python API takes `nare.Tool` value
 command for each call. Both follow the tool allowlist and the approval seam. See
 [caller tools](docs/contract.md#caller-tools).
 
+A caller check works the same way: `check=` in Python, or `nare run --schema
+answer.json --check-command '["python3", "/path/to/check.py"]'` for a caller that cannot
+import nare. The command reads the answer and the run's reads as JSON and prints a list
+of errors, which are corrected in the session like schema errors. Keep the check outside
+any path the model can write. See
+[a check from the command line](docs/contract.md#a-check-from-the-command-line).
+
 Use `--stream` for live text and reasoning events while a model turn runs.
 It works on both providers and permits Anthropic outputs above the SDK's
 nonstreaming ceiling. Streaming can keep an idle proxy alive when the provider
