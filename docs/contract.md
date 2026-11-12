@@ -2570,6 +2570,13 @@ Two kinds of turn are constrained:
   same;
 - every turn of a run whose policy offers no tools.
 
+After a tool-using run, the correction turn's transcript still holds the
+run's `tool_use` and `tool_result` blocks while the request offers no tools.
+The Anthropic Messages API accepts that shape: checked live on 2026-11-12 with
+Claude Haiku 5.5 and Claude Sonnet 5.5, both ending `done`
+([evidence](evidence/298/README.md)). The bedrock rail sends the same body and
+is unchecked on AWS Bedrock (#301).
+
 Tool-using turns are never constrained. Measured on vLLM behind LiteLLM, a
 request carrying both tools and a json_schema response format cannot call a
 tool: the model returns an invented schema-valid answer instead. A first
