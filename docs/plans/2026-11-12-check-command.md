@@ -37,7 +37,7 @@ Python `check` behaves; a check for the TUI.
 ## Tasks
 - [x] 1. Awaitable checks: a test where `check=` returns a coroutine and its
       errors drive a correction; another where it raises.
-- [ ] 2. `command_check(argv, timeout, root)`: tests for pass, errors, string
+- [x] 2. `command_check(argv, timeout, root)`: tests for pass, errors, string
       errors, non-zero exit, bad JSON, non-list, timeout kills the group,
       cancellation kills the group, cwd is the root, credentials withheld.
 - [ ] 3. CLI: `--check-command` and `--check-timeout` parse, refuse bad values

@@ -187,6 +187,102 @@ def _command_call(
     return call
 
 
+# What of a failing check command's output its error quotes.
+_CHECK_DETAIL_CHARS = 2000
+
+
+class CheckCommandFailed(Exception):
+    """The check command did not give a verdict: it exited non-zero, timed out,
+    or printed something other than a JSON list of errors. The run ends as it
+    does when a Python check raises (#296)."""
+
+
+def parse_check_command(text: str) -> list[str]:
+    """The argv `--check-command` names: a JSON array of non-empty strings, run
+    without a shell. Anything else is refused before the run starts."""
+    try:
+        argv = json.loads(text)
+    except ValueError:
+        argv = None
+    if (
+        not isinstance(argv, list)
+        or not argv
+        or not all(isinstance(part, str) and part for part in argv)
+    ):
+        raise ValueError(
+            "--check-command takes a JSON array of non-empty strings, the argv "
+            'to run without a shell, such as \'["python3", "check.py"]\''
+        )
+    return argv
+
+
+def command_check(
+    command: Sequence[str], *, timeout: float, root: Path | None
+) -> Callable[[Any, list[dict[str, Any]]], Awaitable[list[Any]]]:
+    """A caller check the command line runs (#296), with the two-argument shape
+    of a Python check.
+
+    The command gets one JSON object on stdin, `{"answer": ..., "reads": [...]}`,
+    and prints a JSON list of errors: mappings with `code` and `message`, and
+    optional `location` and `guidance`, or plain strings. An empty list passes.
+    It runs in `root` when there is one, in its own process group, with nare's
+    environment minus the provider credentials, as a command tool does. A
+    non-zero exit, a timeout or output that is not a list raises
+    CheckCommandFailed; a cancellation kills the group and passes through.
+    """
+    argv = list(command)
+
+    async def check(answer: Any, reads: list[dict[str, Any]]) -> list[Any]:
+        stdin = json.dumps({"answer": answer, "reads": reads}).encode("utf-8")
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=None if root is None else str(root.resolve()),
+                env=_shell_env(False),
+                start_new_session=True,
+            )
+        except OSError as exc:
+            raise CheckCommandFailed(
+                f"cannot start {argv[0]}: {exc.strerror}"
+            ) from None
+        try:
+            out, err = await asyncio.wait_for(process.communicate(stdin), timeout)
+        except TimeoutError:
+            _kill_group(process)
+            await process.wait()
+            raise CheckCommandFailed(f"timed out after {timeout:g} seconds") from None
+        except asyncio.CancelledError:
+            # A deadline or a signal: the check must not outlive the run.
+            _kill_group(process)
+            with suppress(Exception):
+                await asyncio.wait_for(process.wait(), 5)
+            raise
+        if process.returncode != 0:
+            detail = err.decode("utf-8", "replace").strip()[:_CHECK_DETAIL_CHARS]
+            status = f"exit status {process.returncode}"
+            raise CheckCommandFailed(f"{status}: {detail}" if detail else status)
+        try:
+            found = json.loads(out.decode("utf-8", "replace"))
+        except ValueError:
+            raise CheckCommandFailed("stdout is not JSON") from None
+        if not isinstance(found, list):
+            raise CheckCommandFailed("stdout is not a JSON list of errors")
+        for n, item in enumerate(found):
+            if isinstance(item, str):
+                continue
+            if not isinstance(item, dict):
+                raise CheckCommandFailed(f"error {n} is not a string or an object")
+            for key in ("code", "message"):
+                if not isinstance(item.get(key), str):
+                    raise CheckCommandFailed(f"error {n} has no string {key}")
+        return found
+
+    return check
+
+
 def command_tools(
     value: Any, *, root: Path | None = None, credentials: bool = False
 ) -> list[Tool]:
