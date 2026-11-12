@@ -523,6 +523,19 @@ def describe() -> dict[str, Any]:
             "default": False,
             "marker": {"type": "ephemeral"},
         },
+        # Additive: where a backend-reported cost comes from. A non-streamed
+        # reply reads the response headers. A stream's headers precede final
+        # usage, so a streamed openai turn reads the cost field a LiteLLM proxy
+        # puts on the final usage chunk instead (only from a response carrying
+        # x-litellm-* headers). A reported cost is never estimated; with none,
+        # prices estimate it, and with no prices it is null.
+        "reported_cost": {
+            "proxy": "litellm",
+            "headers": ["x-litellm-response-cost", "x-litellm-response-cost-original"],
+            "header_rails": ["anthropic", "openai"],
+            "streamed": {"openai": "usage.cost"},
+            "estimated": False,
+        },
         # Additive: every `nare run` option, so a caller checks that a flag
         # exists instead of comparing release numbers.
         "flags": flags_of(_run_parser()),

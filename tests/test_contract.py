@@ -413,3 +413,22 @@ def test_the_documented_contract_describes_compaction_modes() -> None:
         assert f"| `{key}` |" in section
     assert "[summary by nare:" in section
     assert "`summaries`" in section
+
+
+def test_contract_describes_reported_cost_sources() -> None:
+    assert describe()["reported_cost"] == {
+        "proxy": "litellm",
+        "headers": ["x-litellm-response-cost", "x-litellm-response-cost-original"],
+        "header_rails": ["anthropic", "openai"],
+        "streamed": {"openai": "usage.cost"},
+        "estimated": False,
+    }
+
+
+def test_the_documented_contract_describes_streamed_reported_cost() -> None:
+    doc = Path(__file__).parent.parent / "docs" / "contract.md"
+    text = " ".join(doc.read_text(encoding="utf-8").split())
+
+    assert "Streamed cost headers are ignored" not in text
+    assert "`usage.cost` on the final usage chunk" in text
+    assert "`reported_cost`" in text

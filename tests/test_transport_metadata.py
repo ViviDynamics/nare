@@ -398,3 +398,127 @@ async def test_discovery_cache_is_keyed_by_model() -> None:
     assert await m.context_window() == 1000
     assert await n.context_window() == 2000
     assert len(requests) == 2
+
+
+def _openai_chunks_with_usage_cost(cost: Any) -> list[bytes]:
+    """The usual stream, with a cost field on its final usage chunk, as a
+    LiteLLM proxy sends when the request asks for usage."""
+    from test_streaming import openai_chunks, sse
+
+    chunks = openai_chunks()
+    chunks[-2] = sse(
+        {
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "prompt_tokens_details": {"cached_tokens": 3},
+                "cost": cost,
+            },
+        }
+    )
+    return chunks
+
+
+@pytest.mark.parametrize(
+    "cost,want",
+    [
+        (0.0042, 0.0042),
+        (0, 0.0),
+        (7.6e-6, 7.6e-6),
+        (-1, None),
+        (True, None),
+        ("0.5", None),
+        (None, None),
+        (float("nan"), None),
+        (float("inf"), None),
+        pytest.param(10**400, None, id="overflow"),
+    ],
+)
+async def test_streamed_openai_reads_cost_from_final_usage(
+    cost: Any, want: float | None
+) -> None:
+    from test_streaming import Bytes
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            # The header precedes final usage and is not the charge.
+            headers={
+                "content-type": "text/event-stream",
+                "x-litellm-response-cost": "0.0",
+            },
+            stream=Bytes(_openai_chunks_with_usage_cost(cost)),
+        )
+
+    transport = OpenAITransport(
+        model="m",
+        api_key="offline",
+        streaming=True,
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+    )
+    reply = await transport.turn([Message("user", [])], [])
+    assert reply.cost == want
+
+
+@pytest.mark.parametrize("priced", [False, True])
+async def test_streamed_usage_cost_is_reported_not_estimated(priced: bool) -> None:
+    from nare.loop import run
+    from nare.session import new_session
+    from nare.tui.render import status_line
+    from test_streaming import Bytes
+
+    info: dict[str, Any] = {"max_input_tokens": 12345}
+    if priced:
+        info.update(input_cost_per_token=1, output_cost_per_token=1)
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.path == "/v1/model/info":
+            return httpx2.Response(
+                200, json={"data": [{"model_name": "m", "model_info": info}]}
+            )
+        return httpx2.Response(
+            200,
+            headers={
+                "content-type": "text/event-stream",
+                "x-litellm-response-cost-original": "0.0",
+            },
+            stream=Bytes(_openai_chunks_with_usage_cost(0.25)),
+        )
+
+    transport = OpenAITransport(
+        model="m",
+        api_key="offline",
+        base_url="https://offline.test/v1",
+        streaming=True,
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+    )
+    session = new_session("hi")
+    events = [e async for e in run(session, transport=transport)]
+    # The backend's charge wins over prices, exactly as a header cost does.
+    assert session.usage.cost == pytest.approx(0.25)
+    assert session.usage.estimated is False
+    assert "estimate" not in next(e.text for e in events if e.type == "cost")
+    assert "~$" not in status_line("m", 1, 50, session.usage, None, "done").plain
+
+
+async def test_streamed_usage_cost_needs_a_litellm_response() -> None:
+    """The header cost is read only from a LiteLLM proxy, so the stream's body
+    cost is too: another gateway's `usage.cost` may be in other units."""
+    from test_streaming import Bytes
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=Bytes(_openai_chunks_with_usage_cost(1250)),
+        )
+
+    transport = OpenAITransport(
+        model="m",
+        api_key="offline",
+        streaming=True,
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+    )
+    reply = await transport.turn([Message("user", [])], [])
+    assert reply.cost is None

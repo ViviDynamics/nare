@@ -448,9 +448,32 @@ def reported_cost(
         raw = headers.get("x-litellm-response-cost-original")
     if raw is None:
         return None
+    return _dollars(raw)
+
+
+def usage_cost(
+    headers: Mapping[str, str], usage: Mapping[str, Any] | None
+) -> float | None:
+    """The dollar cost a LiteLLM proxy puts on a stream's final usage chunk.
+
+    The stream's cost header precedes final usage, so `reported_cost` ignores
+    it; the proxy also writes the charge into the last usage chunk as
+    `usage.cost`, which is final when the stream ends. Only a LiteLLM response
+    is read, as for the header: another gateway's `usage.cost` may count in
+    other units. Anything but a finite, non-negative number is no report.
+    """
+    if not any(name.lower().startswith("x-litellm-") for name in headers):
+        return None
+    raw = (usage or {}).get("cost")
+    if isinstance(raw, bool) or not isinstance(raw, int | float):
+        return None
+    return _dollars(raw)
+
+
+def _dollars(raw: str | float) -> float | None:
     try:
         cost = float(raw)
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
     return cost if math.isfinite(cost) and cost >= 0 else None
 

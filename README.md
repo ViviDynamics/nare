@@ -388,7 +388,8 @@ Invalid settings exit 2 before transport construction, with no result on stdout.
 Prices must be finite and non-negative. Nonstreaming replies prefer the backend's
 reported dollar cost (`x-litellm-response-cost`, then
 `x-litellm-response-cost-original`). Streamed replies ignore these headers because
-they arrive before final usage. Without reported cost, explicit prices take
+they arrive before final usage; a streamed openai-rail reply from a LiteLLM proxy
+takes `usage.cost` from the final usage chunk instead. Without reported cost, explicit prices take
 precedence over prices discovered from `/v1/model/info`, then cost is unknown
 (`usage.cost=null`). Calculated costs are labelled as estimates and carry
 `usage.estimated=true`. Cache prices default to the
