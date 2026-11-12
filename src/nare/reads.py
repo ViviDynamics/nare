@@ -19,8 +19,8 @@ caller input, `unmet()` and `cited_unmet()` for the gaps in a session, and
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -36,14 +36,16 @@ class ReadRequirement:
     Paths are root-relative POSIX strings, as evidence records them. `cited`
     holds JSON pointers (see `parse_pointer`), resolved against the answer when
     it is checked; `root` is the directory those paths are relative to, or None
-    for the working directory. An inactive requirement (count 0, no paths, no
-    pointers) holds nothing.
+    for the working directory. `cited_map` maps a cited value, exactly as the
+    answer holds it, to the paths any one of which satisfies it (#297). An
+    inactive requirement (count 0, no paths, no pointers) holds nothing.
     """
 
     count: int = 0
     paths: tuple[str, ...] = ()
     cited: tuple[str, ...] = ()
     root: Path | None = None
+    cited_map: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     @property
     def active(self) -> bool:
@@ -145,11 +147,13 @@ def build(
     *,
     root: Path | None,
     cited: Sequence[str] = (),
+    cited_map: Mapping[str, str | Sequence[str]] | None = None,
 ) -> ReadRequirement:
     """A requirement from caller input, each path in the form evidence records.
 
     Refuses a count that is not a non-negative integer, an empty path, a path
-    outside the root, and a malformed pointer.
+    outside the root, a malformed pointer, and a malformed cited read map or
+    one given without cited pointers.
     """
     if isinstance(count, bool) or not isinstance(count, int) or count < 0:
         raise ValueError("require_reads must be a non-negative integer")
@@ -173,7 +177,47 @@ def build(
         paths=tuple(normal),
         cited=tuple(pointers),
         root=root,
+        cited_map=_build_cited_map(cited_map, root, bool(pointers)),
     )
+
+
+def _build_cited_map(
+    given: Any, root: Path | None, has_pointers: bool
+) -> dict[str, tuple[str, ...]]:
+    """The cited read map with each target in the form evidence records."""
+    if given is None:
+        return {}
+    if not isinstance(given, Mapping):
+        raise ValueError("cited read map must be an object of cited value to path")
+    if not has_pointers:
+        raise ValueError("a cited read map needs cited pointers to apply to")
+    built: dict[str, tuple[str, ...]] = {}
+    for key, value in given.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError("cited read map has an empty key")
+        targets = [value] if isinstance(value, str) else value
+        if (
+            not isinstance(targets, Sequence)
+            or isinstance(targets, str)
+            or not targets
+            or not all(isinstance(t, str) and t.strip() for t in targets)
+        ):
+            raise ValueError(
+                f"cited read map entry {key} must be a path or a non-empty list "
+                "of paths"
+            )
+        normal: list[str] = []
+        for target in targets:
+            path = shown(target, root)
+            if path is None:
+                base = root.resolve() if root is not None else os.getcwd()
+                raise ValueError(
+                    f"cited read map path {target} for {key} is outside the root {base}"
+                )
+            if path not in normal:
+                normal.append(path)
+        built[key] = tuple(normal)
+    return built
 
 
 def read_paths(s: Session) -> dict[str, dict[str, Any]]:
@@ -211,6 +255,14 @@ def cited_unmet(s: Session, requirement: ReadRequirement, answer: Any) -> list[s
     read = read_paths(s)
     gaps: list[str] = []
     for given in cited_values(answer, requirement.cited):
+        targets = requirement.cited_map.get(given)
+        if targets is not None:
+            if not any(target in read for target in targets):
+                which = (
+                    targets[0] if len(targets) == 1 else "one of " + ", ".join(targets)
+                )
+                gaps.append(f"read {which}, which the answer cites as {given}")
+            continue
         path = shown(given, requirement.root)
         if path is None:
             gaps.append(f"remove {given}, which is outside the root and cannot be read")
