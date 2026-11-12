@@ -28,8 +28,8 @@ Out: checking the cited revision, digest or line range (a caller check, see
 - [x] 1. `reads.build` takes and validates a map; `cited_unmet` uses it: unit
       tests for satisfied, unsatisfied (one and several targets), unmapped, and
       each refusal.
-- [ ] 2. `run(cited_read_map=...)`: a held answer is corrected with the mapped
+- [x] 2. `run(cited_read_map=...)`: a held answer is corrected with the mapped
       path and accepted once it is read; the map without pointers is refused.
-- [ ] 3. `--cited-read-map FILE`: end to end, and exit 2 for a malformed file,
+- [x] 3. `--cited-read-map FILE`: end to end, and exit 2 for a malformed file,
       a path outside the root, and the flag without `--require-cited-reads`.
 - [ ] 4. Contract `cited_reads.map` and docs.
