@@ -30,15 +30,18 @@ class TierDefaults:
     timeout: int
 
 
+_FULL_DEFAULTS = TierDefaults(reps=5, timeout=900)
+
 TIER_DEFAULTS: dict[str, TierDefaults] = {
     "smoke": TierDefaults(reps=3, timeout=600),
-    "full": TierDefaults(reps=5, timeout=900),
+    "full": _FULL_DEFAULTS,
     # Opt-in (#97): real work, several files and layers, run only when named.
     # Fewer reps than full, because each rep is far longer and dearer.
     "extended": TierDefaults(reps=3, timeout=1800),
     # Opt-in (#43): a case built as one experiment's instrument, such as the
-    # compaction point sweep. It runs only when named and has no baselines.
-    "sweep": TierDefaults(reps=5, timeout=900),
+    # compaction point sweep. It runs only when named and has no baselines, at
+    # the scale full runs a case.
+    "sweep": _FULL_DEFAULTS,
 }
 
 # Every tier a run can name. `full` covers smoke and full; `extended` and

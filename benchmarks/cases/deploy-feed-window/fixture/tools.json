@@ -10,7 +10,6 @@
         }
       }
     },
-    "command": ["python3", "feed.py"],
-    "timeout": 10
+    "command": ["python3", "feed.py"]
   }
 }

@@ -15,6 +15,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -171,6 +172,7 @@ def main() -> int:
         page = pages[given]
     else:
         page = 1
+    text = page_text(page)
     STATE.mkdir(exist_ok=True)
     with open(STATE / "lock", "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -184,8 +186,16 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
+        # Printed before it is recorded: a page that never reached the caller,
+        # whose reader was gone, is not used up, so a harness fault does not
+        # cost the model a page.
+        try:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+        except BrokenPipeError:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+            return 1
         handed_file.write_text(json.dumps(sorted([*handed, page])))
-    sys.stdout.write(page_text(page))
     return 0
 
 

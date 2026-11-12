@@ -29,6 +29,11 @@ JSON object that maps each service to the build that went live."""
 # among canary, staged, rolled_back and failed lines for other builds of the same
 # services, so a confused answer names a real build of the right service.
 #
+# nare's elision stub says "Rerun the tool if you need it." Here a rerun is
+# refused, with a message that the page was handed out once. That is what
+# eliding a result that cannot be regenerated costs in nare as it is, so the
+# sweep measures it as part of each point rather than working around it.
+#
 # The tools are read, write and the feed. With no bash, the feed cannot be run
 # outside the tool, and its pages come from SHA-256, so reading feed.py does not
 # give the builds away. The window is a case argument; the sweep passes the point:
@@ -83,9 +88,12 @@ EOF
 
 # Every page was fetched through the tool, by the cursor that hands it out, and
 # came back as that page or as nare's elision stub ("[elided by nare: N chars"),
-# which still says how long it was; a page is about 14,000 characters. A failed
+# which still says how long it was; a page is about 10,900 characters. A failed
 # fetch, such as a cursor used twice, proves nothing. Under --compaction summary
-# the turns a summary replaced are in summaries[].replaced, oldest first.
+# the turns a summary replaced are in summaries[].replaced, oldest first. The
+# feed keeps its record of the pages it handed out in .feed/, which the model's
+# write tool could reach: a run that wrote there could fetch every page again,
+# so it fails.
 [[check]]
 kind = "bash"
 cmd = '''
@@ -110,6 +118,10 @@ for message in archived + session["messages"]:
             calls.append(block)
         elif block.get("type") == "tool_result":
             results[block.get("tool_use_id")] = block
+for call in calls:
+    path = str((call.get("input") or {}).get("path", ""))
+    if call.get("name") in ("write", "edit") and re.search(r"(^|/)\.feed(/|$)", path):
+        sys.exit(f"{path} was written: that is the feed's record of the pages it handed out")
 
 def proves(page, result):
     if result.get("is_error"):

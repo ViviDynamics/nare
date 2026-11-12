@@ -125,6 +125,28 @@ def test_an_unknown_cursor_is_refused_and_uses_up_nothing(tmp_path: Path) -> Non
     assert next_page(work, {}).returncode == 0
 
 
+def test_a_page_that_never_reached_the_caller_is_not_used_up(tmp_path: Path) -> None:
+    # The reader is gone before the page is printed, as when nare kills a call.
+    # The page was never delivered, so it must still be there for the retry: a
+    # harness fault must not cost the model a page.
+    work = feed_copy(tmp_path)
+    process = subprocess.Popen(
+        [sys.executable, "feed.py"],
+        cwd=work,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    assert process.stdout is not None and process.stdin is not None
+    process.stdout.close()
+    process.stdin.write(b"{}")
+    process.stdin.close()
+    assert process.wait() != 0
+    retry = next_page(work, {})
+    assert retry.returncode == 0, retry.stderr
+    assert retry.stdout.startswith("deploy feed, page 1 of 8\n")
+
+
 def test_a_fresh_checkout_hands_out_the_same_feed(
     pages: list[str], tmp_path: Path
 ) -> None:
@@ -333,7 +355,9 @@ def page_call(
     ]
 
 
-def write_answer(index: int) -> list[dict[str, Any]]:
+def write_answer(
+    index: int, path: str = "live.json", content: str = "{}"
+) -> list[dict[str, Any]]:
     call = f"call-{index}"
     return [
         {
@@ -343,7 +367,7 @@ def write_answer(index: int) -> list[dict[str, Any]]:
                     "type": "tool_use",
                     "id": call,
                     "name": "write",
-                    "input": {"path": "live.json", "content": "{}"},
+                    "input": {"path": path, "content": content},
                 }
             ],
         },
@@ -353,7 +377,7 @@ def write_answer(index: int) -> list[dict[str, Any]]:
                 {
                     "type": "tool_result",
                     "tool_use_id": call,
-                    "content": "wrote live.json",
+                    "content": f"wrote {path}",
                     "is_error": False,
                 }
             ],
@@ -374,7 +398,7 @@ def page_calls(pages: list[str]) -> list[list[dict[str, Any]]]:
 
 def elided(turn: int) -> str:
     return (
-        f"[elided by nare: 14000 chars of output from turn {turn}. "
+        f"[elided by nare: 10880 chars of output from turn {turn}. "
         "Rerun the tool if you need it.]"
     )
 
@@ -458,6 +482,57 @@ def test_the_transcript_check_fails_an_idle_run(tmp_path: Path) -> None:
     # verify's pristine run: the session nare starts with fetches nothing.
     save(new_session(cases()[CASE].prompt), tmp_path / "session.json")
     assert run_here(transcript_check(), tmp_path, tmp_path) != 0
+
+
+@pytest.mark.parametrize(
+    "path", [".feed/handed.json", "./.feed/handed.json", "/work/.feed/lock"]
+)
+def test_the_transcript_check_fails_a_run_that_reset_the_feed(
+    pages: list[str], tmp_path: Path, path: str
+) -> None:
+    # With the record of what was handed out rewritten, every page can be
+    # fetched again: the run beat the feed, not compaction.
+    calls = page_calls(pages)
+    reset = write_answer(20, path, "[]")
+    session = {"messages": messages(*calls[:2], reset, *calls[2:], write_answer(9))}
+    assert not transcript_passes(tmp_path, session)
+
+
+@pytest.mark.parametrize("path", ["notes.md", ".feedback.md", "notes/feed.txt"])
+def test_the_transcript_check_allows_notes_in_other_files(
+    pages: list[str], tmp_path: Path, path: str
+) -> None:
+    calls = page_calls(pages)
+    notes = write_answer(20, path, "page 1: gateway, profile")
+    session = {"messages": messages(*calls[:2], notes, *calls[2:], write_answer(9))}
+    assert transcript_passes(tmp_path, session)
+
+
+# The reference attempts, as `bin/bench verify --tier sweep` checks them. CI
+# verifies only the full tier, so this is what keeps them right there.
+
+
+@pytest.mark.parametrize("attempt", ["solution", "exploit"])
+def test_the_reference_attempts_meet_the_checks(tmp_path: Path, attempt: str) -> None:
+    case = cases()[CASE]
+    reference = case.directory / attempt
+    work, out = tmp_path / "work", tmp_path / "out"
+    out.mkdir()
+    fixture_checkout(CASE, work)
+    subprocess.run(["sh", str(reference / "solve.sh")], cwd=work, check=True)
+    if (reference / "session.json").exists():
+        shutil.copy(reference / "session.json", out / "session.json")
+    else:
+        save(new_session(case.prompt), out / "session.json")
+    passed = {
+        marker: run_here(check_with(CASE, marker), work, out) == 0
+        for marker in ("live.json", "next_page", "-- feed.py")
+    }
+    if attempt == "solution":
+        assert all(passed.values()), passed
+    else:
+        # The exploit has the right answer and no transcript of a page.
+        assert passed == {"live.json": True, "next_page": False, "-- feed.py": True}
 
 
 # The feed is left as it is.
