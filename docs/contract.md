@@ -2048,7 +2048,7 @@ refusal does (`status=error`, `stop_reason` null, not retried).
 | Rail | `--effort LEVEL` sends | Notes |
 | --- | --- | --- |
 | anthropic | `output_config: {"effort": LEVEL}` and `thinking: {"type": "adaptive"}` | No `budget_tokens`. Adaptive thinking is sent because Opus 4.7 and 4.8 do not think without it; where thinking is always on it is the same as omitting it |
-| bedrock | `output_config: {"effort": LEVEL}` and `thinking: {"type": "adaptive"}` | The same request as the anthropic rail, sent to Bedrock. Not yet confirmed against a live Bedrock endpoint ([#269](https://github.com/ViviDynamics/nare/issues/269)) |
+| bedrock | `output_config: {"effort": LEVEL}` and `thinking: {"type": "adaptive"}` | The same request as the anthropic rail, sent to Bedrock. Accepted by a self-hosted Bedrock-compatible endpoint; not yet confirmed against AWS Bedrock ([#301](https://github.com/ViviDynamics/nare/issues/301)) |
 | openai | `reasoning_effort: LEVEL` | Passed through. What a level means belongs to the server behind `--base-url`: one server may map an unknown level to its most expensive setting |
 
 Current Claude models refuse a fixed thinking budget with a 400. The older
