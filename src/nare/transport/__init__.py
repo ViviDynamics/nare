@@ -108,6 +108,44 @@ class ProviderStatusError(RuntimeError):
         self.retry_after = retry_after
 
 
+# A capacity refusal: the provider turned the request away before dispatch, so
+# no model output and no charge exist. It is admission, not a failed attempt,
+# and it is queued on its own rail (loop.CapacityQueue), never spent from the
+# request retry budget. A transport declares the markers in its error text that
+# say "capacity" (its `capacity_markers`); only a 429 carrying one qualifies.
+CAPACITY_STATUS = 429
+
+
+@dataclass(frozen=True)
+class Capacity:
+    """A failure the provider raised as a capacity refusal, and its marker."""
+
+    marker: str
+    retry_after: float | None = None
+
+
+def capacity_refusal(
+    exc: BaseException, markers: tuple[str, ...], *, emitted: bool
+) -> Capacity | None:
+    """Whether `exc` is a capacity refusal that may be queued.
+
+    `emitted` says the attempt already handed anything to the caller (a stream
+    item). Once a response has started it is never queued, whatever it says.
+    """
+    if emitted or not markers:
+        return None
+    current: BaseException | None = exc
+    while current is not None:
+        status = getattr(current, "status_code", None)
+        if type(status) is int and status == CAPACITY_STATUS:
+            text = str(current)
+            for marker in markers:
+                if marker in text:
+                    return Capacity(marker, _retry_after(current))
+        current = current.__cause__
+    return None
+
+
 class StreamDropped(RuntimeError):
     """A streamed response ended before its completion marker arrived."""
 
@@ -366,6 +404,7 @@ def make_transport(
 
 
 __all__ = [
+    "Capacity",
     "ProviderStatusError",
     "Reply",
     "StopReason",
@@ -373,6 +412,7 @@ __all__ = [
     "ToolCall",
     "Transient",
     "Transport",
+    "capacity_refusal",
     "make_transport",
     "transient",
 ]

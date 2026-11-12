@@ -9,6 +9,7 @@ import hashlib
 import inspect
 import json
 import math
+import random
 import re
 from collections.abc import (
     AsyncGenerator,
@@ -20,7 +21,7 @@ from collections.abc import (
 )
 from contextlib import aclosing
 from copy import deepcopy
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Literal, cast
 
 from nare import mcp_defer as deferral
@@ -72,6 +73,7 @@ from nare.tools import (
     tool_result,
 )
 from nare.transport import (
+    CAPACITY_STATUS,
     Delta,
     Reply,
     StopReason,
@@ -81,6 +83,7 @@ from nare.transport import (
     ToolChoiceTransport,
     Transient,
     Transport,
+    capacity_refusal,
     transient,
 )
 
@@ -159,6 +162,75 @@ class RetryPolicy:
 
 
 NO_RETRIES = RetryPolicy(retries=0, seconds=0)
+
+# Admission queueing defaults: the most seconds one request may spend queued,
+# and the most refusals one run queues. Backoff is 2 seconds doubling to 60,
+# each scaled by a jitter in [0.5, 1); a Retry-After replaces it.
+CAPACITY_WAIT_DEFAULT = 1800.0
+CAPACITY_REFUSALS_DEFAULT = 50
+CAPACITY_FIRST_WAIT = 2.0
+CAPACITY_MAX_WAIT = 60.0
+
+
+@dataclass
+class CapacityQueue:
+    """Admission queueing for one run: a capacity refusal is waited out, and the
+    byte-identical request is sent again.
+
+    Not a retry. A refusal is raised before dispatch, so nothing was generated
+    or charged, and it spends none of `RetryPolicy`'s budget. Past either limit
+    the refusal is surfaced exactly as it would be without this, which means it
+    is then judged by the retry policy. `refused` counts this run's queued
+    refusals, so a run gets a fresh queue: the CLI and `run()` callers make one
+    per run. The session's own totals (`capacity_refusals`, `capacity_wait`)
+    are cumulative, like `retries`.
+    """
+
+    max_wait: float = CAPACITY_WAIT_DEFAULT
+    max_refusals: int = CAPACITY_REFUSALS_DEFAULT
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+    rng: random.Random = field(default_factory=random.Random, repr=False)
+    refused: int = 0
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.max_wait, bool)
+            or not isinstance(self.max_wait, (int, float))
+            or not math.isfinite(self.max_wait)
+            or self.max_wait < 0
+        ):
+            raise ValueError(
+                "capacity wait seconds must be a nonnegative finite number"
+            )
+        if (
+            isinstance(self.max_refusals, bool)
+            or not isinstance(self.max_refusals, int)
+            or self.max_refusals < 0
+        ):
+            raise ValueError("capacity refusals must be a nonnegative integer")
+
+    def wait(self, queued: int, retry_after: float | None) -> float:
+        """The wait before the request's `queued`-th resend (1-based)."""
+        if retry_after is not None:
+            return float(retry_after)
+        base = min(CAPACITY_FIRST_WAIT * 2 ** (queued - 1), CAPACITY_MAX_WAIT)
+        return float(base * self.rng.uniform(0.5, 1.0))
+
+
+def fresh_queue(queue: CapacityQueue | None) -> CapacityQueue | None:
+    """A queue with the same limits and no refusals yet, for one run."""
+    if queue is None:
+        return None
+    return replace(queue, refused=0)
+
+
+@dataclass
+class _Emitted:
+    """Whether an attempt has handed anything to the caller. A stream item that
+    reached on_delta means a response has started, and a refusal after that is
+    not queued. Sticky across the attempts of one request."""
+
+    any: bool = False
 
 
 def budget_record(
@@ -729,6 +801,9 @@ async def _with_retries(
     attempt: Callable[[], Awaitable[Reply]],
     retry: RetryPolicy,
     on_event: Callable[[Event], None] | None,
+    *,
+    capacity: CapacityQueue | None = None,
+    emitted: _Emitted | None = None,
 ) -> Reply:
     """One model request, resent on a transient failure within the budget.
 
@@ -736,14 +811,60 @@ async def _with_retries(
     only written once a reply arrives, and the messages resent are the same
     ones, so a caching backend still finds its prefix. A failure that is not
     transient, or that outlives the budget, is raised as it came.
+
+    A capacity refusal that `capacity` admits is queued before any of that: it
+    is waited out and resent identically, and counted in `capacity_refusals` and
+    `capacity_wait`, never in `retries`. One the queue does not admit falls
+    through to the retry policy, as it did before the queue existed.
     """
     classify = getattr(transport, "transient", None) or transient
+    markers: tuple[str, ...] = getattr(transport, "capacity_markers", ())
     made = 0
     waited = 0.0
+    queued = 0
+    queued_wait = 0.0
     while True:
         try:
             return await attempt()
         except Exception as exc:
+            if capacity is not None:
+                refusal = capacity_refusal(
+                    exc, markers, emitted=emitted is not None and emitted.any
+                )
+                if refusal is not None:
+                    wait = capacity.wait(queued + 1, refusal.retry_after)
+                    if (
+                        queued_wait + wait <= capacity.max_wait
+                        and capacity.refused < capacity.max_refusals
+                    ):
+                        queued += 1
+                        queued_wait += wait
+                        capacity.refused += 1
+                        s.capacity_refusals += 1
+                        s.capacity_wait += wait
+                        event = Event(
+                            "progress",
+                            f"capacity refusal (HTTP {CAPACITY_STATUS}, "
+                            f"{refusal.marker}); queued {queued} for {wait:g}s, "
+                            "then resent unchanged",
+                            {
+                                "capacity": {
+                                    "attempt": queued,
+                                    "wait": wait,
+                                    "waited": queued_wait,
+                                    "refusals": capacity.refused,
+                                    "refusals_limit": capacity.max_refusals,
+                                    "status": CAPACITY_STATUS,
+                                    "reason": refusal.marker,
+                                }
+                            },
+                        )
+                        if on_event is not None:
+                            on_event(event)
+                        else:
+                            s.events.append(event)
+                        await capacity.sleep(wait)
+                        continue
             found = classify(exc)
             if found is None or made >= retry.retries:
                 raise
@@ -909,6 +1030,7 @@ async def _summarize(
     prices: Prices | None,
     retry: RetryPolicy,
     on_event: Callable[[Event], None] | None,
+    capacity: CapacityQueue | None = None,
 ) -> tuple[CompactionReport | None, bool]:
     """Ask the model for the summary `plan` describes, and apply it.
 
@@ -944,7 +1066,9 @@ async def _summarize(
     text = ""
     report = None
     try:
-        reply = await _with_retries(s, transport, attempt, retry, on_event)
+        reply = await _with_retries(
+            s, transport, attempt, retry, on_event, capacity=capacity
+        )
     except Exception as exc:
         status = "failed"
         error = f"{type(exc).__name__}: {exc}"
@@ -1025,6 +1149,7 @@ async def step(
     summary_tier: SummaryTier | None = None,
     compaction_trigger: float = TRIGGER,
     compaction_target: float = TARGET,
+    capacity: CapacityQueue | None = None,
 ) -> Session:
     # As run() does: a caller that drives step() itself with a typo is told,
     # rather than getting elide.
@@ -1068,6 +1193,7 @@ async def step(
                 prices=prices,
                 retry=retry,
                 on_event=on_event,
+                capacity=capacity,
             )
     if report is None:
         report = compact(s, context_window, image_input=policy.image_input, point=point)
@@ -1121,6 +1247,8 @@ async def step(
     # Off, the transport is called exactly as before: (messages, tools).
     streamed = bool(getattr(transport, "streaming", False)) and on_delta is not None
 
+    emitted = _Emitted()
+
     async def attempt() -> Reply:
         if streamed:
             reply = None
@@ -1140,6 +1268,7 @@ async def step(
                 async for item in stream:
                     if isinstance(item, Delta):
                         assert on_delta is not None
+                        emitted.any = True
                         on_delta(item)
                     else:
                         reply = item
@@ -1158,7 +1287,9 @@ async def step(
             else transport.turn(model_messages, offered)
         )
 
-    reply = await _with_retries(s, transport, attempt, retry, on_event)
+    reply = await _with_retries(
+        s, transport, attempt, retry, on_event, capacity=capacity, emitted=emitted
+    )
     s.last_input_tokens = (
         reply.usage.input + reply.usage.cache_read + reply.usage.cache_write
     )
@@ -1489,6 +1620,7 @@ async def _live_step(
     summary_tier: SummaryTier | None = None,
     compaction_trigger: float = TRIGGER,
     compaction_target: float = TARGET,
+    capacity: CapacityQueue | None = None,
 ) -> AsyncGenerator[Event, None]:
     queue: asyncio.Queue[Event] = asyncio.Queue()
     buffers: dict[Literal["progress", "thinking"], LiveText] = {
@@ -1537,6 +1669,7 @@ async def _live_step(
             compaction_trigger=compaction_trigger,
             compaction_target=compaction_target,
             summary_tier=summary_tier,
+            capacity=capacity,
         )
     )
     waiter: asyncio.Task[Event] | None = None
@@ -1595,6 +1728,7 @@ async def _run(
     compaction: CompactionMode = "elide",
     compaction_trigger: float = TRIGGER,
     compaction_target: float = TARGET,
+    capacity: CapacityQueue | None = None,
 ) -> AsyncGenerator[Event, None]:
     """Advance the session to a terminal status, yielding events as they occur.
 
@@ -1710,6 +1844,8 @@ async def _run(
     # Per invocation too, for the same reason.
     tool_calls = ToolCallLimit(max_tool_calls) if max_tool_calls is not None else None
     cutoffs = CutoffLimit(max_cutoffs) if max_cutoffs is not None else None
+    # Per run, as the limits above: a caller's queue is only its configuration.
+    capacity = fresh_queue(capacity)
     summary_tier = SummaryTier() if compaction == "summary" else None
     while session.status == "working":
         if inbox is not None:
@@ -1763,6 +1899,7 @@ async def _run(
                             compaction_trigger=compaction_trigger,
                             compaction_target=compaction_target,
                             summary_tier=summary_tier,
+                            capacity=capacity,
                         )
                     ) as stream:
                         async for event in stream:
@@ -1789,6 +1926,7 @@ async def _run(
                         compaction_trigger=compaction_trigger,
                         compaction_target=compaction_target,
                         summary_tier=summary_tier,
+                        capacity=capacity,
                     )
                 # A summary request that crossed a limit already ended the
                 # step with `budget`; checking again would report it twice.
@@ -1862,6 +2000,7 @@ async def run(
     compaction: CompactionMode = "elide",
     compaction_trigger: float = TRIGGER,
     compaction_target: float = TARGET,
+    capacity: CapacityQueue | None = None,
 ) -> AsyncGenerator[Event, None]:
     check_structured_output(transport, schema, structured_output)
     # Refused before any call: a bad registration is the caller's error, not a
@@ -1939,6 +2078,7 @@ async def run(
                     prices=prices,
                     structured_output=structured_output,
                     retry=retry,
+                    capacity=capacity,
                     max_tool_calls=max_tool_calls,
                     max_corrections=max_corrections,
                     max_cutoffs=max_cutoffs,

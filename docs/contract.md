@@ -72,6 +72,9 @@ keeps the contract version; removing or renaming one bumps it.
 | `--request-timeout` | yes | | HTTP timeout for each model request ([Provider retries and the request timeout](#provider-retries-and-the-request-timeout)) |
 | `--request-retries` | yes | | Resend a model request after a transient failure, up to this many times |
 | `--request-retry-seconds` | yes | | Longest wait between one request's retries |
+| `--capacity-queue` | yes | | Wait out a provider capacity refusal and resend the same request, not a retry ([capacity queueing](#capacity-queueing)) |
+| `--capacity-wait-seconds` | yes | | Most seconds one request may spend queued on capacity refusals |
+| `--capacity-refusals` | yes | | Most capacity refusals one run queues |
 | `--proxy-num-retries` | yes | | Send `num_retries` to an OpenAI-compatible proxy |
 | `--cache-breakpoints` | no | | Mark prompt-cache breakpoints on the openai rail ([Prompt-cache breakpoints](#prompt-cache-breakpoints)) |
 | `--provider` | yes | `anthropic`, `bedrock`, `openai`, `fake` | Model provider (`bedrock` is Claude on Amazon Bedrock, signed with AWS credentials) |
@@ -1888,6 +1891,62 @@ upstream, inside one of nare's attempts.
 `nare contract` advertises this under `request_retries` and `request_timeout`.
 The flags, event detail, result field and session field are additive and keep
 the contract version.
+
+## Capacity queueing
+
+```sh
+nare run --yes --jsonl --provider openai --capacity-queue \
+  --capacity-wait-seconds 1800 --capacity-refusals 50 "..."
+```
+
+A provider or proxy can refuse a request for capacity before it dispatches
+anything: HTTP 429 with a capacity marker, such as LiteLLM's
+`max_parallel_requests` once its deployment is full. The model produced
+nothing and nothing was charged, so waiting and sending the same request again
+is not a second attempt at the answer. `--capacity-queue` does exactly that.
+It is off by default, and it is not a retry: it has its own budget, `--request-retries 0`
+keeps its meaning, and a refused request spends none of the retry budget.
+
+A refusal qualifies only when all of these hold:
+
+- the transport declares the marker. The openai rail declares
+  `max_parallel_requests`; the anthropic and bedrock rails declare none, so
+  they never queue;
+- it is HTTP 429 and its error text carries that marker;
+- no response has started. On a streamed turn, nothing has reached the caller
+  yet, so a refusal after the first stream item is never queued.
+
+The wait is the `Retry-After` in seconds when the proxy gives one; otherwise it
+is 2 seconds, doubling to 60, each scaled by a random factor in [0.5, 1). The
+identical request is resent: the messages and tools are the same bytes, so the
+prefix still hits.
+
+| Flag | Environment | Default | Meaning |
+| --- | --- | --- | --- |
+| `--capacity-queue` | `NARE_CAPACITY_QUEUE` | off | Queue qualifying refusals |
+| `--capacity-wait-seconds S` | `NARE_CAPACITY_WAIT_SECONDS` | 1800 | Most seconds one request may spend queued. Needs `--capacity-queue` |
+| `--capacity-refusals N` | `NARE_CAPACITY_REFUSALS` | 50 | Most refusals one run queues. Needs `--capacity-queue` |
+
+Past either limit, or for a refusal that does not qualify, the error is handled
+exactly as it is without the queue: the retry policy judges it, and the run ends
+as before if that policy does not resend it. A `Retry-After` longer than the
+seconds left is not waited out.
+
+Each queued refusal emits a `progress` event at the moment of the wait, with
+its own timestamp:
+
+```json
+{"type": "progress", "text": "capacity refusal (HTTP 429, max_parallel_requests); queued 1 for 2.7s, then resent unchanged",
+ "detail": {"capacity": {"attempt": 1, "wait": 2.7, "waited": 2.7, "refusals": 1,
+                         "refusals_limit": 50, "status": 429,
+                         "reason": "max_parallel_requests"}}}
+```
+
+The `result` line and the session file carry `capacity_refusals` (the count over
+the session's life) and `capacity_wait_seconds`. Neither is part of `turns`,
+`retries` or `usage`: a queued refusal is not a request that was sent. A session
+file without them loads as 0. The flags, event detail, result and session fields
+are additive and keep the contract version.
 
 ## Reasoning effort
 

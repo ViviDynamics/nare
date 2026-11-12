@@ -138,6 +138,8 @@ def describe() -> dict[str, Any]:
     from nare import mcp_defer
     from nare.caller_tools import COMMAND_TIMEOUT_DEFAULT
     from nare.loop import (
+        CAPACITY_REFUSALS_DEFAULT,
+        CAPACITY_WAIT_DEFAULT,
         CUTOFF_REASONS,
         CUTOFFS_DEFAULT,
         RETRIES_DEFAULT,
@@ -434,6 +436,32 @@ def describe() -> dict[str, Any]:
             "event_detail": "retry",
             "result_field": "retries",
             "session_field": "retries",
+        },
+        # Additive: admission queueing of provider capacity refusals. Separate
+        # from request_retries: a refused request was never dispatched, so it
+        # has no budget in common with a failed one. Off unless enabled.
+        "capacity_queue": {
+            "flags": {
+                "enable": "--capacity-queue",
+                "wait_seconds": "--capacity-wait-seconds",
+                "refusals": "--capacity-refusals",
+            },
+            "env": {
+                "enable": "NARE_CAPACITY_QUEUE",
+                "wait_seconds": "NARE_CAPACITY_WAIT_SECONDS",
+                "refusals": "NARE_CAPACITY_REFUSALS",
+            },
+            "default": {
+                "enable": False,
+                "wait_seconds": CAPACITY_WAIT_DEFAULT,
+                "refusals": CAPACITY_REFUSALS_DEFAULT,
+            },
+            "per": "model_request",
+            "providers": ["openai"],
+            "event": "progress",
+            "event_detail": "capacity",
+            "result_field": "capacity_refusals",
+            "session_field": "capacity_refusals",
         },
         "request_timeout": {
             "flag": "--request-timeout",

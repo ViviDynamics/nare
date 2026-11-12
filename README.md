@@ -89,6 +89,13 @@ timeout, a dropped connection, a stream that ends early, or HTTP 429, 502,
 retry is a `progress` event, and the `result` line counts them in `retries`.
 See [provider retries](docs/contract.md#provider-retries-and-the-request-timeout).
 
+A provider or proxy that refuses a request for capacity before it dispatches
+anything (HTTP 429 with a capacity marker) can be waited out with
+`--capacity-queue`, which resends the same request. It is off by default and is
+not a retry: it has its own limits (`--capacity-wait-seconds`,
+`--capacity-refusals`) and its own counts in the `result` line. See
+[capacity queueing](docs/contract.md#capacity-queueing).
+
 `--effort` takes `low`, `medium`, `high`, `xhigh` or `max`. On the anthropic
 rail it sends `output_config.effort` with adaptive thinking; on the openai rail
 it is passed through as `reasoning_effort`, and what a level means is the

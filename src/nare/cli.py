@@ -39,11 +39,14 @@ from nare.contract import (
 from nare.corrections import SCHEMA_CORRECTIONS_DEFAULT
 from nare.events import Event, redact
 from nare.loop import (
+    CAPACITY_REFUSALS_DEFAULT,
+    CAPACITY_WAIT_DEFAULT,
     CUTOFFS_DEFAULT,
     MAX_TURNS_DEFAULT,
     RETRIES_DEFAULT,
     RETRY_SECONDS_DEFAULT,
     STRUCTURED_OUTPUT_MODES,
+    CapacityQueue,
     RetryPolicy,
     budget_record,
     check_budget,
@@ -102,6 +105,15 @@ def stream_from_env(env: Mapping[str, str]) -> bool:
     reads it here too, so it streams exactly when the agent does.
     """
     return env.get("NARE_STREAM", "").strip().lower() in ("1", "true", "yes")
+
+
+def capacity_queue_from_env(env: Mapping[str, str]) -> bool:
+    """NARE_CAPACITY_QUEUE, as --capacity-queue's default reads it."""
+    return env.get("NARE_CAPACITY_QUEUE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def cache_breakpoints_from_env(env: Mapping[str, str]) -> bool:
@@ -407,6 +419,37 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
         default=os.environ.get("NARE_REQUEST_RETRY_SECONDS", RETRY_SECONDS_DEFAULT),
         help="most seconds one model request waits between its retries "
         f"(default {RETRY_SECONDS_DEFAULT:g}; env: NARE_REQUEST_RETRY_SECONDS)",
+    )
+    # Admission queueing is not a retry: a capacity refusal is waited out and
+    # resent unchanged, on its own budget, and --request-retries 0 still never
+    # resends a failed request. Off unless asked for, so a run that does not
+    # ask for it behaves as it always has.
+    parser.add_argument(
+        "--capacity-queue",
+        action="store_true",
+        default=capacity_queue_from_env(os.environ),
+        help="wait out a provider capacity refusal (HTTP 429 with a capacity "
+        "marker, sent before any response) and resend the same request, "
+        "instead of failing it; not a retry, and off by default "
+        "(env: NARE_CAPACITY_QUEUE)",
+    )
+    parser.add_argument(
+        "--capacity-wait-seconds",
+        type=float,
+        metavar="SECONDS",
+        default=os.environ.get("NARE_CAPACITY_WAIT_SECONDS"),
+        help="most seconds one request may spend queued on capacity refusals "
+        f"(default {CAPACITY_WAIT_DEFAULT:g}; needs --capacity-queue; "
+        "env: NARE_CAPACITY_WAIT_SECONDS)",
+    )
+    parser.add_argument(
+        "--capacity-refusals",
+        type=int,
+        metavar="N",
+        default=os.environ.get("NARE_CAPACITY_REFUSALS"),
+        help="most capacity refusals one run queues before the error surfaces "
+        f"as it would without the queue (default {CAPACITY_REFUSALS_DEFAULT}; "
+        "needs --capacity-queue; env: NARE_CAPACITY_REFUSALS)",
     )
     parser.add_argument(
         "--proxy-num-retries",
@@ -838,6 +881,21 @@ def validate_run_args(args: argparse.Namespace) -> Prices | None:
     args.retry = RetryPolicy(
         retries=args.request_retries, seconds=args.request_retry_seconds
     )
+    if args.capacity_queue:
+        args.capacity = CapacityQueue(
+            max_wait=CAPACITY_WAIT_DEFAULT
+            if args.capacity_wait_seconds is None
+            else float(args.capacity_wait_seconds),
+            max_refusals=CAPACITY_REFUSALS_DEFAULT
+            if args.capacity_refusals is None
+            else args.capacity_refusals,
+        )
+    elif args.capacity_wait_seconds is not None or args.capacity_refusals is not None:
+        raise ValueError(
+            "--capacity-wait-seconds and --capacity-refusals need --capacity-queue"
+        )
+    else:
+        args.capacity = None
     args.mcp_servers = (
         parse_servers(json.loads(Path(args.mcp_config).read_text(encoding="utf-8")))
         if args.mcp_config
@@ -933,6 +991,8 @@ def _emit_result(
                     "stop_reason": session.stop_reason,
                     "turns": session.turns,
                     "retries": session.retries,
+                    "capacity_refusals": session.capacity_refusals,
+                    "capacity_wait_seconds": round(session.capacity_wait, 3),
                     "cutoffs": session.cutoffs,
                     "contract": CONTRACT_VERSION,
                     "nare": __version__,
@@ -1080,6 +1140,7 @@ async def _execute(
                 tools=args.command_tools,
                 structured_output=args.structured_output,
                 retry=args.retry,
+                capacity=args.capacity,
                 max_tool_calls=args.max_tool_calls,
                 max_corrections=corrections_limit,
                 max_cutoffs=args.max_cutoffs,
