@@ -719,7 +719,9 @@ def _answer_errors(text: str, schema: dict[str, Any]) -> list[SchemaError]:
 # argument, and returns its errors: SchemaError values, or
 # a mapping of code, location, message and guidance, or plain strings. An empty
 # result (or None) passes. It runs only on an answer that passes the schema.
-Check = Callable[..., Iterable[Any] | None]
+# A check may be async: an awaitable result is awaited, so a check that waits
+# on a process or the network does not hold the event loop (#296).
+Check = Callable[..., Iterable[Any] | Awaitable[Iterable[Any] | None] | None]
 
 
 class CheckRaised(Exception):
@@ -771,14 +773,17 @@ def _takes_reads(check: Check) -> bool:
     return len(positional) >= 2
 
 
-def _check_errors(
+async def _check_errors(
     parsed: Any, check: Check, reads: list[dict[str, Any]]
 ) -> list[SchemaError]:
     """The check's errors for a parsed answer. A check that raises, or returns
     something other than a list of errors, raises CheckRaised. `reads` are the
-    run's read records, passed on to a check that takes them."""
+    run's read records, passed on to a check that takes them. An awaitable
+    result is awaited; a cancellation passes through, as for any other await."""
     try:
         found = check(parsed, reads) if _takes_reads(check) else check(parsed)
+        if inspect.isawaitable(found):
+            found = await found
         if isinstance(found, (str, Mapping)):
             raise TypeError("a check returns a list of errors, not one value")
         return [_as_error(item) for item in (found or ())]
@@ -1491,7 +1496,9 @@ async def step(
         errors = _answer_errors(text, schema)
         if not errors and check is not None:
             try:
-                errors = _check_errors(extract_json(text), check, read_record(s))
+                errors = await _check_errors(
+                    extract_json(text), check, read_record(s)
+                )
             except CheckRaised as exc:
                 s.status = "error"
                 s.stop_reason = None
