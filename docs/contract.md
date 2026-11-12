@@ -515,9 +515,13 @@ the token count to use**: the sum of the four token fields, equal to
 included; the session file keeps the four counters without `total`. A summary
 request under `--compaction summary` is a model request but not a turn, and its
 `cost` event carries `detail.call` = `"compaction_summary"`, so a caller must
-not count `cost` events as turns. Streamed cost headers are
-ignored; configured prices override discovered model-info prices. With neither,
-cost is unknown. Token categories are disjoint. For OpenAI,
+not count `cost` events as turns. A backend-reported cost wins and is not
+estimated. A non-streamed reply reads it from the response headers. A stream's
+headers arrive before final usage, so they are ignored; a streamed openai-rail
+turn instead takes `usage.cost` on the final usage chunk, which a LiteLLM proxy
+sends when the request asks for usage. The `reported_cost` entry of
+`nare contract` lists these sources. Without a reported cost, configured prices
+override discovered model-info prices. With neither, cost is unknown. Token categories are disjoint. For OpenAI,
 `input=prompt_tokens-cached_tokens`, `cache_read=cached_tokens`, and cache_write
 is zero. Anthropic reports uncached input, cache reads and cache creation
 separately. Completion/reasoning tokens reported in output are not counted
