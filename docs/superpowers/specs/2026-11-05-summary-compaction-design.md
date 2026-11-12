@@ -999,6 +999,52 @@ shape is a follow-up issue.
 compaction asks for a summary (section 4, amended). The re-run on the same case
 with the same model and reps is pending and reports in its own subsection.
 
+### Results, 2026-11-12 (#275)
+
+Run after the gate change in #275 (section 4, amended), on `gpt-6-luna` with the
+judge `claude-haiku-5-5`, the same model and cost the maintainer confirmed,
+through the public gateway. The case is `context-overflow-small-window` at
+`--context-window 48000`, as before. The $2 cap was not reached: the six runs
+cost $0.99 by the gateway's price table.
+
+Each arm was run in five-rep runs. The runner re-confirms a dropped pass at ten
+reps, and the pool follows the 2026-11-10 rule: the first run plus the ten-rep
+re-confirmation give 15 kept reps for the elide arm. The summary arm had no
+drop, so three five-rep runs give 15. All six runs are reported below, not only
+the pooled 15.
+
+| | `elide` (kept 15) | `summary` (15) |
+| --- | --- | --- |
+| Execution pass | 13/15 | 15/15 |
+| Total tokens per rep, median | 366,703 | 406,553 |
+| Dollars, 15 reps | $0.31 | $0.60 |
+| Summary requests | none | 90, all `applied`, none failed |
+| Reps where the tier engaged | 0/15 | 15/15 |
+
+All runs: `elide` 18/20 (run 1 5/5, run 2 8/10, run 3 5/5), against
+`summary` 15/15. The two `elide` failures in run 2 both stopped at `max_turns` (17 turns each,
+10 and 8 compactions). Rep 3 failed `status=done` and the read-check script;
+rep 7 failed `status=done` only. The Fisher exact p for 15/15 against 13/15 is 0.48, and
+against 18/20 is 0.50: the pass rates cannot be told apart on this case, as on
+2026-11-10.
+
+- **The tier engaged on every rep.** Each rep's six compactions were six summary
+  requests, and each was applied. No summary fell back to elision. On the
+  2026-11-10 run it engaged on 3 of 15 reps.
+- **The summary arm costs more tokens and dollars.** Its median is about 11%
+  above `elide`, from the summary calls and the turns they leave behind. On
+  2026-11-10 the two medians were level. The pass rate is not worse.
+- **The baseline is stale.** The committed `gpt-6-luna` full baseline measured
+  this case before its run arguments and case changed, so the bench's compare
+  flags and the run 2 "regression" are against that stale reference. The runs
+  here were made with `--allow-arg-change --allow-case-change`, and nothing was
+  blessed. The raw results stay local, as the runner keeps them.
+- **The judge column is not reported.** Only the execution checks decide the
+  pass rate here (#151, #152 in section 15).
+
+The bench's own verdict is "no regressions" for the summary arm, and "regression"
+for the single elide run that dropped to 8 of 10.
+
 ## 16. Testing
 
 All deterministic, with `FakeProvider` (`tests/fake_provider.py`, which already
