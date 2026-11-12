@@ -197,6 +197,10 @@ def main() -> None:
             "correct_mean": statistics.mean(r["correct"] for r in scored) if scored else None,
             "fabricated_total": sum(r["fabricated"] for r in scored),
             "findings_missing": sum(1 for r in scored if not r["findings_written"]),
+            "context_stops": sum(1 for r in scored if r["stop_reason"] == "context"),
+            "timeouts": sum(1 for r in reps if r["error_cause"] == "timeout"),
+            "rate_timeouts_fail": (passes / len(reps)) if reps else float("nan"),
+            "ci_timeouts_fail": wilson(passes, len(reps)),
         }
         cell_rows.append(cell)
         if abs(trigger - 0.8) < 1e-9:
@@ -217,7 +221,7 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(cell_rows)
 
-    lines = ["| model | trigger | target | n | pass | rate [95% Wilson] | Fisher p vs 0.8 | tokens med | cost/rep med | compactions med | elided med | reads med | fabricated | correct mean |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    lines = ["| model | trigger | target | n | pass | rate [95% Wilson] | Fisher p vs 0.8 | tokens med | cost/rep med | compactions med | elided med | reads med | fabricated | correct mean | context stops | timeouts | pass, timeouts as fails | [95% Wilson] |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for c in cell_rows:
         p = "" if c["p_vs_default"] is None else f"{c['p_vs_default']:.3f}"
         cost = "" if c["cost_median"] is None else f"${c['cost_median']:.4f}"
@@ -226,7 +230,8 @@ def main() -> None:
             f"{c['rate']:.2f} [{c['ci_low']:.2f}, {c['ci_high']:.2f}] | {p} | "
             f"{(c['tokens_median'] or 0):,.0f} | {cost} | {c['compactions_median']} | "
             f"{c['elided_median']} | {c['reads_median']} | {c['fabricated_total']} | "
-            f"{(c['correct_mean'] or 0):.2f} |"
+            f"{(c['correct_mean'] or 0):.2f} | {c['context_stops']} | {c['timeouts']} | "
+            f"{c['passes']}/{c['passes'] and c['n'] + c['errors']} | [{c['ci_timeouts_fail'][0]:.2f}, {c['ci_timeouts_fail'][1]:.2f}] |"
         )
     (out / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
