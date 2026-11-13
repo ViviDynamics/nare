@@ -1,0 +1,1 @@
+Read the eight pages of the feed and wrote live.json with the build each of the sixteen services took live.
