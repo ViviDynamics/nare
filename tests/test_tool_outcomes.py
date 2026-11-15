@@ -8,6 +8,7 @@ import pytest
 
 from fake_provider import FakeProvider
 from nare import Tool, ToolError, new_session, run
+from nare.caller_tools import as_external
 from test_caller_tools import call_reply, final_reply, result_of
 
 
@@ -69,3 +70,21 @@ async def test_typed_caller_outcome_does_not_enter_provider_blocks(
 def test_tool_error_code_refuses_unbounded_or_freeform_metadata(code: str) -> None:
     with pytest.raises(ValueError):
         ToolError("message", code=code)
+
+
+@pytest.mark.parametrize("args", [(), ("missing",), ("missing", 17)])
+@pytest.mark.parametrize("code", [None, "missing_record"])
+async def test_tool_error_preserves_exception_arguments(
+    args: tuple[object, ...], code: str | None
+) -> None:
+    async def lookup(_: dict[str, Any]) -> str:
+        raise ToolError(*args, code=code)
+
+    external = as_external(Tool("lookup", "Look up", {"type": "object"}, lookup))
+    assert external.classified_call is not None
+    result = await external.classified_call({})
+    assert result.failed
+    assert result.text == str(Exception(*args))
+    assert result.outcome.kind == "caller_error"
+    assert result.outcome.code == code
+    assert await external.call({}) == (str(Exception(*args)), True)

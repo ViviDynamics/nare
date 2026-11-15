@@ -40,13 +40,13 @@ class ToolError(Exception):
     error result, so the run never stops on a tool's failure.
     """
 
-    def __init__(self, message: str, *, code: str | None = None) -> None:
+    def __init__(self, *args: object, code: str | None = None) -> None:
         if code is not None and (
             not isinstance(code, str)
             or re.fullmatch(r"[a-z][a-z0-9_]{0,63}", code) is None
         ):
             raise ValueError("ToolError code must be a bounded lowercase identifier")
-        super().__init__(message)
+        super().__init__(*args)
         self.code = code
 
 
