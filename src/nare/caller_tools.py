@@ -24,6 +24,7 @@ from typing import Any
 
 from nare.mcp import ExternalTool
 from nare.schema import UnsupportedSchema, check_supported
+from nare.tool_outcomes import CallerResult, ToolOutcome
 from nare.tools import TOOLS, _shell_env, check_arguments
 
 # A command tool that does not say how long it may run is stopped after this.
@@ -38,6 +39,15 @@ class ToolError(Exception):
     model sees. Any other exception a call raises becomes `Type: message` as an
     error result, so the run never stops on a tool's failure.
     """
+
+    def __init__(self, *args: object, code: str | None = None) -> None:
+        if code is not None and (
+            not isinstance(code, str)
+            or re.fullmatch(r"[a-z][a-z0-9_]{0,63}", code) is None
+        ):
+            raise ValueError("ToolError code must be a bounded lowercase identifier")
+        super().__init__(*args)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -93,7 +103,7 @@ def as_external(tool: Tool) -> ExternalTool:
     argument check, which dispatch runs before approval.
     """
 
-    async def call(args: dict[str, Any]) -> tuple[str, bool]:
+    async def classified_call(args: dict[str, Any]) -> CallerResult:
         try:
             if inspect.iscoroutinefunction(tool.call):
                 value = await tool.call(args)
@@ -102,10 +112,16 @@ def as_external(tool: Tool) -> ExternalTool:
             if inspect.isawaitable(value):
                 value = await value
         except ToolError as exc:
-            return str(exc), True
+            return CallerResult(str(exc), True, ToolOutcome("caller_error", exc.code))
         except Exception as exc:
-            return f"{type(exc).__name__}: {exc}", True
-        return _as_text(value), False
+            return CallerResult(
+                f"{type(exc).__name__}: {exc}", True, ToolOutcome("unexpected_error")
+            )
+        return CallerResult(_as_text(value), False, ToolOutcome("ok"))
+
+    async def call(args: dict[str, Any]) -> tuple[str, bool]:
+        result = await classified_call(args)
+        return result.text, result.failed
 
     def arguments(args: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
         return check_arguments(tool.name, tool.input_schema, args)
@@ -119,6 +135,7 @@ def as_external(tool: Tool) -> ExternalTool:
         call=call,
         source="caller",
         arguments=arguments,
+        classified_call=classified_call,
     )
 
 

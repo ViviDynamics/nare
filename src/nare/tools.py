@@ -35,6 +35,7 @@ from nare.bash_rules import validate as validate_bash_rules
 from nare.events import redact
 from nare.mcp import ExternalTool
 from nare.schema import validate
+from nare.tool_outcomes import ToolOutcome
 from nare.transport import CREDENTIAL_ENV, ToolCall
 
 MAX_TOOL_OUTPUT = 30_000
@@ -1805,6 +1806,7 @@ async def dispatch(
     left_running: Callable[[int, str], None] | None = None,
     evidence: Callable[[Evidence], None] | None = None,
     rule_match: Callable[[dict[str, Any]], None] | None = None,
+    on_outcome: Callable[[ToolOutcome], None] | None = None,
 ) -> dict[str, Any]:
     """Run one tool call. Every failure comes back as an is_error result rather
     than an exception: the model adapts, which is what it is good at. A policy
@@ -1822,6 +1824,8 @@ async def dispatch(
     effect, patterns}. It never hears the command text.
     """
     if call.error is not None:
+        if on_outcome is not None:
+            on_outcome(ToolOutcome("invalid_arguments"))
         return tool_result(call.id, call.error, is_error=True)
     function = TOOLS.get(call.name)
     if function is None and call.name not in policy.external:
@@ -1846,6 +1850,8 @@ async def dispatch(
         # and nothing starts with arguments Python would only reject later.
         checked, problems = _arguments(call.name, checked)
         if problems:
+            if on_outcome is not None:
+                on_outcome(ToolOutcome("invalid_arguments"))
             return tool_result(
                 call.id, f"{call.name}: {'; '.join(problems)}", is_error=True
             )
@@ -1854,6 +1860,8 @@ async def dispatch(
         assert checker is not None
         checked, problems = checker(checked)
         if problems:
+            if on_outcome is not None:
+                on_outcome(ToolOutcome("invalid_arguments"))
             return tool_result(
                 call.id, f"{call.name}: {'; '.join(problems)}", is_error=True
             )
@@ -1906,7 +1914,14 @@ async def dispatch(
         if not approved:
             return tool_result(call.id, f"{call.name} was not approved", is_error=True)
         if call.name in policy.external:
-            text, failed = await policy.external[call.name].call(checked)
+            external = policy.external[call.name]
+            if external.classified_call is not None:
+                classified = await external.classified_call(checked)
+                text, failed = classified.text, classified.failed
+                if on_outcome is not None:
+                    on_outcome(classified.outcome)
+            else:
+                text, failed = await external.call(checked)
             return tool_result(
                 call.id,
                 _cut_middle(text, MAX_TOOL_OUTPUT, "the result"),

@@ -22,6 +22,7 @@ import httpx2
 
 from nare import mcp_auth
 from nare.mcp_auth import Authorizer, OAuthSettings
+from nare.tool_outcomes import CallerResult
 
 if TYPE_CHECKING:
     from mcp import ClientSession
@@ -140,6 +141,7 @@ class ExternalTool:
     arguments: Callable[[dict[str, Any]], tuple[dict[str, Any], list[str]]] | None = (
         None
     )
+    classified_call: Callable[[dict[str, Any]], Awaitable[CallerResult]] | None = None
 
 
 async def _bounded[Result](

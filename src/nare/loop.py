@@ -22,6 +22,7 @@ from collections.abc import (
 from contextlib import aclosing
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
+from functools import partial
 from typing import Any, Literal, cast
 
 from nare import mcp_defer as deferral
@@ -64,6 +65,7 @@ from nare.session import (
     append_user_text,
     drop_signed_thinking,
 )
+from nare.tool_outcomes import ToolOutcome
 from nare.tools import (
     READ_ONLY_TOOLS,
     Approve,
@@ -856,7 +858,12 @@ def _without_images(messages: list[Message], model: str) -> list[Message]:
     return copied
 
 
-def result_event(name: str, result: dict[str, Any], policy: Policy) -> Event:
+def result_event(
+    name: str,
+    result: dict[str, Any],
+    policy: Policy,
+    outcome: ToolOutcome | None = None,
+) -> Event:
     """How one call ended. A built-in result is described, not repeated: the
     transcript holds its content. An MCP result keeps its content, redacted
     and capped like any event detail, as it always has."""
@@ -870,6 +877,10 @@ def result_event(name: str, result: dict[str, Any], policy: Policy) -> Event:
         record = {**result, **record}
         source = "caller" if policy.external[name].source == "caller" else "MCP"
         text = f"{source} result: {name}"
+        if policy.external[name].source == "caller":
+            record["outcome"] = (
+                outcome or ToolOutcome("tool_error" if result["is_error"] else "ok")
+            ).record()
     else:
         text = f"{name} result: {'error' if result['is_error'] else 'ok'}"
     return Event(
@@ -1577,6 +1588,7 @@ async def step(
     # The name each call's result event carries, by call id: the real tool's
     # name for a call that mcp_call ran, the call's own name otherwise.
     named: dict[str, str] = {}
+    outcomes: dict[str, ToolOutcome] = {}
     unanswered = "tool dispatch failed"
     try:
         if unfinished:
@@ -1635,6 +1647,7 @@ async def step(
                     left_running=left_running,
                     evidence=evidence,
                     rule_match=bash_rule,
+                    on_outcome=partial(outcomes.__setitem__, call.id),
                 )
                 results.append(result)
                 if "image" in result:
@@ -1683,7 +1696,11 @@ async def step(
         # One result event per call, from the results as the transcript holds
         # them, so no event reports a value the model was not sent.
         for call, result in zip(reply.tool_calls, results, strict=True):
-            s.events.append(result_event(named.get(call.id, call.name), result, policy))
+            s.events.append(
+                result_event(
+                    named.get(call.id, call.name), result, policy, outcomes.get(call.id)
+                )
+            )
 
     if unfinished and corrected:
         # Merged into the tool results just kept, so the turn stays well formed.

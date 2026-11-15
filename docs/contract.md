@@ -1132,6 +1132,21 @@ the same `tool_use_id`, as built-in calls do. The progress text is
 `caller result: <name>`. Its content is kept, redacted and capped at the
 [tool output cap](#the-tool-output-cap), as MCP content is.
 
+Caller result events also carry `tool_result.outcome`. Its `kind` is `ok`,
+`invalid_arguments` (including rejection before the callback), `caller_error`
+for `ToolError`, or `unexpected_error` for another callback exception.
+Other dispatch refusals use `tool_error`; that category does not assert that
+the callback ran. `ToolError(message, code="outside_catalog")` adds an optional
+`code` to a `caller_error` outcome. Codes are lowercase identifiers, starting
+with a letter, at most 64 characters, with digits and underscores allowed.
+They must be application-defined classifications, never source or credential text.
+
+Outcome metadata stays in events, not in the provider's tool-result blocks.
+It neither retries nor ends a run: the caller owns its recovery policy. Result
+events are emitted after the current tool batch completes. Stopping while
+consuming one prevents the next model request, not sibling calls already
+dispatched in that batch. Built-in and MCP result-event contracts are unchanged.
+
 The model chooses the arguments, and a caller tool runs with the caller's
 privileges. The check on arguments is a schema check, not a policy: a tool that
 writes or spends should validate what it does.
