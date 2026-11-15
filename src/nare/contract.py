@@ -417,7 +417,12 @@ def describe() -> dict[str, Any]:
         # answers, and refuses to run unconstrained rather than guess.
         "structured_output": {
             "flag": "--structured-output",
-            "modes": ["json_schema"],
+            "modes": ["json_schema", "json_object", "tool_call"],
+            "provider_modes": {
+                "anthropic": ["json_schema"],
+                "bedrock": ["json_schema"],
+                "openai": ["json_schema", "json_object", "tool_call"],
+            },
             "requires": "--schema",
             "providers": ["anthropic", "bedrock", "openai"],
             "constrained_turns": ["schema_correction", "tool_free_run"],

@@ -70,6 +70,67 @@ def stop_reason_from(raw: str | None) -> StopReason:
     return "end_turn"
 
 
+def function_answer(data: dict[str, Any]) -> dict[str, Any]:
+    """Decode one forced answer function; never turn it into an action tool.
+
+    Keep raw argument JSON so duplicate keys and malformed data reach the normal
+    answer validator. Shape failures spend the same correction allowance. Usage,
+    refusal and cutoff metadata stay attached to the physical reply.
+    """
+    choices = data.get("choices") or []
+    if not choices:
+        return data
+    choice = choices[0]
+    message = choice.get("message") or {}
+    calls = message.get("tool_calls") or []
+    text = "Expected exactly one nare_final_answer function response."
+    if (
+        isinstance(calls, list)
+        and len(calls) == 1
+        and isinstance(calls[0], dict)
+        and not message.get("content")
+    ):
+        function = calls[0].get("function")
+        if (
+            isinstance(function, dict)
+            and function.get("name") == "nare_final_answer"
+            and isinstance(function.get("arguments"), str)
+        ):
+            text = function["arguments"]
+    finish = choice.get("finish_reason")
+    if finish in {"tool_calls", "function_call"}:
+        finish = "stop"
+    return {
+        **data,
+        "choices": [
+            {
+                **choice,
+                "message": {**message, "content": text, "tool_calls": []},
+                "finish_reason": finish,
+            }
+        ],
+    }
+
+
+def answer_fragment_valid(part: Any) -> bool:
+    """A malformed forced-answer fragment must still drain final usage."""
+    if not isinstance(part, dict):
+        return False
+    index = part.get("index")
+    function = {} if part.get("function") is None else part["function"]
+    return (
+        isinstance(index, int)
+        and not isinstance(index, bool)
+        and index >= 0
+        and (part.get("id") is None or isinstance(part["id"], str))
+        and isinstance(function, dict)
+        and all(
+            function.get(key) is None or isinstance(function[key], str)
+            for key in ("name", "arguments")
+        )
+    )
+
+
 def usage_from(raw: dict[str, Any] | None) -> Usage:
     """input EXCLUDES cache reads, which is nare's convention across rails.
 
@@ -273,6 +334,7 @@ class OpenAITransport:
     # A constrained turn carries no tools: measured on vLLM, a request with
     # both cannot call a tool, and the model invents an answer instead.
     supports_structured_output = True
+    structured_output_modes = ("json_schema", "json_object", "tool_call")
 
     def __init__(
         self,
@@ -348,6 +410,7 @@ class OpenAITransport:
         tools: list[dict[str, Any]],
         response_schema: dict[str, Any] | None = None,
         tool_choice: str | None = None,
+        response_mode: str = "json_schema",
     ) -> dict[str, Any]:
         wire_messages = messages_from(
             messages,
@@ -367,7 +430,28 @@ class OpenAITransport:
                 *payload["messages"],
             ]
         if response_schema is not None:
-            payload["response_format"] = response_format_from(response_schema)
+            if response_mode == "json_schema":
+                payload["response_format"] = response_format_from(response_schema)
+            elif response_mode == "json_object":
+                payload["response_format"] = {"type": "json_object"}
+            elif response_mode == "tool_call":
+                payload["tools"] = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "nare_final_answer",
+                            "description": "Return the final structured answer.",
+                            "parameters": response_schema,
+                        },
+                    }
+                ]
+                payload["parallel_tool_calls"] = False
+                payload["tool_choice"] = {
+                    "type": "function",
+                    "function": {"name": "nare_final_answer"},
+                }
+            else:
+                raise ValueError(f"Unsupported answer encoding: {response_mode}")
         elif wire_tools:
             payload["tools"] = wire_tools
             if tool_choice:
@@ -392,6 +476,7 @@ class OpenAITransport:
         *,
         response_schema: dict[str, Any] | None = None,
         tool_choice: str | None = None,
+        response_mode: str = "json_schema",
     ) -> Reply:
         if self.streaming:
             # Closed explicitly: a reply stopped early returns from inside the
@@ -402,13 +487,16 @@ class OpenAITransport:
                     tools,
                     response_schema=response_schema,
                     tool_choice=tool_choice,
+                    response_mode=response_mode,
                 )
             ) as items:
                 async for item in items:
                     if isinstance(item, Reply):
                         return item
             raise RuntimeError("stream ended without a reply")
-        payload = self._payload(messages, tools, response_schema, tool_choice)
+        payload = self._payload(
+            messages, tools, response_schema, tool_choice, response_mode
+        )
         response = await self._client.post(
             f"{self._base_url}/chat/completions",
             headers={"authorization": f"Bearer {self._key}"},
@@ -419,7 +507,10 @@ class OpenAITransport:
             # The body carries the reason a proxy refused, which is the part a
             # caller needs: a scoped key naming the model it may not reach.
             raise self._failure(response)
-        reply = self._reply(response.json(), cost=reported_cost(response.headers))
+        data = response.json()
+        if response_schema is not None and response_mode == "tool_call":
+            data = function_answer(data)
+        reply = self._reply(data, cost=reported_cost(response.headers))
         if looping(reply.content):
             return replace(reply, stop_reason="repetition")
         return reply
@@ -431,9 +522,12 @@ class OpenAITransport:
         *,
         response_schema: dict[str, Any] | None = None,
         tool_choice: str | None = None,
+        response_mode: str = "json_schema",
     ) -> AsyncGenerator[Delta | Reply, None]:
         payload = {
-            **self._payload(messages, tools, response_schema, tool_choice),
+            **self._payload(
+                messages, tools, response_schema, tool_choice, response_mode
+            ),
             "stream": True,
             "stream_options": {"include_usage": True},
         }
@@ -458,6 +552,9 @@ class OpenAITransport:
             looped = False
             text_watch = RepetitionWatch()
             thought_watch = RepetitionWatch()
+            answer_watch = RepetitionWatch()
+            forced_answer = response_schema is not None and response_mode == "tool_call"
+            malformed_answer = False
             data: list[str] = []
             async for line in response.aiter_lines():
                 if line.startswith("data:"):
@@ -490,7 +587,14 @@ class OpenAITransport:
                         text.append(str(delta["content"]))
                         yield Delta("progress", str(delta["content"]))
                         looped = text_watch.feed(str(delta["content"])) or looped
-                    for part in delta.get("tool_calls") or []:
+                    parts = delta.get("tool_calls") or []
+                    if forced_answer and not isinstance(parts, list):
+                        malformed_answer = True
+                        parts = []
+                    for part in parts:
+                        if forced_answer and not answer_fragment_valid(part):
+                            malformed_answer = True
+                            continue
                         index = part["index"]
                         call = calls.setdefault(
                             index, {"id": "", "function": {"name": "", "arguments": ""}}
@@ -499,6 +603,11 @@ class OpenAITransport:
                         function = part.get("function") or {}
                         for key in ("name", "arguments"):
                             call["function"][key] += function.get(key) or ""
+                        if forced_answer:
+                            looped = (
+                                answer_watch.feed(function.get("arguments") or "")
+                                or looped
+                            )
                 if looped:
                     break
             if not looped and not done:
@@ -525,15 +634,17 @@ class OpenAITransport:
             message = {
                 "content": "".join(text),
                 "reasoning_content": "".join(reasoning),
-                "tool_calls": [calls[i] for i in sorted(calls)],
+                "tool_calls": []
+                if malformed_answer
+                else [calls[i] for i in sorted(calls)],
             }
-            reply = self._reply(
-                {
-                    "choices": [{"message": message, "finish_reason": finish}],
-                    "usage": usage,
-                },
-                cost=usage_cost(response.headers, usage),
-            )
+            reply_data = {
+                "choices": [{"message": message, "finish_reason": finish}],
+                "usage": usage,
+            }
+            if response_schema is not None and response_mode == "tool_call":
+                reply_data = function_answer(reply_data)
+            reply = self._reply(reply_data, cost=usage_cost(response.headers, usage))
             if looped:
                 # The stop was ours, so the provider's finish reason says nothing.
                 reply = replace(reply, stop_reason="repetition")

@@ -241,6 +241,12 @@ lengths, patterns) are checked only by nare after decoding, and a schema
 Anthropic cannot take is refused at startup. See
 [docs/contract.md](docs/contract.md#schema-constrained-answers).
 
+On the OpenAI rail, `json_object` requests JSON syntax only and `tool_call`
+forces one `nare_final_answer` function whose arguments are validated as the
+answer, never dispatched. Unsupported modes refuse before inference. A domain
+check or diagnostic that rejects an answer restores approved tools on the next
+turn, within the same correction allowance.
+
 Python callers can run the same loop in-process, with `nare.run` and
 `nare.step`, typed answers through `schema=` and `check=`, and caller tools.
 Its budget arguments default to the command line's except `max_cutoffs`, the

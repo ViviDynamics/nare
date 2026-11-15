@@ -227,7 +227,12 @@ def test_contract_describes_read_image_input() -> None:
 def test_contract_describes_structured_output() -> None:
     assert describe()["structured_output"] == {
         "flag": "--structured-output",
-        "modes": ["json_schema"],
+        "modes": ["json_schema", "json_object", "tool_call"],
+        "provider_modes": {
+            "anthropic": ["json_schema"],
+            "bedrock": ["json_schema"],
+            "openai": ["json_schema", "json_object", "tool_call"],
+        },
         "requires": "--schema",
         "providers": ["anthropic", "bedrock", "openai"],
         "constrained_turns": ["schema_correction", "tool_free_run"],

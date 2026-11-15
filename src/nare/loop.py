@@ -104,8 +104,8 @@ TURN_LIMIT = (
 
 # The constrained-answer modes a transport can be asked for. One today: the
 # OpenAI-compatible json_schema response format.
-StructuredOutput = Literal["json_schema"]
-STRUCTURED_OUTPUT_MODES: tuple[str, ...] = ("json_schema",)
+StructuredOutput = Literal["json_schema", "json_object", "tool_call"]
+STRUCTURED_OUTPUT_MODES: tuple[str, ...] = ("json_schema", "json_object", "tool_call")
 
 # What an unanswered call says when a person stopped the turn, so the model is
 # told what happened instead of that a tool broke.
@@ -816,10 +816,15 @@ def check_structured_output(
         raise ValueError(
             f"{type(transport).__name__} does not support structured output"
         )
-    # A rail that can refuse a schema at startup does, rather than with a
-    # provider failure on the correction turn after the first answer.
+    supported = getattr(transport, "structured_output_modes", ("json_schema",))
+    if structured_output not in supported:
+        raise ValueError(
+            f"{type(transport).__name__} does not support {structured_output} output"
+        )
+    # Only schema generation compiles the schema at the provider. JSON-object
+    # syntax and function arguments still face the full local validator.
     vet = getattr(transport, "check_response_schema", None)
-    if callable(vet):
+    if structured_output == "json_schema" and callable(vet):
         vet(schema)
 
 
@@ -1357,6 +1362,9 @@ async def step(
                 },
             )
         )
+    constraints: dict[str, Any] = {"response_schema": schema}
+    if structured_output not in (None, "json_schema"):
+        constraints["response_mode"] = structured_output
     # Off, the transport is called exactly as before: (messages, tools).
     streamed = bool(getattr(transport, "streaming", False)) and on_delta is not None
 
@@ -1367,7 +1375,7 @@ async def step(
             reply = None
             async with aclosing(
                 cast(StreamingStructuredTransport, transport).stream_turn(
-                    model_messages, [], response_schema=schema
+                    model_messages, [], **constraints
                 )
                 if constrained
                 else cast(ToolChoiceTransport, transport).stream_turn(
@@ -1389,9 +1397,7 @@ async def step(
                 raise RuntimeError("stream ended without a completed reply")
             return reply
         return await (
-            cast(StructuredTransport, transport).turn(
-                model_messages, [], response_schema=schema
-            )
+            cast(StructuredTransport, transport).turn(model_messages, [], **constraints)
             if constrained
             else cast(ToolChoiceTransport, transport).turn(
                 model_messages, offered, tool_choice="none"
@@ -1506,18 +1512,22 @@ async def step(
             # schema and does not spend a correction.
             return s
         errors = _answer_errors(text, schema)
+        domain_errors: list[SchemaError] = []
         try:
             if diagnose is not None and _parses(text):
                 # Diagnostics see a detached candidate and may not admit or
                 # normalize it. A structural error must not hide an independent
                 # domain error until a later correction spends another allowance.
-                errors.extend(
+                domain_errors.extend(
                     await _check_errors(
                         deepcopy(extract_json(text)), diagnose, deepcopy(read_record(s))
                     )
                 )
-            if not errors and check is not None:
-                errors = await _check_errors(extract_json(text), check, read_record(s))
+            if not errors and not domain_errors and check is not None:
+                domain_errors = await _check_errors(
+                    extract_json(text), check, read_record(s)
+                )
+            errors.extend(domain_errors)
         except CheckRaised as exc:
             s.status = "error"
             s.stop_reason = None
@@ -1534,7 +1544,17 @@ async def step(
             return s
         complaint = "; ".join(errors)
         restated = schema_instruction(schema)
-        granted = charge(s, errors, max_corrections, comparable=_parses(text))
+        granted = charge(
+            s,
+            errors,
+            max_corrections,
+            comparable=_parses(text),
+            kind="domain" if domain_errors else "schema",
+        )
+        if domain_errors:
+            # A domain correction can require more tools, even after an earlier
+            # structural correction. Persist this choice across continuation.
+            s.schema_retried = False
         if granted is None:
             # The correction budget is spent. A model that cannot satisfy the
             # schema after its allowed corrections will not satisfy it on the
