@@ -1262,6 +1262,7 @@ async def step(
     compaction_trigger: float = TRIGGER,
     compaction_target: float = TARGET,
     capacity: CapacityQueue | None = None,
+    diagnose: Check | None = None,
 ) -> Session:
     # As run() does: a caller that drives step() itself with a typo is told,
     # rather than getting elide.
@@ -1456,7 +1457,7 @@ async def step(
     # With a check, nothing is kept here: the check runs only on a candidate
     # final answer, and the final-answer branch below decides whether it is
     # the output. Turn text that is not JSON is never parsed for a check.
-    if schema is not None and check is None:
+    if schema is not None and check is None and diagnose is None:
         candidate = _final_text(reply.content)
         if not _answer_errors(candidate, schema):
             s.output = extract_json(candidate)
@@ -1505,15 +1506,24 @@ async def step(
             # schema and does not spend a correction.
             return s
         errors = _answer_errors(text, schema)
-        if not errors and check is not None:
-            try:
+        try:
+            if diagnose is not None and _parses(text):
+                # Diagnostics see a detached candidate and may not admit or
+                # normalize it. A structural error must not hide an independent
+                # domain error until a later correction spends another allowance.
+                errors.extend(
+                    await _check_errors(
+                        deepcopy(extract_json(text)), diagnose, deepcopy(read_record(s))
+                    )
+                )
+            if not errors and check is not None:
                 errors = await _check_errors(extract_json(text), check, read_record(s))
-            except CheckRaised as exc:
-                s.status = "error"
-                s.stop_reason = None
-                s.error = str(exc)
-                s.events.append(Event("error", s.error))
-                return s
+        except CheckRaised as exc:
+            s.status = "error"
+            s.stop_reason = None
+            s.error = str(exc)
+            s.events.append(Event("error", s.error))
+            return s
         if not errors:
             answer = extract_json(text)
             if _hold_for_reads(s, reads, max_corrections, answer):
@@ -1739,6 +1749,7 @@ async def _live_step(
     compaction_trigger: float = TRIGGER,
     compaction_target: float = TARGET,
     capacity: CapacityQueue | None = None,
+    diagnose: Check | None = None,
 ) -> AsyncGenerator[Event, None]:
     queue: asyncio.Queue[Event] = asyncio.Queue()
     buffers: dict[Literal["progress", "thinking"], LiveText] = {
@@ -1781,6 +1792,7 @@ async def _live_step(
             cutoffs=cutoffs,
             reads=reads,
             check=check,
+            diagnose=diagnose,
             summary=summary,
             question_nudge=question_nudge,
             compaction=compaction,
@@ -1847,6 +1859,7 @@ async def _run(
     compaction_trigger: float = TRIGGER,
     compaction_target: float = TARGET,
     capacity: CapacityQueue | None = None,
+    diagnose: Check | None = None,
 ) -> AsyncGenerator[Event, None]:
     """Advance the session to a terminal status, yielding events as they occur.
 
@@ -2011,6 +2024,7 @@ async def _run(
                             cutoffs,
                             reads,
                             check=check,
+                            diagnose=diagnose,
                             summary=summary,
                             question_nudge=question_nudge,
                             compaction=compaction,
@@ -2038,6 +2052,7 @@ async def _run(
                         cutoffs=cutoffs,
                         reads=reads,
                         check=check,
+                        diagnose=diagnose,
                         summary=summary,
                         question_nudge=question_nudge,
                         compaction=compaction,
@@ -2120,6 +2135,7 @@ async def run(
     compaction_trigger: float = TRIGGER,
     compaction_target: float = TARGET,
     capacity: CapacityQueue | None = None,
+    diagnose: Check | None = None,
 ) -> AsyncGenerator[Event, None]:
     check_structured_output(transport, schema, structured_output)
     # Refused before any call: a bad registration is the caller's error, not a
@@ -2158,6 +2174,7 @@ async def run(
             "require_cited_reads needs a schema: it reads the fields of the answer"
         )
     check_check(check, schema)
+    check_check(diagnose, schema)
     configure_budgets(session, budget_tokens, budget_usd)
     if context_window is not None and (
         isinstance(context_window, bool)
@@ -2204,6 +2221,7 @@ async def run(
                     max_cutoffs=max_cutoffs,
                     reads=reads,
                     check=check,
+                    diagnose=diagnose,
                     inbox=inbox,
                     question_nudge=question_nudge,
                     compaction=compaction,
