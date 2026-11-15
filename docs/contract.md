@@ -1506,6 +1506,23 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+### Diagnose before admission
+
+`run(..., schema=SCHEMA, diagnose=diagnose, check=check)` can report independent
+structural and domain errors together. `diagnose` receives a detached parsed
+candidate, even when it fails the schema, and optionally a detached list of read
+records. Like `check`, it may be asynchronous and returns errors or an empty
+result. It must be pure and handle arbitrary JSON shapes; it must not normalize
+the candidate or perform admission effects.
+
+Nare combines these errors with the strict schema errors in the existing
+correction pass. There is no additional correction allowance. `check` runs only
+when both are clean, and remains the admission step. Exceptions end the run.
+Malformed or duplicate-key JSON, incomplete replies, tool turns and summaries
+never invoke diagnostics. The callback itself is not serialized; a caller
+resuming a session must supply the same diagnostics contract, just as with
+`schema` and `check`.
+
 ### What to put in --append-system
 
 `--append-system` has no library argument. The library takes one `system=`
