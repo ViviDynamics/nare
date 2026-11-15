@@ -268,10 +268,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--structured-output",
         choices=STRUCTURED_OUTPUT_MODES,
         help=(
-            "ask the backend to constrain answers to the --schema at decode time "
-            "(both providers). A constrained turn offers no tools, so only "
-            "the schema correction turn, or every turn of a run with no tools, "
-            "is constrained. nare still validates every answer"
+            "select answer encoding: json_schema (all real providers), or "
+            "json_object/tool_call (openai only). Applies to structural correction "
+            "turns and tool-free runs. Domain corrections restore approved tools. "
+            "nare still validates every answer against --schema"
         ),
     )
     run_parser.add_argument(

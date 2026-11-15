@@ -63,7 +63,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--yes` | no | | Approve every tool call; required for unattended runs |
 | `--contract` | yes | | The contract version the caller speaks ([Refusing a contract](#refusing-a-contract-you-do-not-speak)) |
 | `--schema` | yes | | JSON Schema file the final answer must satisfy ([Answer schemas](#answer-schemas)) |
-| `--structured-output` | yes | `json_schema` | Constrain answers at decode time, on the anthropic, bedrock and openai rails ([Schema-constrained answers](#schema-constrained-answers)) |
+| `--structured-output` | yes | `json_schema`, `json_object`, `tool_call` | Select supported answer encoding, on the anthropic, bedrock and openai rails ([Schema-constrained answers](#schema-constrained-answers)) |
 | `--max-tool-calls` | yes | | Run at most this many tool calls in this invocation ([Budgets and partial results](#budgets-and-partial-results)) |
 | `--max-corrections` | yes | | Let a failing `--schema` answer be corrected up to this many times in the run, default 1 ([Schema corrections](#schema-corrections)) |
 | `--check-command` | yes | | A caller check the command line runs: a JSON array argv whose errors are corrected like schema errors ([A check from the command line](#a-check-from-the-command-line)) |
@@ -2595,9 +2595,22 @@ On the anthropic and bedrock rails, Anthropic's structured outputs, beside any
 
     "output_config": {"format": {"type": "json_schema", "schema": {...}}}
 
+The OpenAI rail also supports two explicit answer encodings on those same turns:
+
+- `json_object` sends `response_format: {"type": "json_object"}`. This constrains
+  JSON syntax only; nare enforces the complete declared schema locally.
+- `tool_call` offers only the forced `nare_final_answer` function, whose parameters
+  are the declared schema, with `parallel_tool_calls: false`. Exactly one answer
+  function with no accompanying text is decoded into canonical answer text.
+  Missing, wrong or mixed calls and malformed/duplicate-key arguments face the
+  existing correction allowance. The answer function is never an action tool.
+  Usage, refusal, truncation and streaming repetition handling are preserved.
+
+Anthropic and Bedrock support `json_schema` only. No mode is substituted silently.
+
 Two kinds of turn are constrained:
 
-- the one schema correction turn, after a no-tool answer failed the schema. It
+- a structural correction turn, after a no-tool answer failed the schema. It
   replaces the free-text reprompt with tools offered; the reprompt text is the
   same;
 - every turn of a run whose policy offers no tools.
@@ -2626,7 +2639,11 @@ live deltas can reach stdout first; count markers, do not use them to label
 deltas. A resumed run offers tools again, because the correction round is
 per-run state. A backend that returned tool calls on the tool-free correction
 anyway would have them run, and the rest of the run would stay constrained
-and tool-free; a backend following the OpenAI specification cannot.
+and tool-free; a backend following the OpenAI specification cannot. The forced
+answer-function encoding instead refuses any other function as an invalid answer.
+When `check` or `diagnose` reports domain errors, the next turn restores approved
+tools even after a structural correction. This transition is persisted for
+continuation and uses the same correction allowance, without an extra loop.
 
 On the openai rail the schema is forwarded exactly as written, with its
 references, composition and bounds; nare does not flatten or trim it to suit a
@@ -2688,7 +2705,11 @@ does not set `supports_structured_output = True`, or the transport's
 `check_response_schema(schema)` refuses the schema; a supporting transport's
 `turn` and `stream_turn` accept a keyword-only `response_schema`. Without the
 flag every request, event and session field is unchanged, and transports are
-called with `(messages, tools)` only. `nare contract` advertises the capability
+called with `(messages, tools)` only. Additional modes require the transport to
+declare `structured_output_modes` and accept the `response_mode` keyword on
+answer turns. A legacy supporting transport defaults to `json_schema` only; that
+mode retains the existing signature without a new keyword. `nare contract`
+advertises per-provider modes alongside the capability
 under `structured_output`. The flag, event detail and discovery field are
 additive and keep the contract version.
 
