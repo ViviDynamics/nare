@@ -1,0 +1,155 @@
+id = "deploy-feed-window"
+tier = "sweep"
+prompt = """Read the deploy feed with next_page. Call it with no cursor for the first \
+page; each page ends with the cursor for the next one, and the last page says the \
+feed has ended. The feed hands each page out once: a cursor works one time, and no \
+page can be fetched again. Sixteen services go live in the feed, each exactly once, \
+on a deploy line that ends status=live. Read the whole feed, then write live.json: a \
+JSON object that maps each service to the build that went live."""
+# The instrument for the compaction point sweep (#43). context-overflow-small-window
+# could not rank the points: an elided log can be run again, so a model that lost
+# one simply reread it. Here a page is handed out once, so what compaction elides
+# is gone unless the model kept it in its own words, which elision never removes.
+#
+# The feed is eight pages of about 10,800 characters. Timestamps, ids and numbers
+# make the text dense, 2.26 characters a token by the cl100k and o200k tokenizers,
+# so a page is about 4,800 tokens and the feed about 0.6 of the 64,000-token window.
+# That puts both sides of the trade on one case. A run through nare's own
+# compact(), with those token counts and a one-line note per page, gives:
+#   trigger 0.8 (default)  nothing elided     answer written at about 41,000 tokens
+#   trigger 0.5            pages 1 to 4       about 22,000
+#   trigger 0.3            pages 1 to 5       about 17,000
+#   trigger 0.2            pages 1 to 6       about 12,000
+# 41,000 tokens is about a third of a 128,000-token window, around where the issue
+# says local models start to fail. A tokenizer that packs this text more loosely
+# moves every point down; the test that pins the table is in
+# benchmarks/tests/test_deploy_feed.py.
+# A model that keeps notes gains from a lower trigger only if long context hurts
+# it; a model that does not keep notes loses pages. Each page has two live lines
+# among canary, staged, rolled_back and failed lines for other builds of the same
+# services, so a confused answer names a real build of the right service.
+#
+# nare's elision stub says "Rerun the tool if you need it." Here a rerun is
+# refused, with a message that the page was handed out once. That is what
+# eliding a result that cannot be regenerated costs in nare as it is, so the
+# sweep measures it as part of each point rather than working around it.
+#
+# The tools are read, write and the feed. With no bash, the feed cannot be run
+# outside the tool, and its pages come from SHA-256, so reading feed.py does not
+# give the builds away. The window is a case argument; the sweep passes the point:
+#   bin/bench run --tier sweep --case deploy-feed-window -- \
+#     --compaction-trigger 0.3 --compaction-target 0.225
+args = [
+  "--context-window", "64000",
+  "--command-tools", "tools.json",
+  "--tools", "read,write,next_page",
+]
+# Eight pages and the answer take ten turns. The rest is room for a model that
+# writes notes as it goes.
+max_turns = 24
+
+# The answer: each service's build from its status=live line. A build written in
+# upper case, or with spaces around it, is the same build.
+[[check]]
+kind = "bash"
+cmd = '''
+python3 -I - <<'EOF'
+import json, sys
+want = {
+    "auth": "4922e1f",
+    "billing": "e7f6570",
+    "catalog": "20558e0",
+    "checkout": "58ad19c",
+    "gateway": "3cfc211",
+    "inventory": "8d466d4",
+    "ledger": "15e489b",
+    "mailer": "170bd83",
+    "notifier": "d75beb8",
+    "payments": "924344b",
+    "profile": "c564a17",
+    "ratings": "8155392",
+    "reports": "9fc1a95",
+    "scheduler": "b30d1f7",
+    "search": "028baf1",
+    "shipping": "fc05fb3",
+}
+try:
+    got = json.load(open("live.json"))
+except (OSError, ValueError) as exc:
+    sys.exit(f"live.json is missing or is not JSON: {exc}")
+if not isinstance(got, dict):
+    sys.exit("live.json is not a JSON object")
+got = {str(k).strip(): str(v).strip().lower() for k, v in got.items()}
+problems = [f"{s}: {got.get(s)!r}, not {b!r}" for s, b in want.items() if got.get(s) != b]
+problems += [f"{s} is not a service in the feed" for s in sorted(set(got) - set(want))]
+sys.exit("; ".join(problems) or 0)
+EOF
+'''
+
+# Every page was fetched through the tool, by the cursor that hands it out, and
+# came back as that page or as nare's elision stub ("[elided by nare: N chars"),
+# which still says how long it was; a page is about 10,900 characters. A failed
+# fetch, such as a cursor used twice, proves nothing. Under --compaction summary
+# the turns a summary replaced are in summaries[].replaced, oldest first. The
+# feed keeps its record of the pages it handed out in .feed/, which the model's
+# write tool could reach: a run that wrote there could fetch every page again,
+# so it fails.
+[[check]]
+kind = "bash"
+cmd = '''
+python3 -I - <<'EOF'
+import json, re, sys
+cursors = {
+    "": 1,
+    "711dbff0": 2,
+    "97cfae32": 3,
+    "914b95ea": 4,
+    "52e5b97a": 5,
+    "34522c69": 6,
+    "24e56052": 7,
+    "8d571c2c": 8,
+}
+session = json.load(open("/out/session.json"))
+archived = [m for s in session.get("summaries") or [] for m in s.get("replaced") or []]
+calls, results = [], {}
+for message in archived + session["messages"]:
+    for block in message["content"]:
+        if block.get("type") == "tool_use":
+            calls.append(block)
+        elif block.get("type") == "tool_result":
+            results[block.get("tool_use_id")] = block
+for call in calls:
+    path = str((call.get("input") or {}).get("path", ""))
+    if call.get("name") in ("write", "edit") and re.search(r"(^|/)\.feed(/|$)", path):
+        sys.exit(f"{path} was written: that is the feed's record of the pages it handed out")
+
+def proves(page, result):
+    if result.get("is_error"):
+        return False
+    text = str(result.get("content", ""))
+    elided = re.match(r"\[elided by nare: (\d+) chars", text)
+    if elided:
+        return int(elided.group(1)) >= 1000
+    return text.startswith(f"deploy feed, page {page} of 8\n")
+
+fetched = set()
+for call in calls:
+    if call.get("name") != "next_page":
+        continue
+    cursor = str((call.get("input") or {}).get("cursor") or "").strip()
+    page = cursors.get(cursor)
+    if page and proves(page, results.get(call.get("id"), {})):
+        fetched.add(page)
+missing = sorted(set(range(1, 9)) - fetched)
+sys.exit(f"pages never fetched: {missing}" if missing else 0)
+EOF
+'''
+
+# The feed is left as it is.
+[[check]]
+kind = "bash"
+cmd = '''git diff --quiet "$(git rev-list --max-parents=0 HEAD)" -- feed.py tools.json'''
+
+[[check]]
+kind = "result"
+status = "done"
