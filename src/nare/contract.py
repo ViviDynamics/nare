@@ -613,6 +613,57 @@ def describe() -> dict[str, Any]:
             "streamed": {"openai": "usage.cost"},
             "estimated": False,
         },
+        # Additive (#315): how long each model request took, measured inside
+        # nare on a monotonic clock from when the attempt that answered was
+        # sent. Waits nare itself spends (compaction, admission and capacity
+        # waits, retry backoff, failed attempts) all come before that. A true
+        # below is a time the rail measures; false is one it reports as null.
+        "request_timing": {
+            "event": "cost",
+            "event_detail": "timing",
+            "fields": ["headers_seconds", "first_token_seconds", "total_seconds"],
+            "clock": "monotonic",
+            "unit": "seconds",
+            "from": "request sent",
+            "attempt": "the attempt that answered",
+            "excludes": [
+                "compaction",
+                "capacity slot waits",
+                "capacity queue waits",
+                "retry backoff",
+                "failed attempts",
+            ],
+            "first_token": "first chunk of text, reasoning or a tool call",
+            "untimed_transport": "null",
+            "providers": {
+                rail: {
+                    "streamed": {
+                        "headers_seconds": True,
+                        "first_token_seconds": True,
+                        "total_seconds": True,
+                    },
+                    "unstreamed": {
+                        "headers_seconds": True,
+                        "first_token_seconds": False,
+                        "total_seconds": True,
+                    },
+                }
+                for rail in ("anthropic", "bedrock", "openai")
+            }
+            | {"fake": "the reply's timing, else zeros (first token null unstreamed)"},
+            "result_field": "request_timing",
+            "result_per": "invocation",
+            "result_fields": [
+                "requests",
+                "timed",
+                "headers_seconds",
+                "total_seconds",
+                "first_tokens",
+                "first_token_seconds",
+                "generation_seconds",
+                "generation_output_tokens",
+            ],
+        },
         # Additive: every `nare run` option, so a caller checks that a flag
         # exists instead of comparing release numbers.
         "flags": flags_of(_run_parser()),

@@ -176,6 +176,7 @@ with any of these keys:
 | `stop_reason` | One of `end_turn`, `tool_use`, `max_tokens`, `stop_sequence`, `refusal`, `repetition`. Defaults to `tool_use` with tool calls, else `end_turn`. `max_tokens` is a truncated turn; `repetition` is a turn stopped for repeating one span ([Cut-off replies](#cut-off-replies)) |
 | `usage` | `input`, `output`, `cache_read`, `cache_write`, each a nonnegative integer, default 0 |
 | `cost` | The dollars a backend reported for the turn, as a nonnegative number |
+| `timing` | The request's [timing](#request-timing): any of `headers_seconds`, `first_token_seconds`, `total_seconds`, each a nonnegative number or null, reported as given. Without it every time is 0, and `first_token_seconds` is null unless `--stream` |
 
 or is `{"error": "..."}` and nothing else, which fails that turn as a
 transport error does: the run ends `error` with `stop_reason: null` and
@@ -1430,6 +1431,7 @@ The `result` line of `--jsonl` has a Python counterpart on the session, which
 | `corrections` | `session.schema_correction_log`: an empty list when no correction happened |
 | `cutoffs` | `session.cutoffs`: over the session's life, as on the command line |
 | `reads` | `nare.reads.read_record(session)`: present only when a read requirement was set |
+| `request_timing` | `nare.loop.RequestTimingTotals`, fed each event `run` yields: it sums the `cost` events' [timing](#request-timing) |
 
 The `budget` object of the result line is computed inside the loop and is not
 exported. The session fields above carry the same counts.
@@ -1835,6 +1837,65 @@ result is cut depends on the tool, so the model keeps the part it needs:
 `nare contract` names each rule under `tool_output`: `bash` is
 `head_and_tail_per_stream`, `mcp` is `head_and_tail` and `read` is
 `head_then_continue_notice`.
+
+## Request timing
+
+Each `cost` event's `detail.timing` says how long its one model request took,
+in seconds, so a caller can size a deadline or compute a decode rate without
+reading event timestamps (which say when an event was built, and on an
+unstreamed turn all arrive together):
+
+```json
+{"type": "cost", "detail": {"input": 10, "output": 5, "...": "...",
+  "timing": {"headers_seconds": 0.21, "first_token_seconds": 0.84, "total_seconds": 3.1}}}
+```
+
+| Field | From the request being sent to |
+| --- | --- |
+| `headers_seconds` | the response headers |
+| `first_token_seconds` | the first streamed chunk carrying generated content: text, reasoning or a tool call. A role-only chunk, `message_start`, an empty block start and a signature are not content. A turn that only calls tools streams no `progress` delta, but its first tool-call chunk is timed |
+| `total_seconds` | the last byte of the response, or where nare stopped reading a reply it cut off for [repetition](#cut-off-replies) |
+
+The clock is monotonic and read inside nare, around the HTTP request alone.
+Everything nare does itself comes before the request is sent or after its last
+byte, and is not in these numbers: compaction (a summary request is its own
+request, with its own `cost` event and timing), admission and capacity slot
+waits, capacity queue waits, retry backoff, and failed attempts. A retried
+request reports the timing of the attempt that answered; the waits before it
+are the `retry` and `capacity` events' own. On a streamed turn, `total_seconds`
+includes handing each delta on as a `progress` or `thinking` event, which nare
+does between chunks.
+
+A time a rail or mode cannot measure is null:
+
+| Rail | `--stream` | `headers_seconds` | `first_token_seconds` | `total_seconds` |
+| --- | --- | --- | --- | --- |
+| openai, anthropic, bedrock | yes | measured | measured | measured |
+| openai, anthropic, bedrock | no | measured | null: the body is one response, with no first token apart from the rest | measured |
+| fake (`--replay`) | either | the reply's `timing`, else 0 | the reply's `timing`, else 0 streamed and null unstreamed | the reply's `timing`, else 0 |
+
+`timing` itself is null on a request whose transport measured nothing, which
+is a caller's own transport in the library unless its `Reply` sets `timing` to
+a `nare.Timing`. With both times, a streamed
+request's generation time is `total_seconds - first_token_seconds`, and its
+decode rate `output` divided by that.
+
+The `result` line sums this invocation's requests as `request_timing`. It is
+per invocation, unlike `retries`, and is never saved in the session file:
+
+| Field | Meaning |
+| --- | --- |
+| `requests` | Model requests that answered, one per `cost` event, summary requests included |
+| `timed` | Those whose `timing` was not null |
+| `headers_seconds`, `total_seconds` | Sums over the requests that measured each; null when none did |
+| `first_tokens` | Requests with a `first_token_seconds` |
+| `first_token_seconds` | Their sum; null when there are none. The mean time to first token is this over `first_tokens` |
+| `generation_seconds` | The sum of `total_seconds - first_token_seconds` over requests with both; null when there are none |
+| `generation_output_tokens` | Those requests' `output` tokens, so the run's decode rate is this over `generation_seconds` |
+
+`nare contract` advertises the event field, the result field and what each
+rail measures under `request_timing`, so a caller gates on it rather than on a
+release number. All of it is additive and keeps the contract version.
 
 ## Streaming model turns
 

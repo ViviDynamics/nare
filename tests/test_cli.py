@@ -269,6 +269,8 @@ def test_golden_jsonl(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Non
         "cost": None,
         "estimated": False,
         "total": 15,
+        # A transport that measures no timing reports it as null.
+        "timing": None,
     }
     assert emitted[0]["detail"] == {
         "context_window": {

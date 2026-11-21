@@ -214,6 +214,7 @@ async def test_the_summary_counts_in_usage_and_cost_but_is_not_a_turn() -> None:
         "cost": None,
         "estimated": False,
         "total": 4560,
+        "timing": None,
         "call": "compaction_summary",
     }
     assert "call" not in costs[1].detail

@@ -65,6 +65,7 @@ from nare.loop import (
     STRUCTURED_OUTPUT_MODES,
     CapacityQueue,
     Check,
+    RequestTimingTotals,
     RetryPolicy,
     budget_record,
     check_budget,
@@ -1165,6 +1166,7 @@ def _emit_result(
     max_cutoffs: int | None = None,
     cutoffs_from: int | None = None,
     reads_required: bool = False,
+    timing: RequestTimingTotals | None = None,
 ) -> None:
     if jsonl:
         print(
@@ -1201,6 +1203,9 @@ def _emit_result(
                     "capacity_limit": session.capacity_limit,
                     "capacity_slot_wait_seconds": round(session.capacity_slot_wait, 3),
                     "cutoffs": session.cutoffs,
+                    # This invocation's model requests, summed from the timing
+                    # on their cost events. Per invocation, and never saved.
+                    "request_timing": (timing or RequestTimingTotals()).wire(),
                     "contract": CONTRACT_VERSION,
                     "nare": __version__,
                     "output": session.output,
@@ -1328,6 +1333,7 @@ async def _execute(
         corrections_limit if schema is not None or reads_required else None
     )
     cutoffs_from = session.cutoffs
+    timing = RequestTimingTotals()
     stop = _Stop(getattr(args, "timeout", None))
     stop.install()
     try:
@@ -1369,6 +1375,7 @@ async def _execute(
         )
         async for event in stream:
             _emit(event, args.jsonl)
+            timing.add(event)
             # Saved per turn, not once at the end. SIGTERM and SIGINT save on
             # the way out, but SIGKILL cannot be caught, and a run persisted
             # only at the end is not resumable after one. A streamed turn yields
@@ -1419,6 +1426,7 @@ async def _execute(
         max_cutoffs=args.max_cutoffs,
         cutoffs_from=cutoffs_from,
         reads_required=reads_required,
+        timing=timing,
     )
     return EXIT_CODES.get(session.status, EXIT_CODES["error"])
 

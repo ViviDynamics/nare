@@ -31,6 +31,7 @@ from nare.transport import (
     Effort,
     ModelMetadata,
     Reply,
+    RequestClock,
     StopReason,
     StreamDropped,
     ToolCall,
@@ -124,6 +125,22 @@ def _repeated_arguments(body: str) -> dict[int | None, DuplicateKeyError]:
     except ValueError:
         return {}
     return {}
+
+
+def _carries_content(event: Any) -> bool:
+    """Whether a stream event is generated content: a block's text, thinking
+    or tool call starting, or any delta of one. message_start, an empty text
+    or thinking start, a signature and the closing events are bookkeeping."""
+    if event.type == "content_block_start":
+        block = event.content_block
+        if block.type == "text":
+            return bool(block.text)
+        if block.type == "thinking":
+            return bool(block.thinking)
+        return True
+    if event.type == "content_block_delta":
+        return event.delta.type in ("text_delta", "thinking_delta", "input_json_delta")
+    return False
 
 
 def stop_reason_from(raw: str | None) -> StopReason:
@@ -578,7 +595,10 @@ class AnthropicTransport:
         wire_messages, wire_tools = self._wire(
             messages, tools if response_schema is None else []
         )
-        raw = await self._client.messages.with_raw_response.create(
+        # The streaming response wrapper only defers reading the body, so the
+        # headers are timed apart from it; the request is the same one.
+        clock = RequestClock()
+        async with self._client.messages.with_streaming_response.create(
             model=self.model,
             max_tokens=self.max_tokens,
             messages=wire_messages,
@@ -587,11 +607,15 @@ class AnthropicTransport:
             system=self.system if self.system is not None else omit,
             thinking=cast(Any, self.thinking) if self.thinking else omit,
             output_config=self._output_config(response_schema),
-        )
-        response = await raw.parse()
+        ) as raw:
+            clock.headers()
+            body = await raw.read()
+            clock.done()
+            response = await raw.parse()
+            headers = raw.headers
         content = [block.model_dump(exclude_none=True) for block in response.content]
         self._warn_proxy_reasoning(content)
-        repeats = _repeated_arguments(raw.http_response.text)
+        repeats = _repeated_arguments(body.decode("utf-8", errors="replace"))
         calls: list[ToolCall] = []
         for index, block in enumerate(content):
             if block.get("type") != "tool_use":
@@ -610,7 +634,8 @@ class AnthropicTransport:
             tool_calls=calls,
             usage=usage_from(response.usage),
             stop_reason=stop_reason_from(response.stop_reason),
-            cost=reported_cost(raw.headers),
+            cost=reported_cost(headers),
+            timing=clock.timing(),
         )
         if looping(content):
             return replace(reply, stop_reason="repetition")
@@ -627,6 +652,7 @@ class AnthropicTransport:
         wire_messages, wire_tools = self._wire(
             messages, tools if response_schema is None else []
         )
+        clock = RequestClock()
         async with self._client.messages.stream(
             model=self.model,
             max_tokens=self.max_tokens,
@@ -637,6 +663,7 @@ class AnthropicTransport:
             thinking=cast(Any, self.thinking) if self.thinking else omit,
             output_config=self._output_config(response_schema),
         ) as stream:
+            clock.headers()
             finished = False
             complete_usage = False
             fragments: dict[int, list[str]] = {}
@@ -648,6 +675,8 @@ class AnthropicTransport:
             text_watch = RepetitionWatch()
             thought_watch = RepetitionWatch()
             async for event in stream:
+                if _carries_content(event):
+                    clock.token()
                 if event.type == "content_block_start":
                     if event.content_block.type == "text" and event.content_block.text:
                         answer.append(event.content_block.text)
@@ -684,6 +713,7 @@ class AnthropicTransport:
                     finished = True
                 if looped:
                     break
+            clock.done()
             if not finished and not looped:
                 # A connection that ended on a looping reply is the loop, not a
                 # failure to resend: the resend would loop the same way.
@@ -703,6 +733,7 @@ class AnthropicTransport:
                     else Usage(),
                     stop_reason="repetition",
                     cost=None,
+                    timing=clock.timing(),
                 )
                 return
             if not finished:
@@ -747,5 +778,6 @@ class AnthropicTransport:
                 usage=usage_from(response.usage),
                 stop_reason=stop_reason_from(response.stop_reason),
                 cost=reported_cost(stream.response.headers, streamed=True),
+                timing=clock.timing(),
             )
         yield reply

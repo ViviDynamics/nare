@@ -34,6 +34,7 @@ from nare.transport import (
     ModelMetadata,
     ProviderStatusError,
     Reply,
+    RequestClock,
     StopReason,
     StreamDropped,
     ToolCall,
@@ -497,12 +498,19 @@ class OpenAITransport:
         payload = self._payload(
             messages, tools, response_schema, tool_choice, response_mode
         )
-        response = await self._client.post(
+        # Sent as a stream and read whole, so the headers can be timed apart
+        # from the body; the request on the wire is the same.
+        clock = RequestClock()
+        async with self._client.stream(
+            "POST",
             f"{self._base_url}/chat/completions",
             headers={"authorization": f"Bearer {self._key}"},
             json=payload,
             timeout=self.timeout,
-        )
+        ) as response:
+            clock.headers()
+            await response.aread()
+            clock.done()
         if response.status_code >= 400:
             # The body carries the reason a proxy refused, which is the part a
             # caller needs: a scoped key naming the model it may not reach.
@@ -511,6 +519,7 @@ class OpenAITransport:
         if response_schema is not None and response_mode == "tool_call":
             data = function_answer(data)
         reply = self._reply(data, cost=reported_cost(response.headers))
+        reply = replace(reply, timing=clock.timing())
         if looping(reply.content):
             return replace(reply, stop_reason="repetition")
         return reply
@@ -531,6 +540,7 @@ class OpenAITransport:
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        clock = RequestClock()
         async with self._client.stream(
             "POST",
             f"{self._base_url}/chat/completions",
@@ -538,6 +548,7 @@ class OpenAITransport:
             json=payload,
             timeout=self.timeout,
         ) as response:
+            clock.headers()
             if response.status_code >= 400:
                 await response.aread()
                 raise self._failure(response)
@@ -578,6 +589,15 @@ class OpenAITransport:
                     if choice.get("finish_reason") is not None:
                         finish = choice["finish_reason"]
                     delta = choice.get("delta") or {}
+                    if (
+                        delta.get("content")
+                        or delta.get("reasoning_content")
+                        or delta.get("reasoning")
+                        or delta.get("tool_calls")
+                    ):
+                        # Generated content of any kind: a tool-only turn's
+                        # first argument fragment counts as its first token.
+                        clock.token()
                     value = delta.get("reasoning_content") or delta.get("reasoning")
                     if value:
                         reasoning.append(str(value))
@@ -610,6 +630,7 @@ class OpenAITransport:
                             )
                 if looped:
                     break
+            clock.done()
             if not looped and not done:
                 # A connection that ended on a looping reply is the loop, not a
                 # failure to resend: the resend would loop the same way.
@@ -645,6 +666,7 @@ class OpenAITransport:
             if response_schema is not None and response_mode == "tool_call":
                 reply_data = function_answer(reply_data)
             reply = self._reply(reply_data, cost=usage_cost(response.headers, usage))
+            reply = replace(reply, timing=clock.timing())
             if looped:
                 # The stop was ours, so the provider's finish reason says nothing.
                 reply = replace(reply, stop_reason="repetition")
