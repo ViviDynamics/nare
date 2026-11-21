@@ -202,17 +202,75 @@ def transient(exc: BaseException) -> Transient | None:
     """
     current: BaseException | None = exc
     while current is not None:
-        if isinstance(current, StreamDropped):
-            return Transient("stream")
-        if isinstance(current, httpx2.TimeoutException):
-            return Transient("timeout")
-        if isinstance(current, (httpx2.NetworkError, httpx2.RemoteProtocolError)):
-            return Transient("connection")
-        status = getattr(current, "status_code", None)
-        if isinstance(status, int) and status in RETRY_STATUSES:
-            return Transient("status", status=status, retry_after=_retry_after(current))
+        kind = _kind(current)
+        if kind is not None:
+            reason, status = kind
+            if reason != "status":
+                return Transient(reason)
+            if status in RETRY_STATUSES:
+                return Transient(
+                    "status", status=status, retry_after=_retry_after(current)
+                )
         current = current.__cause__
     return None
+
+
+def _kind(exc: BaseException) -> tuple[TransientReason, int | None] | None:
+    """One link of a failure's cause chain, as the retry rule names it: the
+    reason and, for an HTTP error status, the status. None names nothing."""
+    if isinstance(exc, StreamDropped):
+        return ("stream", None)
+    if isinstance(exc, httpx2.TimeoutException):
+        return ("timeout", None)
+    if isinstance(exc, (httpx2.NetworkError, httpx2.RemoteProtocolError)):
+        return ("connection", None)
+    status = getattr(exc, "status_code", None)
+    if type(status) is int and 400 <= status <= 599:
+        return ("status", status)
+    return None
+
+
+# The fields of a provider failure record, in order (`nare contract`).
+FAILURE_FIELDS = ("reason", "status", "transient", "constrained", "attempts")
+
+
+def provider_failure(
+    exc: BaseException,
+    found: Transient | None,
+    *,
+    constrained: bool,
+    attempts: int,
+) -> dict[str, Any]:
+    """The record of a model request that failed for good, for a caller to
+    branch on instead of the error text.
+
+    `found` is what the transport's retry rule made of the failure; when it
+    named it transient, that is the record, so the two never disagree. A
+    permanent failure is named by the same walk of the cause chain, which also
+    names any HTTP error status. A failure nothing names (a malformed or
+    incomplete response, an error frame inside a stream) has `reason` and
+    `status` null. Only an enum, a status code, booleans and a count: never a
+    body, a header or the error text.
+    """
+    reason: TransientReason | None = None
+    status: int | None = None
+    if found is not None:
+        reason, status = found.reason, found.status
+    else:
+        current: BaseException | None = exc
+        while current is not None:
+            kind = _kind(current)
+            if kind is not None:
+                reason, status = kind
+                break
+            current = current.__cause__
+    return {
+        "reason": reason,
+        "status": status,
+        "transient": found is not None,
+        "constrained": constrained,
+        "attempts": attempts,
+    }
 
 
 def _retry_after(exc: BaseException) -> float | None:

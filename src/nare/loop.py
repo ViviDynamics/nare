@@ -88,6 +88,7 @@ from nare.transport import (
     Transient,
     Transport,
     capacity_refusal,
+    provider_failure,
     transient,
 )
 
@@ -905,6 +906,7 @@ async def _with_retries(
     *,
     capacity: CapacityQueue | None = None,
     emitted: _Emitted | None = None,
+    constrained: bool = False,
 ) -> Reply:
     """One model request, resent on a transient failure within the budget.
 
@@ -917,6 +919,9 @@ async def _with_retries(
     is waited out and resent identically, and counted in `capacity_refusals` and
     `capacity_wait`, never in `retries`. One the queue does not admit falls
     through to the retry policy, as it did before the queue existed.
+
+    The failure raised carries its record (`provider_failure`), which the run
+    reports as `failure` if it ends on it.
     """
     classify = getattr(transport, "transient", None) or transient
     markers: tuple[str, ...] = getattr(transport, "capacity_markers", ())
@@ -984,9 +989,11 @@ async def _with_retries(
                         continue
             found = classify(exc)
             if found is None or made >= retry.retries:
+                _record_failure(exc, found, constrained, made + 1)
                 raise
             wait = retry.wait(made + 1, found)
             if waited + wait > retry.seconds:
+                _record_failure(exc, found, constrained, made + 1)
                 raise
             made += 1
             waited += wait
@@ -1012,6 +1019,41 @@ async def _with_retries(
             else:
                 s.events.append(event)
             await retry.sleep(wait)
+
+
+# The attribute a failed model request's exception carries its record on.
+_FAILURE_ATTR = "_nare_provider_failure"
+
+
+def _record_failure(
+    exc: BaseException, found: Transient | None, constrained: bool, attempts: int
+) -> None:
+    record = provider_failure(exc, found, constrained=constrained, attempts=attempts)
+    try:
+        setattr(exc, _FAILURE_ATTR, record)
+    except AttributeError:
+        # An exception type without attributes goes unrecorded: the run still
+        # ends `error`, with `failure` null.
+        pass
+
+
+def _failure_of(exc: BaseException) -> dict[str, Any] | None:
+    """The record of the provider request `exc` came from, or None when the
+    failure was nare's own. Follows the cause and context chain, in case the
+    failure was re-raised as another exception on its way out."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        record = getattr(current, _FAILURE_ATTR, None)
+        if isinstance(record, dict):
+            return dict(record)
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def _failure_detail(record: dict[str, Any] | None) -> dict[str, Any]:
+    return {} if record is None else {"failure": record}
 
 
 # How a read correction begins; the reads still owed follow it.
@@ -1407,7 +1449,14 @@ async def step(
         )
 
     reply = await _with_retries(
-        s, transport, attempt, retry, on_event, capacity=capacity, emitted=emitted
+        s,
+        transport,
+        attempt,
+        retry,
+        on_event,
+        capacity=capacity,
+        emitted=emitted,
+        constrained=constrained,
     )
     s.last_input_tokens = (
         reply.usage.input + reply.usage.cache_read + reply.usage.cache_write
@@ -1913,7 +1962,13 @@ async def _run(
         session.status = "error"
         session.stop_reason = None
         session.error = f"{type(exc).__name__}: {exc}"
-        session.events.append(Event("error", session.error))
+        classify = getattr(transport, "transient", None) or transient
+        session.failure = provider_failure(
+            exc, classify(exc), constrained=False, attempts=1
+        )
+        session.events.append(
+            Event("error", session.error, _failure_detail(session.failure))
+        )
         while session.events:
             yield session.events.pop(0)
         return
@@ -2109,9 +2164,14 @@ async def _run(
                 # this failure: a stale stop_reason on a new error lies.
                 session.stop_reason = None
                 session.error = f"{type(exc).__name__}: {exc}"
-                session.events.append(Event("error", session.error))
+                session.failure = _failure_of(exc)
+                session.events.append(
+                    Event("error", session.error, _failure_detail(session.failure))
+                )
             finally:
                 if summary:
+                    # The record goes with a null stop_reason, never another.
+                    session.failure = None
                     session.status = "error"
                     session.stop_reason = "max_turns"
                     session.error = (

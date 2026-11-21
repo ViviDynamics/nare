@@ -164,7 +164,7 @@ def describe() -> dict[str, Any]:
         SKIPPED_DIRS,
         TOOLS,
     )
-    from nare.transport import CREDENTIAL_ENV, EFFORTS
+    from nare.transport import CREDENTIAL_ENV, EFFORTS, FAILURE_FIELDS, TransientReason
 
     return {
         "contract": CONTRACT_VERSION,
@@ -578,6 +578,22 @@ def describe() -> dict[str, Any]:
             "valid": "0 < target < trigger <= 1",
             "per": "invocation",
             "saved": False,
+        },
+        # Additive (#314): how the model request a run ended on failed, so a
+        # caller tells a refused request shape (400, 422) from a refused
+        # credential (401, 403), a gateway failure after retries (5xx) and a
+        # connection that never opened, without reading `error`. `reason` uses
+        # the retry rule's names; null is a failure nothing names. Present
+        # (non-null) only on a run that ended `error` with a null stop_reason
+        # on a provider request; null after nare's own failure.
+        "provider_failure": {
+            "reasons": [*get_args(TransientReason), None],
+            "fields": list(FAILURE_FIELDS),
+            "providers": ["anthropic", "bedrock", "openai"],
+            "event": "error",
+            "event_detail": "failure",
+            "result_field": "failure",
+            "session_field": "failure",
         },
         "request_timeout": {
             "flag": "--request-timeout",

@@ -1206,6 +1206,9 @@ def _emit_result(
                     "output": session.output,
                     "text": final_text(session),
                     "error": session.error,
+                    # How the provider request the run ended on failed: null
+                    # unless the run ended on one.
+                    "failure": session.failure,
                 }
             ),
             flush=True,
