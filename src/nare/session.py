@@ -125,6 +125,12 @@ class Session:
     questions: list[str] = field(default_factory=list)
     stop_reason: str | None = None
     error: str | None = None
+    # How the model request the run ended on failed, when it ended on one
+    # (`nare.transport.provider_failure`): the reason, HTTP status, whether it
+    # was transient, whether it was a constrained turn, and the attempts made.
+    # None otherwise, and in a file saved before nare recorded it. Cleared by
+    # reopen(), as error is.
+    failure: dict[str, Any] | None = None
     turns: int = 0
     # The reasoning settings the last invocation sent, as nare named them:
     # an --effort level and an anthropic --thinking-budget. None sent none.
@@ -489,6 +495,8 @@ def loads(text: str) -> Session:
             raise TypeError("schema_sha256 must be a string or null")
         if not isinstance(raw.get("forked_from"), (dict, type(None))):
             raise TypeError("forked_from must be an object or null")
+        if not isinstance(raw.get("failure"), (dict, type(None))):
+            raise TypeError("failure must be an object or null")
         loaded = raw.get("mcp_loaded", {})
         if not isinstance(loaded, dict) or not all(
             isinstance(k, str) and isinstance(v, str) for k, v in loaded.items()
@@ -562,6 +570,7 @@ def reopen(s: Session, text: str | None = None) -> None:
     s.schema_errors_seen = []
     s.schema_fewest_errors = None
     s.error = None
+    s.failure = None
     s.stop_reason = None
     s.interrupted_at = None
 
