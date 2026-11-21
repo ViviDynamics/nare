@@ -1998,9 +1998,9 @@ gateway failure or a connection that never opened without reading `error`:
 | --- | --- |
 | `reason` | `status`, `timeout`, `connection`, `stream` or `overloaded`, named as the retry table above names them, or null for a failure nothing names (a response that finished but is malformed or incomplete, an error frame inside an openai-rail stream) |
 | `status` | The HTTP error status (400 to 599) the provider answered with, or null when no error status arrived: a timeout, a connection that never opened or closed early, a dropped stream |
-| `transient` | Whether the retry rule called the failure transient. True means the retry budget ran out (or was 0); false means it ended the run on the first attempt |
+| `transient` | Whether the retry rule called the failure transient. True on a model request means the retry budget ran out (or was 0); false means it ended the run on the first attempt |
 | `constrained` | Whether the failed request was a schema-constrained answer turn (see [Schema-constrained answers](#schema-constrained-answers)), so a 400 or 422 there is likely the backend refusing the constraint or answer encoding |
-| `attempts` | The attempts made at the request, the first one included |
+| `attempts` | The attempts made at the request, the first one included. A capacity refusal the [capacity queue](#capacity-queueing) waited out is admission, not an attempt, and is not counted |
 
 A caller might branch like this:
 
@@ -2017,13 +2017,16 @@ The anthropic and bedrock rails name the SDK's errors by the same walk of the
 cause chain, so a status there is the one the SDK raised with, and an
 `overloaded_error` sent mid-stream is `overloaded` with `status` null. A
 failure of the context window or price discovery at startup is reported the
-same way, with `constrained` false and `attempts` 1.
+same way, with `constrained` false and `attempts` 1 (discovery is never
+resent, so `transient` there only names the kind); one that nothing names has
+no record, since discovery also parses what came back.
 
 The record holds an enum, a status code, two booleans and a count: never a
 response body, a header, the error text or a credential. `failure` is null on
 every other result, including a run that ended `error` on nare's own failure
 (the `error` text then says what broke) and one whose `stop_reason` is not
-null. A session file without it loads as null, and a resume clears it, as it
+null, such as a provider failure on the last turn of `--max-turns` (which ends
+`max_turns`) or a run whose session file could not then be written. A session file without it loads as null, and a resume clears it, as it
 clears `error`. `nare contract` advertises it under `provider_failure`; it is
 additive and keeps the contract version.
 

@@ -225,7 +225,11 @@ def _kind(exc: BaseException) -> tuple[TransientReason, int | None] | None:
     if isinstance(exc, (httpx2.NetworkError, httpx2.RemoteProtocolError)):
         return ("connection", None)
     status = getattr(exc, "status_code", None)
-    if type(status) is int and 400 <= status <= 599:
+    if (
+        isinstance(status, int)
+        and not isinstance(status, bool)
+        and 400 <= status <= 599
+    ):
         return ("status", status)
     return None
 

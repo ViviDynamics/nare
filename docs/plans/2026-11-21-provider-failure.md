@@ -49,3 +49,10 @@ change to which failures are resent.
   counts that request's attempts.
 - [x] Session round trip, older file, malformed value refused, resume clears.
 - [x] `nare contract` describe test; contract version stays 3.
+- [x] Independent review: no Important or Critical finding. Minor findings
+  fixed with tests: the record is cleared when a later stop reason
+  (`max_turns` on a failed last-turn summary, `session_write`, `mcp`) replaces
+  the null one; a discovery failure nothing names has no record; an
+  `overloaded_error` stream that outlasts its retries reports `overloaded`; the
+  status check keeps accepting int subclasses; a suppressed exception context
+  is not followed. The doc says `attempts` excludes capacity-queue waits.

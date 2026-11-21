@@ -1412,6 +1412,8 @@ async def _execute(
                 session.status = "error"
                 session.stop_reason = "session_write"
                 session.error = f"could not write --session {args.session}: {exc}"
+                # The record goes with a null stop_reason, never another.
+                session.failure = None
                 _emit(Event("error", session.error), args.jsonl)
     _emit_result(
         session,

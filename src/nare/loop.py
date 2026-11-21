@@ -1048,7 +1048,9 @@ def _failure_of(exc: BaseException) -> dict[str, Any] | None:
         record = getattr(current, _FAILURE_ATTR, None)
         if isinstance(record, dict):
             return dict(record)
-        current = current.__cause__ or current.__context__
+        current = current.__cause__ or (
+            None if current.__suppress_context__ else current.__context__
+        )
     return None
 
 
@@ -1963,8 +1965,12 @@ async def _run(
         session.stop_reason = None
         session.error = f"{type(exc).__name__}: {exc}"
         classify = getattr(transport, "transient", None) or transient
-        session.failure = provider_failure(
-            exc, classify(exc), constrained=False, attempts=1
+        found = classify(exc)
+        record = provider_failure(exc, found, constrained=False, attempts=1)
+        # Discovery also parses what came back, so a failure nothing names
+        # may be nare's own: it has no record.
+        session.failure = (
+            record if found is not None or record["reason"] is not None else None
         )
         session.events.append(
             Event("error", session.error, _failure_detail(session.failure))
@@ -2164,7 +2170,9 @@ async def _run(
                 # this failure: a stale stop_reason on a new error lies.
                 session.stop_reason = None
                 session.error = f"{type(exc).__name__}: {exc}"
-                session.failure = _failure_of(exc)
+                # A failed last-turn summary ends `max_turns` below, which
+                # carries no record, so its error event carries none either.
+                session.failure = None if summary else _failure_of(exc)
                 session.events.append(
                     Event("error", session.error, _failure_detail(session.failure))
                 )
@@ -2315,4 +2323,5 @@ async def run(
         session.status = "error"
         session.stop_reason = "mcp"
         session.error = f"MCP connection failed: {exc}"
+        session.failure = None
         yield Event("error", session.error)

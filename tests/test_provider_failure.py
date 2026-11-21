@@ -30,9 +30,10 @@ from nare.loop import RetryPolicy, run
 from nare.session import dumps, loads, new_session, reopen
 from nare.tools import Policy
 from nare.transport import ProviderStatusError, StreamDropped, provider_failure
+from nare.transport.anthropic import AnthropicTransport
 from nare.transport.bedrock import BedrockTransport
 from test_retry import Flaky, answer, timeout
-from test_streaming import anthropic_chunks, openai_chunks
+from test_streaming import Bytes, anthropic_chunks, openai_chunks, sse
 
 SCHEMA = {
     "type": "object",
@@ -481,3 +482,117 @@ def test_the_contract_advertises_the_failure_record() -> None:
         "session_field": "failure",
     }
     assert describe()["contract"] == 3
+
+
+# Review follow-ups: discovery, the last-turn summary, a failed session write
+# and an overloaded stream that outlasts its retries.
+
+
+class Discovery(Flaky):
+    def __init__(self, exc: BaseException) -> None:
+        super().__init__([answer()])
+        self.exc = exc
+
+    async def context_window(self) -> int | None:
+        raise self.exc
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (
+            ProviderStatusError("model info failed with HTTP 401: no", status_code=401),
+            failure("status", 401, transient=False),
+        ),
+        (timeout(), failure("timeout", None, transient=True)),
+        # Nothing names it, and discovery parses too: possibly nare's own.
+        (KeyError("max_input_tokens"), None),
+    ],
+)
+async def test_a_discovery_failure(
+    exc: BaseException, expected: dict[str, Any] | None
+) -> None:
+    session = new_session("go")
+    events = [e async for e in run(session, transport=Discovery(exc), policy=Policy())]
+    assert session.status == "error"
+    assert session.failure == expected
+    assert [e.detail for e in events if e.type == "error"] == [
+        {} if expected is None else {"failure": expected}
+    ]
+
+
+async def test_a_failed_last_turn_summary_has_no_record() -> None:
+    refused = ProviderStatusError(
+        "chat completion failed with HTTP 400: no", status_code=400
+    )
+    session = new_session("go")
+    events = [
+        e
+        async for e in run(
+            session,
+            transport=Flaky([tool_reply("ls", {}), refused]),
+            policy=Policy(),
+            max_turns=1,
+            retry=RetryPolicy(retries=0),
+            context_window=100000,
+        )
+    ]
+    assert session.stop_reason == "max_turns"
+    assert session.failure is None
+    assert all("failure" not in e.detail for e in events)
+
+
+def test_a_failed_session_write_has_no_record(
+    route: tuple[str, dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    url, state = route
+    state["mode"] = 401
+    unwritable = tmp_path / "missing" / "dir" / "s.json"
+    (tmp_path / "missing").write_text("a file, not a directory")
+    emitted = run_main(monkeypatch, capsys, "openai", url, "--session", str(unwritable))
+    result = emitted[-1]
+    assert result["stop_reason"] == "session_write"
+    assert result["failure"] is None
+
+
+@pytest.mark.usefixtures("no_wait")
+async def test_an_overloaded_stream_after_retries() -> None:
+    chunks = [
+        *anthropic_chunks()[:3],
+        sse(
+            {"type": "error", "error": {"type": "overloaded_error", "message": "x"}},
+            "error",
+        ),
+    ]
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=Bytes(list(chunks)),
+        )
+
+    rail = AnthropicTransport(
+        model="m",
+        api_key="test",
+        streaming=True,
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+    )
+    session = new_session("go")
+    events = [
+        e
+        async for e in run(
+            session,
+            transport=rail,
+            policy=Policy(),
+            retry=RetryPolicy(retries=1, sleep=_no_sleep),
+            context_window=100000,
+        )
+    ]
+    assert session.failure == failure("overloaded", None, transient=True, attempts=2)
+    assert [e.detail.get("failure") for e in events if e.type == "error"] == [
+        session.failure
+    ]
