@@ -18,7 +18,7 @@ from nare.events import Event
 from nare.loop import run, step
 from nare.session import Message, Session, Usage, dumps, fork, loads, new_session
 from nare.tools import Policy, approve_all
-from nare.transport import Reply, ToolCall, Transport, make_transport
+from nare.transport import Reply, Timing, ToolCall, Transport, make_transport
 from nare.transport.replay import ReplayTransport
 
 __version__ = NARE_VERSION
@@ -30,6 +30,7 @@ __all__ = [
     "Reply",
     "ReplayTransport",
     "Session",
+    "Timing",
     "Tool",
     "ToolCall",
     "ToolError",

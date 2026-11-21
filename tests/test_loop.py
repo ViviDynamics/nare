@@ -260,6 +260,7 @@ async def test_step_emits_progress_and_cost_events() -> None:
         "cost": None,
         "estimated": False,
         "total": 15,
+        "timing": None,
     }
     assert session.events[2].text == "all done"
 
@@ -400,6 +401,7 @@ def test_the_public_api_is_the_documented_surface() -> None:
         "Reply",
         "ReplayTransport",
         "Session",
+        "Timing",
         "Tool",
         "ToolCall",
         "ToolError",

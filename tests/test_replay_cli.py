@@ -19,7 +19,7 @@ import pytest
 from fake_provider import FakeProvider
 from nare.cli import main
 from nare.session import Usage, dumps
-from nare.transport import Reply, ToolCall
+from nare.transport import Reply, Timing, ToolCall
 from test_summary_compaction import WINDOW, at_trigger
 
 FIXTURES = Path(__file__).resolve().parent.parent / "docs" / "replay"
@@ -252,6 +252,8 @@ def test_a_replayed_run_matches_one_with_the_transport_injected(
                 tool_calls=[ToolCall(id="call_1_1", name="list", args={"path": "."})],
                 usage=Usage(input=120, output=18),
                 stop_reason="tool_use",
+                # What the fake rail reports for an unstreamed reply.
+                timing=Timing(0.0, None, 0.0),
             ),
             Reply(
                 content=[
@@ -263,6 +265,7 @@ def test_a_replayed_run_matches_one_with_the_transport_injected(
                 tool_calls=[],
                 usage=Usage(input=180, output=12),
                 stop_reason="end_turn",
+                timing=Timing(0.0, None, 0.0),
             ),
         ]
     )

@@ -10,7 +10,8 @@ from __future__ import annotations
 import logging
 import math
 import os
-from collections.abc import AsyncGenerator, Mapping
+import time
+from collections.abc import AsyncGenerator, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -64,6 +65,83 @@ class ToolCall:
     error: str | None = None
 
 
+# The clock request timing is read from. Monotonic, so a step of the wall
+# clock never makes a request look negative or long. Looked up at each read,
+# so a test replaces it here and every rail follows.
+clock: Callable[[], float] = time.monotonic
+
+
+@dataclass(frozen=True)
+class Timing:
+    """How long one model request took, in seconds from when it was sent.
+
+    `headers_seconds` is to the response headers, `first_token_seconds` to the
+    first streamed chunk that carries generated content (text, reasoning or a
+    tool call, never a role-only or bookkeeping chunk), and `total_seconds` to
+    the last byte of the response. Null is a time the rail or mode cannot
+    measure: an unstreamed body has no first token apart from the rest of it.
+
+    It is the attempt that answered: a failed attempt, the backoff before a
+    resend, a capacity wait and an admission wait all come before `sent`.
+    """
+
+    headers_seconds: float | None = None
+    first_token_seconds: float | None = None
+    total_seconds: float | None = None
+
+    def wire(self, *, final_usage: bool = True) -> dict[str, float | None]:
+        """The `cost` event's `detail.timing`. `generation_seconds` is total
+        minus first token, the window the request's `output` tokens were
+        decoded in. It is null without both times, and when `final_usage` is
+        false: a reply nare stopped for repetition never got its final usage,
+        so its output count would not pair with the window."""
+        generation = (
+            max(self.total_seconds - self.first_token_seconds, 0.0)
+            if final_usage
+            and self.total_seconds is not None
+            and self.first_token_seconds is not None
+            else None
+        )
+        return {
+            "headers_seconds": _seconds(self.headers_seconds),
+            "first_token_seconds": _seconds(self.first_token_seconds),
+            "total_seconds": _seconds(self.total_seconds),
+            "generation_seconds": _seconds(generation),
+        }
+
+
+def _seconds(value: float | None) -> float | None:
+    return None if value is None else round(value, 3)
+
+
+class RequestClock:
+    """Times one request attempt. Made just before the request is sent; each
+    mark keeps its first reading, so a rail calls it on every chunk."""
+
+    def __init__(self) -> None:
+        self._sent = clock()
+        self._headers: float | None = None
+        self._first: float | None = None
+        self._total: float | None = None
+
+    def headers(self) -> None:
+        if self._headers is None:
+            self._headers = clock() - self._sent
+
+    def token(self) -> None:
+        if self._first is None:
+            self._first = clock() - self._sent
+
+    def done(self) -> None:
+        """The last byte arrived (or the rail stopped reading)."""
+        if self._total is None:
+            self._total = clock() - self._sent
+
+    def timing(self) -> Timing:
+        self.done()
+        return Timing(self._headers, self._first, self._total)
+
+
 @dataclass(frozen=True)
 class Reply:
     content: list[dict[str, Any]]
@@ -71,6 +149,9 @@ class Reply:
     usage: Usage
     stop_reason: StopReason
     cost: float | None = None
+    # Set by a rail that measured the request; None from one that did not
+    # (a caller's own transport), which the cost event reports as null.
+    timing: Timing | None = None
 
 
 @dataclass(frozen=True)
@@ -487,8 +568,10 @@ __all__ = [
     "Capacity",
     "ProviderStatusError",
     "Reply",
+    "RequestClock",
     "StopReason",
     "StreamDropped",
+    "Timing",
     "ToolCall",
     "Transient",
     "Transport",

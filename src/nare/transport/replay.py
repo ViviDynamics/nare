@@ -17,15 +17,26 @@ import json
 import math
 import os
 from collections.abc import AsyncGenerator, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast, get_args
 
 from nare.session import Message, Usage
-from nare.transport import Delta, Reply, StopReason, ToolCall
+from nare.transport import Delta, Reply, StopReason, Timing, ToolCall
 
 _REPLY_KEYS = frozenset(
-    {"text", "thinking", "tool_calls", "stop_reason", "usage", "cost", "error"}
+    {
+        "text",
+        "thinking",
+        "tool_calls",
+        "stop_reason",
+        "usage",
+        "cost",
+        "timing",
+        "error",
+    }
 )
+_TIMING_KEYS = ("headers_seconds", "first_token_seconds", "total_seconds")
 _CALL_KEYS = frozenset({"id", "name", "args"})
 _USAGE_KEYS = ("input", "output", "cache_read", "cache_write")
 _STOP_REASONS: tuple[str, ...] = get_args(StopReason)
@@ -75,6 +86,30 @@ def _cost(where: str, raw: Any) -> float | None:
     ):
         raise ValueError(f"{where}cost must be a finite nonnegative number")
     return float(raw)
+
+
+def _timing(where: str, raw: Any) -> Timing | None:
+    """A reply's scripted timing, reported as given. None when the reply has
+    none, and the transport reports zeros."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"{where}timing must be an object")
+    _unknown(f"{where}timing: ", raw, frozenset(_TIMING_KEYS))
+    values: list[float | None] = []
+    for key in _TIMING_KEYS:
+        value = raw.get(key)
+        if value is not None and (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            raise ValueError(
+                f"{where}timing.{key} must be a finite nonnegative number or null"
+            )
+        values.append(None if value is None else float(value))
+    return Timing(*values)
 
 
 def _calls(where: str, raw: Any, number: int) -> list[ToolCall]:
@@ -136,6 +171,7 @@ def _reply(raw: Any, number: int) -> Reply | str:
         usage=_usage(where, raw.get("usage")),
         stop_reason=cast(StopReason, stop),
         cost=_cost(where, raw.get("cost")),
+        timing=_timing(where, raw.get("timing")),
     )
 
 
@@ -163,6 +199,10 @@ class ReplayTransport:
     `model` is recorded as given and changes nothing. `streaming` makes each
     reply's thinking and text arrive as deltas first, as a streaming backend
     sends them.
+
+    Each reply's timing is its script's `timing`, or zeros: every time is 0.0
+    except the first token of an unstreamed reply, which is null as on a real
+    rail. So a caller's offline test sees the same numbers on every run.
     """
 
     def __init__(
@@ -202,6 +242,11 @@ class ReplayTransport:
         *,
         tool_choice: str | None = None,
     ) -> Reply:
+        # A streaming rail streams turn() too, so a summary request under
+        # --stream has a first token here as it does there.
+        return self._timed(self._take(), streamed=self.streaming)
+
+    def _take(self) -> Reply:
         if self._next >= len(self._turns):
             raise RuntimeError(
                 f"replay script has no reply for turn {self._next + 1}: "
@@ -213,6 +258,12 @@ class ReplayTransport:
             raise RuntimeError(scripted)
         return scripted
 
+    @staticmethod
+    def _timed(reply: Reply, *, streamed: bool) -> Reply:
+        if reply.timing is not None:
+            return reply
+        return replace(reply, timing=Timing(0.0, 0.0 if streamed else None, 0.0))
+
     async def stream_turn(
         self,
         messages: list[Message],
@@ -220,7 +271,7 @@ class ReplayTransport:
         *,
         tool_choice: str | None = None,
     ) -> AsyncGenerator[Delta | Reply, None]:
-        reply = await self.turn(messages, tools, tool_choice=tool_choice)
+        reply = self._timed(self._take(), streamed=True)
         for block in reply.content:
             if block["type"] == "thinking":
                 yield Delta("thinking", block["thinking"])

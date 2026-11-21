@@ -1146,9 +1146,20 @@ SUMMARY_STATUSES: tuple[SummaryStatus, ...] = (
 )
 
 
-def _cost_event(usage: Usage, call: str | None = None) -> Event:
-    """One request's cost. `call` names a request that is not a turn."""
-    detail = usage.wire()
+def _cost_event(
+    usage: Usage, call: str | None = None, reply: Reply | None = None
+) -> Event:
+    """One request's cost and timing. `call` names a request that is not a
+    turn. `timing` is null when the transport measured none."""
+    timing = reply.timing if reply is not None else None
+    detail: dict[str, Any] = {
+        **usage.wire(),
+        "timing": (
+            timing.wire(final_usage=reply.stop_reason != "repetition")
+            if timing is not None and reply is not None
+            else None
+        ),
+    }
     if call is not None:
         detail["call"] = call
     return Event(
@@ -1158,6 +1169,66 @@ def _cost_event(usage: Usage, call: str | None = None) -> Event:
         + (" (estimate)" if usage.estimated else ""),
         detail,
     )
+
+
+@dataclass
+class RequestTimingTotals:
+    """The result line's `request_timing`: the timing of every model request
+    one invocation made, summed from its `cost` events.
+
+    Sums run over the requests that measured each time, and are null when none
+    did. `generation_seconds` sums the requests' own `generation_seconds`, and
+    `generation_output_tokens` is those requests' output tokens, so a caller's
+    decode rate is the one divided by the other.
+    """
+
+    requests: int = 0
+    timed: int = 0
+    headers: float | None = None
+    total: float | None = None
+    first_tokens: int = 0
+    first_token: float | None = None
+    generation: float | None = None
+    generation_output: int = 0
+
+    def add(self, event: Event) -> None:
+        if event.type != "cost":
+            return
+        self.requests += 1
+        timing = event.detail.get("timing")
+        if not isinstance(timing, dict):
+            return
+        self.timed += 1
+        headers = timing.get("headers_seconds")
+        total = timing.get("total_seconds")
+        first = timing.get("first_token_seconds")
+        if headers is not None:
+            self.headers = (self.headers or 0.0) + headers
+        if total is not None:
+            self.total = (self.total or 0.0) + total
+        if first is not None:
+            self.first_tokens += 1
+            self.first_token = (self.first_token or 0.0) + first
+        generation = timing.get("generation_seconds")
+        if generation is not None:
+            self.generation = (self.generation or 0.0) + generation
+            output = event.detail.get("output")
+            self.generation_output += output if isinstance(output, int) else 0
+
+    def wire(self) -> dict[str, Any]:
+        def seconds(value: float | None) -> float | None:
+            return None if value is None else round(value, 3)
+
+        return {
+            "requests": self.requests,
+            "timed": self.timed,
+            "headers_seconds": seconds(self.headers),
+            "total_seconds": seconds(self.total),
+            "first_tokens": self.first_tokens,
+            "first_token_seconds": seconds(self.first_token),
+            "generation_seconds": seconds(self.generation),
+            "generation_output_tokens": self.generation_output,
+        }
 
 
 def _turns(n: int) -> str:
@@ -1236,7 +1307,7 @@ async def _summarize(
     else:
         usage = turn_usage(reply, prices)
         s.usage += usage
-        s.events.append(_cost_event(usage, SUMMARY_CALL))
+        s.events.append(_cost_event(usage, SUMMARY_CALL, reply))
         text = _final_text(reply.content).strip()
         if reply.tool_calls:
             status = "tool_call"
@@ -1507,7 +1578,7 @@ async def step(
             s.events.append(Event("progress", block.get("text", "")))
         elif block.get("type") == "thinking":
             s.events.append(Event("thinking", block.get("thinking", "")))
-    s.events.append(_cost_event(usage))
+    s.events.append(_cost_event(usage, reply=reply))
 
     # A tool turn can carry already valid findings alongside its calls. Keep
     # the latest schema-valid document without claiming the task completed.
