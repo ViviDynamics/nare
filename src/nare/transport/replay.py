@@ -242,7 +242,9 @@ class ReplayTransport:
         *,
         tool_choice: str | None = None,
     ) -> Reply:
-        return self._timed(self._take(), streamed=False)
+        # A streaming rail streams turn() too, so a summary request under
+        # --stream has a first token here as it does there.
+        return self._timed(self._take(), streamed=self.streaming)
 
     def _take(self) -> Reply:
         if self._next >= len(self._turns):

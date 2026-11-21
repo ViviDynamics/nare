@@ -89,11 +89,24 @@ class Timing:
     first_token_seconds: float | None = None
     total_seconds: float | None = None
 
-    def wire(self) -> dict[str, float | None]:
+    def wire(self, *, final_usage: bool = True) -> dict[str, float | None]:
+        """The `cost` event's `detail.timing`. `generation_seconds` is total
+        minus first token, the window the request's `output` tokens were
+        decoded in. It is null without both times, and when `final_usage` is
+        false: a reply nare stopped for repetition never got its final usage,
+        so its output count would not pair with the window."""
+        generation = (
+            max(self.total_seconds - self.first_token_seconds, 0.0)
+            if final_usage
+            and self.total_seconds is not None
+            and self.first_token_seconds is not None
+            else None
+        )
         return {
             "headers_seconds": _seconds(self.headers_seconds),
             "first_token_seconds": _seconds(self.first_token_seconds),
             "total_seconds": _seconds(self.total_seconds),
+            "generation_seconds": _seconds(generation),
         }
 
 

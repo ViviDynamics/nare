@@ -4,7 +4,8 @@ Issue #315
 
 ## Scope
 In: the time to headers, to the first generated chunk and to the last byte of
-each model request, on its `cost` event's `detail.timing`; their sums on the
+each model request, and the generation window between the last two, on its
+`cost` event's `detail.timing`; their sums on the
 result line as `request_timing`; a `request_timing` contract entry; scripted
 values on the fake rail.
 Out: wall-clock `sent_at` timestamps; timing of failed attempts; any change to
@@ -25,6 +26,9 @@ what is sent or when; saving timing in the session file.
   unstreamed request through `client.stream` and reads it whole, and the
   anthropic rail uses `with_streaming_response` in place of
   `with_raw_response`. Both send the same request bytes.
+- `generation_seconds` is null on a reply nare stopped for repetition: its
+  final usage never arrived, so its `output` would not pair with the window,
+  and the result line's decode-rate inputs leave it out.
 - A transport that sets no timing (a caller's own) gets `timing: null`. The key
   is always present on a `cost` event.
 - The fake rail reports a reply's scripted `timing`, else zeros, with
@@ -45,7 +49,11 @@ what is sent or when; saving timing in the session file.
 - [x] 4. `_cost_event` carries it, for turns and summary requests.
 - [x] 5. `RequestTimingTotals` sums it in `nare run`'s event loop for the
       result line.
-- [x] 6. `request_timing` in `describe()`; docs/contract.md: a Request timing
+- [x] 6. Review fixes, each with a test: a repetition stop has no generation
+      window; the fake rail's `turn()` has a first token under `--stream`, as a
+      streaming rail's does; an anthropic body read that times out after the
+      headers raises the SDK's `APITimeoutError`, as before.
+- [x] 7. `request_timing` in `describe()`; docs/contract.md: a Request timing
       section, the replay key, the library Results row.
 
 ## Verification

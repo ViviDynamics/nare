@@ -410,6 +410,7 @@ async def test_a_retried_request_reports_the_attempt_that_answered(
         "headers_seconds": 0.25,
         "first_token_seconds": 0.75,
         "total_seconds": 1.0,
+        "generation_seconds": 0.25,
     }
 
 
@@ -477,7 +478,12 @@ def test_replay_streamed_timing_is_zero_and_the_result_sums_it(
 ) -> None:
     rows = run_cli(tmp_path, capsys, SCRIPT, "--stream")
     costs = [r["detail"] for r in rows if r.get("type") == "cost"]
-    zero = {"headers_seconds": 0.0, "first_token_seconds": 0.0, "total_seconds": 0.0}
+    zero = {
+        "headers_seconds": 0.0,
+        "first_token_seconds": 0.0,
+        "total_seconds": 0.0,
+        "generation_seconds": 0.0,
+    }
     assert [c["timing"] for c in costs] == [zero, zero]
     result = rows[-1]
     assert result["type"] == "result"
@@ -498,7 +504,12 @@ def test_replay_unstreamed_timing_has_no_first_token(
 ) -> None:
     rows = run_cli(tmp_path, capsys, SCRIPT)
     costs = [r["detail"] for r in rows if r.get("type") == "cost"]
-    zero = {"headers_seconds": 0.0, "first_token_seconds": None, "total_seconds": 0.0}
+    zero = {
+        "headers_seconds": 0.0,
+        "first_token_seconds": None,
+        "total_seconds": 0.0,
+        "generation_seconds": None,
+    }
     assert [c["timing"] for c in costs] == [zero, zero]
     assert rows[-1]["request_timing"] == {
         "requests": 2,
@@ -529,8 +540,8 @@ def test_replay_script_timing_is_reported_and_aggregated(
     rows = run_cli(tmp_path, capsys, script, "--stream")
     costs = [r["detail"] for r in rows if r.get("type") == "cost"]
     assert [c["timing"] for c in costs] == [
-        script["replies"][0]["timing"],
-        script["replies"][1]["timing"],
+        {**script["replies"][0]["timing"], "generation_seconds": 2.5},
+        {**script["replies"][1]["timing"], "generation_seconds": 1.5},
     ]
     assert rows[-1]["request_timing"] == {
         "requests": 2,
@@ -586,6 +597,7 @@ def test_contract_advertises_request_timing() -> None:
         "headers_seconds",
         "first_token_seconds",
         "total_seconds",
+        "generation_seconds",
     ]
     assert entry["clock"] == "monotonic"
     assert entry["attempt"] == "the attempt that answered"
@@ -602,3 +614,76 @@ def test_the_documented_contract_describes_request_timing() -> None:
     assert "`request_timing`" in text
     assert "`first_token_seconds`" in text
     assert "`generation_output_tokens`" in text
+
+
+def test_a_reply_stopped_for_repetition_has_no_generation_window(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # nare stopped reading the looping reply, so its final usage never came:
+    # its output count must not be paired with its window, per request or in
+    # the run's decode rate.
+    timing = {"headers_seconds": 0.5, "first_token_seconds": 1.0, "total_seconds": 90.0}
+    script = {
+        "replies": [
+            {
+                "text": "again and again",
+                "stop_reason": "repetition",
+                "usage": {"input": 10, "output": 1},
+                "timing": timing,
+            },
+            {
+                "text": "done",
+                "usage": {"input": 20, "output": 30},
+                "timing": {
+                    "headers_seconds": 0.5,
+                    "first_token_seconds": 1.0,
+                    "total_seconds": 4.0,
+                },
+            },
+        ]
+    }
+    rows = run_cli(tmp_path, capsys, script, "--stream", "--max-cutoffs", "1")
+    costs = [r["detail"] for r in rows if r.get("type") == "cost"]
+    assert costs[0]["timing"] == {**timing, "generation_seconds": None}
+    assert costs[1]["timing"]["generation_seconds"] == 3.0
+    result = rows[-1]["request_timing"]
+    assert result["first_tokens"] == 2
+    assert result["first_token_seconds"] == 2.0
+    assert result["total_seconds"] == 94.0
+    assert result["generation_seconds"] == 3.0
+    assert result["generation_output_tokens"] == 30
+
+
+async def test_a_streaming_replay_turn_has_a_first_token() -> None:
+    # A summary request calls turn(); on a streaming rail that streams too.
+    transport = ReplayTransport({"replies": [{"text": "x"}]}, streaming=True)
+    reply = await transport.turn(hi(), [])
+    assert exact(reply.timing) == (0.0, 0.0, 0.0)
+
+
+async def test_an_anthropic_body_read_timeout_is_the_sdk_timeout(clock: Clock) -> None:
+    import anthropic as sdk
+
+    from nare.transport import transient
+
+    class Stalls(httpx2.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            yield b'{"id": '
+            raise httpx2.ReadTimeout("read timed out")
+
+        async def aclose(self) -> None:
+            pass
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200, headers={"content-type": "application/json"}, stream=Stalls()
+        )
+
+    transport = anthropic(
+        httpx2.AsyncClient(transport=httpx2.MockTransport(handler)), streaming=False
+    )
+    with pytest.raises(sdk.APITimeoutError) as raised:
+        await transport.turn(hi(), [])
+    assert transport.transient(raised.value) == transient(raised.value)
+    assert transient(raised.value) is not None
+    assert transient(raised.value).reason == "timeout"  # type: ignore[union-attr]

@@ -1847,7 +1847,8 @@ unstreamed turn all arrive together):
 
 ```json
 {"type": "cost", "detail": {"input": 10, "output": 5, "...": "...",
-  "timing": {"headers_seconds": 0.21, "first_token_seconds": 0.84, "total_seconds": 3.1}}}
+  "timing": {"headers_seconds": 0.21, "first_token_seconds": 0.84, "total_seconds": 3.1,
+             "generation_seconds": 2.26}}}
 ```
 
 | Field | From the request being sent to |
@@ -1855,6 +1856,7 @@ unstreamed turn all arrive together):
 | `headers_seconds` | the response headers |
 | `first_token_seconds` | the first streamed chunk carrying generated content: text, reasoning or a tool call. A role-only chunk, `message_start`, an empty block start and a signature are not content. A turn that only calls tools streams no `progress` delta, but its first tool-call chunk is timed |
 | `total_seconds` | the last byte of the response, or where nare stopped reading a reply it cut off for [repetition](#cut-off-replies) |
+| `generation_seconds` | not from the send: `total_seconds - first_token_seconds`, the window the request's `output` tokens were decoded in. Null without both, and on a reply stopped for repetition, which never got its final usage, so its `output` would not pair with the window |
 
 The clock is monotonic and read inside nare, around the HTTP request alone.
 Everything nare does itself comes before the request is sent or after its last
@@ -1872,13 +1874,16 @@ A time a rail or mode cannot measure is null:
 | --- | --- | --- | --- | --- |
 | openai, anthropic, bedrock | yes | measured | measured | measured |
 | openai, anthropic, bedrock | no | measured | null: the body is one response, with no first token apart from the rest | measured |
-| fake (`--replay`) | either | the reply's `timing`, else 0 | the reply's `timing`, else 0 streamed and null unstreamed | the reply's `timing`, else 0 |
+| fake (`--replay`) | either | the reply's `timing`, else 0 | the reply's `timing`, else 0 with `--stream` and null without | the reply's `timing`, else 0 |
+
+`generation_seconds` follows from the other two on every rail. A summary
+request is sent with `turn()`, which a streaming rail streams, so under
+`--stream` it has a first token too.
 
 `timing` itself is null on a request whose transport measured nothing, which
 is a caller's own transport in the library unless its `Reply` sets `timing` to
-a `nare.Timing`. With both times, a streamed
-request's generation time is `total_seconds - first_token_seconds`, and its
-decode rate `output` divided by that.
+a `nare.Timing`. A request's decode rate is its `output` over its
+`generation_seconds`.
 
 The `result` line sums this invocation's requests as `request_timing`. It is
 per invocation, unlike `retries`, and is never saved in the session file:
@@ -1890,7 +1895,7 @@ per invocation, unlike `retries`, and is never saved in the session file:
 | `headers_seconds`, `total_seconds` | Sums over the requests that measured each; null when none did |
 | `first_tokens` | Requests with a `first_token_seconds` |
 | `first_token_seconds` | Their sum; null when there are none. The mean time to first token is this over `first_tokens` |
-| `generation_seconds` | The sum of `total_seconds - first_token_seconds` over requests with both; null when there are none |
+| `generation_seconds` | The sum of the requests' `generation_seconds`; null when none has one |
 | `generation_output_tokens` | Those requests' `output` tokens, so the run's decode rate is this over `generation_seconds` |
 
 `nare contract` advertises the event field, the result field and what each

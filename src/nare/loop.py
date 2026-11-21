@@ -84,7 +84,6 @@ from nare.transport import (
     StreamingStructuredTransport,
     StreamingTransport,
     StructuredTransport,
-    Timing,
     ToolChoiceTransport,
     Transient,
     Transport,
@@ -1104,13 +1103,18 @@ SUMMARY_STATUSES: tuple[SummaryStatus, ...] = (
 
 
 def _cost_event(
-    usage: Usage, call: str | None = None, timing: Timing | None = None
+    usage: Usage, call: str | None = None, reply: Reply | None = None
 ) -> Event:
     """One request's cost and timing. `call` names a request that is not a
     turn. `timing` is null when the transport measured none."""
+    timing = reply.timing if reply is not None else None
     detail: dict[str, Any] = {
         **usage.wire(),
-        "timing": timing.wire() if timing is not None else None,
+        "timing": (
+            timing.wire(final_usage=reply.stop_reason != "repetition")
+            if timing is not None and reply is not None
+            else None
+        ),
     }
     if call is not None:
         detail["call"] = call
@@ -1129,9 +1133,9 @@ class RequestTimingTotals:
     one invocation made, summed from its `cost` events.
 
     Sums run over the requests that measured each time, and are null when none
-    did. `generation_seconds` is total minus first token over the requests
-    with a first token, and `generation_output_tokens` their output tokens, so
-    a caller's decode rate is the one divided by the other.
+    did. `generation_seconds` sums the requests' own `generation_seconds`, and
+    `generation_output_tokens` is those requests' output tokens, so a caller's
+    decode rate is the one divided by the other.
     """
 
     requests: int = 0
@@ -1161,10 +1165,11 @@ class RequestTimingTotals:
         if first is not None:
             self.first_tokens += 1
             self.first_token = (self.first_token or 0.0) + first
-            if total is not None:
-                self.generation = (self.generation or 0.0) + max(total - first, 0.0)
-                output = event.detail.get("output")
-                self.generation_output += output if isinstance(output, int) else 0
+        generation = timing.get("generation_seconds")
+        if generation is not None:
+            self.generation = (self.generation or 0.0) + generation
+            output = event.detail.get("output")
+            self.generation_output += output if isinstance(output, int) else 0
 
     def wire(self) -> dict[str, Any]:
         def seconds(value: float | None) -> float | None:
@@ -1258,7 +1263,7 @@ async def _summarize(
     else:
         usage = turn_usage(reply, prices)
         s.usage += usage
-        s.events.append(_cost_event(usage, SUMMARY_CALL, reply.timing))
+        s.events.append(_cost_event(usage, SUMMARY_CALL, reply))
         text = _final_text(reply.content).strip()
         if reply.tool_calls:
             status = "tool_call"
@@ -1522,7 +1527,7 @@ async def step(
             s.events.append(Event("progress", block.get("text", "")))
         elif block.get("type") == "thinking":
             s.events.append(Event("thinking", block.get("thinking", "")))
-    s.events.append(_cost_event(usage, timing=reply.timing))
+    s.events.append(_cost_event(usage, reply=reply))
 
     # A tool turn can carry already valid findings alongside its calls. Keep
     # the latest schema-valid document without claiming the task completed.

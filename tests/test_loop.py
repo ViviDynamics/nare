@@ -401,6 +401,7 @@ def test_the_public_api_is_the_documented_surface() -> None:
         "Reply",
         "ReplayTransport",
         "Session",
+        "Timing",
         "Tool",
         "ToolCall",
         "ToolError",

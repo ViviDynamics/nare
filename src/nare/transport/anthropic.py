@@ -13,7 +13,9 @@ from typing import Any, cast
 import httpx2
 from anthropic import (
     DEFAULT_TIMEOUT,
+    APIConnectionError,
     APIStatusError,
+    APITimeoutError,
     AsyncAnthropic,
     AsyncAnthropicBedrock,
     omit,
@@ -609,7 +611,13 @@ class AnthropicTransport:
             output_config=self._output_config(response_schema),
         ) as raw:
             clock.headers()
-            body = await raw.read()
+            try:
+                body = await raw.read()
+            except httpx2.TimeoutException as exc:
+                # Raised as the SDK raised them when it read the body itself.
+                raise APITimeoutError(request=raw.http_request) from exc
+            except httpx2.TransportError as exc:
+                raise APIConnectionError(request=raw.http_request) from exc
             clock.done()
             response = await raw.parse()
             headers = raw.headers

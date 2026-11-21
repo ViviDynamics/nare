@@ -621,7 +621,12 @@ def describe() -> dict[str, Any]:
         "request_timing": {
             "event": "cost",
             "event_detail": "timing",
-            "fields": ["headers_seconds", "first_token_seconds", "total_seconds"],
+            "fields": [
+                "headers_seconds",
+                "first_token_seconds",
+                "total_seconds",
+                "generation_seconds",
+            ],
             "clock": "monotonic",
             "unit": "seconds",
             "from": "request sent",
@@ -634,6 +639,7 @@ def describe() -> dict[str, Any]:
                 "failed attempts",
             ],
             "first_token": "first chunk of text, reasoning or a tool call",
+            "generation": "total minus first token; null without final usage",
             "untimed_transport": "null",
             "providers": {
                 rail: {
@@ -641,11 +647,13 @@ def describe() -> dict[str, Any]:
                         "headers_seconds": True,
                         "first_token_seconds": True,
                         "total_seconds": True,
+                        "generation_seconds": True,
                     },
                     "unstreamed": {
                         "headers_seconds": True,
                         "first_token_seconds": False,
                         "total_seconds": True,
+                        "generation_seconds": False,
                     },
                 }
                 for rail in ("anthropic", "bedrock", "openai")
