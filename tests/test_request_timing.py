@@ -685,5 +685,5 @@ async def test_an_anthropic_body_read_timeout_is_the_sdk_timeout(clock: Clock) -
     with pytest.raises(sdk.APITimeoutError) as raised:
         await transport.turn(hi(), [])
     assert transport.transient(raised.value) == transient(raised.value)
-    assert transient(raised.value) is not None
-    assert transient(raised.value).reason == "timeout"  # type: ignore[union-attr]
+    found = transient(raised.value)
+    assert found is not None and found.reason == "timeout"
