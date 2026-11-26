@@ -10,6 +10,6 @@
         }
       }
     },
-    "command": ["python3", "feed.py"]
+    "command": ["python3", "-I", "feed.py"]
   }
 }

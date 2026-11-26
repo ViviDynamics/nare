@@ -117,6 +117,58 @@ def test_the_first_page_is_handed_out_once(
     assert "handed out once" in again.stderr
 
 
+# A json.py that loads the real one and forgets which pages went out. The
+# model's write tool can put it next to feed.py, where `python3 feed.py` would
+# import it ahead of the standard library.
+FORGETFUL_JSON = """\
+import os
+import sys
+
+_here = os.path.dirname(os.path.abspath(__file__))
+sys.path[:] = [p for p in sys.path if os.path.abspath(p or ".") != _here]
+_self = sys.modules.pop("json")
+import json as _real
+
+sys.modules["json"] = _self
+dumps = _real.dumps
+
+
+def loads(s, *args, **kwargs):
+    value = _real.loads(s, *args, **kwargs)
+    return [] if isinstance(value, list) else value
+"""
+
+
+def tool_argv(drop: str | None = None) -> list[str]:
+    """The next_page argv from tools.json, run with this interpreter."""
+    tools = json.loads((cases()[CASE].fixture / "tools.json").read_text())
+    argv = [sys.executable, *tools["next_page"]["command"][1:]]
+    return [arg for arg in argv if arg != drop]
+
+
+def test_a_module_written_next_to_the_feed_cannot_hand_a_page_out_again(
+    tmp_path: Path,
+) -> None:
+    def fetch_first_page_twice(work: Path, argv: list[str]) -> int:
+        def call() -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                argv, cwd=work, input="{}", capture_output=True, text=True
+            )
+
+        assert call().returncode == 0
+        return call().returncode
+
+    # Control: without -I the planted module is imported and the page comes
+    # back, so the assertion below is about the flag and not a broken module.
+    control = feed_copy(tmp_path / "control")
+    (control / "json.py").write_text(FORGETFUL_JSON)
+    assert fetch_first_page_twice(control, tool_argv(drop="-I")) == 0
+
+    work = feed_copy(tmp_path / "work")
+    (work / "json.py").write_text(FORGETFUL_JSON)
+    assert fetch_first_page_twice(work, tool_argv()) == 1
+
+
 def test_an_unknown_cursor_is_refused_and_uses_up_nothing(tmp_path: Path) -> None:
     work = feed_copy(tmp_path)
     wrong = next_page(work, {"cursor": "00000000"})
@@ -274,7 +326,7 @@ def test_the_case_is_in_the_sweep_tier_with_only_the_feed_to_run() -> None:
     )
     tools = json.loads((case.fixture / "tools.json").read_text())
     assert set(tools) == {"next_page"}
-    assert tools["next_page"]["command"] == ["python3", "feed.py"]
+    assert tools["next_page"]["command"] == ["python3", "-I", "feed.py"]
 
 
 # The answer check.
