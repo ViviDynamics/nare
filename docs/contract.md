@@ -1701,7 +1701,8 @@ that climbs out of one with `..`. A link from one root into another is allowed.
 directory `bash` runs in. An added root never changes either: a relative path
 still lands under `--root`, so the model names a file in an added root by its
 absolute path. `list` and `search` show such a path absolute, which is what
-`read` accepts.
+`read` accepts. nare does not tell the model which roots it has, so name the
+added roots in the prompt; a refused path's error names them.
 
 - `--add-root` needs `--root`. Without it, `nare run` exits 2 and names both
   flags; the library raises `ValueError`. A path that is not a directory exits 2.

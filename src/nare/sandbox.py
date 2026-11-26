@@ -284,8 +284,8 @@ def bwrap_argv(
 
     The host is mounted read-only, then the root, each added root (`writable`)
     and the scratch directory are bound writable on top, and each credential is
-    masked after that: a folder
-    by an empty read-only tmpfs, a file by /dev/null. /tmp and /run are replaced
+    masked after that: a folder by an empty read-only tmpfs, a file by
+    /dev/null. /tmp and /run are replaced
     by empty tmpfs mounts, made read-only last. Unix sockets live in those
     folders (ssh-agent, a container runtime socket, the D-Bus session bus), and
     a read-only mount does not stop connect(), so the host copies are hidden
