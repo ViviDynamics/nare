@@ -699,12 +699,32 @@ def test_tui_without_the_extra_exits_two(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr("importlib.util.find_spec", lambda name: None)
+    monkeypatch.setattr("nare.cli.__version__", "2026.11.9")
     assert main(["tui"]) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
+    # nare is not on PyPI, so the hint names this release's own installer,
+    # which brings the extra and keeps the version the caller has. latest
+    # would move a pinned install to another release.
     assert captured.err.strip() == (
-        "nare tui needs the tui extra: uv tool install 'nare[tui]'"
+        "nare tui needs the tui extra. Reinstall this release with it: curl "
+        "-fsSL https://github.com/ViviDynamics/nare/releases/download/2026.11.9/"
+        "install.sh | sh"
     )
+
+
+@pytest.mark.parametrize("version", ["2026.11.10.dev3+g989636b", "0.0.0"])
+def test_tui_without_the_extra_from_source_suggests_the_extra(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    version: str,
+) -> None:
+    monkeypatch.setattr("importlib.util.find_spec", lambda name: None)
+    monkeypatch.setattr("nare.cli.__version__", version)
+    assert main(["tui"]) == 2
+    err = capsys.readouterr().err
+    assert "releases" not in err
+    assert "uv sync --extra tui" in err
 
 
 def test_a_streamed_turn_is_saved_only_once_its_calls_have_results(
