@@ -56,23 +56,8 @@ private_terms=false; [ -s "$tmp/terms" ] && private_terms=true
 
 if [ -n "$pr" ]; then
   vivi_require VIVI_REPO
-  code=0; vivi_gh pr diff "$pr" --repo "$VIVI_REPO" > "$tmp/diff" 2> "$tmp/diff.err" || code=$?
-  if [ "$code" -ne 0 ]; then
-    grep -q 'too_large' "$tmp/diff.err" || { cat "$tmp/diff.err" >&2; exit "$code"; }
-    # GitHub serves no PR diff above 300 files or 20,000 lines. Rebuild the same
-    # diff from git, so a large PR is still scanned line by line rather than skipped.
-    base_oid=$(vivi_gh pr view "$pr" --repo "$VIVI_REPO" --json baseRefOid --jq .baseRefOid) || exit $?
-    head_oid=$(vivi_gh pr view "$pr" --repo "$VIVI_REPO" --json headRefOid --jq .headRefOid) || exit $?
-    if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
-      git fetch -q --no-tags --unshallow origin || vivi_die 2 "cannot unshallow the checkout: check out with fetch-depth: 0"
-    fi
-    for oid in "$base_oid" "$head_oid"; do
-      git cat-file -e "$oid^{commit}" 2>/dev/null || git fetch -q --no-tags origin "$oid" \
-        || vivi_die 2 "PR $pr commit $oid is not available locally"
-    done
-    merge_base=$(git merge-base "$base_oid" "$head_oid") || vivi_die 2 "PR $pr has no merge base with its base branch"
-    git diff "$merge_base" "$head_oid" > "$tmp/diff"
-  fi
+  # A diff GitHub refuses as too large is rebuilt from git (vivi_pr_diff).
+  vivi_pr_diff "$pr" "$tmp/diff" || exit $?
   vivi_gh pr view "$pr" --repo "$VIVI_REPO" --json body --jq .body > "$tmp/body" || exit $?
   vivi_gh pr view "$pr" --repo "$VIVI_REPO" --json commits --jq '.commits[].messageHeadline,.commits[].messageBody' > "$tmp/messages" || exit $?
 else

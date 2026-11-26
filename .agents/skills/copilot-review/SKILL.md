@@ -2,7 +2,7 @@
 name: copilot-review
 description: Use only when the developer explicitly asks for a GitHub Copilot code review, or when ship-issue's review gate is copilot and the local review is clean. Requests one review, waits for it, and fixes or answers each comment. Never the first reviewer, and never re-requested to check its own fixes.
 license: Elastic-2.0
-compatibility: Requires gh, jq, git and a repo.env (copy repo.env.example to repo.env). Copilot code review must be enabled for the repository. Scripts are bash 3.2 compatible.
+compatibility: Requires gh, jq, git and the committed repo.env.example. Copilot code review must be enabled for the repository. Scripts are bash 3.2 compatible.
 metadata:
   version: "2.0.0"
   requires: ci-safety

@@ -2,7 +2,7 @@
 name: watch-ci-main
 description: Use when asked whether the default branch is green, to watch the latest CI run on the default branch or another long-lived branch, retry its flakes safely, or report a real breakage.
 license: Elastic-2.0
-compatibility: Requires gh, jq, git and a repo.env (copy repo.env.example to repo.env). Scripts are bash 3.2 compatible.
+compatibility: Requires gh, jq, git and the committed repo.env.example. Scripts are bash 3.2 compatible.
 metadata:
   version: "1.1.0"
   requires: ci-safety

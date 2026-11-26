@@ -14,6 +14,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      # merge-verified reads this step's NAME to learn which merge the run tested, so
+      # it can merge a PR whose base has not moved since without a fresh run
+      # (VIVI_MERGE_FRESHNESS=record, the default). Keep the name's exact shape.
+      - name: Record the tested merge ${{ github.sha }}
+        env:
+          TESTED_MERGE: ${{ github.sha }}
+        run: git log -1 --format='Tested merge %H, base side %P' "$TESTED_MERGE"
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
