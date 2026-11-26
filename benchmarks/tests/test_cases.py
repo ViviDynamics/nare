@@ -36,6 +36,8 @@ SEEDS = {
     "notes-tags-feature",
     "prefs-migration",
     "report-refactor",
+    # The opt-in sweep tier (#43): one experiment's instrument, run only when named.
+    "deploy-feed-window",
 }
 
 EXTENDED = {
@@ -44,6 +46,8 @@ EXTENDED = {
     "prefs-migration",
     "report-refactor",
 }
+
+SWEEP = {"deploy-feed-window"}
 
 
 def test_every_seed_case_loads() -> None:
@@ -56,7 +60,7 @@ def test_the_full_tier_is_smoke_and_full_and_smoke_is_a_subset() -> None:
     root = repo_root() / "benchmarks" / "cases"
     smoke = {c.id for c in load_cases(root, tier="smoke")}
     full = {c.id for c in load_cases(root, tier="full")}
-    assert full == SEEDS - EXTENDED
+    assert full == SEEDS - EXTENDED - SWEEP
     assert smoke < full
     assert "bash-timeout-recovery" not in smoke
 
@@ -70,6 +74,16 @@ def test_the_extended_tier_is_named_and_never_part_of_full() -> None:
     assert not extended & {c.id for c in load_cases(root, tier="smoke")}
     # Verify with no tier still checks every case, extended included.
     assert {c.id for c in load_cases(root, tier=None)} == SEEDS
+
+
+def test_the_sweep_tier_is_named_and_part_of_no_other_tier() -> None:
+    """#43: a case built for one experiment never joins full, so the matrix,
+    its baselines and CI stay as they were."""
+    root = repo_root() / "benchmarks" / "cases"
+    sweep = {c.id for c in load_cases(root, tier="sweep")}
+    assert sweep == SWEEP
+    for other in ("smoke", "full", "extended"):
+        assert not sweep & {c.id for c in load_cases(root, tier=other)}, other
 
 
 def test_each_extended_case_has_a_reference_and_an_exploit() -> None:

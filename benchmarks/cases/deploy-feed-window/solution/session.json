@@ -1,0 +1,252 @@
+{
+  "messages": [
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "call-1",
+          "name": "next_page",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call-1",
+          "content": "[elided by nare: 10874 chars of output from turn 1. Rerun the tool if you need it.]",
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Page 1: live gateway 3cfc211, profile c564a17."
+        },
+        {
+          "type": "tool_use",
+          "id": "call-2",
+          "name": "next_page",
+          "input": {
+            "cursor": "711dbff0"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call-2",
+          "content": "[elided by nare: 10893 chars of output from turn 2. Rerun the tool if you need it.]",
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Page 2: live catalog 20558e0, search 028baf1."
+        },
+        {
+          "type": "tool_use",
+          "id": "call-3",
+          "name": "next_page",
+          "input": {
+            "cursor": "97cfae32"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call-3",
+          "content": "[elided by nare: 10890 chars of output from turn 3. Rerun the tool if you need it.]",
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Page 3: live mailer 170bd83, checkout 58ad19c."
+        },
+        {
+          "type": "tool_use",
+          "id": "call-4",
+          "name": "next_page",
+          "input": {
+            "cursor": "914b95ea"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call-4",
+          "content": "[elided by nare: 10861 chars of output from turn 4. Rerun the tool if you need it.]",
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Page 4: live ratings 8155392, inventory 8d466d4."
+        },
+        {
+          "type": "tool_use",
+          "id": "call-5",
+          "name": "next_page",
+          "input": {
+            "cursor": "52e5b97a"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call-5",
+          "content": "[elided by nare: 10878 chars of output from turn 5. Rerun the tool if you need it.]",
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Page 5: live shipping fc05fb3, billing e7f6570."
+        },
+        {
+          "type": "tool_use",
+          "id": "call-6",
+          "name": "next_page",
+          "input": {
+            "cursor": "34522c69"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call-6",
+          "content": "[elided by nare: 10879 chars of output from turn 6. Rerun the tool if you need it.]",
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Page 6: live payments 924344b, auth 4922e1f."
+        },
+        {
+          "type": "tool_use",
+          "id": "call-7",
+          "name": "next_page",
+          "input": {
+            "cursor": "24e56052"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call-7",
+          "content": "deploy feed, page 7 of 8\n2026-10-02T10:30:01Z http POST /v2/users/33839/profile 404 665ms req=cc0940bd\n2026-10-02T10:30:03Z http DELETE /v2/orders/67794 304 684ms req=b9545c24\n2026-10-02T10:30:04Z cache shipping hits=2387 misses=102\n2026-10-02T10:30:06Z http GET /v2/catalog/items/48438 200 497ms req=ecab54a3\n2026-10-02T10:30:07Z cache inventory hits=1250 misses=277\n2026-10-02T10:30:08Z http GET /v2/orders/71548 304 451ms req=11952d42\n2026-10-02T10:30:10Z worker mailer job=6ef43477 finished in 291ms\n2026-10-02T10:30:11Z worker ratings job=557a5587 finished in 664ms\n2026-10-02T10:30:13Z health billing ok 713ms\n2026-10-02T10:30:15Z worker scheduler job=8f99d753 finished in 413ms\n2026-10-02T10:30:16Z http GET /v2/shipments/18214/events 200 522ms req=fc8eaa6c\n2026-10-02T10:30:17Z deploy service=gateway build=d21b691 status=rolled_back\n2026-10-02T10:30:18Z worker inventory job=c9cdc61e finished in 567ms\n2026-10-02T10:30:20Z cache inventory hits=143 misses=245\n2026-10-02T10:30:21Z health reports ok 856ms\n2026-10-02T10:30:22Z deploy service=scheduler build=fad0a21 status=canary\n2026-10-02T10:30:23Z http PUT /v2/orders/27244 200 28ms req=28f2bec5\n2026-10-02T10:30:24Z worker gateway job=c26257d5 finished in 288ms\n2026-10-02T10:30:26Z http DELETE /v2/cart/30696 200 203ms req=890df64d\n2026-10-02T10:30:27Z worker catalog job=4fbb175b finished in 743ms\n2026-10-02T10:30:29Z http GET /v2/invoices/90737/lines 201 402ms req=55249216\n2026-10-02T10:30:31Z health catalog ok 191ms\n2026-10-02T10:30:33Z http GET /v2/shipments/68605/events 500 251ms req=30677192\n2026-10-02T10:30:35Z http DELETE /v2/orders/97125 200 765ms req=72efdc41\n2026-10-02T10:30:36Z cache mailer hits=4393 misses=367\n2026-10-02T10:30:38Z http PUT /v2/catalog/items/55360 204 261ms req=26345be8\n2026-10-02T10:30:40Z worker catalog job=7c90c5de finished in 506ms\n2026-10-02T10:30:42Z deploy service=reports build=9fc1a95 status=canary\n2026-10-02T10:30:44Z http PUT /v2/cart/99786 200 709ms req=60f39920\n2026-10-02T10:30:45Z cache scheduler hits=2536 misses=129\n2026-10-02T10:30:46Z worker billing job=ca5c5b77 finished in 252ms\n2026-10-02T10:30:48Z health auth ok 51ms\n2026-10-02T10:30:50Z http PUT /v2/catalog/items/99356 200 599ms req=290a40a5\n2026-10-02T10:30:52Z http GET /v2/orders/52620 200 466ms req=1428395b\n2026-10-02T10:30:53Z cache profile hits=1197 misses=81\n2026-10-02T10:30:54Z cache scheduler hits=3317 misses=68\n2026-10-02T10:30:55Z cache scheduler hits=1518 misses=200\n2026-10-02T10:30:56Z worker reports job=4a196463 finished in 576ms\n2026-10-02T10:30:58Z health ledger ok 701ms\n2026-10-02T10:31:00Z http GET /v2/shipments/85740/events 200 714ms req=6d082a90\n2026-10-02T10:31:01Z cache shipping hits=3260 misses=14\n2026-10-02T10:31:02Z deploy service=search build=917e7a8 status=canary\n2026-10-02T10:31:04Z worker gateway job=f4600053 finished in 69ms\n2026-10-02T10:31:05Z http GET /v2/catalog/items/36363 200 38ms req=ba087fcd\n2026-10-02T10:31:06Z worker search job=99e62ac5 finished in 114ms\n2026-10-02T10:31:08Z health search ok 578ms\n2026-10-02T10:31:10Z worker reports job=319f9cf8 finished in 257ms\n2026-10-02T10:31:11Z health ledger ok 60ms\n2026-10-02T10:31:13Z http GET /v2/shipments/79788/events 200 142ms req=a6d6ad2e\n2026-10-02T10:31:14Z deploy service=reports build=9fc1a95 status=live\n2026-10-02T10:31:16Z http GET /v2/invoices/84791/lines 500 188ms req=5448b1e9\n2026-10-02T10:31:18Z worker gateway job=396c95bb finished in 578ms\n2026-10-02T10:31:19Z cache billing hits=1884 misses=126\n2026-10-02T10:31:21Z cache notifier hits=1323 misses=217\n2026-10-02T10:31:23Z http GET /v2/cart/33946 304 805ms req=bbca2633\n2026-10-02T10:31:25Z worker shipping job=63e9d456 finished in 782ms\n2026-10-02T10:31:27Z cache profile hits=934 misses=187\n2026-10-02T10:31:29Z cache ratings hits=144 misses=354\n2026-10-02T10:31:30Z cache search hits=4332 misses=237\n2026-10-02T10:31:32Z cache scheduler hits=2390 misses=335\n2026-10-02T10:31:33Z http PUT /v2/invoices/55362/lines 304 420ms req=780a4deb\n2026-10-02T10:31:35Z cache catalog hits=160 misses=96\n2026-10-02T10:31:36Z cache auth hits=1278 misses=255\n2026-10-02T10:31:37Z worker auth job=a474a52a finished in 591ms\n2026-10-02T10:31:39Z http GET /v2/catalog/items/31328 200 483ms req=f579cbee\n2026-10-02T10:31:40Z health catalog ok 895ms\n2026-10-02T10:31:41Z http GET /v2/orders/12670 200 380ms req=ca302153\n2026-10-02T10:31:43Z worker scheduler job=b88d0195 finished in 901ms\n2026-10-02T10:31:45Z http GET /v2/invoices/80718/lines 200 312ms req=0e8785e2\n2026-10-02T10:31:46Z health auth ok 448ms\n2026-10-02T10:31:48Z cache notifier hits=545 misses=43\n2026-10-02T10:31:49Z health search ok 316ms\n2026-10-02T10:31:51Z health notifier ok 14ms\n2026-10-02T10:31:53Z http GET /v2/cart/83722 500 672ms req=093b18e3\n2026-10-02T10:31:54Z worker mailer job=f508a8a4 finished in 372ms\n2026-10-02T10:31:56Z http GET /v2/shipments/95867/events 404 25ms req=81dc8318\n2026-10-02T10:31:58Z deploy service=gateway build=1662ea9 status=staged\n2026-10-02T10:31:59Z http PUT /v2/users/12244/profile 200 563ms req=3fd09b09\n2026-10-02T10:32:01Z http POST /v2/orders/23214 404 452ms req=e7209996\n2026-10-02T10:32:03Z worker ledger job=efb6ce96 finished in 313ms\n2026-10-02T10:32:04Z health mailer ok 753ms\n2026-10-02T10:32:05Z health ledger ok 764ms\n2026-10-02T10:32:06Z worker shipping job=2ceae561 finished in 587ms\n2026-10-02T10:32:07Z health checkout ok 671ms\n2026-10-02T10:32:09Z deploy service=ledger build=15e489b status=canary\n2026-10-02T10:32:10Z health inventory ok 381ms\n2026-10-02T10:32:12Z deploy service=gateway build=6be54ed status=canary\n2026-10-02T10:32:14Z health checkout ok 779ms\n2026-10-02T10:32:15Z http PUT /v2/users/56659/profile 409 287ms req=dc313f34\n2026-10-02T10:32:16Z health checkout ok 176ms\n2026-10-02T10:32:18Z http PUT /v2/orders/11571 204 200ms req=4cb6ee8f\n2026-10-02T10:32:19Z worker auth job=750a4642 finished in 170ms\n2026-10-02T10:32:20Z http DELETE /v2/invoices/85113/lines 500 122ms req=109d322e\n2026-10-02T10:32:21Z worker reports job=adb39bf0 finished in 349ms\n2026-10-02T10:32:23Z worker scheduler job=43658af5 finished in 38ms\n2026-10-02T10:32:25Z cache search hits=2855 misses=347\n2026-10-02T10:32:26Z cache reports hits=2406 misses=174\n2026-10-02T10:32:28Z http PUT /v2/catalog/items/85017 304 275ms req=d4335675\n2026-10-02T10:32:29Z worker mailer job=82ec040c finished in 102ms\n2026-10-02T10:32:30Z http DELETE /v2/users/79408/profile 200 82ms req=b82f2085\n2026-10-02T10:32:31Z http GET /v2/catalog/items/20102 200 325ms req=ca790116\n2026-10-02T10:32:32Z worker catalog job=f1e1d840 finished in 335ms\n2026-10-02T10:32:34Z http GET /v2/shipments/30622/events 200 438ms req=5d74d50f\n2026-10-02T10:32:35Z http GET /v2/shipments/99972/events 201 807ms req=b1db8659\n2026-10-02T10:32:37Z deploy service=ledger build=15e489b status=live\n2026-10-02T10:32:38Z cache notifier hits=713 misses=196\n2026-10-02T10:32:40Z worker payments job=a7af2c9d finished in 696ms\n2026-10-02T10:32:41Z health profile ok 88ms\n2026-10-02T10:32:42Z deploy service=ratings build=dfde141 status=rolled_back\n2026-10-02T10:32:44Z http GET /v2/shipments/61520/events 404 776ms req=93747265\n2026-10-02T10:32:46Z cache catalog hits=4396 misses=126\n2026-10-02T10:32:47Z http PUT /v2/shipments/39868/events 404 567ms req=b4d6e3ad\n2026-10-02T10:32:49Z deploy service=ratings build=271724c status=staged\n2026-10-02T10:32:51Z worker ratings job=b60427ac finished in 291ms\n2026-10-02T10:32:53Z http GET /v2/users/94167/profile 404 11ms req=0ac2e105\n2026-10-02T10:32:55Z health search ok 859ms\n2026-10-02T10:32:57Z health scheduler ok 894ms\n2026-10-02T10:32:58Z http DELETE /v2/invoices/62842/lines 201 813ms req=e6e8a4c0\n2026-10-02T10:32:59Z http GET /v2/shipments/99927/events 409 324ms req=70b20ece\n2026-10-02T10:33:01Z health ledger ok 24ms\n2026-10-02T10:33:03Z http GET /v2/invoices/28733/lines 204 224ms req=eeeafe2c\n2026-10-02T10:33:04Z http POST /v2/catalog/items/74574 304 528ms req=8133d339\n2026-10-02T10:33:06Z worker mailer job=6e1f6105 finished in 814ms\n2026-10-02T10:33:08Z http POST /v2/users/82447/profile 200 643ms req=cdf92535\n2026-10-02T10:33:09Z health checkout ok 482ms\n2026-10-02T10:33:10Z worker catalog job=96ddecdf finished in 197ms\n2026-10-02T10:33:12Z cache checkout hits=771 misses=259\n2026-10-02T10:33:13Z http GET /v2/users/55862/profile 304 852ms req=6e153ca7\n2026-10-02T10:33:15Z health shipping ok 481ms\n2026-10-02T10:33:17Z health ratings ok 799ms\n2026-10-02T10:33:19Z cache ratings hits=4829 misses=243\n2026-10-02T10:33:20Z http POST /v2/orders/33064 200 190ms req=70239277\n2026-10-02T10:33:22Z http POST /v2/catalog/items/60526 200 853ms req=27a4469d\n2026-10-02T10:33:24Z http DELETE /v2/catalog/items/87957 500 460ms req=9f2155ac\n2026-10-02T10:33:26Z health billing ok 162ms\n2026-10-02T10:33:27Z health mailer ok 305ms\n2026-10-02T10:33:28Z http PUT /v2/cart/73367 204 557ms req=bb335481\n2026-10-02T10:33:29Z http GET /v2/orders/85695 200 172ms req=9c3279e5\n2026-10-02T10:33:31Z deploy service=notifier build=aabd7af status=rolled_back\n2026-10-02T10:33:33Z http PUT /v2/orders/88022 409 896ms req=b28d013d\n2026-10-02T10:33:35Z health profile ok 638ms\n2026-10-02T10:33:37Z cache catalog hits=1303 misses=158\n2026-10-02T10:33:39Z http POST /v2/orders/89218 304 592ms req=3b6f0923\n2026-10-02T10:33:40Z worker catalog job=704acc06 finished in 455ms\n2026-10-02T10:33:41Z worker billing job=c895a147 finished in 28ms\n2026-10-02T10:33:43Z worker ratings job=d9640e92 finished in 657ms\n2026-10-02T10:33:45Z health ratings ok 680ms\n2026-10-02T10:33:47Z worker reports job=b8df6557 finished in 807ms\n2026-10-02T10:33:49Z worker ratings job=d5b81332 finished in 697ms\n2026-10-02T10:33:51Z health ratings ok 639ms\n2026-10-02T10:33:52Z http DELETE /v2/invoices/54051/lines 200 275ms req=69883209\n2026-10-02T10:33:53Z health ratings ok 616ms\n2026-10-02T10:33:54Z http GET /v2/catalog/items/16178 200 135ms req=92aab524\n2026-10-02T10:33:56Z worker mailer job=205c0fcd finished in 172ms\n2026-10-02T10:33:57Z health notifier ok 209ms\n2026-10-02T10:33:58Z http DELETE /v2/catalog/items/31532 200 231ms req=aef50d56\n2026-10-02T10:33:59Z cache gateway hits=1879 misses=80\n2026-10-02T10:34:00Z http GET /v2/invoices/67314/lines 201 32ms req=4ef6aeb3\n2026-10-02T10:34:02Z health shipping ok 36ms\n2026-10-02T10:34:04Z http DELETE /v2/orders/52777 200 864ms req=f4ac0c4c\n2026-10-02T10:34:06Z worker ratings job=b11f7f82 finished in 422ms\n2026-10-02T10:34:07Z cache ratings hits=2042 misses=208\n2026-10-02T10:34:08Z http GET /v2/invoices/61293/lines 201 552ms req=55a3f061\n2026-10-02T10:34:10Z health billing ok 347ms\n2026-10-02T10:34:12Z http POST /v2/shipments/24557/events 200 226ms req=266d9ed4\n2026-10-02T10:34:13Z http GET /v2/shipments/93106/events 304 396ms req=6abb503e\n2026-10-02T10:34:14Z health payments ok 362ms\n2026-10-02T10:34:15Z health ledger ok 509ms\n2026-10-02T10:34:16Z health billing ok 328ms\nnext cursor: 8d571c2c\n",
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Page 7: live reports 9fc1a95, ledger 15e489b."
+        },
+        {
+          "type": "tool_use",
+          "id": "call-8",
+          "name": "next_page",
+          "input": {
+            "cursor": "8d571c2c"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call-8",
+          "content": "deploy feed, page 8 of 8\n2026-10-02T10:45:02Z health mailer ok 30ms\n2026-10-02T10:45:03Z http POST /v2/cart/74040 201 183ms req=232a0964\n2026-10-02T10:45:05Z health scheduler ok 153ms\n2026-10-02T10:45:06Z health profile ok 480ms\n2026-10-02T10:45:08Z cache reports hits=2035 misses=117\n2026-10-02T10:45:09Z http DELETE /v2/users/56816/profile 200 252ms req=14641ba6\n2026-10-02T10:45:10Z http GET /v2/cart/27477 200 74ms req=1048b3f1\n2026-10-02T10:45:11Z worker auth job=6c62ca46 finished in 286ms\n2026-10-02T10:45:13Z health ratings ok 185ms\n2026-10-02T10:45:14Z cache profile hits=216 misses=347\n2026-10-02T10:45:16Z worker catalog job=2e312f71 finished in 685ms\n2026-10-02T10:45:18Z deploy service=ledger build=331cdfd status=canary\n2026-10-02T10:45:19Z health ratings ok 10ms\n2026-10-02T10:45:21Z http GET /v2/catalog/items/92820 304 901ms req=224c1a97\n2026-10-02T10:45:23Z cache scheduler hits=2540 misses=125\n2026-10-02T10:45:25Z http GET /v2/invoices/29950/lines 200 166ms req=48b7ce0c\n2026-10-02T10:45:27Z health auth ok 866ms\n2026-10-02T10:45:29Z http GET /v2/invoices/36431/lines 409 83ms req=b37e30d7\n2026-10-02T10:45:30Z http GET /v2/orders/17466 200 536ms req=d724263d\n2026-10-02T10:45:31Z deploy service=scheduler build=b30d1f7 status=canary\n2026-10-02T10:45:32Z worker reports job=5c82a7e5 finished in 487ms\n2026-10-02T10:45:33Z cache ledger hits=4005 misses=0\n2026-10-02T10:45:35Z http GET /v2/users/83117/profile 500 522ms req=13cc8143\n2026-10-02T10:45:37Z http DELETE /v2/users/69289/profile 500 142ms req=dd1e7d71\n2026-10-02T10:45:39Z deploy service=inventory build=dd7e658 status=staged\n2026-10-02T10:45:41Z http GET /v2/shipments/56647/events 200 305ms req=f53c7631\n2026-10-02T10:45:43Z http PUT /v2/users/98082/profile 304 464ms req=ccaa8854\n2026-10-02T10:45:45Z cache ledger hits=2337 misses=329\n2026-10-02T10:45:46Z http GET /v2/invoices/77565/lines 409 868ms req=63e6c74e\n2026-10-02T10:45:47Z worker catalog job=b2eba9d6 finished in 786ms\n2026-10-02T10:45:48Z worker profile job=ce825f73 finished in 132ms\n2026-10-02T10:45:50Z worker reports job=1190786e finished in 681ms\n2026-10-02T10:45:51Z http GET /v2/invoices/46320/lines 204 537ms req=5e428476\n2026-10-02T10:45:53Z worker reports job=4abfe8d6 finished in 524ms\n2026-10-02T10:45:55Z cache reports hits=3037 misses=220\n2026-10-02T10:45:56Z http PUT /v2/users/98083/profile 200 411ms req=75bec0d6\n2026-10-02T10:45:57Z http DELETE /v2/cart/43052 201 658ms req=c5bf4c82\n2026-10-02T10:45:59Z worker billing job=93032060 finished in 358ms\n2026-10-02T10:46:00Z http GET /v2/catalog/items/64203 404 158ms req=a6c8d078\n2026-10-02T10:46:01Z cache billing hits=4985 misses=383\n2026-10-02T10:46:03Z deploy service=scheduler build=b30d1f7 status=live\n2026-10-02T10:46:04Z worker auth job=71623f49 finished in 320ms\n2026-10-02T10:46:05Z deploy service=reports build=2b47ef5 status=rolled_back\n2026-10-02T10:46:07Z cache shipping hits=1326 misses=168\n2026-10-02T10:46:08Z http PUT /v2/invoices/37173/lines 201 22ms req=e5f0db09\n2026-10-02T10:46:10Z health mailer ok 562ms\n2026-10-02T10:46:11Z http DELETE /v2/invoices/64355/lines 200 90ms req=3d1f29c3\n2026-10-02T10:46:12Z worker scheduler job=e759872c finished in 502ms\n2026-10-02T10:46:13Z worker reports job=3ce84b57 finished in 514ms\n2026-10-02T10:46:15Z cache payments hits=1681 misses=256\n2026-10-02T10:46:17Z health ratings ok 266ms\n2026-10-02T10:46:19Z worker checkout job=d27b8d77 finished in 781ms\n2026-10-02T10:46:20Z http DELETE /v2/users/58824/profile 200 702ms req=ec16c67d\n2026-10-02T10:46:21Z cache ratings hits=1793 misses=32\n2026-10-02T10:46:22Z http GET /v2/users/62594/profile 304 160ms req=dc6711a7\n2026-10-02T10:46:23Z health profile ok 481ms\n2026-10-02T10:46:25Z http DELETE /v2/invoices/43102/lines 201 474ms req=56a39804\n2026-10-02T10:46:26Z health scheduler ok 525ms\n2026-10-02T10:46:27Z deploy service=payments build=1b02458 status=rolled_back\n2026-10-02T10:46:29Z cache auth hits=3077 misses=101\n2026-10-02T10:46:30Z http DELETE /v2/catalog/items/62065 304 667ms req=36b63703\n2026-10-02T10:46:32Z health inventory ok 490ms\n2026-10-02T10:46:34Z http GET /v2/shipments/45138/events 200 668ms req=22b02d3e\n2026-10-02T10:46:35Z http GET /v2/cart/88558 200 346ms req=0812692a\n2026-10-02T10:46:37Z http GET /v2/catalog/items/11803 200 897ms req=729f0f9f\n2026-10-02T10:46:39Z health payments ok 735ms\n2026-10-02T10:46:41Z http GET /v2/shipments/60174/events 200 405ms req=e2c6dbb8\n2026-10-02T10:46:43Z worker auth job=80c2ed31 finished in 797ms\n2026-10-02T10:46:44Z health notifier ok 753ms\n2026-10-02T10:46:45Z health billing ok 759ms\n2026-10-02T10:46:46Z http DELETE /v2/invoices/38072/lines 200 181ms req=e6db234a\n2026-10-02T10:46:48Z health billing ok 657ms\n2026-10-02T10:46:49Z http PUT /v2/orders/17343 201 222ms req=bf8d3b44\n2026-10-02T10:46:51Z http POST /v2/orders/17665 409 358ms req=62a9a82e\n2026-10-02T10:46:53Z cache shipping hits=1697 misses=388\n2026-10-02T10:46:54Z cache scheduler hits=3157 misses=261\n2026-10-02T10:46:55Z cache scheduler hits=972 misses=336\n2026-10-02T10:46:57Z http POST /v2/cart/45740 201 90ms req=d2169bf4\n2026-10-02T10:46:59Z http GET /v2/shipments/89934/events 304 535ms req=c9d043df\n2026-10-02T10:47:01Z http PUT /v2/invoices/76455/lines 500 51ms req=eb94e8ea\n2026-10-02T10:47:03Z deploy service=payments build=d22d565 status=rolled_back\n2026-10-02T10:47:05Z http PUT /v2/cart/22431 200 896ms req=90d848c6\n2026-10-02T10:47:07Z http GET /v2/invoices/79942/lines 201 844ms req=7b799f46\n2026-10-02T10:47:08Z http GET /v2/cart/37045 304 611ms req=1d406053\n2026-10-02T10:47:10Z http DELETE /v2/cart/56349 204 595ms req=b8dfd4b0\n2026-10-02T10:47:11Z worker auth job=0041ef82 finished in 366ms\n2026-10-02T10:47:12Z http PUT /v2/users/46646/profile 200 582ms req=e6026510\n2026-10-02T10:47:14Z http GET /v2/users/70318/profile 500 192ms req=dbc40bba\n2026-10-02T10:47:15Z deploy service=notifier build=d75beb8 status=canary\n2026-10-02T10:47:17Z http POST /v2/invoices/30641/lines 204 268ms req=9cd85d11\n2026-10-02T10:47:19Z worker profile job=758f8b19 finished in 545ms\n2026-10-02T10:47:21Z worker reports job=820021e5 finished in 731ms\n2026-10-02T10:47:22Z cache auth hits=761 misses=366\n2026-10-02T10:47:24Z health scheduler ok 890ms\n2026-10-02T10:47:25Z http PUT /v2/cart/28096 304 477ms req=ce77a6d6\n2026-10-02T10:47:26Z deploy service=profile build=bb12a2a status=canary\n2026-10-02T10:47:27Z deploy service=payments build=ae02c45 status=canary\n2026-10-02T10:47:28Z http GET /v2/cart/73007 304 129ms req=d64f1bba\n2026-10-02T10:47:29Z health ratings ok 497ms\n2026-10-02T10:47:31Z worker ledger job=be2e195f finished in 166ms\n2026-10-02T10:47:32Z worker payments job=bb2a8be2 finished in 153ms\n2026-10-02T10:47:34Z http PUT /v2/shipments/11173/events 200 745ms req=08c693e9\n2026-10-02T10:47:36Z http GET /v2/invoices/54636/lines 200 247ms req=4f8ab15e\n2026-10-02T10:47:38Z worker search job=8cf6de0c finished in 689ms\n2026-10-02T10:47:40Z http GET /v2/catalog/items/56439 200 769ms req=bf7baa43\n2026-10-02T10:47:41Z cache reports hits=3493 misses=204\n2026-10-02T10:47:42Z http GET /v2/invoices/70570/lines 201 676ms req=dea1dfef\n2026-10-02T10:47:44Z http PUT /v2/users/34467/profile 404 891ms req=9e5379b0\n2026-10-02T10:47:46Z deploy service=notifier build=d75beb8 status=live\n2026-10-02T10:47:48Z cache checkout hits=3081 misses=190\n2026-10-02T10:47:50Z cache scheduler hits=3661 misses=29\n2026-10-02T10:47:51Z worker search job=3920446e finished in 493ms\n2026-10-02T10:47:53Z http GET /v2/orders/68755 200 862ms req=46ca1efe\n2026-10-02T10:47:55Z http GET /v2/shipments/34722/events 200 715ms req=2b4b7301\n2026-10-02T10:47:56Z http GET /v2/orders/80628 200 584ms req=5cc08eb7\n2026-10-02T10:47:58Z health catalog ok 285ms\n2026-10-02T10:47:59Z deploy service=billing build=c9624a2 status=failed\n2026-10-02T10:48:00Z worker auth job=613b6add finished in 822ms\n2026-10-02T10:48:01Z http POST /v2/users/30613/profile 404 129ms req=98f24cfb\n2026-10-02T10:48:02Z deploy service=notifier build=db9eef0 status=staged\n2026-10-02T10:48:04Z deploy service=inventory build=2ab2859 status=staged\n2026-10-02T10:48:05Z cache search hits=128 misses=1\n2026-10-02T10:48:06Z deploy service=shipping build=785e826 status=canary\n2026-10-02T10:48:08Z health gateway ok 710ms\n2026-10-02T10:48:09Z health scheduler ok 477ms\n2026-10-02T10:48:11Z cache scheduler hits=483 misses=376\n2026-10-02T10:48:12Z cache payments hits=4388 misses=331\n2026-10-02T10:48:13Z deploy service=auth build=8b540dc status=staged\n2026-10-02T10:48:15Z http GET /v2/orders/53719 304 469ms req=a7f350c9\n2026-10-02T10:48:16Z health search ok 490ms\n2026-10-02T10:48:17Z cache profile hits=568 misses=58\n2026-10-02T10:48:19Z http POST /v2/invoices/77267/lines 409 730ms req=9eb8ec73\n2026-10-02T10:48:21Z worker ledger job=59543c12 finished in 860ms\n2026-10-02T10:48:22Z health ledger ok 612ms\n2026-10-02T10:48:23Z deploy service=notifier build=d4885b0 status=rolled_back\n2026-10-02T10:48:25Z cache billing hits=112 misses=61\n2026-10-02T10:48:26Z cache ratings hits=2066 misses=134\n2026-10-02T10:48:28Z worker scheduler job=2ef0da21 finished in 823ms\n2026-10-02T10:48:30Z http PUT /v2/shipments/60989/events 201 813ms req=0d249242\n2026-10-02T10:48:32Z http DELETE /v2/cart/45598 200 111ms req=e8ced18a\n2026-10-02T10:48:34Z health scheduler ok 714ms\n2026-10-02T10:48:36Z http GET /v2/cart/92602 204 212ms req=c6ecc6d4\n2026-10-02T10:48:37Z cache ledger hits=3325 misses=328\n2026-10-02T10:48:38Z health gateway ok 33ms\n2026-10-02T10:48:39Z http DELETE /v2/cart/49523 409 709ms req=9ef9b57a\n2026-10-02T10:48:40Z http GET /v2/invoices/55293/lines 200 168ms req=46a0b9c4\n2026-10-02T10:48:42Z http GET /v2/shipments/23577/events 201 622ms req=e50bdd28\n2026-10-02T10:48:43Z health scheduler ok 305ms\n2026-10-02T10:48:45Z worker inventory job=108788da finished in 188ms\n2026-10-02T10:48:47Z http DELETE /v2/users/80513/profile 204 798ms req=f50f123b\n2026-10-02T10:48:49Z http PUT /v2/catalog/items/72640 200 729ms req=7d048bb9\n2026-10-02T10:48:51Z http PUT /v2/invoices/54790/lines 409 393ms req=b461af7a\n2026-10-02T10:48:53Z http GET /v2/invoices/17864/lines 200 387ms req=0042c67f\n2026-10-02T10:48:55Z http GET /v2/orders/92248 200 441ms req=64138562\n2026-10-02T10:48:57Z http PUT /v2/cart/22234 200 728ms req=f6f5aac0\n2026-10-02T10:48:58Z health auth ok 858ms\n2026-10-02T10:48:59Z http DELETE /v2/orders/42946 409 12ms req=dc9be977\n2026-10-02T10:49:01Z http GET /v2/invoices/71062/lines 204 396ms req=c7c32099\n2026-10-02T10:49:03Z worker shipping job=ccb8bbc4 finished in 209ms\n2026-10-02T10:49:04Z cache mailer hits=3879 misses=265\n2026-10-02T10:49:05Z http PUT /v2/shipments/34887/events 304 7ms req=a6a6cfab\n2026-10-02T10:49:06Z http GET /v2/users/51547/profile 204 729ms req=64afddb5\n2026-10-02T10:49:07Z worker billing job=e348c1f6 finished in 392ms\n2026-10-02T10:49:09Z health checkout ok 282ms\n2026-10-02T10:49:10Z worker shipping job=2d0450ce finished in 130ms\nend of feed: there is no next page.\n",
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Page 8: live scheduler b30d1f7, notifier d75beb8. That is the end of the feed."
+        },
+        {
+          "type": "tool_use",
+          "id": "call-9",
+          "name": "write",
+          "input": {
+            "path": "live.json",
+            "content": "{\n  \"auth\": \"4922e1f\",\n  \"billing\": \"e7f6570\",\n  \"catalog\": \"20558e0\",\n  \"checkout\": \"58ad19c\",\n  \"gateway\": \"3cfc211\",\n  \"inventory\": \"8d466d4\",\n  \"ledger\": \"15e489b\",\n  \"mailer\": \"170bd83\",\n  \"notifier\": \"d75beb8\",\n  \"payments\": \"924344b\",\n  \"profile\": \"c564a17\",\n  \"ratings\": \"8155392\",\n  \"reports\": \"9fc1a95\",\n  \"scheduler\": \"b30d1f7\",\n  \"search\": \"028baf1\",\n  \"shipping\": \"fc05fb3\"\n}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call-9",
+          "content": "wrote live.json",
+          "is_error": false
+        }
+      ]
+    }
+  ],
+  "status": "done"
+}

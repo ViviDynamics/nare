@@ -197,9 +197,16 @@ def test_extended_is_opt_in_and_verify_still_sees_every_case(tmp_path: Path) -> 
 def test_the_extended_tier_defaults_to_fewer_reps_and_a_longer_timeout() -> None:
     from benchmarks.runner.case import TIER_CHOICES, TIER_DEFAULTS
 
-    assert TIER_CHOICES == ("smoke", "full", "extended")
+    assert TIER_CHOICES == ("smoke", "full", "extended", "sweep")
     assert TIER_DEFAULTS["extended"].reps < TIER_DEFAULTS["full"].reps
     assert TIER_DEFAULTS["extended"].timeout > TIER_DEFAULTS["full"].timeout
+
+
+def test_the_sweep_tier_defaults_to_the_full_tiers_reps_and_timeout() -> None:
+    """#43: a sweep compares points of one case, at the scale full runs it."""
+    from benchmarks.runner.case import TIER_DEFAULTS
+
+    assert TIER_DEFAULTS["sweep"] == TIER_DEFAULTS["full"]
 
 
 def test_load_cases_on_an_empty_root_returns_nothing(tmp_path: Path) -> None:

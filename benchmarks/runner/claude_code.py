@@ -58,6 +58,11 @@ EXCLUDED_CASES: dict[str, str] = {
     "context-overflow-small-window": (
         "passes --context-window, a nare flag with no Claude Code counterpart"
     ),
+    "deploy-feed-window": (
+        "an instrument for nare's compaction point sweep: it passes "
+        "--context-window and --command-tools, nare flags with no Claude Code "
+        "counterpart, and reads nare's session file"
+    ),
     "mcp-fanout": (
         "MCP is wired per harness (nare's mcp.json and server__tool names); "
         "not wired for Claude Code in this round"
