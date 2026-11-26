@@ -50,7 +50,7 @@ esac
 """
 
 # What the installer may call besides uv. Everything else is a shell builtin.
-TOOLS = ("curl", "mktemp", "rm", "sha256sum", "shasum")
+TOOLS = ("curl", "mkdir", "mktemp", "mv", "rm", "sha256sum", "shasum")
 
 
 @dataclass
@@ -98,10 +98,12 @@ def release(tmp_path: Path) -> Release:
     return Release(home, assets, tools, tmp_path / "uv.log", installer)
 
 
-def _with_uv(release: Release) -> None:
-    uv = release.tools / "uv"
+def _with_uv(release: Release, where: Path | None = None) -> Path:
+    uv = (where or release.tools) / "uv"
+    uv.parent.mkdir(parents=True, exist_ok=True)
     uv.write_text(STUB_UV, encoding="utf-8")
     uv.chmod(0o755)
+    return uv
 
 
 def _run(
@@ -112,6 +114,7 @@ def _run(
     tui_exit: int = 0,
     release_url: str | None = None,
     extra_path: str = "",
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = {
         "HOME": str(release.home),
@@ -122,6 +125,7 @@ def _run(
         "STUB_LOG": str(release.log),
         "STUB_REPORTS": reports,
         "STUB_TUI_EXIT": str(tui_exit),
+        **(extra_env or {}),
     }
     if stdin:
         # The documented form: curl ... | sh
@@ -244,13 +248,15 @@ def test_a_release_url_must_be_https_or_file(release: Release, url: str) -> None
 def test_it_says_how_to_reach_nare_when_the_bin_dir_is_off_path(
     release: Release,
 ) -> None:
-    _with_uv(release)
+    uv = _with_uv(release)
 
     off_path = _run(release)
     on_path = _run(release, extra_path=f"{release.home / 'bin'}{os.pathsep}")
 
     assert off_path.returncode == 0, off_path.stderr
     assert "PATH" in off_path.stdout
+    # The uv it used, by path: it may have been found off PATH too.
+    assert f"{uv} tool update-shell" in off_path.stdout
     assert on_path.returncode == 0, on_path.stderr
     assert "PATH" not in on_path.stdout
 
@@ -268,3 +274,71 @@ def test_it_refuses_arguments_it_does_not_know(release: Release) -> None:
     assert result.returncode != 0
     assert "bound to" in result.stderr
     assert _installs(release) == []
+
+
+def _installed_path(release: Release) -> str:
+    [install] = _installs(release)
+    return install.split(" @ file://", 1)[1]
+
+
+def test_the_verified_wheel_is_kept_where_uv_can_read_it_again(
+    release: Release,
+) -> None:
+    # uv records the wheel's path and re-reads it on upgrade or reinstall, so
+    # a temporary directory would break uv tool upgrade later.
+    _with_uv(release)
+
+    result = _run(release)
+
+    assert result.returncode == 0, result.stderr
+    kept = release.home / ".local" / "share" / "nare" / "wheels" / WHEEL
+    assert _installed_path(release) == str(kept)
+    assert kept.read_bytes() == (release.assets / WHEEL).read_bytes()
+
+
+def test_xdg_data_home_holds_the_kept_wheel(release: Release, tmp_path: Path) -> None:
+    _with_uv(release)
+    data = tmp_path / "data"
+
+    result = _run(release, extra_env={"XDG_DATA_HOME": str(data)})
+
+    assert result.returncode == 0, result.stderr
+    assert _installed_path(release) == str(data / "nare" / "wheels" / WHEEL)
+
+
+def test_a_new_install_drops_the_previous_releases_wheel(release: Release) -> None:
+    _with_uv(release)
+    wheels = release.home / ".local" / "share" / "nare" / "wheels"
+    wheels.mkdir(parents=True)
+    (wheels / "nare-2026.11.8-py3-none-any.whl").write_bytes(b"old\n")
+
+    result = _run(release)
+
+    assert result.returncode == 0, result.stderr
+    assert sorted(path.name for path in wheels.iterdir()) == [WHEEL]
+
+
+def test_a_failed_check_keeps_the_previous_releases_wheel(release: Release) -> None:
+    _with_uv(release)
+    wheels = release.home / ".local" / "share" / "nare" / "wheels"
+    wheels.mkdir(parents=True)
+    (wheels / "nare-2026.11.8-py3-none-any.whl").write_bytes(b"old\n")
+
+    result = _run(release, tui_exit=1)
+
+    assert result.returncode != 0
+    assert (wheels / "nare-2026.11.8-py3-none-any.whl").exists()
+
+
+@pytest.mark.parametrize("where", [".local/bin", ".cargo/bin", "xdg-bin"])
+def test_it_finds_uv_where_uvs_own_installer_put_it(
+    release: Release, where: str
+) -> None:
+    uv = _with_uv(release, release.home / where)
+    assert shutil.which("uv", path=str(release.tools)) is None
+
+    result = _run(release, extra_env={"XDG_BIN_HOME": str(release.home / "xdg-bin")})
+
+    assert result.returncode == 0, result.stderr
+    assert len(_installs(release)) == 1
+    assert f"{uv} tool update-shell" in result.stdout

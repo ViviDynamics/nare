@@ -6,8 +6,8 @@
 # Bound to one release: the release job wrote this script's tag and its
 # wheel's SHA-256 in at build time, so it installs that wheel and nothing
 # else, from whichever URL it was fetched. Needs curl and uv
-# (https://docs.astral.sh/uv/); uv brings Python 3.12 when the system has none.
-# Running it again reinstalls the same release.
+# (https://docs.astral.sh/uv/); uv brings Python 3.12 or newer when the system
+# has none. Running it again reinstalls the same release.
 #
 # Everything runs inside main, called on the last line, so a download cut off
 # part way through runs nothing.
@@ -48,10 +48,25 @@ main() (
         *) fail 'NARE_RELEASE_URL must be an https:// or file:// URL.' ;;
     esac
 
+    case "${HOME:-}" in
+        /?*) ;;
+        *) fail 'HOME must be set to an absolute path.' ;;
+    esac
     command -v curl >/dev/null 2>&1 || fail 'curl is required. Install it, then run this again.'
+    # uv's own installer may have just put it somewhere this shell's PATH
+    # does not reach yet: XDG_BIN_HOME, ~/.local/bin, or ~/.cargo/bin.
     uv=$(command -v uv 2>/dev/null || true)
-    if [ -z "$uv" ] && [ -x "${HOME:-}/.local/bin/uv" ]; then
-        uv=$HOME/.local/bin/uv
+    if [ -z "$uv" ]; then
+        case "${XDG_BIN_HOME:-}" in
+            /*) xdg_bin=$XDG_BIN_HOME ;;
+            *) xdg_bin=$HOME/.local/bin ;;
+        esac
+        for candidate in "$xdg_bin/uv" "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
+            if [ -x "$candidate" ]; then
+                uv=$candidate
+                break
+            fi
+        done
     fi
     [ -n "$uv" ] || fail 'uv is required. Install it from' \
         'https://docs.astral.sh/uv/getting-started/installation/ and run this again.'
@@ -80,13 +95,22 @@ main() (
             "with, so nothing was installed."
     printf 'Verified SHA-256 %s\n' "$wheel_sha256"
 
+    # uv records the wheel's path and reads it again on uv tool upgrade or a
+    # reinstall, so the verified wheel is kept, not left in $tmp.
+    case "${XDG_DATA_HOME:-}" in
+        /*) wheel_dir=$XDG_DATA_HOME/nare/wheels ;;
+        *) wheel_dir=$HOME/.local/share/nare/wheels ;;
+    esac
+    mkdir -p "$wheel_dir" || fail "could not create $wheel_dir."
+    mv -f "$tmp/$wheel" "$wheel_dir/$wheel" || fail "could not write $wheel_dir/$wheel."
+
     # --force replaces an earlier install, of this release or another, so a
     # repeat run ends in the same state as the first. uv tool install takes
     # the default interpreter rather than the wheel's requires-python, so ask
     # for one that fits; uv downloads it when the system has none.
     printf 'Installing nare %s with the terminal UI\n' "$version"
     "$uv" tool install --force --python '>=3.12' \
-        "nare[tui] @ file://$tmp/$wheel" </dev/null \
+        "nare[tui] @ file://$wheel_dir/$wheel" </dev/null \
         || fail 'uv could not install nare; its error is above.'
 
     bin_dir=$("$uv" tool dir --bin) || fail 'uv could not name its tool bin directory.'
@@ -98,6 +122,11 @@ main() (
     "$tool_dir/nare/bin/python" -c 'import nare.tui.app' </dev/null \
         || fail "nare $version installed, but its TUI does not import."
 
+    # Only now is an earlier release's wheel no longer needed.
+    for kept in "$wheel_dir"/nare-*.whl; do
+        [ "$kept" = "$wheel_dir/$wheel" ] || rm -f "$kept"
+    done
+
     printf '\nnare %s is installed, with the terminal UI.\n' "$version"
     printf '  Start the terminal UI:  nare tui\n'
     printf '  Run without the UI:     nare run --yes "..."\n'
@@ -105,7 +134,7 @@ main() (
     case ":${PATH:-}:" in
         *":$bin_dir:"*) ;;
         *)
-            printf '\n%s is not on your PATH yet. Run: uv tool update-shell\n' "$bin_dir"
+            printf '\n%s is not on your PATH yet. Run: %s tool update-shell\n' "$bin_dir" "$uv"
             printf 'then open a new terminal, or call %s/nare directly.\n' "$bin_dir"
             ;;
     esac

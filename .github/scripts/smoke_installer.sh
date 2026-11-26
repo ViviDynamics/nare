@@ -15,8 +15,10 @@ version=${2:?usage: smoke_installer.sh DIST VERSION}
 
 HOME=$(mktemp -d)
 export HOME
-# A clean install: nothing from the runner's uv tool setup carries over.
-unset UV_TOOL_DIR UV_TOOL_BIN_DIR XDG_DATA_HOME XDG_BIN_HOME XDG_CONFIG_HOME
+# A clean install: nothing from the runner's uv setup carries over, not its
+# tool directories, its cache, its pinned Python or an active environment.
+unset UV_TOOL_DIR UV_TOOL_BIN_DIR UV_CACHE_DIR UV_PYTHON UV_PYTHON_INSTALL_DIR \
+    VIRTUAL_ENV XDG_DATA_HOME XDG_BIN_HOME XDG_CACHE_HOME XDG_CONFIG_HOME
 export NARE_RELEASE_URL="file://$dist"
 
 check() {
@@ -44,4 +46,10 @@ check
 
 echo "== repeat install"
 sh "$dist/install.sh"
+check
+
+# uv reads the installed wheel again on upgrade, so the installer must have
+# kept it somewhere that outlives the run.
+echo "== uv tool upgrade"
+uv tool upgrade nare
 check

@@ -14,11 +14,14 @@ Then start the terminal UI with `nare tui`, after setting `ANTHROPIC_API_KEY`
 or choosing another [provider](#providers).
 
 It needs `curl` and [uv](https://docs.astral.sh/uv/getting-started/installation/).
-uv brings Python 3.12 if the machine has none, and installs nare as a uv tool
-in its own environment, with the `nare` command in uv's tool bin directory
-(`uv tool dir --bin`, usually `~/.local/bin`). The installer says so when that
-directory is not on `PATH`; `uv tool update-shell` adds it. Running the command
-again reinstalls cleanly, and `uv tool uninstall nare` removes it.
+uv brings Python 3.12 or newer if the machine has none, and installs nare as a
+uv tool in its own environment, with the `nare` command in uv's tool bin
+directory (`uv tool dir --bin`, usually `~/.local/bin`). The installer says so
+when that directory is not on `PATH`; `uv tool update-shell` adds it. The
+verified wheel is kept in `~/.local/share/nare/wheels` (under `XDG_DATA_HOME`
+when that is set), because uv reads it again on `uv tool upgrade`. Running the
+command again reinstalls cleanly, and moves to the newest release when there is
+one. `uv tool uninstall nare` removes nare; the kept wheel can then be deleted.
 
 The script is bound to the release it came from: it downloads that release's
 wheel by its exact tag, checks it against the SHA-256 written into the script

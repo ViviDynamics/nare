@@ -36,6 +36,18 @@ mode; Windows.
   than the wheel's requires-python (found by the first real smoke run, against
   a system Python 3.11), so the installer names the range. A repeat run
   reinstalls the same release cleanly.
+- The verified wheel is kept in `${XDG_DATA_HOME:-~/.local/share}/nare/wheels`,
+  not a temporary directory: uv records its path and reads it again on
+  `uv tool upgrade` or a reinstall. An earlier release's wheel is removed only
+  after the new install passes its checks.
+- When uv is not on PATH, the installer looks where uv's own installer puts it
+  (`XDG_BIN_HOME`, `~/.local/bin`, `~/.cargo/bin`) and names that path in its
+  PATH hint.
+- `nare tui` without the extra points a release at its own tag's installer,
+  never latest, so the hint cannot move a pinned install; a source build is
+  told `uv sync --extra tui`.
+- A rerun of the release workflow for a published release skips build,
+  render, smoke and create, so it can only retry the image push.
 - After installing, the installer checks `nare --version` against its own tag
   and imports `nare.tui.app` in the tool's environment, then prints how to
   start the TUI and, when needed, how to put uv's bin directory on PATH.
