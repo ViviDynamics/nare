@@ -346,3 +346,28 @@ async def test_the_system_keychain_cannot_be_read(layout: dict[str, Path]) -> No
         denied=sandbox.default_denied(),
     )
     assert code != 0, body
+
+
+async def test_a_sandboxed_bash_writes_into_an_added_root_only(
+    tmp_path: Path,
+) -> None:
+    from nare.tools import Policy, dispatch
+    from nare.transport import ToolCall
+
+    root, added, neither = tmp_path / "A", tmp_path / "B", tmp_path / "C"
+    for path in (root, added, neither):
+        path.mkdir()
+    policy = Policy(root=root, extra_roots=(added,), bash_sandbox=True)
+
+    async def bash(command: str) -> dict[str, object]:
+        return await dispatch(
+            ToolCall(id="c1", name="bash", args={"command": command}),
+            policy,
+            approve=lambda *_: True,
+        )
+
+    await bash(f"echo ok > '{added / 'x'}'")
+    await bash(f"echo no > '{neither / 'x'}'")
+
+    assert (added / "x").read_text() == "ok\n"
+    assert not (neither / "x").exists()
