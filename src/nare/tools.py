@@ -1542,6 +1542,11 @@ class Policy:
                 "--bash-sandbox refuses a root of /: that would make the whole "
                 "disk writable"
             )
+        if any(extra.resolve() == Path("/") for extra in self.extra_roots):
+            raise ValueError(
+                "--bash-sandbox refuses an --add-root of /: that would make the "
+                "whole disk writable"
+            )
         found = sandbox.availability()
         if not found.available:
             raise ValueError(
@@ -1627,23 +1632,29 @@ class Policy:
     def confinement(self) -> sandbox.Confinement | None:
         """What a bash call runs under, or None when the sandbox is off.
 
-        Refused when the root contains a credential location. Renaming a folder
-        that holds one, inside the root, would move the credential to a path
-        that is not denied, so the root must not contain one.
+        Refused when the root, or an added root, contains a credential
+        location. Renaming a folder that holds one, inside a writable root,
+        would move the credential to a path that is not denied, so no root may
+        contain one.
         """
         if not self.bash_sandbox:
             return None
         assert self.root is not None  # _check_sandbox ran at construction
         root = self.root.resolve()
+        extras = tuple(extra.resolve() for extra in self.extra_roots)
         denied = sandbox.default_denied()
-        for path in denied:
-            if path == root or path.is_relative_to(root):
-                raise ValueError(
-                    f"--root {root} contains the credential location {path}; "
-                    "choose a root that does not hold it, since bash could "
-                    "rename the folder and read the credential from its new path"
-                )
-        return sandbox.Confinement(root=root, network=self.bash_network, denied=denied)
+        for flag, writable in [("--root", root), *(("--add-root", e) for e in extras)]:
+            for path in denied:
+                if path == writable or path.is_relative_to(writable):
+                    raise ValueError(
+                        f"{flag} {writable} contains the credential location "
+                        f"{path}; choose a root that does not hold it, since bash "
+                        "could rename the folder and read the credential from "
+                        "its new path"
+                    )
+        return sandbox.Confinement(
+            root=root, network=self.bash_network, denied=denied, writable=extras
+        )
 
     def resolve(self, path: str) -> Path:
         """Resolve a model-supplied path, refusing anything outside the roots.

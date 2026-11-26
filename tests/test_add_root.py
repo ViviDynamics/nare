@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from nare import sandbox
+from nare.sandbox import Availability
 from nare.tools import Policy, dispatch
 from nare.transport import ToolCall
 
@@ -175,3 +177,91 @@ def test_the_policy_records_the_added_roots(dirs: dict[str, Path]) -> None:
 
 def test_the_policy_records_no_added_roots_key_without_one(tmp_path: Path) -> None:
     assert "extra_roots" not in Policy(root=tmp_path).recorded()
+
+
+# Under --bash-sandbox an added root is writable like the root.
+
+
+@pytest.fixture
+def available(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sandbox, "availability", lambda: Availability(mechanism="seatbelt", reason="")
+    )
+
+
+def test_seatbelt_lets_bash_write_into_an_added_root(tmp_path: Path) -> None:
+    root, added, scratch = tmp_path / "A", tmp_path / "B", tmp_path / "scratch"
+
+    profile = sandbox.seatbelt_profile(
+        root, scratch, (), network=False, writable=(added,)
+    )
+
+    assert f'(allow file-write* (subpath "{root}"))' in profile
+    assert f'(allow file-write* (subpath "{added}"))' in profile
+
+
+def test_seatbelt_denies_a_credential_after_the_added_root_allow(
+    tmp_path: Path,
+) -> None:
+    added, secret = tmp_path / "B", tmp_path / "B-creds"
+
+    profile = sandbox.seatbelt_profile(
+        tmp_path / "A", tmp_path / "s", (secret,), network=False, writable=(added,)
+    )
+
+    allow = profile.index(f'(allow file-write* (subpath "{added}"))')
+    assert profile.index(f'(deny file-write* (subpath "{secret}"))') > allow
+
+
+def test_bwrap_binds_an_added_root_writable_before_the_masks(tmp_path: Path) -> None:
+    secret = tmp_path / ".ssh"
+    secret.mkdir()
+
+    argv = sandbox.bwrap_argv(
+        Path("/work/A"),
+        Path("/tmp/nare-bash-x"),
+        (secret,),
+        network=False,
+        command=["bash", "-c", "true"],
+        writable=(Path("/work/B"),),
+    )
+
+    binds = [argv[i + 1 : i + 3] for i, a in enumerate(argv) if a == "--bind"]
+    assert ["/work/B", "/work/B"] in binds
+    last_bind = max(i for i, a in enumerate(argv) if a == "--bind")
+    assert argv.index(str(secret)) > last_bind
+    assert argv[argv.index("--chdir") + 1] == "/work/A"
+
+
+def test_the_confinement_carries_the_added_roots(
+    available: None, dirs: dict[str, Path]
+) -> None:
+    sandboxed = Policy(root=dirs["A"], extra_roots=(dirs["B"],), bash_sandbox=True)
+
+    confine = sandboxed.confinement()
+
+    assert confine is not None
+    assert confine.root == dirs["A"].resolve()
+    assert confine.writable == (dirs["B"].resolve(),)
+    assert sandboxed.recorded()["bash_sandbox"]["writable"] == [
+        str(dirs["A"].resolve()),
+        str(dirs["B"].resolve()),
+    ]
+
+
+def test_an_added_root_that_contains_a_credential_is_refused(
+    available: None, dirs: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = dirs["B"] / ".ssh"
+    secret.mkdir()
+    monkeypatch.setattr(sandbox, "default_denied", lambda: (secret,))
+
+    with pytest.raises(ValueError, match="--add-root .* contains the credential"):
+        Policy(root=dirs["A"], extra_roots=(dirs["B"],), bash_sandbox=True)
+
+
+def test_an_added_root_of_slash_is_refused_under_the_sandbox(
+    available: None, dirs: dict[str, Path]
+) -> None:
+    with pytest.raises(ValueError, match="--add-root of /"):
+        Policy(root=dirs["A"], extra_roots=(Path("/"),), bash_sandbox=True)

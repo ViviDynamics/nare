@@ -2,9 +2,10 @@
 
 With `Policy(bash_sandbox=True)` (the `--bash-sandbox` flag), each bash command
 runs under the platform's own sandbox: `sandbox-exec` (Seatbelt) on macOS and
-`bwrap` (bubblewrap) on Linux. Writes are allowed only inside the root and a
-private scratch directory made for the call. Reads are allowed except for
-credential locations. The network is off unless `bash_network` allows it.
+`bwrap` (bubblewrap) on Linux. Writes are allowed only inside the root, any
+added roots, and a private scratch directory made for the call. Reads are
+allowed except for credential locations. The network is off unless
+`bash_network` allows it.
 
 Nothing here falls back. When confinement was asked for and cannot run, the
 call is refused and no shell starts, so a command never runs unconfined because
@@ -232,12 +233,14 @@ def seatbelt_profile(
     denied: Sequence[Path],
     *,
     network: bool,
+    writable: Sequence[Path] = (),
 ) -> str:
     """The Seatbelt profile for one bash call.
 
     Deny by default, then open what a shell needs. Seatbelt uses the last rule
     that matches, so the credential denials come after the broad read allow and
-    the write allows. Paths are used as given: the caller resolves them.
+    the write allows. `writable` is the added roots, writable like the root.
+    Paths are used as given: the caller resolves them.
     """
     keychain = " ".join(f'(global-name "{name}")' for name in KEYCHAIN_SERVICES)
     lines = [
@@ -258,6 +261,7 @@ def seatbelt_profile(
         f"(allow file-write* (subpath {_quote(root)}))",
         f"(allow file-write* (subpath {_quote(scratch)}))",
     ]
+    lines += [f"(allow file-write* (subpath {_quote(path)}))" for path in writable]
     for path in denied:
         lines.append(f"(deny file-read* (subpath {_quote(path)}))")
         lines.append(f"(deny file-write* (subpath {_quote(path)}))")
@@ -274,16 +278,18 @@ def bwrap_argv(
     network: bool,
     command: Sequence[str],
     bwrap: str = "bwrap",
+    writable: Sequence[Path] = (),
 ) -> list[str]:
     """The bubblewrap command line for one bash call.
 
-    The host is mounted read-only, then the root and the scratch directory are
-    bound writable on top, and each credential is masked after that: a folder
+    The host is mounted read-only, then the root, each added root (`writable`)
+    and the scratch directory are bound writable on top, and each credential is
+    masked after that: a folder
     by an empty read-only tmpfs, a file by /dev/null. /tmp and /run are replaced
     by empty tmpfs mounts, made read-only last. Unix sockets live in those
     folders (ssh-agent, a container runtime socket, the D-Bus session bus), and
     a read-only mount does not stop connect(), so the host copies are hidden
-    rather than left reachable. The root and the scratch directory are the only
+    rather than left reachable. The roots and the scratch directory are the only
     writable places, as on macOS. The PID namespace hides every host
     process, so /proc names nothing outside. `--new-session` is not passed, since
     the spawn already starts a session and a second setsid would leave the
@@ -317,6 +323,8 @@ def bwrap_argv(
         str(root),
         str(root),
     ]
+    for path in writable:
+        argv += ["--bind", str(path), str(path)]
     for path in denied:
         if path.is_dir():
             # Empty and read-only: a command sees no files, and writes fail.
@@ -332,7 +340,8 @@ def bwrap_argv(
 
 @dataclass(frozen=True)
 class Confinement:
-    """What one bash call may reach: the root, the network, and the denied paths.
+    """What one bash call may reach: the root, the added roots (`writable`),
+    the network, and the denied paths.
 
     `wrap` builds the argv for the platform, or raises SandboxUnavailable. It
     never returns the command unwrapped.
@@ -341,6 +350,7 @@ class Confinement:
     root: Path
     network: bool = False
     denied: tuple[Path, ...] = ()
+    writable: tuple[Path, ...] = ()
 
     def wrap(
         self, command: Sequence[str], scratch: Path, found: Availability
@@ -348,7 +358,11 @@ class Confinement:
         if found.mechanism == "seatbelt":
             binary = found.binary or "sandbox-exec"
             profile = seatbelt_profile(
-                self.root, scratch, self.denied, network=self.network
+                self.root,
+                scratch,
+                self.denied,
+                network=self.network,
+                writable=self.writable,
             )
             return [binary, "-p", profile, *command]
         if found.mechanism == "bubblewrap":
@@ -359,6 +373,7 @@ class Confinement:
                 network=self.network,
                 command=command,
                 bwrap=found.binary or "bwrap",
+                writable=self.writable,
             )
         raise SandboxUnavailable(found.reason or "no OS sandbox")
 
@@ -369,7 +384,7 @@ def record(confine: Confinement, mechanism: str | None) -> dict[str, Any]:
         "mechanism": mechanism,
         "profile": PROFILE,
         "network": confine.network,
-        "writable": [str(confine.root)],
+        "writable": [str(path) for path in (confine.root, *confine.writable)],
         "private_temp": True,
         "denied": [str(path) for path in confine.denied],
     }
