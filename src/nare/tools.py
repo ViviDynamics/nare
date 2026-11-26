@@ -1477,6 +1477,10 @@ class Policy:
 
     tools: frozenset[str] = field(default_factory=lambda: frozenset(TOOLS))
     root: Path | None = None
+    # More directories the file tools may resolve into (--add-root), under the
+    # same symlink and `..` rules as the root. The root alone is bash's working
+    # directory and the base for relative paths. Needs a root.
+    extra_roots: tuple[Path, ...] = ()
     external: dict[str, ExternalTool] = field(default_factory=dict)
     pending: frozenset[str] = frozenset()
     image_input: bool = False
@@ -1506,6 +1510,11 @@ class Policy:
         validate_bash_rules(self.bash_deny, "deny")
         if (self.bash_allow or self.bash_deny) and "bash" not in self.tools:
             raise ValueError("bash command patterns need the bash tool in the policy")
+        if self.extra_roots and self.root is None:
+            raise ValueError(
+                "--add-root needs --root: relative paths and bash's working "
+                "directory come from --root, and an added root does not replace it"
+            )
         if self.bash_network and not self.bash_sandbox:
             raise ValueError(
                 "--bash-network needs --bash-sandbox: the network is only "
@@ -1601,6 +1610,12 @@ class Policy:
             **({"mcp_defer": True} if self.deferring() else {}),
             "tools": sorted(self.tools),
             "root": None if self.root is None else str(self.root),
+            # Only when given, so a run without one writes the record it always has.
+            **(
+                {"extra_roots": [str(path) for path in self.extra_roots]}
+                if self.extra_roots
+                else {}
+            ),
         }
 
     def _sandbox_record(self) -> dict[str, Any]:
@@ -1631,12 +1646,13 @@ class Policy:
         return sandbox.Confinement(root=root, network=self.bash_network, denied=denied)
 
     def resolve(self, path: str) -> Path:
-        """Resolve a model-supplied path, refusing anything outside the root.
+        """Resolve a model-supplied path, refusing anything outside the roots.
 
         `resolve()` follows symlinks and normalizes `..`, so a link planted
-        inside the root during the run is caught here rather than obeyed. A
+        inside a root during the run is caught here rather than obeyed. A
         relative path is relative to the root when there is one, which is the
-        same directory bash runs in.
+        same directory bash runs in; an added root only widens where an
+        absolute path, or a link, may land.
         """
         if self.root is None:
             return Path(path)
@@ -1644,7 +1660,13 @@ class Policy:
         candidate = Path(path)
         candidate = root / candidate if not candidate.is_absolute() else candidate
         resolved = candidate.resolve()
-        if not resolved.is_relative_to(root):
+        roots = [root, *(extra.resolve() for extra in self.extra_roots)]
+        if not any(resolved.is_relative_to(allowed) for allowed in roots):
+            if self.extra_roots:
+                added = ", ".join(str(extra) for extra in roots[1:])
+                raise ValueError(
+                    f"{path} is outside the root {root} and the added roots {added}"
+                )
             raise ValueError(f"{path} is outside the root {root}")
         return resolved
 
