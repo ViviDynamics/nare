@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -396,8 +397,8 @@ _CITES_SCHEMA = {
 }
 
 
-async def _drain(session: Session, provider: FakeProvider, **kwargs: object) -> None:
-    async for _ in run(session, transport=provider, **kwargs):  # type: ignore[arg-type]
+async def _drain(session: Session, provider: FakeProvider, **kwargs: Any) -> None:
+    async for _ in run(session, transport=provider, **kwargs):
         pass
 
 
