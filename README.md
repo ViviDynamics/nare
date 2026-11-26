@@ -6,18 +6,42 @@ file and an exit code.
 
 ## Install
 
+On Linux or macOS, this installs the newest release with its terminal UI:
+
+    curl -fsSL https://github.com/ViviDynamics/nare/releases/latest/download/install.sh | sh
+
+Then start the terminal UI with `nare tui`, after setting `ANTHROPIC_API_KEY`
+or choosing another [provider](#providers).
+
+It needs `curl` and [uv](https://docs.astral.sh/uv/getting-started/installation/).
+uv brings Python 3.12 if the machine has none, and installs nare as a uv tool
+in its own environment, with the `nare` command in uv's tool bin directory
+(`uv tool dir --bin`, usually `~/.local/bin`). The installer says so when that
+directory is not on `PATH`; `uv tool update-shell` adds it. Running the command
+again reinstalls cleanly, and `uv tool uninstall nare` removes it.
+
+The script is bound to the release it came from: it downloads that release's
+wheel by its exact tag, checks it against the SHA-256 written into the script
+when the release was built, and refuses to install anything else. Releases
+published since the installer was added carry it too, so
+`releases/download/<version>/install.sh` installs exactly that release.
+Earlier releases have none; install those from the wheel, as below.
+
 Every release publishes a wheel and a container image. nare is not on PyPI, so
 `pip install nare` does not work and this file will not pretend it does.
 
-Pin a version. `latest` is fine for a look around and wrong for anything that
-records what produced a result. A published release is never deleted or moved,
+For anything that records what produced a result, pin a version: `latest` is
+fine for a look around and wrong for that. A published release is never deleted or moved,
 so a pin keeps working; see [the release policy](docs/contract.md#releases).
 The newest release is on the [releases page](https://github.com/ViviDynamics/nare/releases/latest),
 or `gh release view --repo ViviDynamics/nare --json tagName --jq .tagName`.
 
     # wheel, from the release
     V=2026.11.9
-    uv tool install "https://github.com/ViviDynamics/nare/releases/download/$V/nare-$V-py3-none-any.whl"
+    uv tool install --python 3.12 "https://github.com/ViviDynamics/nare/releases/download/$V/nare-$V-py3-none-any.whl"
+
+    # the same wheel with the terminal UI
+    uv tool install --python 3.12 "nare[tui] @ https://github.com/ViviDynamics/nare/releases/download/$V/nare-$V-py3-none-any.whl"
 
     # container, same argv as the CLI
     docker run --rm -e ANTHROPIC_API_KEY -v "$PWD:/work" \
@@ -29,10 +53,6 @@ or `gh release view --repo ViviDynamics/nare --json tagName --jq .tagName`.
 `nare --version` prints the installed release, the `result` line carries it as
 `nare`, and so does the session file. A caller records the version that
 produced a result rather than whatever main was that day.
-
-For the terminal UI, install the extra:
-
-    uv tool install 'nare[tui]'
 
 ## Providers
 

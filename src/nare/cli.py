@@ -1549,7 +1549,9 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     if args.command == "tui":
         if importlib.util.find_spec("textual") is None:
             print(
-                "nare tui needs the tui extra: uv tool install 'nare[tui]'",
+                "nare tui needs the tui extra. Reinstall nare with it: curl -fsSL "
+                "https://github.com/ViviDynamics/nare/releases/latest/download/"
+                "install.sh | sh",
                 file=sys.stderr,
             )
             return NEVER_STARTED

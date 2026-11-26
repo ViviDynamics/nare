@@ -702,8 +702,12 @@ def test_tui_without_the_extra_exits_two(
     assert main(["tui"]) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
+    # nare is not on PyPI, so the hint names the installer, which brings the
+    # extra, rather than a package name that resolves to nothing.
     assert captured.err.strip() == (
-        "nare tui needs the tui extra: uv tool install 'nare[tui]'"
+        "nare tui needs the tui extra. Reinstall nare with it: curl -fsSL "
+        "https://github.com/ViviDynamics/nare/releases/latest/download/install.sh"
+        " | sh"
     )
 
 

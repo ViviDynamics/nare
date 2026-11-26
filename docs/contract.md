@@ -392,11 +392,14 @@ only works if a version keeps naming the same code, so:
 
 - **A published release and its tag are never deleted or moved.** A version
   that installed once installs again, from the same commit.
-- **A release's assets never change.** The wheel and the sdist are attached in
-  the call that publishes the release, and the repository's releases are
-  immutable, so GitHub refuses any later change to them. Each release's notes
-  carry the SHA-256 of both files, so a caller can pin a hash as well as a
-  version.
+- **A release's assets never change.** The wheel, the sdist and `install.sh`
+  are attached in the call that publishes the release, and the repository's
+  releases are immutable, so GitHub refuses any later change to them. Each
+  release's notes carry the SHA-256 of all three, so a caller can pin a hash as
+  well as a version. `install.sh` is bound to its own release when it is
+  built: it installs that release's wheel, checked against its SHA-256, and no
+  other, so `releases/latest/download/install.sh` never mixes one release's
+  script with another's wheel.
 - **A version's container image is pushed once.** A rerun of the release
   workflow that finds `ghcr.io/vividynamics/nare:<version>` already published
   leaves it, and `latest`, alone.

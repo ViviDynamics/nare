@@ -54,5 +54,5 @@ mode; Windows.
   with the tui extra, checks the version, and a repeat run succeeds.
 - [x] 4. Release workflow: render, validate, smoke, publish with three assets.
   CI job: the same smoke on Linux and macOS for every pull request.
-- [ ] 5. README and contract: the stable command, prerequisites, `nare tui`,
+- [x] 5. README and contract: the stable command, prerequisites, `nare tui`,
   and the pinned form; the CLI's missing-extra hint points at a working command.

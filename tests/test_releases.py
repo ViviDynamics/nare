@@ -76,3 +76,25 @@ def test_the_contract_states_the_policy_and_links_the_record() -> None:
     assert "## Releases" in contract
     assert "never deleted or moved" in contract
     assert "(releases.md)" in contract
+
+
+STABLE_INSTALL = (
+    "curl -fsSL "
+    "https://github.com/ViviDynamics/nare/releases/latest/download/install.sh | sh"
+)
+
+
+def test_the_readme_gives_the_stable_installer_and_how_to_start_the_tui() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    install = readme[readme.index("## Install") : readme.index("## Providers")]
+    assert STABLE_INSTALL in install
+    assert "nare tui" in install
+    assert "uv" in install and "curl" in install
+    # nare is not on PyPI: a bare package name installs nothing.
+    assert "uv tool install 'nare[tui]'" not in readme
+
+
+def test_the_contract_lists_the_installer_among_a_releases_assets() -> None:
+    contract = (ROOT / "docs" / "contract.md").read_text(encoding="utf-8")
+    releases = contract[contract.index("## Releases") :]
+    assert "install.sh" in releases
