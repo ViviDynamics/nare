@@ -9,7 +9,7 @@
     "head_sha": { "type": "string" },
     "run_ids": { "type": "array" },
     "attempt": { "type": "integer" },
-    "state": { "type": "string", "enum": ["green", "failed", "pending", "timed_out", "none", "parked"] },
+    "state": { "type": "string", "enum": ["green", "failed", "failing", "pending", "timed_out", "none", "parked"] },
     "failures": {
       "type": "array",
       "items": {

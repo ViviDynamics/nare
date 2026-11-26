@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # Poll CI for a PR to a terminal state and emit CI_RESULT JSON.
 # usage: ci-watch <pr> [--expect-head SHA] [--timeout-min N] [--timeout-sec N] [--interval-sec S]
-#                      [--parked-grace-sec N]
+#                      [--parked-grace-sec N] [--until-complete] [--issue N]
+# --until-complete: do not stop at failing; wait until every run on the head completed
+# (failed or green). Use it before retrying a flake on a failing head, since a run in
+# progress cannot be re-run.
+# --issue: record the run in that issue's checkpoint context (ci_head, ci_run_ids) as
+# soon as it starts, so a resumed worker knows which run to read. It changes nothing
+# else in the checkpoint (not the stage, not the head), and does nothing when the issue
+# has no checkpoint.
 # --expect-head: only a run for this head (or a head it prefixes) may end the
 # watch. Right after a push GitHub can still report the previous head, whose
 # run is already green; without this the watch reports green on poll 1 for
@@ -16,14 +23,18 @@
 # deadline also reports parked, not timed_out. ci-safety says how to release it.
 # A failed check run from another app (external: true in failed_jobs) has no
 # Actions job log, so none is fetched for it.
-# exit: 0 green, 1 failed, 4 timed out / no runs by the deadline, 5 parked
+# A head is failing as soon as one job failed while others still run (see ci-runs):
+# the watch ends there, with that job's log, instead of waiting for the whole run.
+# in_progress_run_ids names the runs still going; the fix push cancels them where the
+# workflow's concurrency group cancels in progress, otherwise cancel them after it.
+# exit: 0 green, 1 failed or failing, 4 timed out / no runs by the deadline, 5 parked
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/_lib.sh"
 vivi_load_env; vivi_require VIVI_REPO
-pr=${1:-}; [ -n "$pr" ] || vivi_die 2 "usage: ci-watch <pr> [--expect-head SHA] [--timeout-min N] [--timeout-sec N] [--interval-sec S] [--parked-grace-sec N]"
+pr=${1:-}; [ -n "$pr" ] || vivi_die 2 "usage: ci-watch <pr> [--expect-head SHA] [--timeout-min N] [--timeout-sec N] [--interval-sec S] [--parked-grace-sec N] [--until-complete] [--issue N]"
 shift
-timeout_total_sec=$((60 * 60)); interval=30; expect_head=""; parked_grace=600
+timeout_total_sec=$((60 * 60)); interval=30; expect_head=""; parked_grace=600; until_complete=false; issue=""; checkpointed=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --timeout-min) timeout_total_sec=$((${2} * 60)); shift 2;;
@@ -31,6 +42,8 @@ while [ $# -gt 0 ]; do
     --interval-sec) interval=$2; shift 2;;
     --expect-head) expect_head=$2; shift 2;;
     --parked-grace-sec) parked_grace=$2; shift 2;;
+    --until-complete) until_complete=true; shift;;
+    --issue) [ $# -ge 2 ] || vivi_die 2 "--issue needs an issue number"; issue=$2; shift 2;;
     *) vivi_die 2 "unknown option $1";;
   esac
 done
@@ -75,7 +88,23 @@ while :; do
   if [ "$head" != "$first_head" ]; then head_changed=true; echo "head moved $first_head -> $head, following the new run" >&2; first_head=$head; parked_since=""; fi
   state=$(printf '%s' "$snap" | jq -r .state)
   echo "poll $polls: $state (head $head)" >&2
-  case "$state" in green|failed) break;; esac
+  if [ -n "$issue" ]; then
+    ids=$(printf '%s' "$snap" | jq -r '[.runs[].id] | map(tostring) | join(",")')
+    if [ -n "$ids" ] && [ "$head:$ids" != "$checkpointed" ]; then
+      if "$here/checkpoint" context "$issue" --set ci_head="$head" --set ci_run_ids="$ids" >/dev/null 2>&1; then
+        checkpointed="$head:$ids"
+      else
+        echo "warning: could not checkpoint run(s) $ids for issue $issue" >&2
+      fi
+    fi
+  fi
+  case "$state" in
+    green|failed) break;;
+    # Even with --until-complete, stop once no run is still going: what is left open
+    # (a check run from another app, a missing required workflow) cannot clear failing.
+    failing) $until_complete || break
+             [ "$(printf '%s' "$snap" | jq '.in_progress_run_ids | length')" -gt 0 ] || break;;
+  esac
   if [ "$state" = "parked" ]; then
     [ -n "$parked_since" ] || parked_since=$(date +%s)
     if [ $(( $(date +%s) - parked_since )) -ge "$parked_grace" ]; then break; fi
@@ -89,7 +118,7 @@ while :; do
   vivi_sleep "$interval"
 done
 failures='[]'
-if [ "$state" = "failed" ]; then
+if [ "$state" = "failed" ] || [ "$state" = "failing" ]; then
   for row in $(printf '%s' "$snap" | jq -r '.failed_jobs[] | "\(.run_id):\(.job_id):\(.external // false)"'); do
     rid=${row%%:*}; rest=${row#*:}; jid=${rest%%:*}; ext=${rest#*:}
     log_error=false
@@ -98,11 +127,16 @@ if [ "$state" = "failed" ]; then
     if [ "$ext" = true ]; then
       log="(external check run: no Actions job log)"
     else
-      log=$(vivi_gh run view --job "$jid" --log-failed --repo "$VIVI_REPO" 2>/dev/null) || { log_error=true; log="(log unavailable)"; }
-      if ! $log_error && [ -z "$log" ]; then
+      # gh refuses --log-failed while the run is still in progress (state failing), so
+      # a failure or an empty answer falls back to the job's own log, which exists as
+      # soon as the job completed.
+      log=$(vivi_gh run view --job "$jid" --log-failed --repo "$VIVI_REPO" 2>/dev/null) || log=""
+      if [ -z "$log" ]; then
         log=$(vivi_gh api "repos/$VIVI_REPO/actions/jobs/$jid/logs" 2>/dev/null) || log=""
         last_error=$(printf '%s\n' "$log" | grep -n '##\[error\]' | tail -n 1 | cut -d: -f1 || true)
-        if [ -n "$last_error" ]; then log=$(printf '%s\n' "$log" | head -n "$last_error"); fi
+        # A here-string, not printf | head: head stops reading at line N, and under
+        # pipefail a printf still writing a large log dies of SIGPIPE (skills#25).
+        if [ -n "$last_error" ]; then log=$(head -n "$last_error" <<<"$log"); fi
         if [ -z "$log" ]; then log_error=true; log="(log unavailable)"; fi
       fi
     fi
@@ -110,7 +144,7 @@ if [ "$state" = "failed" ]; then
     hint=unknown; match=null
     if [ "$ext" = true ]; then :
     elif $log_error; then :
-    elif printf '%s' "$log" | grep -qE "$INFRA"; then hint=infra
+    elif grep -qE "$INFRA" <<<"$log"; then hint=infra
     elif [ -n "$sigfile" ]; then
       m=""
       while IFS= read -r s || [ -n "$s" ]; do
@@ -131,5 +165,6 @@ attempt=$(printf '%s' "$snap" | jq '[.runs[].run_attempt] | max // 0')
 printf '%s' "$snap" | jq -c --arg state "$state" --argjson failures "$failures" --argjson hc "$head_changed" --argjson attempt "$attempt" --argjson el "$(( $(date +%s) - start ))" '
   {schema:"CI_RESULT", pr, head_sha, run_ids:[.runs[].id], attempt:$attempt, state:$state, failures:$failures,
    failed_runs:(.failed_runs // []), parked_runs:(.parked_runs // []),
+   in_progress_run_ids:(.in_progress_run_ids // []),
    retries_verified:0, retries_unverified:0, elapsed_sec:$el, head_changed:$hc}'
-case "$state" in green) exit 0;; failed) exit 1;; parked) exit 5;; *) exit 4;; esac
+case "$state" in green) exit 0;; failed|failing) exit 1;; parked) exit 5;; *) exit 4;; esac

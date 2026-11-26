@@ -523,9 +523,11 @@ Agent workflow skills for this repo live in [`.agents/skills/`](.agents/skills/)
 (`.claude/skills` and `.opencode/skill` point at the same copies): `conventions`,
 `ci-safety`, `watch-ci`, `merge-pr`, `ship-issue`, `rebase-main`, `copilot-review`,
 and `watch-ci-main`. They were adapted from the org's internal skill set at tag
-`2026.11.1` (Copilot review policy from `2026.10.4`) and are maintained here, tuned to nare. To use them in a fresh clone:
+`2026.11.13` and are maintained here, tuned to nare. Their settings are in the
+committed `repo.env.example`, so a fresh clone needs no setup; an optional, gitignored
+`repo.env` holds only your own `VIVI_ASSIGNEE` and `VIVI_GH_TOKEN_FILE`. To check the
+wiring:
 
-    cp repo.env.example repo.env
     .agents/skills/ci-safety/scripts/check-wiring
 
 The scripts need `gh`, `jq`, and `git`.

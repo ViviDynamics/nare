@@ -4,7 +4,7 @@ description: Use when reading CI state, deciding whether a CI failure is a flake
 license: Elastic-2.0
 compatibility: Requires gh, jq, git. Scripts are bash 3.2 compatible.
 metadata:
-  version: "1.1.0"
+  version: "1.3.0"
 ---
 
 # CI safety
@@ -94,9 +94,23 @@ If that log is non-empty, rebase first and let the fresh run speak.
 
 `$S/ci-watch` retries transient API errors internally, follows the PR if the
 head moves mid-watch (`head_changed: true`), and ends only in `green` (exit 0),
-`failed` (exit 1), `timed_out` (exit 4) or `parked` (exit 5). If it exits 4 with
+`failed` or `failing` (exit 1), `timed_out` (exit 4) or `parked` (exit 5). `failing`
+means a job already failed (not merely cancelled) while other runs or jobs on the head
+are still going: the head cannot turn green, so the watch ends there with the failed
+job's log instead of waiting out the rest. Treat it like `failed`; the fix push cancels
+the doomed runs (watch-ci step 5). If it exits 4 with
 `timed_out`, report the last known state and the elapsed time. Exit 5 is §7.
 "Unknown" is not a state you may report.
+
+**Long waits and tool time limits.** `ci-watch` waits up to 60 minutes by default and
+`merge-verified --wait-min N` up to N minutes per wait. Many harnesses cap one foreground
+command at about 10 minutes and kill it silently, which reads like a hang. Either run the
+command in the background and wait for it to exit (Claude Code: `run_in_background`,
+then wait on the task; never end the turn to wait), or loop with bounded foreground
+calls: `ci-watch --timeout-min 9`, which exits 4 `timed_out` with the state so far, then
+call it again with the same `--expect-head`; `merge-verified` without `--wait-min`, which
+exits 5 or 6 immediately, then call it again. A bounded call that timed out is not a
+result: only green, failed, parked, merged or dequeued is.
 
 ## §7 Parked is not green
 
@@ -131,6 +145,24 @@ What a worker does on `state: parked`:
 - On a PR that is not yours, report `parked` with the `parked_runs` ids and stop.
   Never approve a run on someone else's branch: approving starts their CI.
 - Never report parked as green, as passed, or as "no failures".
+
+## §8 Merge serialization is part of CI safety
+
+A green run is evidence about the base it tested. Every merge moves the base for every
+other PR, so merges are serialized (merge-pr, "One merge at a time"):
+
+- Lease mode: never update a branch from the default branch, and never merge, without
+  the merge lease; `merge-verified` takes it. Never update a branch whose green run is
+  still fresh (`merge-verified <pr> --status` exits 0): that only buys another CI run.
+- Queue mode (`queue`, or `auto` with a queue on the default branch): before enqueueing,
+  every workflow run on the PR head must be green, the path-filtered ones outside the
+  queue included. The merge queue then runs the PR workflow on `merge_group` against
+  the base the PR will land on. A dequeue for red merge group CI is classified exactly like a PR
+  failure (§2 and §3): `cancelled` jobs are not evidence; infra and first-time known
+  flakes get one verified retry, which is re-enqueueing through `merge-verified`; a
+  second occurrence or anything `real` is fixed on the branch. Never re-run a
+  merge_group run by hand: the queue has already moved on, and a green re-run merges
+  nothing.
 
 ## Output contract
 
