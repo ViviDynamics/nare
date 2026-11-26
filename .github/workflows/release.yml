@@ -71,6 +71,18 @@ jobs:
           uv build
           ls "dist/nare-${version}-py3-none-any.whl" "dist/nare-${version}.tar.gz"
 
+      # Bound to this tag and this wheel's SHA-256, so the stable
+      # releases/latest/download/install.sh URL always installs the wheel of
+      # the release it came from.
+      - name: Render the installer for this release
+        run: python3 .github/scripts/release_assets.py render '${{ steps.derive.outputs.version }}'
+
+      # The bytes about to be published, installed the way a reader will: a
+      # clean install, then a repeat. A broken installer stops the release
+      # here, because an immutable release cannot be fixed afterwards.
+      - name: Install from the release assets, clean and again
+        run: .github/scripts/smoke_installer.sh dist '${{ steps.derive.outputs.version }}'
+
       - name: Create GitHub release and tag
         uses: actions/github-script@v7
         env:
@@ -104,27 +116,17 @@ jobs:
             // This repository's releases are immutable, so `gh release upload`
             // afterwards fails with HTTP 422 and a release ships bare.
             const { execFileSync } = require('node:child_process');
-            // Only the artifacts. `uv build` leaves a .gitignore in dist/,
-            // and 2026.9.7 shipped it as an asset called default.gitignore.
-            const files = require('node:fs')
-              .readdirSync('dist')
-              .filter((name) => name.endsWith('.whl') || name.endsWith('.tar.gz'))
-              .map((name) => `dist/${name}`);
-            if (files.length !== 2) {
-              throw new Error(`expected a wheel and an sdist in dist/, found ${files.join(', ') || 'nothing'}`);
-            }
+            // Exactly the wheel, the sdist and install.sh. The check fails on
+            // anything else in dist/ except `uv build`'s own .gitignore, which
+            // 2026.9.7 shipped as an asset called default.gitignore.
+            const report = JSON.parse(execFileSync('python3', [
+              '.github/scripts/release_assets.py', 'check', version,
+            ], { encoding: 'utf8' }));
+            const files = report.files;
             // The hashes go in the notes, so a caller can pin the bytes as well
             // as the version. The assets never change after this call.
-            const { createHash } = require('node:crypto');
-            const digests = files
-              .map((file) => {
-                const digest = createHash('sha256')
-                  .update(require('node:fs').readFileSync(file))
-                  .digest('hex');
-                return `    ${digest}  ${require('node:path').basename(file)}`;
-              })
-              .join('\n');
-            const notes = `${commit.data.commit.message}\n\nSHA-256:\n\n${digests}\n`;
+            const install = `curl -fsSL https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${version}/install.sh | sh`;
+            const notes = `${commit.data.commit.message}\n\nInstall this release with its terminal UI:\n\n    ${install}\n\nSHA-256:\n\n${report.sha256_notes}`;
             execFileSync('gh', [
               'release', 'create', version,
               '--target', sha,

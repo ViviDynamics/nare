@@ -212,3 +212,42 @@ def test_the_command_line_fails_on_a_stray_file(tmp_path: Path) -> None:
     assert listed.returncode != 0
     assert "default.gitignore" in listed.stderr
     assert listed.stdout == ""
+
+
+# The workflows that run it
+
+
+WORKFLOWS = ROOT / ".github" / "workflows"
+
+
+def test_the_release_renders_smokes_and_checks_before_it_publishes() -> None:
+    release = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+    render = release.index("release_assets.py render")
+    smoke = release.index("smoke_installer.sh")
+    check = release.index("release_assets.py', 'check'")
+    publish = release.index("'release', 'create'")
+    # Releases are immutable: everything is attached in the creating call, so
+    # the installer exists and has installed before that call is made.
+    assert render < smoke < check < publish
+    assert "files.length !== 2" not in release
+
+
+def test_every_pull_request_smokes_the_installer_on_linux_and_macos() -> None:
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    job = ci[ci.index("\n  installer:") :]
+    assert "smoke_installer.sh" in job
+    assert "os: [ubuntu-latest, macos-latest]" in job
+    assert "release_assets.py render" in job
+
+
+def test_no_workflow_runs_on_a_self_hosted_runner() -> None:
+    hosted = re.compile(
+        r"^(ubuntu|macos|windows)-[a-z0-9.-]+$|^\$\{\{ matrix\.os \}\}$"
+    )
+    for workflow in WORKFLOWS.glob("*.yml"):
+        text = workflow.read_text(encoding="utf-8")
+        for label in re.findall(r"^\s*runs-on:\s*(.+?)\s*$", text, re.MULTILINE):
+            assert hosted.match(label), (workflow.name, label)
+        for os_list in re.findall(r"^\s*os:\s*\[(.+)\]\s*$", text, re.MULTILINE):
+            for label in os_list.split(","):
+                assert hosted.match(label.strip()), (workflow.name, label)

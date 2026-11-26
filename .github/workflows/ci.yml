@@ -50,6 +50,40 @@ jobs:
         env:
           NARE_REQUIRE_SANDBOX: "1"
 
+  installer:
+    # The release's install.sh, built, rendered and installed exactly as the
+    # release job does it, so a broken installer fails a pull request rather
+    # than a release. Linux and macOS are the systems it supports.
+    name: installer smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      # The next CalVer is tagged locally and never pushed, so the wheel and
+      # the installer carry a release-shaped version, as they do on main.
+      - name: Build a release-shaped wheel and render its installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+          version="$(python3 .github/scripts/next_calver.py)"
+          git tag --force "$version"
+          uv build
+          python3 .github/scripts/release_assets.py render "$version"
+          python3 .github/scripts/release_assets.py check "$version" >/dev/null
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Install from those assets, clean and again
+        run: .github/scripts/smoke_installer.sh dist "$VERSION"
+
   cases:
     name: benchmark cases measure something
     runs-on: ubuntu-latest

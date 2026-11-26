@@ -31,8 +31,11 @@ mode; Windows.
   Linux. One tested path is better than an untested fallback. Without uv the
   installer stops and names uv's install page; it never pipes a second remote
   script.
-- `uv tool install --force` with the extra, from the verified local file. A
-  repeat run reinstalls the same release cleanly.
+- `uv tool install --force --python '>=3.12'` with the extra, from the
+  verified local file. uv tool install takes the default interpreter rather
+  than the wheel's requires-python (found by the first real smoke run, against
+  a system Python 3.11), so the installer names the range. A repeat run
+  reinstalls the same release cleanly.
 - After installing, the installer checks `nare --version` against its own tag
   and imports `nare.tui.app` in the tool's environment, then prints how to
   start the TUI and, when needed, how to put uv's bin directory on PATH.
@@ -49,7 +52,7 @@ mode; Windows.
 - [x] 3. Installer behaviour offline, with a stub uv: verifies the digest and
   refuses a mismatch before installing, refuses a missing uv clearly, installs
   with the tui extra, checks the version, and a repeat run succeeds.
-- [ ] 4. Release workflow: render, validate, smoke, publish with three assets.
+- [x] 4. Release workflow: render, validate, smoke, publish with three assets.
   CI job: the same smoke on Linux and macOS for every pull request.
 - [ ] 5. README and contract: the stable command, prerequisites, `nare tui`,
   and the pinned form; the CLI's missing-extra hint points at a working command.
