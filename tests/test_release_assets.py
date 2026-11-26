@@ -251,3 +251,21 @@ def test_no_workflow_runs_on_a_self_hosted_runner() -> None:
         for os_list in re.findall(r"^\s*os:\s*\[(.+)\]\s*$", text, re.MULTILINE):
             for label in os_list.split(","):
                 assert hosted.match(label.strip()), (workflow.name, label)
+
+
+def test_a_rerun_of_a_published_release_skips_the_build_side_steps() -> None:
+    # A rerun exists to retry the image push. Rendering and installing again
+    # for a release that already exists only adds network failures that would
+    # block it.
+    release = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+    check = release.index("id: existing")
+    gate = "if: steps.existing.outputs.published != 'true'"
+    for step in (
+        "name: Render the installer",
+        "name: Install from the release assets",
+        "name: Create GitHub release",
+    ):
+        start = release.index(step)
+        assert check < start, step
+        end = release.find("\n      - name:", start + 1)
+        assert gate in release[start : end if end != -1 else None], step
