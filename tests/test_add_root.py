@@ -7,12 +7,19 @@ same symlink and `..` rules as the root.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
+from fake_provider import FakeProvider, text_reply, tool_reply
 from nare import sandbox
+from nare.cli import build_parser, main, policy_from_args
+from nare.contract import describe
+from nare.loop import run
+from nare.reads import build as build_reads
 from nare.sandbox import Availability
+from nare.session import Session, new_session
 from nare.tools import Policy, dispatch
 from nare.transport import ToolCall
 
@@ -265,3 +272,186 @@ def test_an_added_root_of_slash_is_refused_under_the_sandbox(
 ) -> None:
     with pytest.raises(ValueError, match="--add-root of /"):
         Policy(root=dirs["A"], extra_roots=(Path("/"),), bash_sandbox=True)
+
+
+# The command line: --add-root PATH, repeatable.
+
+
+def test_nare_run_writes_and_reads_in_an_added_root(
+    dirs: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    target, refused = dirs["B"] / "x", dirs["C"] / "x"
+    session_path = dirs["A"] / "s.json"
+
+    code = main(
+        [
+            "run",
+            "go",
+            "--yes",
+            "--jsonl",
+            "--root",
+            str(dirs["A"]),
+            "--add-root",
+            str(dirs["B"]),
+            "--session",
+            str(session_path),
+        ],
+        transport=FakeProvider(
+            [
+                tool_reply("write", {"path": str(target), "content": "hi"}),
+                tool_reply("read", {"path": str(target)}, call_id="call_2"),
+                tool_reply(
+                    "write", {"path": str(refused), "content": "no"}, call_id="call_3"
+                ),
+                text_reply("done"),
+            ]
+        ),
+    )
+
+    capsys.readouterr()
+    assert code == 0
+    assert target.read_text(encoding="utf-8") == "hi"
+    assert not refused.exists()
+    saved = json.loads(session_path.read_text(encoding="utf-8"))["policy"]
+    assert saved["extra_roots"] == [str(dirs["B"])]
+
+
+def test_add_root_is_repeatable(dirs: dict[str, Path]) -> None:
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--root",
+            str(dirs["A"]),
+            "--add-root",
+            str(dirs["B"]),
+            "--add-root",
+            str(dirs["C"]),
+            "x",
+        ]
+    )
+    args.command_tools = []
+    args.mcp_servers = {}
+
+    assert policy_from_args(args).extra_roots == (dirs["B"], dirs["C"])
+
+
+def test_add_root_without_root_exits_2_naming_both(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(
+        ["run", "go", "--yes", "--add-root", str(tmp_path)],
+        transport=FakeProvider([]),
+    )
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert "--add-root" in captured.err
+    assert "--root" in captured.err.replace("--add-root", "")
+
+
+def test_an_added_root_that_is_not_a_directory_exits_2(
+    dirs: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing = dirs["A"].parent / "nope"
+
+    code = main(
+        ["run", "go", "--yes", "--root", str(dirs["A"]), "--add-root", str(missing)],
+        transport=FakeProvider([]),
+    )
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert f"--add-root {missing} is not a directory" in captured.err
+
+
+def test_the_contract_lists_the_flag() -> None:
+    assert describe()["flags"]["--add-root"] == {"takes_value": True, "choices": None}
+
+
+def test_the_contract_says_an_added_root_is_writable_under_the_sandbox() -> None:
+    assert "each --add-root" in describe()["bash_sandbox"]["writable"]
+
+
+# Read requirements reach an added root, as the read tool does.
+
+
+def _cites(path: str) -> str:
+    return json.dumps({"checks": [{"path": path}]})
+
+
+_CITES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "checks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        }
+    },
+    "required": ["checks"],
+}
+
+
+async def _drain(session: Session, provider: FakeProvider, **kwargs: object) -> None:
+    async for _ in run(session, transport=provider, **kwargs):  # type: ignore[arg-type]
+        pass
+
+
+async def test_a_required_path_in_an_added_root_is_met_by_reading_it(
+    dirs: dict[str, Path],
+) -> None:
+    target = dirs["B"] / "x"
+    target.write_text("hi", encoding="utf-8")
+    provider = FakeProvider(
+        [
+            text_reply("too early"),
+            tool_reply("read", {"path": str(target)}),
+            text_reply("answer"),
+        ]
+    )
+    session = new_session("go")
+
+    await _drain(session, provider, policy=policy(dirs), require_read=[str(target)])
+
+    assert session.status == "done", session.error
+    held = json.dumps([b for m in provider.calls[1][0] for b in m.content])
+    assert f"read {target.resolve()}" in held
+
+
+def test_a_required_path_in_neither_root_is_refused_at_startup(
+    dirs: dict[str, Path],
+) -> None:
+    with pytest.raises(ValueError, match="outside the root"):
+        build_reads(0, [str(dirs["C"] / "x")], root=dirs["A"], extra_roots=(dirs["B"],))
+
+
+async def test_a_cited_path_in_an_added_root_is_asked_to_be_read(
+    dirs: dict[str, Path],
+) -> None:
+    target = dirs["B"] / "x"
+    target.write_text("hi", encoding="utf-8")
+    provider = FakeProvider(
+        [
+            text_reply(_cites(str(target))),
+            tool_reply("read", {"path": str(target)}),
+            text_reply(_cites(str(target))),
+        ]
+    )
+    session = new_session("go")
+
+    await _drain(
+        session,
+        provider,
+        policy=policy(dirs),
+        schema=_CITES_SCHEMA,
+        require_cited_reads=["/checks/*/path"],
+    )
+
+    assert session.status == "done", session.error
+    sent = json.dumps([b for m in provider.calls[1][0] for b in m.content])
+    assert "which the answer cites" in sent
+    assert "outside the root" not in sent

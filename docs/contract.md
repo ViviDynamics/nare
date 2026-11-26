@@ -108,10 +108,11 @@ keeps the contract version; removing or renaming one bumps it.
 | `--append-system-file` | yes | | `--append-system`, read from a UTF-8 file |
 | `--tools` | yes | | Comma-separated tools the run may call, or `none` |
 | `--root` | yes | | Confine file tools to a directory and run `bash` in it |
+| `--add-root` | yes | | Let the file tools also reach this directory; needs `--root`; repeatable ([Added roots](#added-roots)) |
 | `--bash-credentials` | no | | Let `bash` see the provider credentials nare reads ([The bash environment](#the-bash-environment)) |
 | `--bash-allow` | yes | | Run a `bash` command matching PATTERN without asking; repeatable ([Bash command rules](#bash-command-rules)) |
 | `--bash-deny` | yes | | Refuse a `bash` command matching PATTERN, even with `--yes`; repeatable ([Bash command rules](#bash-command-rules)) |
-| `--bash-sandbox` | no | | Run each `bash` command under the OS sandbox: writes only in `--root` and a private temp dir, credentials unreadable, no network ([Bash sandbox](#bash-sandbox)) |
+| `--bash-sandbox` | no | | Run each `bash` command under the OS sandbox: writes only in `--root`, each `--add-root` and a private temp dir, credentials unreadable, no network ([Bash sandbox](#bash-sandbox)) |
 | `--bash-network` | no | | With `--bash-sandbox`, let `bash` use the network ([Bash sandbox](#bash-sandbox)) |
 | `--resume` | yes | | Continue the session at a path. `nare tui --resume` with no path picks one of this directory's saved sessions; `nare run` needs the path |
 | `--mcp-config` | yes | | JSON file of MCP servers ([MCP tool sources](#mcp-tool-sources)) |
@@ -1234,7 +1235,9 @@ Python API only. The command line still passes its policy explicitly, so
 the contract version does not move.
 
 With no `root`, the read tools reach any path the process can read. A caller
-that gives the model a tree passes `Policy(root=...)`.
+that gives the model a tree passes `Policy(root=...)`, and one that gives it
+more than one passes `Policy(root=..., extra_roots=(...))`
+([Added roots](#added-roots)).
 
 ### Choosing a transport
 
@@ -1346,7 +1349,7 @@ asyncio.run(main())
 passes nothing ends at the first cut-off reply, as nare did before the option
 existed. Pass `max_cutoffs=2` to match the command line. The read requirements
 need the `read` tool in the policy, and a path is relative to the policy's
-`root`.
+`root`, or absolute inside one of its `extra_roots`.
 
 The command line also takes its provider, model, base URL, context window,
 budgets and request settings from `NARE_*` variables when no flag is given
@@ -1683,6 +1686,35 @@ that set rules records them under its policy as `"bash_allow"` and
 The rules add flags, a session field with a default and keys under the recorded
 policy, so the contract version stays the same ([What changes the version](#what-changes-the-version)).
 
+## Added roots
+
+    nare run --yes --jsonl --root ./checkout --add-root /cache/toolchain "..."
+
+`--add-root PATH` (library: `Policy(extra_roots=(...))`) adds a directory that
+`read`, `write`, `edit`, `list` and `search` may resolve into, alongside
+`--root`. It is repeatable. An added root follows the rules the root does: a
+path is resolved, following symlinks and `..`, before it is checked, so a link
+in an added root that points outside every root is refused, and so is a path
+that climbs out of one with `..`. A link from one root into another is allowed.
+
+`--root` keeps its meaning. It is the base for relative paths and the working
+directory `bash` runs in. An added root never changes either: a relative path
+still lands under `--root`, so the model names a file in an added root by its
+absolute path. `list` and `search` show such a path absolute, which is what
+`read` accepts.
+
+- `--add-root` needs `--root`. Without it, `nare run` exits 2 and names both
+  flags; the library raises `ValueError`. A path that is not a directory exits 2.
+- Under `--bash-sandbox` an added root is writable like the root, it must not
+  hold a credential location, and an added root of `/` is refused
+  ([Bash sandbox](#bash-sandbox)).
+- Read requirements accept a path in an added root, given absolute
+  ([Read requirements](#read-requirements)).
+- The session records the added roots under its policy as `extra_roots`, a
+  list of the paths as given. A session without the flag has no such key.
+
+Added roots are read and write. A read-only mode is not offered.
+
 ## Bash sandbox
 
 `--bash-sandbox` (library: `Policy(bash_sandbox=True)`) runs each `bash`
@@ -1694,8 +1726,8 @@ pattern rules above are not a sandbox.
 
 What a confined command may do:
 
-- **Write** only inside `--root` and a private temporary directory made for
-  that call. `TMPDIR` points at it, and it is deleted when the call returns.
+- **Write** only inside `--root`, each `--add-root`, and a private temporary
+  directory made for that call. `TMPDIR` points at it, and it is deleted when the call returns.
 - **Read** anything the user can read, except the credential locations below.
 - **Use the network** not at all, unless `--bash-network` is also given.
 - **See** only the environment variables a shell needs: `PATH`, `HOME`, `USER`,
@@ -1714,8 +1746,8 @@ On macOS also `~/Library/Keychains` and `/Library/Keychains`, and the
 keychain's mach services are refused, so `security find-generic-password`
 returns nothing.
 
-**The root must not hold a credential.** `--root` is refused when a credential
-location lies inside it or is it. Otherwise bash could rename a folder that
+**The root must not hold a credential.** `--root`, or an `--add-root`, is
+refused when a credential location lies inside it or is it. Otherwise bash could rename a folder that
 contains a credential, and read the credential at its new, undenied path.
 
 **Platforms.** On macOS nare uses `sandbox-exec` (Seatbelt). On Linux it uses
@@ -1723,7 +1755,7 @@ contains a credential, and read the credential at its new, undenied path.
 create user namespaces. Other platforms have no sandbox here.
 
 **Refusal, never a fallback.** `--bash-sandbox` needs `--root`, and it refuses
-a root of `/`. When the platform has no sandbox, or it fails to start (no
+a root or an added root of `/`. When the platform has no sandbox, or it fails to start (no
 `bwrap`, or user namespaces are blocked), `nare run` exits 2 before any turn
 and says why. A call made while a sandboxed session runs is refused the same
 way and its command never starts unconfined. `--bash-network` without
@@ -1731,7 +1763,7 @@ way and its command never starts unconfined. `--bash-network` without
 
 **Recording.** A sandboxed session records the profile under its policy as
 `bash_sandbox`: `mechanism` (`seatbelt` or `bubblewrap`), `profile` (`confined-1`),
-`network`, `writable` (the root), `private_temp: true`, and `denied` (the
+`network`, `writable` (the root, then each added root), `private_temp: true`, and `denied` (the
 credential locations on this machine). A session without the flag has no
 `bash_sandbox` key. `nare contract` reports under `bash_sandbox` whether this
 host can confine bash, and why not when it cannot.
@@ -1743,7 +1775,8 @@ host can confine bash, and why not when it cannot.
   masked. On macOS the path rule covers it.
 - Caller tools (`--command-tools`) and MCP stdio servers are not confined. They
   are programs the caller chose to run, not the model's shell.
-- The root is writable in full. Put the work in a directory you can throw away.
+- The root, and each added root, is writable in full. Put the work in a
+  directory you can throw away.
 - Non-file mach services stay reachable on macOS, apart from the keychain
   services above. Anything a process can ask of a system service is still open.
 - On Linux the sandbox has no seccomp filter. Kernel attack surface is shared
@@ -2286,11 +2319,13 @@ omitted). `nare contract` advertises them under `tools` and their limits under
 `navigation`; both keys are additive and keep the contract version.
 
 Both resolve their `path` (default: the root) exactly as `read` does, so a
-path outside `--root`, including through a symlink, is an `is_error` result.
+path outside `--root` and every `--add-root`, including through a symlink, is
+an `is_error` result.
 Neither follows a symlink while walking: `list` reports a symlink as a symlink,
 and `search` never enters or reads through one. `search` skips `.git/`
 directories. Paths in results are relative to `--root` (relative to the working
-directory without one), which is what `read` accepts.
+directory without one), and absolute in an added root, which is what `read`
+accepts.
 
 `list` returns one directory, sorted by name, under a header:
 
@@ -2542,7 +2577,8 @@ cannot be read, so the correction asks the model to remove it. A malformed
 pointer (no leading `/`, an empty token, an unknown `~` escape) is refused at
 startup, as is a cited requirement without `--schema`. Paths are relative to `--root`. Only a read that succeeded
 and stayed inside the root counts; a failed read, or one refused as outside the
-root, does not. A read with `offset` or `limit` counts as a read of its file. A
+root, does not. A path in an added root is named absolute, and a read there
+counts as one inside the root does ([Added roots](#added-roots)). A read with `offset` or `limit` counts as a read of its file. A
 link inside the root counts as its target, and a link that points outside it is
 refused at startup. Without `--root` a path may be any path the read tool
 accepts. A requirement needs the `read` tool.

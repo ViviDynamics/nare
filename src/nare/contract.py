@@ -124,7 +124,11 @@ def _bash_sandbox_contract() -> dict[str, Any]:
         "mechanism": found.mechanism,
         "reason": found.reason,
         "needs": "--root",
-        "writable": ["the root", "a private temporary directory per call"],
+        "writable": [
+            "the root",
+            "each --add-root",
+            "a private temporary directory per call",
+        ],
         "network": "off unless --bash-network",
         "fallback": "none: a call that cannot be confined is refused, never run",
     }

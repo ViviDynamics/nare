@@ -2325,6 +2325,7 @@ async def run(
         root=policy.root if policy is not None else None,
         cited=list(require_cited_reads),
         cited_map=cited_read_map,
+        extra_roots=policy.extra_roots if policy is not None else (),
     )
     if reads.active and "read" not in base.tools:
         raise ValueError("a read requirement needs the read tool")

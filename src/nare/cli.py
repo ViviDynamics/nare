@@ -693,6 +693,18 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--add-root",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "let read, write, edit, list and search also reach this directory, "
+            "under the same symlink and .. rules as --root. Relative paths and "
+            "bash's working directory stay --root; with --bash-sandbox bash may "
+            "write here too. Needs --root. Repeatable"
+        ),
+    )
+    parser.add_argument(
         "--bash-credentials",
         action="store_true",
         help=(
@@ -929,6 +941,10 @@ def policy_from_args(args: argparse.Namespace) -> Policy:
         root = Path(args.root)
         if not root.is_dir():
             raise ValueError(f"--root {args.root} is not a directory")
+    extra_roots = tuple(Path(path) for path in args.add_root)
+    for path in extra_roots:
+        if not path.is_dir():
+            raise ValueError(f"--add-root {path} is not a directory")
     command_names = {tool.name for tool in args.command_tools}
     unresolved_names = frozenset(
         name
@@ -939,6 +955,7 @@ def policy_from_args(args: argparse.Namespace) -> Policy:
     return Policy(
         tools=tools,
         root=root,
+        extra_roots=extra_roots,
         pending=unresolved_names,
         bash_credentials=args.bash_credentials,
         bash_allow=frozenset(args.bash_allow),
@@ -1634,6 +1651,7 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
                 root=Path(args.root).resolve() if args.root else None,
                 cited=args.require_cited_reads or [],
                 cited_map=cited_read_map,
+                extra_roots=[Path(path) for path in args.add_root],
             )
             if "read" not in tools_from_args(args):
                 raise ValueError(

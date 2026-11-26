@@ -192,7 +192,10 @@ and `--tools none` allows no tool at all, which is what a caller wants when
 it needs one answer and no side effects. `--root DIR` confines `read`,
 `list`, `search`, `write` and `edit` to a directory, refusing any path that
 leaves it, including through a symlink. Both are recorded in the session, so a
-run's permissions can be read afterwards rather than inferred.
+run's permissions can be read afterwards rather than inferred. `--add-root DIR`
+(repeatable) lets the file tools reach another directory under the same rules,
+while relative paths and `bash` stay in `--root`. See
+[added roots](docs/contract.md#added-roots).
 
 `--tools read,list,search` is a read-only session that can still find its
 way around: `list` pages through a directory and `search` finds files by glob

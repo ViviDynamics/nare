@@ -7,9 +7,9 @@ answer cites, found by a JSON pointer into it), or the matching arguments of
 requirement is unmet, and the model is told what is missing. Each hold is a
 correction charged against the correction budget (corrections.py).
 
-Only a read that succeeded and stayed inside the root counts: those, and only
-those, leave an evidence record with the tool `read` (tools.py). A failed read
-or one refused as outside the root leaves none.
+Only a read that succeeded and stayed inside the root, or an added root, counts:
+those, and only those, leave an evidence record with the tool `read` (tools.py).
+A failed read or one refused as outside the roots leaves none.
 
 The surface for other modules is `ReadRequirement`, `build()` to make one from
 caller input, `unmet()` and `cited_unmet()` for the gaps in a session, and
@@ -36,10 +36,11 @@ class ReadRequirement:
     Paths are root-relative POSIX strings, as evidence records them. `cited`
     holds JSON pointers (see `parse_pointer`), resolved against the answer when
     it is checked; `root` is the directory those paths are relative to, or None
-    for the working directory. `cited_map` pairs a cited value, exactly as the
-    answer holds it, with the paths any one of which satisfies it (#297); pairs,
-    not a dict, so the requirement stays hashable. An inactive requirement
-    (count 0, no paths, no pointers) holds nothing.
+    for the working directory. A path in one of `extra_roots` (the policy's
+    added roots) is absolute, as evidence records it. `cited_map` pairs a cited
+    value, exactly as the answer holds it, with the paths any one of which
+    satisfies it (#297); pairs, not a dict, so the requirement stays hashable.
+    An inactive requirement (count 0, no paths, no pointers) holds nothing.
     """
 
     count: int = 0
@@ -47,6 +48,7 @@ class ReadRequirement:
     cited: tuple[str, ...] = ()
     root: Path | None = None
     cited_map: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    extra_roots: tuple[Path, ...] = ()
 
     @property
     def active(self) -> bool:
@@ -114,10 +116,13 @@ def _walk(node: Any, tokens: tuple[str, ...]) -> Iterator[str]:
         yield from _walk(child, rest)
 
 
-def shown(given: str, root: Path | None) -> str | None:
+def shown(
+    given: str, root: Path | None, extra_roots: Sequence[Path] = ()
+) -> str | None:
     """A path in the form evidence records it: relative to the root, or to the
     working directory when there is no root and the path is under it, absolute
-    otherwise. None when the path lies outside the root or cannot be resolved.
+    otherwise. A path in an added root is absolute, as the read tool shows it.
+    None when the path lies outside the roots or cannot be resolved.
 
     A link inside the root counts as its target: the read tool resolves a path
     (following symlinks) before it reads, so a required path is resolved the same
@@ -135,11 +140,14 @@ def shown(given: str, root: Path | None) -> str | None:
         if not candidate.is_absolute():
             candidate = base_path / candidate
         resolved = candidate.resolve()
+        added = [extra.resolve() for extra in extra_roots]
     except (OSError, ValueError, RuntimeError):
         return None
-    if not resolved.is_relative_to(base_path):
-        return None
-    return resolved.relative_to(base_path).as_posix()
+    if resolved.is_relative_to(base_path):
+        return resolved.relative_to(base_path).as_posix()
+    if any(resolved.is_relative_to(extra) for extra in added):
+        return str(resolved)
+    return None
 
 
 def build(
@@ -149,6 +157,7 @@ def build(
     root: Path | None,
     cited: Sequence[str] = (),
     cited_map: Mapping[str, str | Sequence[str]] | None = None,
+    extra_roots: Sequence[Path] = (),
 ) -> ReadRequirement:
     """A requirement from caller input, each path in the form evidence records.
 
@@ -161,7 +170,8 @@ def build(
     for given in paths:
         if not isinstance(given, str) or not given.strip():
             raise ValueError("require_read needs a non-empty path")
-    normal = _normal_paths(paths, root, lambda given: f"required path {given}")
+    extras = tuple(extra_roots)
+    normal = _normal_paths(paths, root, extras, lambda given: f"required path {given}")
     pointers: list[str] = []
     for pointer in cited:
         parse_pointer(pointer)
@@ -172,18 +182,22 @@ def build(
         paths=normal,
         cited=tuple(pointers),
         root=root,
-        cited_map=_build_cited_map(cited_map, root, bool(pointers)),
+        cited_map=_build_cited_map(cited_map, root, extras, bool(pointers)),
+        extra_roots=extras,
     )
 
 
 def _normal_paths(
-    paths: Sequence[str], root: Path | None, label: Callable[[str], str]
+    paths: Sequence[str],
+    root: Path | None,
+    extra_roots: Sequence[Path],
+    label: Callable[[str], str],
 ) -> tuple[str, ...]:
     """Each path in the form evidence records, once, in order. A path outside
-    the root is refused, named by `label`."""
+    the roots is refused, named by `label`."""
     normal: list[str] = []
     for given in paths:
-        path = shown(given, root)
+        path = shown(given, root, extra_roots)
         if path is None:
             base = root.resolve() if root is not None else os.getcwd()
             raise ValueError(f"{label(given)} is outside the root {base}")
@@ -193,7 +207,7 @@ def _normal_paths(
 
 
 def _build_cited_map(
-    given: Any, root: Path | None, has_pointers: bool
+    given: Any, root: Path | None, extra_roots: Sequence[Path], has_pointers: bool
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
     """The cited read map as pairs, each target in the form evidence records."""
     if given is None:
@@ -223,7 +237,7 @@ def _build_cited_map(
         def label(target: str, key: str = key) -> str:
             return f"cited read map path {target} for {key}"
 
-        built.append((key, _normal_paths(targets, root, label)))
+        built.append((key, _normal_paths(targets, root, extra_roots, label)))
     return tuple(built)
 
 
@@ -270,7 +284,7 @@ def cited_unmet(s: Session, requirement: ReadRequirement, answer: Any) -> list[s
                 )
                 gaps.append(f"read {which}, which the answer cites as {given}")
             continue
-        path = shown(given, requirement.root)
+        path = shown(given, requirement.root, requirement.extra_roots)
         if path is None:
             gaps.append(f"remove {given}, which is outside the root and cannot be read")
         elif path not in read:
