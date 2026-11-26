@@ -14,6 +14,7 @@ import json
 import logging
 import math
 import os
+import re
 import signal
 import sys
 from collections.abc import AsyncIterator, Callable, Mapping
@@ -1529,6 +1530,27 @@ def _mcp_logout(args: argparse.Namespace) -> int:
     return 0
 
 
+# A release tag, as the release workflow mints it. Anything else is a source
+# build, which has no installer of its own.
+_RELEASE_TAG = re.compile(r"^[0-9]{4}\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+
+
+def _tui_extra_hint(version: str) -> str:
+    """How to get the tui extra without changing the installed version.
+
+    nare is not on PyPI, so a package name resolves to nothing. A release
+    points at its own install.sh, never latest, which would move a pinned
+    install to another release.
+    """
+    if _RELEASE_TAG.match(version):
+        return (
+            "nare tui needs the tui extra. Reinstall this release with it: curl "
+            f"-fsSL https://github.com/ViviDynamics/nare/releases/download/{version}/"
+            "install.sh | sh"
+        )
+    return "nare tui needs the tui extra. In a source checkout: uv sync --extra tui"
+
+
 def main(argv: list[str] | None = None, *, transport: Transport | None = None) -> int:
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
     parser = build_parser()
@@ -1548,12 +1570,7 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
 
     if args.command == "tui":
         if importlib.util.find_spec("textual") is None:
-            print(
-                "nare tui needs the tui extra. Reinstall nare with it: curl -fsSL "
-                "https://github.com/ViviDynamics/nare/releases/latest/download/"
-                "install.sh | sh",
-                file=sys.stderr,
-            )
+            print(_tui_extra_hint(__version__), file=sys.stderr)
             return NEVER_STARTED
         from nare.tui.app import main as tui_main
 
