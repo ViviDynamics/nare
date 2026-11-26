@@ -674,6 +674,21 @@ async def test_git_is_only_the_root_git_directory(tmp_path: Path) -> None:
     assert keys.asked == ["write"]
 
 
+async def test_after_a_a_write_under_an_added_roots_git_still_asks(
+    tmp_path: Path,
+) -> None:
+    # git runs what an added root's hooks name too, when that root is a repo.
+    root, added = tmp_path / "A", tmp_path / "B"
+    root.mkdir()
+    (added / ".git").mkdir(parents=True)
+    keys = Keys("a", "n")
+    approver = Approver(keys, Policy(root=root, extra_roots=(added,)))
+    assert await approver("write", {"path": str(added / "x"), "content": ""}) is True
+    hook = str(added / ".git" / "hooks" / "pre-commit")
+    assert await approver("write", {"path": hook, "content": ""}) is False
+    assert keys.asked == ["write", "write"]
+
+
 async def test_after_a_a_git_write_in_another_case_still_asks(tmp_path: Path) -> None:
     # macOS and Windows volumes fold case, so .GIT/hooks is the same directory.
     (tmp_path / ".git").mkdir()

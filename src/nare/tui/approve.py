@@ -119,19 +119,21 @@ def in_git_dir(path: str, policy: Policy) -> bool:
     """Whether a write or edit to `path` lands in the protected .git directory,
     or is .git itself, through any `..`, symlink or letter case. git runs what
     that directory's config and hooks name, so such a write always asks, even
-    after `a`. A path that cannot be resolved counts as inside. Bash is out of
-    scope (#101): an approved program can write anywhere, and a redirection
-    into .git is not asked about.
+    after `a`. The .git directory of each added root is protected the same way.
+    A path that cannot be resolved counts as inside. Bash is out of scope
+    (#101): an approved program can write anywhere, and a redirection into .git
+    is not asked about.
     """
     # A relative path is relative to the root, or with none to the cwd, as
     # Policy.resolve and bash read it.
     try:
         anchor = policy.root.resolve() if policy.root is not None else Path.cwd()
-        git = _folded(_git_dir(policy).resolve())
+        gits = [_folded(_git_dir(policy).resolve())]
+        gits += [_folded((e / ".git").resolve()) for e in policy.extra_roots]
         target = _folded((anchor / path).resolve())
     except (OSError, RuntimeError, ValueError):
         return True
-    return target[: len(git)] == git
+    return any(target[: len(git)] == git for git in gits)
 
 
 def _outside(token: str, policy: Policy) -> bool:
