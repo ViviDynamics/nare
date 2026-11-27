@@ -164,7 +164,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--tools` | yes | | Comma-separated tools the run may call, or `none` |
 | `--allowed-tools` | yes | | Claude Code's `--tools`, also `--allowedTools`: tool names in nare's or Claude Code's spelling, and `Bash(PATTERN)` for `--bash-allow`; repeatable ([Other tools' spellings](#other-tools-spellings)) |
 | `--disallowed-tools` | yes | | Built-in tools the run may not call, also `--disallowedTools`; `Bash(PATTERN)` is `--bash-deny`; repeatable |
-| `--root` | yes | | Confine file tools to a directory and run `bash` in it |
+| `--root` | yes | | Confine file tools to a directory and run `bash` in it; pinned when the run starts ([Pinned roots](#pinned-roots)) |
 | `--add-root` | yes | | Let the file tools also reach this directory; needs `--root`; repeatable ([Added roots](#added-roots)) |
 | `--add-dir` | yes | | Claude Code's `--add-root`; repeatable |
 | `--bash-credentials` | no | | Let `bash` see the provider credentials nare reads ([The bash environment](#the-bash-environment)) |
@@ -564,6 +564,7 @@ has a kind, which says what a caller can do about it:
 | null | `failure` | `error` | No completed response: the provider call raised (a transport failure, after any retries), or nare did. `failure` says which, and how (see [Provider failures](#provider-failures)) |
 | `mcp` | `failure` | `error` | An MCP server failed to start, list its tools, or close (see MCP tool sources) |
 | `session_write` | `failure` | `error` | The run ended but `--session` could not be written, so it cannot be resumed |
+| `root_replaced` | `failure` | `error` | `--root` or an `--add-root` was replaced during the run (removed, renamed away, or swapped for a link), so no tool call ran after it (see [Pinned roots](#pinned-roots)) |
 
 `nare contract` prints the same table under `stop_reasons`, one object per
 value with its `stop_reason`, `kind` and `statuses`, so a caller can read the
@@ -1870,6 +1871,45 @@ added roots in the prompt; a refused path's error names them.
 
 Added roots are read and write. A read-only mode is not offered.
 
+## Pinned roots
+
+`--root` and each `--add-root` are resolved once, when the run starts
+(library: when the `Policy` is built), following any symlink in the path
+given. Everything that confines to the roots uses those resolved paths for the
+whole run: the file tools' path check, the directory `bash` runs in, and the
+`--bash-sandbox` profile. A root given as a symlink is pinned to the directory
+it pointed at then, and pointing the link elsewhere later changes nothing.
+
+Before every tool call, and again just before an approved call runs, nare
+checks that each root still resolves to its pinned path and is still a
+directory there. A root that was removed, renamed away, or replaced by a link
+or a file (or whose path leads elsewhere because a folder above it changed)
+stops the run:
+
+- The call is not run. Its result is an error naming the root, and so is the
+  result of every later call in the same turn.
+- The run ends `error` with `stop_reason` `root_replaced` (kind `failure`) and
+  exits 1: after the turn that saw it, before the next model call, or before a
+  final answer is accepted, whichever comes first. An answer that arrives
+  after the replacement is not accepted, and `--check-command` does not run.
+- The stop holds for the rest of the process, even if the root is put back.
+  In a session a person continues (the TUI, or `nare "<task>"` at a plain
+  terminal), every later prompt stops the same way.
+
+The path is what is pinned, not the folder: a folder made again at the same
+path is confined as the first one was.
+
+Under `--bash-sandbox` a confined command cannot remove or rename the root, an
+added root, or a folder between two roots (a folder inside one root that holds
+another), so it cannot replace one in the first place
+([Bash sandbox](#bash-sandbox)). Everything inside a root stays removable and
+renamable. The pin covers what else could replace a root: `bash` without the
+sandbox, a caller tool, or a process outside the run.
+
+A new invocation pins the roots as they are when it starts. Check the roots
+before resuming a session that stopped with `root_replaced`: a resume given
+the same `--root`, now a link, follows it.
+
 ## Bash sandbox
 
 `--bash-sandbox` (library: `Policy(bash_sandbox=True)`) runs each `bash`
@@ -1883,6 +1923,9 @@ What a confined command may do:
 
 - **Write** only inside `--root`, each `--add-root`, and a private temporary
   directory made for that call. `TMPDIR` points at it, and it is deleted when the call returns.
+- **Not remove or rename** `--root`, an `--add-root`, or a folder between two
+  roots. The roots are pinned when the run starts, and a root replaced anyway
+  stops the run ([Pinned roots](#pinned-roots)).
 - **Read** anything the user can read, except the credential locations below.
 - **Use the network** not at all, unless `--bash-network` is also given.
 - **See** only the environment variables a shell needs: `PATH`, `HOME`, `USER`,
@@ -1917,8 +1960,8 @@ way and its command never starts unconfined. `--bash-network` without
 `--bash-sandbox` is refused too.
 
 **Recording.** A sandboxed session records the profile under its policy as
-`bash_sandbox`: `mechanism` (`seatbelt` or `bubblewrap`), `profile` (`confined-1`),
-`network`, `writable` (the root, then each added root), `private_temp: true`, and `denied` (the
+`bash_sandbox`: `mechanism` (`seatbelt` or `bubblewrap`), `profile` (`confined-2`),
+`network`, `writable` (the root, then each added root, as pinned), `private_temp: true`, and `denied` (the
 credential locations on this machine). A session without the flag has no
 `bash_sandbox` key. `nare contract` reports under `bash_sandbox` whether this
 host can confine bash, and why not when it cannot.

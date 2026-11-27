@@ -268,7 +268,7 @@ def approval_text(tool: str, args: dict[str, Any], policy: Policy) -> tuple[str,
     try:
         path = policy.resolve(str(args["path"]))
         display_path = _relative(
-            str(path), str(policy.root.resolve()) if policy.root else None
+            str(path), str(policy.real_root) if policy.real_root else None
         )
         if tool == "write":
             content = str(args["content"])
@@ -351,7 +351,7 @@ def _bash_preview(command: str) -> str:
 def approval_header(tool: str, args: dict[str, Any], policy: Policy) -> Text:
     """Fixed identity, answer keys, size and warnings above the preview."""
     text, lexer = approval_text(tool, args, policy)
-    root = str(policy.root.resolve()) if policy.root else None
+    root = str(policy.real_root) if policy.real_root else None
     details = tool
     path = str(args.get("path", ""))
     always = " · a always"

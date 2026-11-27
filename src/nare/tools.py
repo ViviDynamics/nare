@@ -34,6 +34,7 @@ from nare.bash_rules import decide as decide_bash
 from nare.bash_rules import validate as validate_bash_rules
 from nare.events import redact
 from nare.mcp import ExternalTool
+from nare.roots import RootPins
 from nare.schema import validate
 from nare.tool_outcomes import ToolOutcome
 from nare.transport import CREDENTIAL_ENV, ToolCall
@@ -1498,6 +1499,11 @@ class Policy:
     bash_network: bool = False
     # MCP tool definitions held back behind the search step (nare.mcp_defer).
     defer_mcp: bool = False
+    # The root and added roots as resolved when the policy was built
+    # (nare.roots). Set by __post_init__, and passed on by dataclasses.replace,
+    # so every copy of a policy shares them, and a replaced root seen through
+    # one copy stops them all. Not a caller's setting.
+    pins: RootPins | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         unknown = sorted(self.tools - set(TOOLS) - self.external.keys() - self.pending)
@@ -1520,8 +1526,30 @@ class Policy:
                 "--bash-network needs --bash-sandbox: the network is only "
                 "switched off by the sandbox"
             )
+        if self.root is None:
+            self.pins = None
+        elif self.pins is None or not self.pins.holds(self.root, self.extra_roots):
+            self.pins = RootPins(self.root, self.extra_roots)
         if self.bash_sandbox:
             self._check_sandbox()
+
+    @property
+    def real_root(self) -> Path | None:
+        """The root as resolved when the policy was built, or None."""
+        return None if self.pins is None else self.pins.root.real
+
+    @property
+    def real_extra_roots(self) -> tuple[Path, ...]:
+        """The added roots as resolved when the policy was built."""
+        return () if self.pins is None else tuple(pin.real for pin in self.pins.extra)
+
+    def replaced_root(self) -> str | None:
+        """Why the run may no longer use its roots, or None while it may.
+
+        A root replaced since the policy was built (nare.roots) is reported
+        from then on, even if it is put back.
+        """
+        return None if self.pins is None else self.pins.check()
 
     def _check_sandbox(self) -> None:
         """Refuse a sandboxed policy that could not confine bash.
@@ -1537,12 +1565,12 @@ class Policy:
             raise ValueError(
                 "--bash-sandbox needs --root: it names the one folder bash may write to"
             )
-        if self.root.resolve() == Path("/"):
+        if self.real_root == Path("/"):
             raise ValueError(
                 "--bash-sandbox refuses a root of /: that would make the whole "
                 "disk writable"
             )
-        if any(extra.resolve() == Path("/") for extra in self.extra_roots):
+        if any(extra == Path("/") for extra in self.real_extra_roots):
             raise ValueError(
                 "--bash-sandbox refuses an --add-root of /: that would make the "
                 "whole disk writable"
@@ -1635,13 +1663,15 @@ class Policy:
         Refused when the root, or an added root, contains a credential
         location. Renaming a folder that holds one, inside a writable root,
         would move the credential to a path that is not denied, so no root may
-        contain one.
+        contain one. The roots are the pinned ones (nare.roots), never resolved
+        again: a root replaced by a link would otherwise make its target
+        writable.
         """
         if not self.bash_sandbox:
             return None
-        assert self.root is not None  # _check_sandbox ran at construction
-        root = self.root.resolve()
-        extras = tuple(extra.resolve() for extra in self.extra_roots)
+        root = self.real_root
+        assert root is not None  # _check_sandbox ran at construction
+        extras = self.real_extra_roots
         denied = sandbox.default_denied()
         for flag, writable in [("--root", root), *(("--add-root", e) for e in extras)]:
             for path in denied:
@@ -1663,15 +1693,16 @@ class Policy:
         inside a root during the run is caught here rather than obeyed. A
         relative path is relative to the root when there is one, which is the
         same directory bash runs in; an added root only widens where an
-        absolute path, or a link, may land.
+        absolute path, or a link, may land. The roots are the pinned ones
+        (nare.roots), so a root replaced by a link leads outside them.
         """
-        if self.root is None:
+        root = self.real_root
+        if root is None:
             return Path(path)
-        root = self.root.resolve()
         candidate = Path(path)
         candidate = root / candidate if not candidate.is_absolute() else candidate
         resolved = candidate.resolve()
-        roots = [root, *(extra.resolve() for extra in self.extra_roots)]
+        roots = [root, *self.real_extra_roots]
         if not any(resolved.is_relative_to(allowed) for allowed in roots):
             if self.extra_roots:
                 added = ", ".join(str(extra) for extra in roots[1:])
@@ -1831,6 +1862,11 @@ def route_deferred(
     return None
 
 
+def root_replaced_refusal(replaced: str) -> str:
+    """What the model is told for a call refused because a root was replaced."""
+    return f"not run: {replaced}. The run stops here; no further tool call runs"
+
+
 async def dispatch(
     call: ToolCall,
     policy: Policy,
@@ -1855,7 +1891,14 @@ async def dispatch(
 
     `rule_match` hears of a bash call a policy rule decided, as {tool_use_id,
     effect, patterns}. It never hears the command text.
+
+    A root replaced since the policy was built (nare.roots) refuses every call,
+    before approval and again just before the call runs, since a person can
+    take minutes to approve one. The loop then ends the run.
     """
+    replaced = policy.replaced_root()
+    if replaced is not None:
+        return tool_result(call.id, root_replaced_refusal(replaced), is_error=True)
     if call.error is not None:
         if on_outcome is not None:
             on_outcome(ToolOutcome("invalid_arguments"))
@@ -1946,6 +1989,9 @@ async def dispatch(
             return tool_result(call.id, text, is_error=True)
         if not approved:
             return tool_result(call.id, f"{call.name} was not approved", is_error=True)
+        replaced = policy.replaced_root()
+        if replaced is not None:
+            return tool_result(call.id, root_replaced_refusal(replaced), is_error=True)
         if call.name in policy.external:
             external = policy.external[call.name]
             if external.classified_call is not None:
@@ -1968,11 +2014,11 @@ async def dispatch(
             # cannot be moved.
             if call.name in NAVIGATION_TOOLS and args.get("path") in (None, ""):
                 args["path"] = "."
-            args["base"] = str(policy.root.resolve()) if policy.root else os.getcwd()
+            args["base"] = str(policy.real_root) if policy.real_root else os.getcwd()
         if call.name in PATH_TOOLS and "path" in args:
             args["path"] = str(policy.resolve(str(args["path"])))
-        if call.name == "bash" and policy.root is not None:
-            args["cwd"] = str(policy.root.resolve())
+        if call.name == "bash" and policy.real_root is not None:
+            args["cwd"] = str(policy.real_root)
         if call.name == "bash":
             # Set after the model's arguments, so it cannot be moved by them.
             args["credentials"] = policy.bash_credentials
