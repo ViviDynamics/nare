@@ -279,7 +279,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     login_parser.add_argument("alias", help="the server's alias in --mcp-config")
     login_parser.add_argument(
-        "--mcp-config", required=True, metavar="PATH", help="JSON file of MCP servers"
+        "--mcp-config",
+        metavar="PATH",
+        help="JSON file of MCP servers; without it, the servers nare mcp add "
+        "configured for the user and this (trusted) project",
     )
     login_parser.add_argument(
         "--timeout",
@@ -304,6 +307,31 @@ def build_parser() -> argparse.ArgumentParser:
             "(without it the tokens are only deleted)"
         ),
     )
+    add_parser = mcp_sub.add_parser(
+        "add",
+        help="add a server to the user's config (NARE_HOME/mcp.json) or with "
+        "--scope project to this project's .mcp.json: nare mcp add <name> -- "
+        "<command...>, or nare mcp add <name> --url <url>; nare mcp add --help",
+        add_help=False,
+    )
+    add_parser.add_argument("arguments", nargs=argparse.REMAINDER)
+    list_parser = mcp_sub.add_parser(
+        "list", help="list the user's and this project's servers"
+    )
+    list_parser.add_argument("--json", action="store_true", help="one JSON array")
+    get_parser = mcp_sub.add_parser(
+        "get", help="show one server, its env and header values hidden"
+    )
+    get_parser.add_argument("name")
+    remove_parser = mcp_sub.add_parser("remove", help="remove a server")
+    remove_parser.add_argument("name")
+    remove_parser.add_argument("-s", "--scope", choices=("user", "project"))
+    trust_parser = mcp_sub.add_parser(
+        "trust",
+        help="trust this project's .mcp.json as it is now, so nare, nare -p and "
+        "nare exec start its servers; --revoke takes that back",
+    )
+    trust_parser.add_argument("--revoke", action="store_true")
     run_parser = sub.add_parser(
         "run", help="run a task headlessly", formatter_class=AliasHelpFormatter
     )
@@ -1122,8 +1150,18 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
         "directory's saved sessions",
     )
     parser.add_argument(
-        "--mcp-config", help="JSON file of named MCP stdio or Streamable HTTP servers"
+        "--mcp-config",
+        help="JSON file of named MCP stdio or Streamable HTTP servers, in nare's "
+        "format or Claude Code's mcpServers format",
     )
+    strict = parser.add_argument(
+        "--strict-mcp-config",
+        action="store_true",
+        help="load only the servers --mcp-config names. nare run always does; "
+        "nare, nare -p and nare exec otherwise add the user's and the trusted "
+        "project's",
+    )
+    _mark(strict, nare_exact=True)
     parser.add_argument(
         "--mcp-defer",
         action="store_true",
@@ -1458,11 +1496,20 @@ def validate_run_args(args: argparse.Namespace) -> Prices | None:
         )
         if args.capacity_shared_dir is not None and sys.platform == "win32":
             raise ValueError("--capacity-shared-dir needs POSIX file locks")
-    args.mcp_servers = (
-        parse_servers(json.loads(Path(args.mcp_config).read_text(encoding="utf-8")))
-        if args.mcp_config
-        else {}
-    )
+    from nare.mcp_config import to_nare
+
+    # The person-facing forms' configured servers, then --mcp-config's, which
+    # win on a shared name. nare run has no configured servers.
+    args.mcp_servers = {
+        **parse_servers(getattr(args, "mcp_defaults", None) or {}),
+        **(
+            parse_servers(
+                to_nare(json.loads(Path(args.mcp_config).read_text(encoding="utf-8")))
+            )
+            if args.mcp_config
+            else {}
+        ),
+    }
     args.command_tools = (
         command_tools(
             json.loads(Path(args.command_tools).read_text(encoding="utf-8")),
@@ -1864,18 +1911,24 @@ def _redact_stdin() -> int:
 def _mcp_login(args: argparse.Namespace) -> int:
     """`nare mcp login`: the one interactive step. Nothing here reaches stdout,
     which a caller may be reading as a result stream."""
+    from nare.mcp_config import configured, to_nare
+
     try:
-        servers = parse_servers(
-            json.loads(Path(args.mcp_config).read_text(encoding="utf-8"))
+        servers = (
+            parse_servers(
+                to_nare(json.loads(Path(args.mcp_config).read_text(encoding="utf-8")))
+            )
+            if args.mcp_config
+            else configured()
         )
     except (OSError, ValueError) as exc:
         print(f"nare: --mcp-config: {exc}", file=sys.stderr)
         return 2
     server = servers.get(args.alias)
     if server is None or server.auth is None:
+        where = "--mcp-config" if args.mcp_config else "the configured servers"
         print(
-            f"nare: {args.alias!r} is not a remote MCP server with auth in "
-            "--mcp-config",
+            f"nare: {args.alias!r} is not a remote MCP server with auth in {where}",
             file=sys.stderr,
         )
         return 2
@@ -1969,6 +2022,11 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     argv = sys.argv[1:] if argv is None else list(argv)
     from nare import person
 
+    if argv[:2] == ["mcp", "add"]:
+        # Its own parser: the command after -- is the server's, flags and all.
+        from nare.mcp_config import add_main
+
+        return add_main(argv[2:])
     mode = person.route(argv)
     if mode is not None:
         # nare, nare "<task>", nare -p, nare exec: the person-facing forms.
@@ -1987,6 +2045,16 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         return _redact_stdin()
 
     if args.command == "mcp":
+        from nare import mcp_config
+
+        if args.mcp_command == "list":
+            return mcp_config.list_main(args.json)
+        if args.mcp_command == "get":
+            return mcp_config.get_main(args.name)
+        if args.mcp_command == "remove":
+            return mcp_config.remove_main(args.name, args.scope)
+        if args.mcp_command == "trust":
+            return mcp_config.trust_main(args.revoke)
         if args.mcp_command == "logout":
             return _mcp_logout(args)
         return _mcp_login(args)

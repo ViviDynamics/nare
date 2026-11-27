@@ -455,6 +455,11 @@ def interactive_main(argv: list[str], transport: Transport | None) -> int:
         return NEVER_STARTED
     try:
         settle_session(args)
+        from nare import mcp_config
+
+        # At a terminal, before anything takes the screen: ask about an
+        # untrusted project's servers once.
+        args.mcp_defaults, _skipped = mcp_config.defaults(args, mcp_config.terminal_ask)
     except ValueError as exc:
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED
@@ -510,6 +515,11 @@ def print_main(argv: list[str], prog: str, transport: Transport | None) -> int:
             args.root = os.getcwd()
         settle_session(args)
         read_prompt(args, prog)
+        from nare import mcp_config
+
+        args.mcp_defaults, skipped = mcp_config.defaults(args, None)
+        if skipped:
+            print(mcp_config.skipped_line(skipped), file=sys.stderr)
     except ValueError as exc:
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED
