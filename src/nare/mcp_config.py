@@ -8,7 +8,10 @@ Two scopes, both in Claude Code's format, `{"mcpServers": {name: entry}}`:
 
 The person-facing forms (nare, nare "<task>", nare -p, nare exec) load both;
 project servers start only once the person trusted that exact .mcp.json,
-since a cloned repository could otherwise start any program. `nare run` loads
+since a cloned repository could otherwise start any program; the question
+shows each server's command line or URL. A project's ${VAR} may not name a
+provider credential nare withholds from the programs it starts
+(CREDENTIAL_ENV). `nare run` loads
 only what --mcp-config names, as it always has. No MCP SDK import here: the
 servers are only parsed, and connecting stays in nare.mcp.
 """
@@ -20,6 +23,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import sys
 import tempfile
 from collections.abc import Callable
@@ -28,6 +32,7 @@ from typing import Any
 
 from nare.mcp import Server, parse_servers
 from nare.session import nare_home, private_folder
+from nare.transport import CREDENTIAL_ENV
 
 PROJECT_FILE = ".mcp.json"
 SCOPES = ("user", "project")
@@ -60,11 +65,18 @@ def is_mcp_servers(raw: Any) -> bool:
     )
 
 
-def _expand(value: Any, where: str) -> Any:
+def _expand(value: Any, where: str, withheld: frozenset[str]) -> Any:
     if isinstance(value, str):
 
         def one(match: re.Match[str]) -> str:
             name, default = match.group(1), match.group(2)
+            if name in withheld:
+                raise ValueError(
+                    f"{where}: ${{{name}}} is a provider credential nare keeps from "
+                    "the programs it starts, so a project's servers may not use "
+                    "it; to pass it to a server on purpose, add the server to "
+                    "your own config (nare mcp add)"
+                )
             found = os.environ.get(name)
             if found is not None:
                 return found
@@ -74,13 +86,15 @@ def _expand(value: Any, where: str) -> Any:
 
         return _VAR.sub(one, value)
     if isinstance(value, list):
-        return [_expand(item, where) for item in value]
+        return [_expand(item, where, withheld) for item in value]
     if isinstance(value, dict):
-        return {key: _expand(item, where) for key, item in value.items()}
+        return {key: _expand(item, where, withheld) for key, item in value.items()}
     return value
 
 
-def _entry(name: str, entry: dict[str, Any], *, expand: bool) -> dict[str, Any]:
+def _entry(
+    name: str, entry: dict[str, Any], *, expand: bool, project: bool
+) -> dict[str, Any]:
     """One mcpServers entry in nare's terms: `type` checked and dropped, and
     ${VAR} expanded when the server is about to start."""
     entry = dict(entry)
@@ -96,16 +110,23 @@ def _entry(name: str, entry: dict[str, Any], *, expand: bool) -> dict[str, Any]:
         raise ValueError(f"MCP server {name}: type stdio needs a command")
     if kind in ("http", "streamable-http") and "url" not in entry:
         raise ValueError(f"MCP server {name}: type {kind} needs a url")
-    return _expand(entry, f"MCP server {name}") if expand else entry
+    if not expand:
+        return entry
+    where = f"MCP server {name}" + (f" in {PROJECT_FILE}" if project else "")
+    expanded: dict[str, Any] = _expand(
+        entry, where, CREDENTIAL_ENV if project else frozenset()
+    )
+    return expanded
 
 
-def to_nare(raw: Any, *, expand: bool = True) -> Any:
+def to_nare(raw: Any, *, expand: bool = True, project: bool = False) -> Any:
     """A config in either format, as nare's own. nare's format passes through
-    untouched, with no expansion, so it means what it always meant."""
+    untouched, with no expansion, so it means what it always meant. A
+    project's entries (`project`) may not expand a CREDENTIAL_ENV name."""
     if not is_mcp_servers(raw):
         return raw
     return {
-        name: _entry(name, entry, expand=expand)
+        name: _entry(name, entry, expand=expand, project=project)
         for name, entry in raw["mcpServers"].items()
     }
 
@@ -196,7 +217,8 @@ def _write(path: Path | None, value: dict[str, Any], *, private: bool) -> None:
 
 
 def defaults(
-    args: argparse.Namespace, ask: Callable[[list[str]], bool] | None
+    args: argparse.Namespace,
+    ask: Callable[[dict[str, dict[str, Any]]], bool] | None,
 ) -> tuple[dict[str, Any], list[str]]:
     """The servers a person-facing run loads besides --mcp-config: the user's,
     then the project's, which win on a shared name, in nare's format. An
@@ -209,20 +231,53 @@ def defaults(
     project = entries(project_path(root)) if project_path(root).is_file() else {}
     skipped: list[str] = []
     if project and not trusted(root):
-        if ask is not None and ask(sorted(project)):
+        if ask is not None and ask(project):
             trust(root)
         else:
             skipped, project = sorted(project), {}
-    merged = to_nare({"mcpServers": {**user, **project}})
+    # The project's entry wins on a shared name, so the user's is not expanded.
+    user = {name: entry for name, entry in user.items() if name not in project}
+    merged = {
+        **to_nare({"mcpServers": user}),
+        **to_nare({"mcpServers": project}, project=True),
+    }
     return merged, skipped
 
 
-def terminal_ask(names: list[str]) -> bool:
-    """The trust question, at a terminal, before anything takes the screen."""
+def target(entry: dict[str, Any]) -> str:
+    """A server as a person reads it: its URL, or its command line, unexpanded."""
+    if "url" in entry:
+        return str(entry["url"])
+    return shlex.join(
+        [str(entry.get("command", "")), *(str(arg) for arg in entry.get("args", []))]
+    )
+
+
+def _printable(text: str) -> str:
+    """`text` with each control character escaped, so a file cannot redraw or
+    hide the question that asks about it."""
+    return "".join(
+        char if char.isprintable() else char.encode("unicode_escape").decode()
+        for char in text
+    )
+
+
+def terminal_ask(servers: dict[str, dict[str, Any]]) -> bool:
+    """The trust question, at a terminal, before anything takes the screen:
+    each server with its command line, or URL, as the file has it."""
+    lines = []
+    for name in sorted(servers):
+        entry = servers[name]
+        line = f"  {name}: {target(entry)}"
+        env = entry.get("env")
+        if isinstance(env, dict) and env:
+            line += f" (with env {', '.join(str(key) for key in env)})"
+        lines.append(_printable(line))
     sys.stderr.write(
-        f"nare: this project's {PROJECT_FILE} starts MCP servers "
-        f"({', '.join(names)}), which run programs on this machine. Trust it and "
-        "start them? [y/N] "
+        f"nare: this project's {PROJECT_FILE} starts MCP servers, which run "
+        "programs on this machine or connect to these addresses:\n"
+        + "\n".join(lines)
+        + "\nTrust it and start them? [y/N] "
     )
     sys.stderr.flush()
     return sys.stdin.readline().strip().lower() in ("y", "yes")

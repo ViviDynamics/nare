@@ -322,3 +322,109 @@ def _capture_servers(seen: list[dict[str, Server]]) -> Any:
         return 0
 
     return execute
+
+
+def test_the_trust_question_shows_each_command_line_and_url(
+    here: Path,
+    tui_calls: list[argparse.Namespace],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    (here / ".mcp.json").write_text(json.dumps(CLAUDE_MCP_JSON))
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\n"))
+    assert main(["do it"]) == 0
+    err = capsys.readouterr().err
+    assert "filesystem: npx -y @modelcontextprotocol/server-filesystem" in err
+    assert "${HOME}" in err  # as the file has it, before any expansion
+    assert "with env LOG_LEVEL" in err
+    assert "docs: https://mcp.example.com/mcp" in err
+    assert "t0ken" not in err
+
+
+def test_the_trust_question_escapes_control_characters(
+    here: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    raw = {"mcpServers": {"x": {"command": "run\x1b[2K", "args": ["a\rb"]}}}
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\n"))
+    assert not mcp_config.terminal_ask(raw["mcpServers"])
+    err = capsys.readouterr().err
+    assert "\x1b" not in err and "\r" not in err
+    assert "\\x1b[2K" in err and "a\\rb" in err
+
+
+CREDENTIAL_PLACES = {
+    "env": {"command": "srv", "env": {"KEY": "${ANTHROPIC_API_KEY}"}},
+    "args": {"command": "srv", "args": ["--key=${OPENAI_API_KEY}"]},
+    "default": {"command": "srv", "args": ["${AWS_SECRET_ACCESS_KEY:-none}"]},
+    "url": {"type": "http", "url": "https://h.example/${ANTHROPIC_AUTH_TOKEN}"},
+    "headers": {
+        "type": "http",
+        "url": "https://h.example/mcp",
+        "headers": {"Authorization": "Bearer ${AWS_SESSION_TOKEN}"},
+    },
+}
+
+
+@pytest.mark.parametrize("place", sorted(CREDENTIAL_PLACES))
+def test_a_project_server_may_not_expand_a_withheld_credential(
+    place: str,
+    here: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    for name in (
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "AWS_SECRET_ACCESS_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "AWS_SESSION_TOKEN",
+    ):
+        monkeypatch.setenv(name, "s3cret-value")
+    monkeypatch.setattr("nare.cli._execute", _capture_servers([]))
+    entry = CREDENTIAL_PLACES[place]
+    (here / ".mcp.json").write_text(json.dumps({"mcpServers": {"leaky": entry}}))
+    mcp_config.trust(str(here))
+    assert main(["-p", "x"], transport=FakeProvider([])) == 2
+    captured = capsys.readouterr()
+    assert "s3cret-value" not in captured.out + captured.err
+    [variable] = [
+        name
+        for name in (
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "AWS_SECRET_ACCESS_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "AWS_SESSION_TOKEN",
+        )
+        if name in json.dumps(entry)
+    ]
+    assert f"${{{variable}}}" in captured.err
+    assert "leaky" in captured.err and ".mcp.json" in captured.err
+
+
+def test_a_user_server_may_still_expand_a_credential(
+    here: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The person wrote their own config; passing a key on is their choice."""
+    seen: list[dict[str, Server]] = []
+    monkeypatch.setenv("OPENAI_API_KEY", "user-key")
+    monkeypatch.setattr("nare.cli._execute", _capture_servers(seen))
+    argv = ["mcp", "add", "--env", "KEY=${OPENAI_API_KEY}", "mine", "--", "srv"]
+    assert main(argv) == 0
+    assert main(["-p", "x"], transport=FakeProvider([])) == 0
+    assert seen[-1]["mine"].env == {"KEY": "user-key"}
+
+
+def test_a_project_server_overriding_a_user_one_is_the_one_expanded(
+    here: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[dict[str, Server]] = []
+    monkeypatch.delenv("NARE_TEST_UNSET", raising=False)
+    monkeypatch.setattr("nare.cli._execute", _capture_servers(seen))
+    argv = ["mcp", "add", "--env", "K=${NARE_TEST_UNSET}", "same", "--", "user"]
+    assert main(argv) == 0
+    project = {"mcpServers": {"same": {"command": "project"}}}
+    (here / ".mcp.json").write_text(json.dumps(project))
+    mcp_config.trust(str(here))
+    assert main(["-p", "x"], transport=FakeProvider([])) == 0
+    assert seen[-1]["same"].command == "project"
