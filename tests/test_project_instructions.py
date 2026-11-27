@@ -11,13 +11,14 @@ import argparse
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from fake_provider import FakeProvider, text_reply
 from nare import instructions
 from nare.cli import DEFAULT_SYSTEM, main
-from nare.session import nare_home
+from nare.session import loads, nare_home, newest_in
 
 
 @pytest.fixture
@@ -285,3 +286,77 @@ def test_a_file_is_read_only_up_to_the_cap(tmp_path: Path) -> None:
     loaded = instructions.load(str(tmp_path))
     assert loaded is not None and loaded.truncated
     assert loaded.bytes == instructions.MAX_BYTES
+
+
+@pytest.fixture
+def built(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
+    """The system prompt each transport is built with: what is sent."""
+    sent: list[str | None] = []
+
+    def factory(provider: str, **kwargs: Any) -> FakeProvider:
+        sent.append(kwargs["system"])
+        return FakeProvider([text_reply("ok")])
+
+    monkeypatch.setattr("nare.cli.make_transport", factory)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    return sent
+
+
+def recorded(repo: Path) -> str:
+    saved = newest_in(str(repo / "pkg"))
+    return str(loads(saved.read_text(encoding="utf-8")).system)
+
+
+def test_resumes_keep_one_copy_of_the_instructions(
+    repo: Path, built: list[str | None]
+) -> None:
+    """Each resume sends the recorded prompt, which already holds them (#348)."""
+    assert main(["-p", "hello"]) == 0
+    first = recorded(repo)
+    assert first.count("Root rule") == 1
+    for argv in (
+        ["-p", "-c", "again"],
+        ["-p", "-c", "again"],
+        ["exec", "resume", "--last", "more"],
+    ):
+        assert main(argv) == 0
+        assert recorded(repo) == first
+    assert built == [first] * 4
+
+
+def test_the_tui_resume_keeps_one_copy_of_the_instructions(
+    repo: Path, built: list[str | None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nare import person
+    from nare.tui import app
+
+    assert main(["-p", "hello"]) == 0
+    first = recorded(repo)
+    apps: list[app.TuiApp] = []
+
+    def start(args: argparse.Namespace, transport: Any = None) -> int:
+        apps.append(app.prepare(args, transport))
+        return 0
+
+    monkeypatch.setattr(person, "tui_available", lambda: True)
+    monkeypatch.setattr(person, "interactive_terminal", lambda: True)
+    monkeypatch.setattr(app, "main", start)
+    assert main(["-c"]) == 0
+    assert main(["resume", "--last"]) == 0
+    assert [tui.session.system for tui in apps if tui.session] == [first, first]
+    assert built == [first] * 3
+
+
+def test_a_resume_with_a_system_option_rebuilds_it_once(
+    repo: Path, built: list[str | None], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["-p", "hello"]) == 0
+    capsys.readouterr()
+    assert main(["-p", "-c", "--json", "--append-system-prompt", "Persona.", "x"]) == 0
+    sent = built[-1] or ""
+    assert sent.startswith(DEFAULT_SYSTEM)
+    assert sent.count("Root rule") == 1
+    assert sent.index("Package rule") < sent.index("Persona.")
+    assert recorded(repo) == sent
+    out = capsys.readouterr().out
+    assert '"system_prompt": {"changed": true}' in out

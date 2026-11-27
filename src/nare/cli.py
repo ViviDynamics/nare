@@ -1256,15 +1256,19 @@ def adopt_system(args: argparse.Namespace, session: Session) -> None:
     A resume given no system option sends what the session recorded: falling
     back to the default would swap the model's instructions mid-session with
     no error, and change the prefix a caching backend matches on. A resume
-    given one sends it, and says so when it differs from the record. A
-    session saved before the record existed has none and keeps the flags.
+    given one sends it, project instructions included, and says so when it
+    differs from the record. A session saved before the record existed has
+    none and keeps the flags.
 
     The file holds the redacted copy, so the comparison is made redacted: the
     same prompt resent is never reported as a change.
     """
     given = args.system is not None or args.append_system is not None
     if session.system is not None and not given:
+        # The record already holds the project instructions it was sent with:
+        # adding them again would grow the prompt on every resume (#348).
         args.system, args.append_system = session.system, None
+        args.instructions_text = None
     sent = system_from_args(args) or ""
     if session.system is not None and given and redact(sent) != session.system:
         session.events.append(
