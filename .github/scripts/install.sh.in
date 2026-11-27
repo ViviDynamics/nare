@@ -3,11 +3,17 @@
 #
 #   curl -fsSL https://github.com/ViviDynamics/nare/releases/download/@NARE_VERSION@/install.sh | sh
 #
+# Without the terminal UI, for headless use (either spelling):
+#
+#   curl -fsSL .../install.sh | sh -s -- --no-tui
+#   curl -fsSL .../install.sh | NARE_INSTALL_NO_TUI=1 sh
+#
 # Bound to one release: the release job wrote this script's tag and its
 # wheel's SHA-256 in at build time, so it installs that wheel and nothing
-# else, from whichever URL it was fetched. Needs curl and uv
-# (https://docs.astral.sh/uv/); uv brings Python 3.12 or newer when the system
-# has none. Running it again reinstalls the same release.
+# else, from whichever URL it was fetched. Needs curl. Uses the uv it finds,
+# and installs uv (https://docs.astral.sh/uv/) into ~/.local/bin with Astral's
+# official installer when there is none; uv brings Python 3.12 or newer when
+# the system has none. Running it again reinstalls the same release.
 #
 # Everything runs inside main, called on the last line, so a download cut off
 # part way through runs nothing.
@@ -24,20 +30,41 @@ main() (
         exit 1
     }
 
-    if [ "$#" -gt 0 ]; then
-        case "$1" in
+    # The headless option, for CI and other callers with no terminal:
+    # either spelling installs nare without the tui extra.
+    case "${NARE_INSTALL_NO_TUI:-}" in
+        '' | 0) tui=1 ;;
+        1) tui=0 ;;
+        *) fail 'NARE_INSTALL_NO_TUI must be 1 (install without the terminal UI), 0 or unset.' ;;
+    esac
+    for arg in "$@"; do
+        case "$arg" in
             -h | --help)
                 printf '%s\n' \
-                    'Usage: sh install.sh' \
+                    'Usage: sh install.sh [--no-tui]' \
                     "Installs nare $version with the tui extra, using uv." \
-                    'Needs curl and uv (https://docs.astral.sh/uv/).'
+                    'Needs curl. Installs uv (https://docs.astral.sh/uv/) when it is missing.' \
+                    '' \
+                    '  --no-tui   install without the terminal UI, for headless use;' \
+                    '             NARE_INSTALL_NO_TUI=1 does the same.' \
+                    '' \
+                    'Piped from curl, pass the flag after sh -s --:' \
+                    "  curl -fsSL https://github.com/ViviDynamics/nare/releases/download/$version/install.sh | sh -s -- --no-tui"
                 exit 0
                 ;;
+            --no-tui) tui=0 ;;
             *)
-                fail "this script is bound to nare $version and takes no options." \
-                    "For another release, run that release's install.sh."
+                fail "this script is bound to nare $version and takes no option but" \
+                    "--no-tui. For another release, run that release's install.sh."
                 ;;
         esac
+    done
+    if [ "$tui" = 1 ]; then
+        requirement="nare[tui]"
+        flavour='with the terminal UI'
+    else
+        requirement=nare
+        flavour='without the terminal UI'
     fi
 
     # Only for testing the installer against local bytes. The digest above
@@ -134,9 +161,9 @@ main() (
     # repeat run ends in the same state as the first. uv tool install takes
     # the default interpreter rather than the wheel's requires-python, so ask
     # for one that fits; uv downloads it when the system has none.
-    printf 'Installing nare %s with the terminal UI\n' "$version"
+    printf 'Installing nare %s %s\n' "$version" "$flavour"
     "$uv" tool install --force --python '>=3.12' \
-        "nare[tui] @ file://$wheel_dir/$wheel" </dev/null \
+        "$requirement @ file://$wheel_dir/$wheel" </dev/null \
         || fail 'uv could not install nare; its error is above.'
 
     bin_dir=$("$uv" tool dir --bin) || fail 'uv could not name its tool bin directory.'
@@ -145,17 +172,23 @@ main() (
         || fail "the installed $bin_dir/nare did not run."
     [ "$installed" = "$version" ] \
         || fail "the installed nare reports $installed, expected $version."
-    "$tool_dir/nare/bin/python" -c 'import nare.tui.app' </dev/null \
-        || fail "nare $version installed, but its TUI does not import."
+    if [ "$tui" = 1 ]; then
+        "$tool_dir/nare/bin/python" -c 'import nare.tui.app' </dev/null \
+            || fail "nare $version installed, but its TUI does not import."
+    fi
 
     # Only now is an earlier release's wheel no longer needed.
     for kept in "$wheel_dir"/nare-*.whl; do
         [ "$kept" = "$wheel_dir/$wheel" ] || rm -f "$kept"
     done
 
-    printf '\nnare %s is installed, with the terminal UI.\n' "$version"
-    printf '  Start the terminal UI:  nare tui\n'
-    printf '  Run without the UI:     nare run --yes "..."\n'
+    printf '\nnare %s is installed, %s.\n' "$version" "$flavour"
+    if [ "$tui" = 1 ]; then
+        printf '  Start the terminal UI:  nare tui\n'
+        printf '  Run without the UI:     nare run --yes "..."\n'
+    else
+        printf '  Run it:  nare run --yes "..."\n'
+    fi
     printf 'Set ANTHROPIC_API_KEY first, or see the README for other providers.\n'
     case ":${PATH:-}:" in
         *":$bin_dir:"*) ;;

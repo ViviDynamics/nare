@@ -458,3 +458,56 @@ def test_uv_comes_from_astrals_installer_by_default(release: Release) -> None:
     # The tests replace it; a reader's run fetches Astral's own, over https.
     script = release.installer.read_text(encoding="utf-8")
     assert "${NARE_UV_INSTALLER_URL:-https://astral.sh/uv/install.sh}" in script
+
+
+@pytest.mark.parametrize(
+    ("args", "env"),
+    [(("--no-tui",), {}), ((), {"NARE_INSTALL_NO_TUI": "1"})],
+    ids=["flag", "env"],
+)
+def test_the_headless_option_installs_nare_without_the_tui_extra(
+    release: Release, args: tuple[str, ...], env: dict[str, str]
+) -> None:
+    _with_uv(release)
+
+    result = _run(release, stdin=True, args=args, extra_env=env)
+
+    assert result.returncode == 0, result.stderr
+    [install] = _installs(release)
+    assert " nare @ file://" in install
+    assert "[tui]" not in install
+    # No TUI to check, and none to offer.
+    assert not any(call.startswith("python ") for call in _uv_calls(release))
+    assert f"nare {VERSION} is installed" in result.stdout
+    assert "nare tui" not in result.stdout
+    assert "nare run" in result.stdout
+
+
+@pytest.mark.parametrize("value", ["", "0"])
+def test_the_headless_variable_off_keeps_the_tui(release: Release, value: str) -> None:
+    _with_uv(release)
+
+    result = _run(release, extra_env={"NARE_INSTALL_NO_TUI": value})
+
+    assert result.returncode == 0, result.stderr
+    [install] = _installs(release)
+    assert "nare[tui] @ file://" in install
+
+
+@pytest.mark.parametrize("value", ["yes", "true", "2"])
+def test_the_headless_variable_takes_only_0_or_1(release: Release, value: str) -> None:
+    _with_uv(release)
+
+    result = _run(release, extra_env={"NARE_INSTALL_NO_TUI": value})
+
+    assert result.returncode != 0
+    assert "NARE_INSTALL_NO_TUI" in result.stderr
+    assert _installs(release) == []
+
+
+def test_help_names_the_headless_option(release: Release) -> None:
+    result = _run(release, args=("--help",))
+
+    assert result.returncode == 0, result.stderr
+    assert "--no-tui" in result.stdout
+    assert "NARE_INSTALL_NO_TUI=1" in result.stdout
