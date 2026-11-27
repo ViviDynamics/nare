@@ -2853,23 +2853,37 @@ change any file under `--root` and each `--add-root`, including a script there
 that the argv names. `bash` counts with `--bash-sandbox` too, since the sandbox
 leaves the roots writable. So nare refuses that run: when a writing tool is
 allowed and an argv word names an existing file inside `--root` or an
-`--add-root`, the run never starts (exit 2) and names the file. A relative word
-is resolved in `--root`, where the check runs. A link is followed, and a link
-that itself lies inside a root counts too, since the model can replace it.
-Words that name no file (flags, a missing path, a directory) and a bare command
-name found on `PATH` are not checked. Name the script by an absolute path
-outside every root, or pass `--allow-check-in-root` to accept the risk and run
-it as before. A read-only run (`--tools read,list`) and a run without `--root`
-are not refused; without `--root` the file tools reach any path, so no place is
-out of the model's reach. Keep the data the check reads (a manifest, a capture)
-where the model cannot write it either: nare does not look for it.
+`--add-root`, the run never starts (exit 2) and names the file. A word names a
+file as the check would use it: a first word without a slash is the program
+found on `PATH` (so a virtualenv inside the project counts), any other word is
+a path relative to `--root`, where the check runs, and `--name=value` names its
+value too. A link is followed, and a link that itself lies inside a root counts
+too, since the model can replace it. Roots are compared as directories, not as
+spellings, so another letter case or a linked spelling of a root still
+matches. Words that name no file (flags, a missing path, a directory) are not
+checked. Name the script by an absolute path outside every root, or pass
+`--allow-check-in-root` to accept the risk and run it as before. A read-only
+run (`--tools read,list`) and a run without `--root` are not refused; without
+`--root` the file tools reach any path, so no place is out of the model's
+reach.
+
+The refusal looks only at the roots and the built-in tools, so some reach is
+yours to judge. `bash` without `--bash-sandbox` can write anywhere you can,
+including a script outside every root; the refusal says so when it applies.
+Only `write`, `edit` and `bash` count as writing tools: an MCP or
+`--command-tools` tool that writes files is yours to account for. And nare does
+not follow what the check loads: the data it reads (a manifest, a capture), a
+`Makefile` that `make check` runs, or a module that `python3 -m` imports from
+`--root`. Keep all of these where the model cannot write them either.
 
 `--check-command` requires `--schema`, and `--check-timeout` and
 `--allow-check-in-root` require `--check-command`; a malformed argv or a timeout
 that is not a positive finite number never starts (exit 2). None of them is
 saved: a resume without the flag runs no check. `nare contract` advertises
 this under `check_command`. The flags and the entry are additive and keep the
-contract version.
+contract version. The refusal does too: exit 2 keeps its meaning, an
+invocation nare refuses before starting, and only a run whose check the model
+could rewrite now gets it.
 
 ### Finding the document in an answer
 

@@ -1604,17 +1604,26 @@ def refuse_writable_check(argv: list[str], policy: Policy, *, allowed: bool) -> 
     if allowed or policy.root is None or not writers:
         return
     found = check_file_in_roots(
-        argv, cwd=policy.root, roots=[policy.root, *policy.extra_roots]
+        argv,
+        cwd=policy.root,
+        roots=[policy.root, *policy.extra_roots],
+        path=os.environ.get("PATH"),
     )
     if found is None:
         return
-    word, reached = found
-    where = word if Path(word) == reached else f"{word} (which reaches {reached})"
+    word, inside = found
+    where = word if Path(word) == inside else f"{word} ({inside})"
+    unconfined = ""
+    if "bash" in writers and not policy.bash_sandbox:
+        unconfined = (
+            " bash without --bash-sandbox can write outside the roots too, so "
+            "also add --bash-sandbox or leave bash out of --tools."
+        )
     raise ValueError(
         f"--check-command names {where}, inside --root or an --add-root, and "
         f"the run allows {', '.join(writers)}, so the model could rewrite the "
         "check. Move it outside --root and every --add-root, or pass "
-        "--allow-check-in-root to run it anyway"
+        f"--allow-check-in-root to run it anyway.{unconfined}"
     )
 
 

@@ -427,6 +427,8 @@ def test_the_documented_contract_describes_the_check_command() -> None:
     assert "advertises this under `check_command`" in flat
     assert "`--allow-check-in-root`" in flat
     assert "never starts (exit 2) and names the file" in flat
+    assert "`bash` without `--bash-sandbox` can write anywhere you can" in flat
+    assert "an MCP or `--command-tools` tool that writes files" in flat
 
 
 def test_the_run_deadline_stops_a_slow_check_command(
@@ -721,3 +723,114 @@ def test_argv_words_that_name_no_file_are_not_paths(
 
     assert code == 0
     assert result_line(capsys.readouterr().out)["status"] == "done"
+
+
+def test_unsandboxed_bash_is_named_as_reaching_past_the_roots(
+    tmp_path: Path, capsys: Any
+) -> None:
+    """Moving the script out of the roots does not help when bash runs
+    unconfined, so the refusal says what does."""
+    import sys
+
+    check = write_script(tmp_path / "A")
+
+    code = in_root_run(
+        tmp_path,
+        [
+            "--root",
+            str(tmp_path / "A"),
+            "--tools",
+            "read,bash",
+            "--check-command",
+            json.dumps([sys.executable, str(check)]),
+        ],
+    )
+
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "bash without --bash-sandbox can write outside the roots too" in err
+
+
+def test_write_alone_is_not_said_to_reach_past_the_roots(
+    tmp_path: Path, capsys: Any
+) -> None:
+    import sys
+
+    check = write_script(tmp_path / "A")
+
+    code = in_root_run(
+        tmp_path,
+        [
+            "--root",
+            str(tmp_path / "A"),
+            "--tools",
+            "read,write",
+            "--check-command",
+            json.dumps([sys.executable, str(check)]),
+        ],
+    )
+
+    assert code == 2
+    assert "--bash-sandbox" not in capsys.readouterr().err
+
+
+def test_a_bare_command_name_is_looked_up_on_path_not_in_the_root(
+    tmp_path: Path,
+) -> None:
+    from nare.caller_tools import check_file_in_roots
+
+    root = tmp_path / "A"
+    write_script(root).rename(root / "check")
+    elsewhere = tmp_path / "bin"
+    elsewhere.mkdir()
+
+    found = check_file_in_roots(["check"], cwd=root, roots=[root], path=str(elsewhere))
+
+    assert found is None
+
+
+def test_a_bare_command_found_on_path_inside_a_root_counts(tmp_path: Path) -> None:
+    """A virtualenv in the project, first on PATH, is a program the model can
+    replace."""
+    from nare.caller_tools import check_file_in_roots
+
+    root = tmp_path / "A"
+    venv_bin = root / ".venv" / "bin"
+    tool = write_script(venv_bin).rename(venv_bin / "checker")
+    tool.chmod(0o755)
+
+    found = check_file_in_roots(
+        ["checker", "--strict"], cwd=root, roots=[root], path=str(venv_bin)
+    )
+
+    assert found == ("checker", tool)
+
+
+def test_a_path_given_as_an_option_value_counts(tmp_path: Path) -> None:
+    from nare.caller_tools import check_file_in_roots
+
+    root = tmp_path / "A"
+    script = write_script(root)
+
+    found = check_file_in_roots(
+        ["/usr/bin/env", f"--script={script}"], cwd=root, roots=[root], path=""
+    )
+
+    assert found == (f"--script={script}", script)
+
+
+def test_a_root_spelled_in_another_case_still_matches(tmp_path: Path) -> None:
+    """On a case-insensitive file system one directory has many spellings."""
+    from nare.caller_tools import check_file_in_roots
+
+    root = tmp_path / "Repo"
+    write_script(root)
+    other = tmp_path / "repo"
+    if not other.exists():
+        pytest.skip("this file system is case-sensitive")
+
+    found = check_file_in_roots(
+        [str(other / "check.py")], cwd=root, roots=[root], path=""
+    )
+
+    assert found is not None
