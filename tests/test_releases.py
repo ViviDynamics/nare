@@ -137,3 +137,12 @@ def test_the_contract_lists_the_installer_among_a_releases_assets() -> None:
     contract = (ROOT / "docs" / "contract.md").read_text(encoding="utf-8")
     releases = contract[contract.index("## Releases") :]
     assert "install.sh" in releases
+
+
+def test_the_contract_fixes_the_installers_interface() -> None:
+    # Callers such as coordinare's installer script against these.
+    contract = (ROOT / "docs" / "contract.md").read_text(encoding="utf-8")
+    releases = contract[contract.index("## Releases") :]
+    assert "releases/download/<version>/install.sh" in releases
+    assert "--no-tui" in releases
+    assert "NARE_INSTALL_NO_TUI=1" in releases
