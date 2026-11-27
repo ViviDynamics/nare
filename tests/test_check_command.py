@@ -820,17 +820,18 @@ def test_a_path_given_as_an_option_value_counts(tmp_path: Path) -> None:
 
 
 def test_a_root_spelled_in_another_case_still_matches(tmp_path: Path) -> None:
-    """On a case-insensitive file system one directory has many spellings."""
+    """On a case-insensitive file system (macOS's default) one directory has
+    many spellings, and each reaches the root. On a case-sensitive one the
+    other spelling names no file, so there is nothing to refuse."""
     from nare.caller_tools import check_file_in_roots
 
     root = tmp_path / "Repo"
     write_script(root)
     other = tmp_path / "repo"
-    if not other.exists():
-        pytest.skip("this file system is case-sensitive")
+    case_insensitive = other.exists()
 
     found = check_file_in_roots(
         [str(other / "check.py")], cwd=root, roots=[root], path=""
     )
 
-    assert found is not None
+    assert (found is not None) == case_insensitive
