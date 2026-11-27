@@ -17,6 +17,8 @@ import pytest
 from fake_provider import FakeProvider, text_reply, tool_reply
 from nare import credentials, person
 from nare.cli import main, parse_args, transport_from_args
+from nare.transport.anthropic import AnthropicTransport
+from nare.transport.openai import OpenAITransport
 
 KEY = "sk-ant-api03-" + "K" * 40
 OPENAI_KEY = "sk-proj-" + "Q" * 40
@@ -182,7 +184,8 @@ def test_logout_removes_the_stored_key(home: Path) -> None:
 def test_a_stored_key_reaches_the_transport() -> None:
     credentials.store_key("anthropic", KEY)
     transport = transport_from_args(parse_args(["run", "--yes", "x"]))
-    assert transport._client.api_key == KEY  # type: ignore[attr-defined]
+    assert isinstance(transport, AnthropicTransport)
+    assert transport._client.api_key == KEY
 
 
 def test_the_environment_beats_the_stored_key(
@@ -191,14 +194,16 @@ def test_the_environment_beats_the_stored_key(
     credentials.store_key("anthropic", KEY)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env-" + "E" * 30)
     transport = transport_from_args(parse_args(["run", "--yes", "x"]))
-    assert transport._client.api_key == "sk-ant-env-" + "E" * 30  # type: ignore[attr-defined]
+    assert isinstance(transport, AnthropicTransport)
+    assert transport._client.api_key == "sk-ant-env-" + "E" * 30
 
 
 def test_a_stored_openai_key_reaches_the_transport() -> None:
     credentials.store_key("openai", OPENAI_KEY)
     args = parse_args(["run", "--yes", "--provider", "openai", "--model", "m", "x"])
     transport = transport_from_args(args)
-    assert transport._key == OPENAI_KEY  # type: ignore[attr-defined]
+    assert isinstance(transport, OpenAITransport)
+    assert transport._key == OPENAI_KEY
 
 
 def test_run_without_a_key_says_what_it_always_said(
