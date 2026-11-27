@@ -174,3 +174,73 @@ def test_the_line_session_loads_them(
     assert main(["x"], transport=FakeProvider([text_reply("ok")])) == 0
     assert "Root rule" in (systems[-1] or "")
     assert re.search(r"Package rule", systems[-1] or "")
+
+
+def test_a_link_out_of_the_project_is_skipped_and_named(
+    repo: Path, tmp_path: Path, systems: list[str | None]
+) -> None:
+    outside = tmp_path / "elsewhere.txt"
+    outside.write_text("Not project text.\n")
+    (repo / "pkg" / "AGENTS.md").unlink()
+    (repo / "pkg" / "AGENTS.md").symlink_to(outside)
+    loaded = instructions.load(str(repo / "pkg"))
+    assert loaded is not None
+    assert "Not project text" not in loaded.text
+    assert loaded.files == [str(repo / "AGENTS.md")]
+    assert loaded.skipped == [str(repo / "pkg" / "AGENTS.md")]
+    event = loaded.event()
+    assert "skipped" in event.text and "outside the project" in event.text
+    detail = event.detail["project_instructions"]
+    assert detail["skipped"] == [
+        {"file": str(repo / "pkg" / "AGENTS.md"), "reason": "outside the project"}
+    ]
+    assert main(["-p", "x"], transport=FakeProvider([text_reply("ok")])) == 0
+    assert "Not project text" not in (systems[-1] or "")
+
+
+def test_a_skipped_link_still_reports_when_nothing_loads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = tmp_path / "elsewhere.txt"
+    outside.write_text("Not project text.\n")
+    work = tmp_path / "work"
+    (work / ".git").mkdir(parents=True)
+    (work / "CLAUDE.md").symlink_to(outside)
+    loaded = instructions.load(str(work))
+    assert loaded is not None
+    assert loaded.files == [] and loaded.text == ""
+    assert loaded.skipped == [str(work / "CLAUDE.md")]
+
+
+def test_a_link_inside_the_project_still_loads(repo: Path) -> None:
+    (repo / "docs").mkdir()
+    (repo / "docs" / "agents.md").write_text("Shared rule.\n")
+    (repo / "pkg" / "AGENTS.md").unlink()
+    (repo / "pkg" / "AGENTS.md").symlink_to(repo / "docs" / "agents.md")
+    loaded = instructions.load(str(repo / "pkg"))
+    assert loaded is not None
+    assert "Shared rule." in loaded.text
+    assert loaded.skipped == []
+
+
+def test_the_home_file_must_stay_in_nare_home(repo: Path, tmp_path: Path) -> None:
+    home = nare_home()
+    assert home is not None
+    home.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "elsewhere.txt"
+    outside.write_text("Not home text.\n")
+    (home / "AGENTS.md").symlink_to(outside)
+    loaded = instructions.load(str(repo / "pkg"))
+    assert loaded is not None
+    assert "Not home text" not in loaded.text
+    assert loaded.skipped == [str(home / "AGENTS.md")]
+
+
+def test_a_file_is_read_only_up_to_the_cap(tmp_path: Path) -> None:
+    big = tmp_path / "AGENTS.md"
+    with big.open("wb") as handle:
+        handle.truncate(64 * 1024 * 1024)
+    assert len(instructions.read_head(big, 100)) == 101
+    loaded = instructions.load(str(tmp_path))
+    assert loaded is not None and loaded.truncated
+    assert loaded.bytes == instructions.MAX_BYTES

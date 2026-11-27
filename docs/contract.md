@@ -1702,6 +1702,14 @@ directory has no `AGENTS.md`. Their total is capped at 32 KiB; a cut ends with
 files, with `detail.project_instructions` as `{"files": [...], "bytes": N,
 "truncated": false}`. `--no-project-instructions` leaves them out.
 
+A file is read where it really is. One that resolves, through a symbolic link,
+outside the folder it was found for (the project root, or `$NARE_HOME` for the
+home file) is skipped, never read: the event's text says so, and
+`detail.project_instructions.skipped` lists each as `{"file": "<path>",
+"reason": "outside the project"}`. When every file is skipped, the event still
+comes, with `"files": []`. A link that stays inside the project loads as usual.
+Each file is read only as far as the cap needs.
+
 `nare run` never reads them, so a caller's prompt is exactly what it sent and
 its runs stay deterministic. `nare run --project-instructions` opts in, with
 the same files, order, cap and event. A resume sends the system prompt the
