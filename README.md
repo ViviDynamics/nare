@@ -21,6 +21,9 @@ and let me enter credentials privately. Verify the installed version and a
 read-only model session, then show me how to open the TUI.
 ```
 
+Once your [provider](#providers) is configured, run `nare tui` from the
+project directory to open the terminal UI.
+
 It needs only `curl`. nare installs as a [uv](https://docs.astral.sh/uv/) tool
 in its own environment, and the script uses the uv it finds. When there is
 none, it says so and installs uv into `~/.local/bin` with Astral's official

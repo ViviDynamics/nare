@@ -17,7 +17,8 @@ curl -fsSL https://github.com/ViviDynamics/nare/releases/latest/download/install
 ```
 
 Follow any PATH instruction it prints, then run `nare --version` again.
-If the installer asks for uv, install it using
+The current installer installs uv when needed. If an older installer asks
+for uv, install it using
 [uv's installation guide](https://docs.astral.sh/uv/getting-started/installation/)
 and rerun the installer. Also use the release installer if an older binary
 lacks `--require-read` or the TUI. If `curl` is missing, install it with the system
