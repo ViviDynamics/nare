@@ -100,6 +100,24 @@ openai` speaks Chat Completions, which is also what a LiteLLM proxy, vLLM,
 llama.cpp and Ollama speak, and reads `OPENAI_API_KEY`; point it anywhere with
 `--base-url`. `--provider bedrock` is the Anthropic rail reached through AWS.
 
+To keep a key without exporting it in every shell, store it once:
+
+    nare auth login                      # typed with the input hidden
+    printf %s "$KEY" | nare auth login --provider openai --with-api-key
+    nare auth status                     # where each key comes from, never the key
+    nare auth logout --provider openai
+
+`nare login` and `nare logout` are the same commands, as Codex spells them, and
+`nare login status` is `nare auth status`. The key goes to
+`~/.nare/credentials.json` (under `NARE_HOME`), mode 0600, and never through
+argv. The environment variable, when set, wins over a stored key, for every
+command including `nare run`. `nare auth status` exits 0 when the default
+provider (`NARE_PROVIDER`, else anthropic) has a key and 1 when not; for
+bedrock it reports whether the AWS credential chain resolves. Nothing prompts
+without a terminal: `nare auth login` there needs `--with-api-key`. `nare`,
+`nare "<task>"` and `nare -p` with no key say so in one line, naming
+`nare auth login`.
+
 ### Claude on Amazon Bedrock
 
 `--provider bedrock` calls Claude on Amazon Bedrock directly, with no API key
@@ -435,9 +453,9 @@ your projects.
   letters, digits, `.`, `-` and `_`) made a `-`. Folders are 0700 and files 0600,
   redacted as every session file is. Nothing removes them: delete the ones you
   no longer need.
-- Nothing else is written there yet. Model and provider settings stay in
-  environment variables or a project `.env`, and no API key is read from this
-  folder.
+- `credentials.json` holds the keys `nare auth login` stored, mode 0600. An
+  environment variable always wins over it. Model and provider settings stay in
+  environment variables or a project `.env`.
 - `nare run` saves a session only with `--session`, so a headless run writes
   nothing to `~/.nare`.
 - Sessions saved before this change, under `$XDG_STATE_HOME/nare/sessions`
