@@ -10,8 +10,19 @@ On Linux or macOS, one command installs the newest release with its terminal UI:
 
     curl -fsSL https://github.com/ViviDynamics/nare/releases/latest/download/install.sh | sh
 
-Then start the terminal UI with `nare tui`, after setting `ANTHROPIC_API_KEY`
-or choosing another [provider](#providers).
+**Set up Nare in this project** · Copy this prompt into your coding agent, or
+follow the [first-session guide](docs/first-session.md) yourself.
+
+```text
+Set up Nare in this project. Follow the guide at
+https://github.com/ViviDynamics/nare/blob/main/docs/first-session.md
+Reuse my installation and provider settings. Ask only for missing choices,
+and let me enter credentials privately. Verify the installed version and a
+read-only model session, then show me how to open the TUI.
+```
+
+Once your [provider](#providers) is configured, run `nare tui` from the
+project directory to open the terminal UI.
 
 It needs only `curl`. nare installs as a [uv](https://docs.astral.sh/uv/) tool
 in its own environment, and the script uses the uv it finds. When there is
