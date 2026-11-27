@@ -101,6 +101,24 @@ def flags_of(parser: argparse.ArgumentParser) -> dict[str, dict[str, Any]]:
     return flags
 
 
+def flag_aliases_of(parser: argparse.ArgumentParser) -> dict[str, str]:
+    """Every other spelling a parser accepts, onto the `flags` name it stands
+    for: Claude Code's and Codex's names (--yolo for --yes), short forms (-m
+    for --model) and camelCase forms (--allowedTools)."""
+    aliases: dict[str, str] = {}
+    for action in parser._actions:
+        if not action.option_strings or isinstance(action, argparse._HelpAction):
+            continue
+        key = max(action.option_strings, key=len)
+        stands_for = getattr(action, "nare_stands_for", None)
+        for option in action.option_strings:
+            if stands_for is not None:
+                aliases[option] = stands_for
+            elif option != key:
+                aliases[option] = key
+    return aliases
+
+
 def _run_parser() -> argparse.ArgumentParser:
     from nare.cli import build_parser
 
@@ -695,6 +713,9 @@ def describe() -> dict[str, Any]:
         # Additive: every `nare run` option, so a caller checks that a flag
         # exists instead of comparing release numbers.
         "flags": flags_of(_run_parser()),
+        # Additive: the other tools' spellings `flags` accepts, each onto the
+        # nare flag it stands for.
+        "flag_aliases": flag_aliases_of(_run_parser()),
         # The redaction is part of what a caller relies on: event `text` and
         # whatever a caller pipes through `nare redact` carry it, and a rule
         # change is a change to what those mean.

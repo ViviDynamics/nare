@@ -236,6 +236,13 @@ denied, reported on stderr and told to the model, and the run goes on; reads
 and read-only commands run. `--yes`, `--dangerously-skip-permissions` or
 `--yolo` approves every call.
 
+nare also takes Claude Code's and Codex's spellings of its flags:
+`--append-system-prompt`, `--system-prompt`, `--dangerously-skip-permissions`,
+`--yolo`, `--allowedTools "Bash(git log:*),Read"`, `--permission-mode`, `-a`,
+`-s`, `--max-budget-usd`, `--json-schema`, `--output-schema`, `-m
+provider/model` and `--add-dir`, each onto the nare flag it stands for. See
+[other tools' spellings](docs/contract.md#other-tools-spellings).
+
 For a program, `nare run` is the [machine contract](docs/contract.md):
 
     nare run --yes --jsonl "add a docstring to foo() in bar.py"

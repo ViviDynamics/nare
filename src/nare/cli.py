@@ -166,10 +166,88 @@ FORK_HELP = (
 )
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="nare", description="A standalone agent harness."
+PROVIDERS = ("anthropic", "bedrock", "openai", "fake")
+PERMISSION_MODES = ("default", "acceptEdits", "plan", "bypassPermissions")
+ASK_FOR_APPROVAL = ("never", "on-request")
+SANDBOX_MODES = ("read-only", "workspace-write", "danger-full-access")
+# The tools that change nothing, which plan and read-only allow.
+READ_ONLY_TOOLS = "ask,list,read,search"
+# Claude Code's tool names, onto nare's.
+CLAUDE_TOOLS = {
+    "Bash": "bash",
+    "Read": "read",
+    "Edit": "edit",
+    "MultiEdit": "edit",
+    "Write": "write",
+    "Glob": "search",
+    "Grep": "search",
+    "LS": "list",
+}
+
+
+class NareParser(argparse.ArgumentParser):
+    """An option added for another tool's spelling matches only when spelled in
+    full. argparse also accepts a unique prefix of a long option, so without
+    this a new --yolo would make --y, which meant --yes, ambiguous, and a new
+    --json-schema would break --json for --jsonl. Every prefix that worked
+    before the aliases still means what it meant."""
+
+    def _get_option_tuples(self, option_string: str) -> Any:
+        return [
+            option
+            for option in super()._get_option_tuples(option_string)
+            if not getattr(option[0], "nare_exact", False)
+        ]
+
+
+class AliasHelpFormatter(argparse.HelpFormatter):
+    """Prints an option's aliases on its own line of the help, after its name."""
+
+    def _format_action_invocation(self, action: argparse.Action) -> str:
+        text = super()._format_action_invocation(action)
+        aliases: tuple[str, ...] = getattr(action, "nare_aliases", ())
+        return ", ".join((text, *aliases))
+
+
+def add_alias(
+    parser: argparse.ArgumentParser,
+    canonical: argparse.Action,
+    *names: str,
+    stands_for: str | None = None,
+    **kwargs: Any,
+) -> argparse.Action:
+    """Another tool's spelling of `canonical`, as an option of its own.
+
+    Its own option, so `nare contract` lists it under `flags` and no existing
+    flag's key changes; it stores into a slot of its own, so a conflict with
+    the canonical flag can be named. resolve_aliases moves the value across.
+    """
+    dest = "alias_" + names[0].lstrip("-").replace("-", "_")
+    action = parser.add_argument(
+        *names, dest=dest, default=None, help=argparse.SUPPRESS, **kwargs
     )
+    _mark(
+        action,
+        nare_alias_of=canonical,
+        nare_stands_for=stands_for or _name(canonical),
+        nare_exact=True,
+    )
+    _mark(canonical, nare_aliases=(*getattr(canonical, "nare_aliases", ()), *names))
+    return action
+
+
+def _mark(action: argparse.Action, **attributes: Any) -> None:
+    """Notes on a parser option that help, resolution and the contract read."""
+    for key, value in attributes.items():
+        setattr(action, key, value)
+
+
+def _name(action: argparse.Action) -> str:
+    return max(action.option_strings, key=len)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = NareParser(prog="nare", description="A standalone agent harness.")
     parser.add_argument(
         "--version",
         action="version",
@@ -226,11 +304,15 @@ def build_parser() -> argparse.ArgumentParser:
             "(without it the tokens are only deleted)"
         ),
     )
-    run_parser = sub.add_parser("run", help="run a task headlessly")
+    run_parser = sub.add_parser(
+        "run", help="run a task headlessly", formatter_class=AliasHelpFormatter
+    )
     add_run_command_flags(run_parser)
 
     tui_parser = sub.add_parser(
-        "tui", help="work with nare in a terminal UI, or watch a run with --attach"
+        "tui",
+        help="work with nare in a terminal UI, or watch a run with --attach",
+        formatter_class=AliasHelpFormatter,
     )
     tui_parser.add_argument(
         "prompt", nargs="?", help="the task to start with; without one, type it"
@@ -260,14 +342,54 @@ def add_run_command_flags(run_parser: argparse.ArgumentParser) -> None:
         default=stream_from_env(os.environ),
         help="stream text/reasoning while each model turn runs (env: NARE_STREAM)",
     )
-    run_parser.add_argument(
+    jsonl = run_parser.add_argument(
         "--jsonl", action="store_true", help="emit typed JSONL on stdout"
     )
-    run_parser.add_argument(
+    # Codex's spelling, which as a prefix of --jsonl always meant it.
+    add_alias(run_parser, jsonl, "--json", action="store_true")
+    yes = run_parser.add_argument(
         "--yes",
         action="store_true",
         help="approve every tool call (required for unattended runs)",
     )
+    # Claude Code's and Codex's spellings of --yes.
+    for spelling in (
+        "--dangerously-skip-permissions",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--yolo",
+    ):
+        add_alias(run_parser, yes, spelling, action="store_true")
+    modes = run_parser.add_argument(
+        "--permission-mode",
+        dest="alias_permission_mode",
+        choices=PERMISSION_MODES,
+        help=(
+            "Claude Code's approval modes: default asks at a terminal, as without "
+            "--yes; acceptEdits also approves write and edit unasked; plan allows "
+            "only the read-only tools (read, list, search, ask); "
+            "bypassPermissions is --yes"
+        ),
+    )
+    approval = run_parser.add_argument(
+        "--ask-for-approval",
+        "-a",
+        dest="alias_ask_for_approval",
+        choices=ASK_FOR_APPROVAL,
+        help="Codex's approval policy: never is --yes; on-request asks as without it",
+    )
+    sandbox = run_parser.add_argument(
+        "--sandbox",
+        "-s",
+        dest="alias_sandbox",
+        choices=SANDBOX_MODES,
+        help=(
+            "Codex's sandbox: read-only allows only the read-only tools; "
+            "workspace-write is --bash-sandbox, with --root defaulting to the "
+            "working directory; danger-full-access is no sandbox, the default"
+        ),
+    )
+    for action in (modes, approval, sandbox):
+        _mark(action, nare_exact=True)
     run_parser.add_argument(
         "--contract",
         type=int,
@@ -277,7 +399,7 @@ def add_run_command_flags(run_parser: argparse.ArgumentParser) -> None:
             f"would mis-read (this nare: {CONTRACT_VERSION})"
         ),
     )
-    run_parser.add_argument(
+    schema = run_parser.add_argument(
         "--schema",
         help=(
             "a JSON Schema file the final answer must satisfy. nare validates a "
@@ -286,6 +408,9 @@ def add_run_command_flags(run_parser: argparse.ArgumentParser) -> None:
             "schema using anything else rather than validating it only in part"
         ),
     )
+    # Claude Code's and Codex's spellings, which also take the schema inline.
+    add_alias(run_parser, schema, "--json-schema", stands_for="--schema")
+    add_alias(run_parser, schema, "--output-schema", stands_for="--schema")
     run_parser.add_argument(
         "--structured-output",
         choices=STRUCTURED_OUTPUT_MODES,
@@ -449,6 +574,201 @@ def add_run_command_flags(run_parser: argparse.ArgumentParser) -> None:
     run_parser.add_argument("--fork", action="store_true", help=FORK_HELP)
 
 
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    """Parse a subcommand's argv, then settle its aliases. A conflict between
+    an alias and its canonical flag raises ValueError, which is exit 2."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    command = getattr(args, "command", None)
+    [sub] = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
+    if command in ("run", "tui"):
+        resolve_aliases(sub.choices[command], argv[1:], args)
+    return args
+
+
+def resolve_aliases(
+    parser: argparse.ArgumentParser, argv: list[str], args: argparse.Namespace
+) -> None:
+    """Move each alias's value onto the option it stands for.
+
+    An alias given beside its canonical flag with a different value is a
+    conflict, named with both spellings. A flag is "given" when its spelling
+    is on the command line: a value from the environment is a default, which
+    an alias overrides as the flag itself would.
+    """
+    words = argv[: argv.index("--")] if "--" in argv else argv
+    origin: dict[str, str] = {}
+    for action in parser._actions:
+        spelled = _spelled(action, words)
+        if spelled and not action.dest.startswith("alias_"):
+            origin[action.dest] = spelled
+
+    def put(dest: str, value: Any, flag: str, same: Callable[[Any], Any] = str) -> None:
+        if dest in origin and same(getattr(args, dest)) != same(value):
+            raise ValueError(f"{flag} conflicts with {origin[dest]}: give one of them")
+        setattr(args, dest, value)
+        origin.setdefault(dest, flag)
+
+    def tool_set(value: Any) -> frozenset[str]:
+        return frozenset(n.strip() for n in str(value).split(",") if n.strip())
+
+    args.accept_edits = False
+    deny_only = False
+    for action in parser._actions:
+        if not action.dest.startswith("alias_"):
+            continue
+        value = getattr(args, action.dest, None)
+        if value is None:
+            continue
+        flag = _spelled(action, words) or _name(action)
+        canonical: argparse.Action | None = getattr(action, "nare_alias_of", None)
+        if canonical is not None and action.nargs == 0:
+            setattr(args, canonical.dest, True)
+        elif canonical is not None and isinstance(action, argparse._AppendAction):
+            setattr(args, canonical.dest, [*getattr(args, canonical.dest), *value])
+        elif canonical is not None:
+            put(canonical.dest, value, flag)
+        elif action.dest == "alias_allowed_tools":
+            names, patterns = _claude_tools(value, flag)
+            if patterns:
+                names |= {"bash"}
+            put("tools", ",".join(sorted(names)) or "none", flag, tool_set)
+            args.bash_allow = [*args.bash_allow, *patterns]
+        elif action.dest == "alias_disallowed_tools":
+            names, patterns = _claude_tools(value, flag)
+            unknown = sorted(names - frozenset(TOOLS))
+            if unknown:
+                raise ValueError(
+                    f"{flag} names built-in tools only, not {', '.join(unknown)}; "
+                    "name the tools to allow in --tools instead"
+                )
+            if names:
+                deny_only = args.tools is None
+                base = frozenset(TOOLS) if args.tools is None else tool_set(args.tools)
+                args.tools = ",".join(sorted(base - names)) or "none"
+            args.bash_deny = [*args.bash_deny, *patterns]
+        elif action.dest == "alias_permission_mode":
+            if value == "bypassPermissions":
+                args.yes = True
+            elif value == "acceptEdits":
+                args.accept_edits = True
+            elif value == "plan":
+                put("tools", READ_ONLY_TOOLS, f"{flag} plan", tool_set)
+        elif action.dest == "alias_ask_for_approval":
+            if value == "never":
+                args.yes = True
+        elif action.dest == "alias_sandbox":
+            if value == "read-only":
+                put("tools", READ_ONLY_TOOLS, f"{flag} read-only", tool_set)
+            elif value == "workspace-write":
+                args.bash_sandbox = True
+                if args.root is None:
+                    args.root = os.getcwd()
+            elif args.bash_sandbox:
+                raise ValueError(
+                    f"{flag} danger-full-access conflicts with --bash-sandbox: "
+                    "give one of them"
+                )
+    for text, path in (
+        ("system", "system_file"),
+        ("append_system", "append_system_file"),
+    ):
+        if (
+            getattr(args, text, None) is not None
+            and getattr(args, path, None) is not None
+        ):
+            raise ValueError(
+                f"{origin.get(text, text)} conflicts with {origin.get(path, path)}: "
+                "give one of them"
+            )
+    args.mcp_allow_all = args.tools is None or deny_only
+    # A schema given inline, as Claude Code's --json-schema takes it.
+    args.schema_text = None
+    schema = getattr(args, "schema", None)
+    if schema is not None and origin.get("schema") != "--schema":
+        if schema.lstrip().startswith("{"):
+            args.schema_text, args.schema = schema, None
+    _split_model(args, origin)
+
+
+def _spelled(action: argparse.Action, words: list[str]) -> str | None:
+    """The spelling of `action` used on the command line, if any."""
+    for word in words:
+        for option in action.option_strings:
+            if word == option or (
+                option.startswith("--") and word.startswith(option + "=")
+            ):
+                return option
+    return None
+
+
+def _claude_tools(values: list[str], flag: str) -> tuple[frozenset[str], list[str]]:
+    """Tool names and bash patterns from Claude Code's tool rules: names comma
+    or space separated, Claude's or nare's, mcp__server__tool for an MCP tool,
+    and Bash(PATTERN) for a bash command rule. PATTERN:* is PATTERN and
+    anything after it, as Claude Code reads it."""
+    names: set[str] = set()
+    patterns: list[str] = []
+    for word in _tool_words(values):
+        rule = re.fullmatch(r"(\w+)\((.*)\)", word, re.DOTALL)
+        name = rule.group(1) if rule else word
+        name = CLAUDE_TOOLS.get(name, name)
+        if name.startswith("mcp__"):
+            name = name[len("mcp__") :]
+        if rule is None:
+            names.add(name)
+            continue
+        if name != "bash":
+            raise ValueError(f"{flag}: only Bash takes a pattern, not {word}")
+        pattern = rule.group(2).strip()
+        if pattern.endswith(":*"):
+            prefix = pattern[:-2].rstrip()
+            patterns += [prefix, f"{prefix} *"]
+        elif pattern and pattern != "*":
+            patterns.append(pattern)
+        else:
+            names.add("bash")  # Bash() and Bash(*) are every command
+    return frozenset(names), patterns
+
+
+def _tool_words(values: list[str]) -> list[str]:
+    """Split on commas and spaces outside parentheses: Bash(git log:*) is one."""
+    words: list[str] = []
+    for value in values:
+        depth, current = 0, ""
+        for char in value:
+            depth += char == "("
+            depth -= char == ")" and depth > 0
+            if depth == 0 and (char == "," or char.isspace()):
+                if current:
+                    words.append(current)
+                current = ""
+            else:
+                current += char
+        if current:
+            words.append(current)
+    return words
+
+
+def _split_model(args: argparse.Namespace, origin: dict[str, str]) -> None:
+    """--model provider/model picks the provider, but only where nothing else
+    names one: an explicit provider, NARE_PROVIDER or an endpoint keeps the
+    value whole, since a proxy's model names carry prefixes of their own."""
+    model = getattr(args, "model", None)
+    if (
+        "model" not in origin
+        or not isinstance(model, str)
+        or "/" not in model
+        or "provider" in origin
+        or os.environ.get("NARE_PROVIDER")
+        or getattr(args, "base_url", None)
+    ):
+        return
+    provider, name = model.split("/", 1)
+    if provider in PROVIDERS and name:
+        args.provider, args.model = provider, name
+
+
 def _share_of(name: str) -> Callable[[str], float]:
     """A --compaction-trigger or --compaction-target value. The message names the
     environment variable too, since argparse also parses a value taken from it."""
@@ -586,7 +906,7 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--provider",
-        choices=["anthropic", "bedrock", "openai", "fake"],
+        choices=PROVIDERS,
         default=os.environ.get("NARE_PROVIDER", "anthropic"),
         help="model provider: anthropic, bedrock for Claude on Amazon Bedrock "
         "(AWS credentials, --region), or openai for anything speaking Chat "
@@ -601,8 +921,11 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--model",
+        "-m",
         default=os.environ.get("NARE_MODEL", "claude-sonnet-5"),
-        help="model name (env: NARE_MODEL)",
+        help="model name (env: NARE_MODEL). provider/model, such as "
+        "openai/gpt-5, also picks the provider when neither --provider, "
+        "NARE_PROVIDER nor --base-url names one; otherwise it is the model name",
     )
     parser.add_argument(
         "--base-url",
@@ -638,12 +961,13 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
         help="session token budget, including input, output and cache "
         "(env: NARE_BUDGET_TOKENS)",
     )
-    parser.add_argument(
+    budget_usd = parser.add_argument(
         "--budget-usd",
         type=float,
         default=os.environ.get("NARE_BUDGET_USD"),
         help="cumulative session dollar budget (env: NARE_BUDGET_USD)",
     )
+    add_alias(parser, budget_usd, "--max-budget-usd", type=float)
     parser.add_argument(
         "--effort",
         choices=EFFORTS,
@@ -662,27 +986,31 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
     # Each file route is exclusive with its argv form, as --prompt-file is
     # with a positional prompt: a caller that sent both meant one of them.
     system = parser.add_mutually_exclusive_group()
-    system.add_argument(
+    system_text = system.add_argument(
         "--system",
         metavar="TEXT",
         help="replace nare's default system prompt with TEXT; --system '' sends none",
     )
-    system.add_argument(
+    system_file = system.add_argument(
         "--system-file",
         metavar="PATH",
         help="--system, read from a UTF-8 file, which keeps it out of argv",
     )
+    add_alias(parser, system_text, "--system-prompt")
+    add_alias(parser, system_file, "--system-prompt-file")
     append = parser.add_mutually_exclusive_group()
-    append.add_argument(
+    append_text = append.add_argument(
         "--append-system",
         metavar="TEXT",
         help="add TEXT after the system prompt: the default, or --system's",
     )
-    append.add_argument(
+    append_file = append.add_argument(
         "--append-system-file",
         metavar="PATH",
         help="--append-system, read from a UTF-8 file",
     )
+    add_alias(parser, append_text, "--append-system-prompt")
+    add_alias(parser, append_file, "--append-system-prompt-file")
     parser.add_argument(
         "--tools",
         help=(
@@ -690,6 +1018,32 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
             f"(default all: {','.join(sorted(TOOLS))}; 'none' allows no tool)"
         ),
     )
+    tool_list = parser.add_argument(
+        "--allowed-tools",
+        "--allowedTools",
+        dest="alias_allowed_tools",
+        action="append",
+        metavar="TOOLS",
+        help=(
+            "Claude Code's --tools: tool names, comma or space separated and "
+            "repeatable, in nare's names or Claude Code's (Read, Edit, Bash...). "
+            "Bash(PATTERN) allows bash and adds PATTERN to --bash-allow; "
+            "Bash(git log:*) is git log and anything after it"
+        ),
+    )
+    _mark(tool_list, nare_stands_for="--tools", nare_exact=True)
+    tool_denials = parser.add_argument(
+        "--disallowed-tools",
+        "--disallowedTools",
+        dest="alias_disallowed_tools",
+        action="append",
+        metavar="TOOLS",
+        help=(
+            "built-in tools this run may not call, in the same spellings; "
+            "Bash(PATTERN) adds PATTERN to --bash-deny instead"
+        ),
+    )
+    _mark(tool_denials, nare_exact=True)
     parser.add_argument(
         "--root",
         help=(
@@ -698,7 +1052,7 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
             "can still walk upward, and confining it is the sandbox's job"
         ),
     )
-    parser.add_argument(
+    add_root = parser.add_argument(
         "--add-root",
         action="append",
         default=[],
@@ -710,6 +1064,7 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
             "write here too. Needs --root. Repeatable"
         ),
     )
+    add_alias(parser, add_root, "--add-dir", action="append")
     parser.add_argument(
         "--bash-credentials",
         action="store_true",
@@ -920,6 +1275,16 @@ def schema_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
     """Read and vet the schema before the run starts: a caller that asked for
     data should not spend a model call to learn the schema was unreadable.
     """
+    text = getattr(args, "schema_text", None)
+    if text is not None:
+        try:
+            loaded = json.loads(text)
+        except ValueError as exc:
+            raise ValueError(f"the inline schema is not JSON: {exc}") from exc
+        if not isinstance(loaded, dict):
+            raise ValueError("the inline schema is not a JSON object")
+        check_supported(loaded)
+        return loaded
     if args.schema is None:
         return None
     loaded = json.loads(Path(args.schema).read_text(encoding="utf-8"))
@@ -1386,7 +1751,7 @@ async def _execute(
                 budget_usd=args.budget_usd,
                 prices=prices,
                 mcp_servers=args.mcp_servers,
-                mcp_allow_all=args.tools is None,
+                mcp_allow_all=getattr(args, "mcp_allow_all", args.tools is None),
                 mcp_defer=args.mcp_defer,
                 tools=args.command_tools,
                 structured_output=args.structured_output,
@@ -1601,8 +1966,11 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     if mode is not None:
         # nare, nare "<task>", nare -p, nare exec: the person-facing forms.
         return person.main(mode, argv, transport=transport)
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    try:
+        args = parse_args(argv)
+    except ValueError as exc:
+        print(f"nare: {exc}", file=sys.stderr)
+        return NEVER_STARTED
 
     if args.command == "contract":
         print(json.dumps(describe()), flush=True)
@@ -1673,6 +2041,10 @@ def run_command(
     except (ValueError, OSError, UnsupportedSchema) as exc:
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED
+    if approver is not None and getattr(args, "accept_edits", False):
+        from nare.terminal import accepting_edits
+
+        approver = accepting_edits(approver)
     if approver is not None:
         args.approve = approver(policy)
 
