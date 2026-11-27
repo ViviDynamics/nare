@@ -401,6 +401,12 @@ only works if a version keeps naming the same code, so:
   built: it installs that release's wheel, checked against its SHA-256, and no
   other, so `releases/latest/download/install.sh` never mixes one release's
   script with another's wheel.
+- **The installer's interface only grows.** A caller pins a release with
+  `curl -fsSL https://github.com/ViviDynamics/nare/releases/download/<version>/install.sh | sh`.
+  The script needs only `curl`, installs uv with Astral's official installer
+  when none is found, and installs the `tui` extra unless it is given
+  `--no-tui` (`| sh -s -- --no-tui`) or `NARE_INSTALL_NO_TUI=1`. A later
+  release may add options; it does not remove or rename these.
 - **A version's container image is pushed once.** A rerun of the release
   workflow that finds `ghcr.io/vividynamics/nare:<version>` already published
   leaves it, and `latest`, alone.

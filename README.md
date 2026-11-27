@@ -6,44 +6,65 @@ file and an exit code.
 
 ## Install
 
-On Linux or macOS, this installs the newest release with its terminal UI:
+On Linux or macOS, one command installs the newest release with its terminal UI:
 
     curl -fsSL https://github.com/ViviDynamics/nare/releases/latest/download/install.sh | sh
 
 Then start the terminal UI with `nare tui`, after setting `ANTHROPIC_API_KEY`
 or choosing another [provider](#providers).
 
-It needs `curl` and [uv](https://docs.astral.sh/uv/getting-started/installation/).
-uv brings Python 3.12 or newer if the machine has none, and installs nare as a
-uv tool in its own environment, with the `nare` command in uv's tool bin
-directory (`uv tool dir --bin`, usually `~/.local/bin`). The installer says so
-when that directory is not on `PATH`; `uv tool update-shell` adds it. The
-verified wheel is kept in `~/.local/share/nare/wheels` (under `XDG_DATA_HOME`
-when that is set), because uv reads it again on `uv tool upgrade`. Running the
-command again reinstalls cleanly, and moves to the newest release when there is
-one. `uv tool uninstall nare` removes nare; the kept wheel can then be deleted.
+It needs only `curl`. nare installs as a [uv](https://docs.astral.sh/uv/) tool
+in its own environment, and the script uses the uv it finds. When there is
+none, it says so and installs uv into `~/.local/bin` with Astral's official
+installer (`https://astral.sh/uv/install.sh`, which also adds that directory to
+your shell profile, as it does by default), without asking; install uv yourself
+first if you would rather run that step on your own. uv brings Python 3.12 or
+newer if the machine has none. The `nare` command lands in uv's tool bin
+directory (`uv tool dir --bin`, usually `~/.local/bin`), and when that is not
+on `PATH` the script prints the exact `export PATH=...` line for the current
+shell. Running the command again reinstalls cleanly, and moves to the newest
+release when there is one. `uv tool uninstall nare` removes nare.
+
+Without the terminal UI, for CI and other callers with no terminal, add
+`--no-tui` (after `sh -s --`, since the script comes in on stdin), or set
+`NARE_INSTALL_NO_TUI=1`:
+
+    curl -fsSL https://github.com/ViviDynamics/nare/releases/latest/download/install.sh | sh -s -- --no-tui
+    curl -fsSL https://github.com/ViviDynamics/nare/releases/latest/download/install.sh | NARE_INSTALL_NO_TUI=1 sh
+
+To pin a release, put its version where `latest/download` was. This is the
+line to copy into docs and scripts:
+
+    curl -fsSL https://github.com/ViviDynamics/nare/releases/download/<version>/install.sh | sh
 
 The script is bound to the release it came from: it downloads that release's
 wheel by its exact tag, checks it against the SHA-256 written into the script
-when the release was built, and refuses to install anything else. Releases
-published since the installer was added carry it too, so
-`releases/download/<version>/install.sh` installs exactly that release.
-Earlier releases have none; install those from the wheel, as below.
-
-Every release publishes a wheel and a container image. nare is not on PyPI, so
-`pip install nare` does not work and this file will not pretend it does.
+when the release was built, and refuses to install anything else; on a
+mismatch it installs nothing, uv included. The verified wheel is kept in
+`~/.local/share/nare/wheels` (under `XDG_DATA_HOME` when that is set), because
+uv reads it again on `uv tool upgrade`. Releases since 2026.11.113 carry the
+script. The ones from before it learned to install uv and to take `--no-tui`
+need uv already installed and take no options; `sh install.sh --help` says
+what a release's script accepts.
 
 For anything that records what produced a result, pin a version: `latest` is
 fine for a look around and wrong for that. A published release is never deleted or moved,
 so a pin keeps working; see [the release policy](docs/contract.md#releases).
 The newest release is on the [releases page](https://github.com/ViviDynamics/nare/releases/latest),
 or `gh release view --repo ViviDynamics/nare --json tagName --jq .tagName`.
+`nare --version` prints the installed release, the `result` line carries it as
+`nare`, and so does the session file. A caller records the version that
+produced a result rather than whatever main was that day.
 
-    # wheel, from the release
+### Other ways to install
+
+Every release also publishes a wheel and a container image, which is how
+releases older than the installer are installed. nare is not on PyPI, so
+`pip install nare` does not work and this file will not pretend it does.
+
+    # wheel, from the release (add the tui extra for the terminal UI)
     V=2026.11.9
     uv tool install --python 3.12 "https://github.com/ViviDynamics/nare/releases/download/$V/nare-$V-py3-none-any.whl"
-
-    # the same wheel with the terminal UI
     uv tool install --python 3.12 "nare[tui] @ https://github.com/ViviDynamics/nare/releases/download/$V/nare-$V-py3-none-any.whl"
 
     # container, same argv as the CLI
@@ -52,10 +73,6 @@ or `gh release view --repo ViviDynamics/nare --json tagName --jq .tagName`.
 
     # from source, at a tag
     pip install "git+https://github.com/ViviDynamics/nare@$V"
-
-`nare --version` prints the installed release, the `result` line carries it as
-`nare`, and so does the session file. A caller records the version that
-produced a result rather than whatever main was that day.
 
 ## Providers
 

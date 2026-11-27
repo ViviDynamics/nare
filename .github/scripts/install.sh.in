@@ -3,11 +3,17 @@
 #
 #   curl -fsSL https://github.com/ViviDynamics/nare/releases/download/@NARE_VERSION@/install.sh | sh
 #
+# Without the terminal UI, for headless use (either spelling):
+#
+#   curl -fsSL .../install.sh | sh -s -- --no-tui
+#   curl -fsSL .../install.sh | NARE_INSTALL_NO_TUI=1 sh
+#
 # Bound to one release: the release job wrote this script's tag and its
 # wheel's SHA-256 in at build time, so it installs that wheel and nothing
-# else, from whichever URL it was fetched. Needs curl and uv
-# (https://docs.astral.sh/uv/); uv brings Python 3.12 or newer when the system
-# has none. Running it again reinstalls the same release.
+# else, from whichever URL it was fetched. Needs curl. Uses the uv it finds,
+# and installs uv (https://docs.astral.sh/uv/) into ~/.local/bin with Astral's
+# official installer when there is none; uv brings Python 3.12 or newer when
+# the system has none. Running it again reinstalls the same release.
 #
 # Everything runs inside main, called on the last line, so a download cut off
 # part way through runs nothing.
@@ -24,20 +30,42 @@ main() (
         exit 1
     }
 
-    if [ "$#" -gt 0 ]; then
-        case "$1" in
+    # The headless option, for CI and other callers with no terminal:
+    # --no-tui or NARE_INSTALL_NO_TUI=1 installs nare without the tui extra.
+    tui=1
+    for arg in "$@"; do
+        case "$arg" in
             -h | --help)
                 printf '%s\n' \
-                    'Usage: sh install.sh' \
+                    'Usage: sh install.sh [--no-tui]' \
                     "Installs nare $version with the tui extra, using uv." \
-                    'Needs curl and uv (https://docs.astral.sh/uv/).'
+                    'Needs curl. Installs uv (https://docs.astral.sh/uv/) when it is missing.' \
+                    '' \
+                    '  --no-tui   install without the terminal UI, for headless use;' \
+                    '             NARE_INSTALL_NO_TUI=1 does the same.' \
+                    '' \
+                    'Piped from curl, pass the flag after sh -s --:' \
+                    "  curl -fsSL https://github.com/ViviDynamics/nare/releases/download/$version/install.sh | sh -s -- --no-tui"
                 exit 0
                 ;;
+            --no-tui) tui=0 ;;
             *)
-                fail "this script is bound to nare $version and takes no options." \
-                    "For another release, run that release's install.sh."
+                fail "this script is bound to nare $version and takes no option but" \
+                    "--no-tui. For another release, run that release's install.sh."
                 ;;
         esac
+    done
+    case "${NARE_INSTALL_NO_TUI:-}" in
+        '' | 0) ;;
+        1) tui=0 ;;
+        *) fail 'NARE_INSTALL_NO_TUI must be 1 (install without the terminal UI), 0 or unset.' ;;
+    esac
+    if [ "$tui" = 1 ]; then
+        requirement="nare[tui]"
+        flavour='with the terminal UI'
+    else
+        requirement=nare
+        flavour='without the terminal UI'
     fi
 
     # Only for testing the installer against local bytes. The digest above
@@ -47,29 +75,18 @@ main() (
         https://* | file://*) ;;
         *) fail 'NARE_RELEASE_URL must be an https:// or file:// URL.' ;;
     esac
+    # Only for testing the installer offline, against a stub of Astral's.
+    uv_installer_url=${NARE_UV_INSTALLER_URL:-https://astral.sh/uv/install.sh}
+    case "$uv_installer_url" in
+        https://* | file://*) ;;
+        *) fail 'NARE_UV_INSTALLER_URL must be an https:// or file:// URL.' ;;
+    esac
 
     case "${HOME:-}" in
         /?*) ;;
         *) fail 'HOME must be set to an absolute path.' ;;
     esac
     command -v curl >/dev/null 2>&1 || fail 'curl is required. Install it, then run this again.'
-    # uv's own installer may have just put it somewhere this shell's PATH
-    # does not reach yet: XDG_BIN_HOME, ~/.local/bin, or ~/.cargo/bin.
-    uv=$(command -v uv 2>/dev/null || true)
-    if [ -z "$uv" ]; then
-        case "${XDG_BIN_HOME:-}" in
-            /*) xdg_bin=$XDG_BIN_HOME ;;
-            *) xdg_bin=$HOME/.local/bin ;;
-        esac
-        for candidate in "$xdg_bin/uv" "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
-            if [ -x "$candidate" ]; then
-                uv=$candidate
-                break
-            fi
-        done
-    fi
-    [ -n "$uv" ] || fail 'uv is required. Install it from' \
-        'https://docs.astral.sh/uv/getting-started/installation/ and run this again.'
     if command -v sha256sum >/dev/null 2>&1; then
         sha256() { sha256sum "$1"; }
     elif command -v shasum >/dev/null 2>&1; then
@@ -95,6 +112,43 @@ main() (
             "with, so nothing was installed."
     printf 'Verified SHA-256 %s\n' "$wheel_sha256"
 
+    # An existing uv is used as is. uv's own installer may have put it
+    # somewhere this shell's PATH does not reach yet: XDG_BIN_HOME,
+    # ~/.local/bin, or ~/.cargo/bin.
+    uv=$(command -v uv 2>/dev/null || true)
+    if [ -z "$uv" ]; then
+        case "${XDG_BIN_HOME:-}" in
+            /*) xdg_bin=$XDG_BIN_HOME ;;
+            *) xdg_bin=$HOME/.local/bin ;;
+        esac
+        for candidate in "$xdg_bin/uv" "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
+            if [ -x "$candidate" ]; then
+                uv=$candidate
+                break
+            fi
+        done
+    fi
+    # Only after the digest matched, so a bad download installs nothing,
+    # uv included. Astral's installer takes no input, and gets none: under
+    # curl | sh there is no one to answer a prompt.
+    if [ -z "$uv" ]; then
+        uv_dir=$HOME/.local/bin
+        printf "uv is not installed. Installing it into %s with Astral's official installer, %s\n" \
+            "$uv_dir" "$uv_installer_url"
+        uv_help='Install uv from https://docs.astral.sh/uv/getting-started/installation/ and run this again.'
+        curl --fail --silent --show-error --location \
+            --proto '=https,file' --proto-redir '=https' \
+            --connect-timeout 15 --retry 3 \
+            --output "$tmp/uv-installer.sh" "$uv_installer_url" \
+            || fail "could not download $uv_installer_url. $uv_help"
+        UV_INSTALL_DIR=$uv_dir sh "$tmp/uv-installer.sh" </dev/null \
+            || fail "uv's installer failed; its error is above. $uv_help"
+        [ -x "$uv_dir/uv" ] || fail "uv's installer did not put uv in $uv_dir. $uv_help"
+        uv=$uv_dir/uv
+        uv_version=$("$uv" --version </dev/null) || fail "the installed $uv did not run. $uv_help"
+        printf 'Installed %s at %s\n' "$uv_version" "$uv"
+    fi
+
     # uv records the wheel's path and reads it again on uv tool upgrade or a
     # reinstall, so the verified wheel is kept, not left in $tmp.
     case "${XDG_DATA_HOME:-}" in
@@ -108,9 +162,9 @@ main() (
     # repeat run ends in the same state as the first. uv tool install takes
     # the default interpreter rather than the wheel's requires-python, so ask
     # for one that fits; uv downloads it when the system has none.
-    printf 'Installing nare %s with the terminal UI\n' "$version"
+    printf 'Installing nare %s %s\n' "$version" "$flavour"
     "$uv" tool install --force --python '>=3.12' \
-        "nare[tui] @ file://$wheel_dir/$wheel" </dev/null \
+        "$requirement @ file://$wheel_dir/$wheel" </dev/null \
         || fail 'uv could not install nare; its error is above.'
 
     bin_dir=$("$uv" tool dir --bin) || fail 'uv could not name its tool bin directory.'
@@ -119,23 +173,33 @@ main() (
         || fail "the installed $bin_dir/nare did not run."
     [ "$installed" = "$version" ] \
         || fail "the installed nare reports $installed, expected $version."
-    "$tool_dir/nare/bin/python" -c 'import nare.tui.app' </dev/null \
-        || fail "nare $version installed, but its TUI does not import."
+    if [ "$tui" = 1 ]; then
+        "$tool_dir/nare/bin/python" -c 'import nare.tui.app' </dev/null \
+            || fail "nare $version installed, but its TUI does not import."
+    fi
 
     # Only now is an earlier release's wheel no longer needed.
     for kept in "$wheel_dir"/nare-*.whl; do
         [ "$kept" = "$wheel_dir/$wheel" ] || rm -f "$kept"
     done
 
-    printf '\nnare %s is installed, with the terminal UI.\n' "$version"
-    printf '  Start the terminal UI:  nare tui\n'
-    printf '  Run without the UI:     nare run --yes "..."\n'
+    printf '\nnare %s is installed, %s.\n' "$version" "$flavour"
+    if [ "$tui" = 1 ]; then
+        printf '  Start the terminal UI:  nare tui\n'
+        printf '  Run without the UI:     nare run --yes "..."\n'
+    else
+        printf '  Run it:  nare run --yes "..."\n'
+    fi
     printf 'Set ANTHROPIC_API_KEY first, or see the README for other providers.\n'
     case ":${PATH:-}:" in
         *":$bin_dir:"*) ;;
         *)
-            printf '\n%s is not on your PATH yet. Run: %s tool update-shell\n' "$bin_dir" "$uv"
-            printf 'then open a new terminal, or call %s/nare directly.\n' "$bin_dir"
+            printf '\n%s is not on your PATH yet. To use nare in this shell, run:\n' "$bin_dir"
+            # $PATH stays literal: the reader's shell expands it.
+            # shellcheck disable=SC2016
+            printf '  export PATH="%s:$PATH"\n' "$bin_dir"
+            printf 'For new terminals, run: %s tool update-shell\n' "$uv"
+            printf 'or call %s/nare directly.\n' "$bin_dir"
             ;;
     esac
 )

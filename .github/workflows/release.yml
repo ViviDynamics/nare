@@ -152,7 +152,7 @@ jobs:
             // The hashes go in the notes, so a caller can pin the bytes as well
             // as the version. The assets never change after this call.
             const install = `curl -fsSL https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${version}/install.sh | sh`;
-            const notes = `${commit.data.commit.message}\n\nInstall this release with its terminal UI:\n\n    ${install}\n\nSHA-256:\n\n${report.sha256_notes}`;
+            const notes = `${commit.data.commit.message}\n\nInstall this release with its terminal UI:\n\n    ${install}\n\nWithout the terminal UI, for headless use:\n\n    ${install} -s -- --no-tui\n\nSHA-256:\n\n${report.sha256_notes}`;
             execFileSync('gh', [
               'release', 'create', version,
               '--target', sha,

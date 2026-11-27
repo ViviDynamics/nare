@@ -240,6 +240,26 @@ def test_every_pull_request_smokes_the_installer_on_linux_and_macos() -> None:
     assert "release_assets.py render" in job
 
 
+def test_every_pull_request_installs_with_no_uv_and_on_a_clean_debian() -> None:
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    job = ci[ci.index("\n  installer:") : ci.index("\n  cases:")]
+    assert 'smoke_installer.sh dist "$VERSION" --without-uv' in job
+    debian = job[job.index("debian:stable-slim") :]
+    assert "apt-get install -y -qq curl" in debian
+    assert "--without-uv" in debian
+
+
+def test_the_release_notes_give_the_pinned_and_headless_installs() -> None:
+    release = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+    notes = release[
+        release.index("const install = ") : release.index("'release', 'create'")
+    ]
+    assert "releases/download/${version}/install.sh | sh" in notes
+    # install ends in "| sh", so this renders as "| sh -s -- --no-tui".
+    assert "install.sh | sh`;" in notes
+    assert "${install} -s -- --no-tui" in notes
+
+
 def test_no_workflow_runs_on_a_self_hosted_runner() -> None:
     hosted = re.compile(
         r"^(ubuntu|macos|windows)-[a-z0-9.-]+$|^\$\{\{ matrix\.os \}\}$"
