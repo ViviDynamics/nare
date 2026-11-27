@@ -15,6 +15,7 @@ import json
 import os
 import sys
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from nare.events import Event, redact
@@ -179,23 +180,58 @@ def progress_line(event: Event) -> str | None:
 def accepting_edits(
     make: Callable[[Policy], Approve],
 ) -> Callable[[Policy], Approve]:
-    """--permission-mode acceptEdits: write and edit run unasked, except into
-    .git, which is always asked about; every other call goes to `make`'s
-    approver."""
+    """--permission-mode acceptEdits: write and edit run unasked inside the
+    working folders, the root (the working directory when there is no --root)
+    and each --add-root, as Claude Code scopes it, except into .git, which is
+    always asked about. A write or edit anywhere else, and every other call,
+    goes to `make`'s approver."""
 
     def build(policy: Policy) -> Approve:
         inner = make(policy)
+        folders = working_folders(policy)
 
         async def approve(tool: str, args: dict[str, Any]) -> bool | str:
-            if tool in FILE_WRITES and not in_git_dir(
-                str(args.get("path", "")), policy
+            path = str(args.get("path", ""))
+            if (
+                tool in FILE_WRITES
+                and lands_in(path, folders, policy)
+                and not in_git_dir(path, policy)
             ):
                 return True
             answer = inner(tool, args)
-            if isinstance(answer, (bool, str)):
-                return answer
-            return await answer
+            if not isinstance(answer, (bool, str)):
+                answer = await answer
+            if tool in FILE_WRITES and isinstance(inner, Approver):
+                # Only a write outside the folders is asked about here, so an
+                # `a` approves that call alone, as for .git: it must not open
+                # every later write, wherever it lands.
+                inner.always.discard(tool)
+            return answer
 
         return approve
 
     return build
+
+
+def working_folders(policy: Policy) -> list[Path]:
+    """Where acceptEdits writes unasked, resolved once, as the run starts."""
+    try:
+        base = policy.root if policy.root is not None else Path.cwd()
+        return [folder.resolve() for folder in (base, *policy.extra_roots)]
+    except (OSError, RuntimeError):
+        return []  # nothing runs unasked: every write is asked about
+
+
+def lands_in(path: str, folders: list[Path], policy: Policy) -> bool:
+    """Whether `path` resolves, through any `..` or symlink, into one of
+    `folders`. A relative path is relative to the root, or with none to the
+    working directory, as the write tool reads it. A path that cannot be
+    resolved does not count as inside."""
+    if not path:
+        return False
+    try:
+        anchor = policy.root.resolve() if policy.root is not None else Path.cwd()
+        target = (anchor / path).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return any(target.is_relative_to(folder) for folder in folders)

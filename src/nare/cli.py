@@ -394,7 +394,8 @@ def add_run_command_flags(run_parser: argparse.ArgumentParser) -> None:
         choices=PERMISSION_MODES,
         help=(
             "Claude Code's approval modes: default asks at a terminal, as without "
-            "--yes; acceptEdits also approves write and edit unasked; plan allows "
+            "--yes; acceptEdits also approves write and edit unasked in the "
+            "working folders; plan allows "
             "only the read-only tools (read, list, search, ask); "
             "bypassPermissions is --yes"
         ),

@@ -104,7 +104,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--dangerously-skip-permissions` | no | | Claude Code's `--yes` ([Other tools' spellings](#other-tools-spellings)) |
 | `--dangerously-bypass-approvals-and-sandbox` | no | | Codex's `--yes` |
 | `--yolo` | no | | Codex's short `--yes` |
-| `--permission-mode` | yes | `default`, `acceptEdits`, `plan`, `bypassPermissions` | Claude Code's approval modes: as without `--yes`, also approve `write` and `edit` unasked, only the read-only tools, `--yes` ([Other tools' spellings](#other-tools-spellings)) |
+| `--permission-mode` | yes | `default`, `acceptEdits`, `plan`, `bypassPermissions` | Claude Code's approval modes: as without `--yes`, also approve `write` and `edit` unasked in the working folders, only the read-only tools, `--yes` ([Other tools' spellings](#other-tools-spellings)) |
 | `--ask-for-approval` | yes | `never`, `on-request` | Codex's approval policy, also `-a`: `--yes`, or as without it |
 | `--sandbox` | yes | `read-only`, `workspace-write`, `danger-full-access` | Codex's sandbox, also `-s`: only the read-only tools, `--bash-sandbox` with `--root` defaulting to the working directory, or no sandbox |
 | `--contract` | yes | | The contract version the caller speaks ([Refusing a contract](#refusing-a-contract-you-do-not-speak)) |
@@ -213,8 +213,12 @@ environment is a default, which an alias overrides as the flag would.
 - `--permission-mode acceptEdits`, and `default`, `-a on-request`, are not
   `--yes`: without a terminal, `nare run` refuses them as it refuses a run
   without `--yes`. At a terminal, `acceptEdits` runs `write` and `edit` unasked
-  (except into `.git`) and asks about the rest. Under `nare -p` the rest is
-  denied.
+  inside the working folders, as Claude Code scopes it: the root (the working
+  directory when there is no `--root`) and each `--add-root`, judged where the
+  path resolves through any `..` or symbolic link. A write or edit anywhere
+  else, or into `.git`, is asked about like any other call, as is the rest;
+  there `a` approves that one write, not every later one. Under `nare -p`
+  the rest is denied.
 - `--model provider/model`, and `-m`, split only when the prefix is a nare
   provider and nothing else names one; otherwise the value is the model name,
   as before, which keeps a proxy's own `vendor/model` names working.
