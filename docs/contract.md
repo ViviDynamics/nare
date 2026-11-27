@@ -46,6 +46,14 @@ in any release. Two things about them are fixed, because they reuse `nare run`:
   (`--yes` or one of its [spellings](#other-tools-spellings)), a call the
   terminal UI would ask about is denied, and the model is told.
 
+A person-facing run given no `--session` saves to the store,
+`$NARE_HOME/sessions/<project>/<id>.json`, and takes `-c`/`--continue`,
+`-r <id>`, `--fork-session`, `nare resume`, `nare fork`, `nare exec resume` and
+`nare sessions` to find one again. The files have the session file's shape,
+plus `started_at` (an ISO 8601 UTC time), a field with a default that `nare
+run`'s files never carry. `nare run` without `--session` writes nothing, as
+before.
+
 `nare run` without `--yes` refuses to start, exit 2 with nothing on stdout,
 whenever stdin is not a terminal. A caller that spawns it never gives it one,
 so for a caller nothing changed. With a terminal on stdin it asks the person
@@ -153,7 +161,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--bash-deny` | yes | | Refuse a `bash` command matching PATTERN, even with `--yes`; repeatable ([Bash command rules](#bash-command-rules)) |
 | `--bash-sandbox` | no | | Run each `bash` command under the OS sandbox: writes only in `--root`, each `--add-root` and a private temp dir, credentials unreadable, no network ([Bash sandbox](#bash-sandbox)) |
 | `--bash-network` | no | | With `--bash-sandbox`, let `bash` use the network ([Bash sandbox](#bash-sandbox)) |
-| `--resume` | yes | | Continue the session at a path. `nare tui --resume` with no path picks one of this directory's saved sessions; `nare run` needs the path |
+| `--resume` | yes | | Continue the session at a path, also `-r`. `nare tui --resume` with no path picks one of this directory's saved sessions; `nare run` needs the path. `nare -p`, `nare exec` and `nare "<task>"` also take a session id from `nare sessions` |
 | `--mcp-config` | yes | | JSON file of MCP servers ([MCP tool sources](#mcp-tool-sources)) |
 | `--mcp-defer` | no | | Keep MCP tool definitions out of the request; the model searches, loads and calls them ([MCP tool deferral](#mcp-tool-deferral)) |
 | `--command-tools` | yes | | JSON file of tools this command line runs ([caller tools](#caller-tools)) |

@@ -243,6 +243,20 @@ nare also takes Claude Code's and Codex's spellings of its flags:
 provider/model` and `--add-dir`, each onto the nare flag it stands for. See
 [other tools' spellings](docs/contract.md#other-tools-spellings).
 
+Sessions are kept for you. `nare`, `nare "<task>"`, `nare -p` and `nare exec`
+save to `~/.nare/sessions/<project>/`, one folder per working directory, unless
+`--session PATH` says otherwise. `-c` (`--continue`) continues the newest
+session started in this directory, `-r <id>` (`--resume`) the one with that id
+or at that path, and `--fork-session` with either writes the continuation as a
+new session and leaves the original as it was. `nare sessions` lists this
+directory's sessions (id, started, status, first prompt; `--json` for data).
+Codex's spellings work too: `nare resume [--last|<id>]`, `nare fork
+[--last|<id>]` and `nare exec resume [--last|<id>] "<prompt>"`. `nare resume`
+with neither opens the picker.
+
+    nare -p "find the flaky test"
+    nare -p -c "now fix it"
+
 For a program, `nare run` is the [machine contract](docs/contract.md):
 
     nare run --yes --jsonl "add a docstring to foo() in bar.py"
@@ -391,8 +405,8 @@ says so.
 
 `nare tui --resume` with no path lists the saved sessions that started in the
 current directory, newest first, with the first prompt, when each last changed,
-its status and its turns. It lists sessions from `~/.nare/sessions` and from the
-folder used before it (see below). Enter resumes one and saves back to its file;
+its status and its turns. It lists sessions from `~/.nare/sessions`, from this
+directory's folder in the store, and from the folder used before them (see below). Enter resumes one and saves back to its file;
 Esc starts nothing. `nare run --resume` needs the path and lists the candidates
 when it is missing.
 
@@ -415,8 +429,12 @@ names `NARE_HOME` and `--session`. An explicit `--session PATH` does not read
 folder you work in, sessions there are not warned about, so keep it outside
 your projects.
 
-- `sessions/` holds the TUI's saved sessions. Nothing removes them: delete the
-  ones you no longer need.
+- `sessions/` holds the TUI's saved sessions, and `sessions/<project>/` those
+  of `nare`, `nare "<task>"`, `nare -p` and `nare exec`, where `<project>` is the
+  working directory's real path with each `/` (and anything else outside
+  letters, digits, `.`, `-` and `_`) made a `-`. Folders are 0700 and files 0600,
+  redacted as every session file is. Nothing removes them: delete the ones you
+  no longer need.
 - Nothing else is written there yet. Model and provider settings stay in
   environment variables or a project `.env`, and no API key is read from this
   folder.
