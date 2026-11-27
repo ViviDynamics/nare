@@ -8,6 +8,7 @@ capped at 32 KiB. Never in nare run, unless it opts in with
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -396,3 +397,86 @@ def test_a_line_session_resume_names_no_files(
     assert main(["-c"]) == 0
     assert seen and not any("project_instructions" in detail for detail in seen)
     assert built[-1] == recorded(repo)
+
+
+def tui_events(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str], transport: Any = None
+) -> list[dict[str, Any]]:
+    """Start the terminal UI as `nare <argv>` would, run its first turn, and
+    return the project_instructions detail of each event the run emitted."""
+    from nare import person
+    from nare.tui import app
+
+    apps: list[app.TuiApp] = []
+
+    def start(args: argparse.Namespace, transport: Any = None) -> int:
+        apps.append(app.prepare(args, transport))
+        return 0
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setattr(person, "tui_available", lambda: True)
+    monkeypatch.setattr(person, "interactive_terminal", lambda: True)
+    monkeypatch.setattr(app, "main", start)
+    assert main(argv, transport=transport) == 0
+    [tui] = apps
+    seen: list[dict[str, Any]] = []
+    shown = tui._event
+
+    def spy(event: Any) -> None:
+        if "project_instructions" in event.detail:
+            seen.append(event.detail["project_instructions"])
+        shown(event)
+
+    monkeypatch.setattr(tui, "_event", spy)
+
+    async def drive() -> None:
+        async with tui.run_test() as pilot:
+            for _ in range(300):
+                if tui.session is not None and tui.session.status == "done":
+                    break
+                await pilot.pause(0.01)
+            assert tui.session is not None and tui.session.status == "done"
+
+    asyncio.run(drive())
+    return seen
+
+
+def test_the_tui_names_the_files_in_a_new_session(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """contract.md: every person-facing form emits the event (#352)."""
+    [detail] = tui_events(
+        monkeypatch, ["hello"], transport=FakeProvider([text_reply("ok")])
+    )
+    assert detail["files"] == [str(repo / "AGENTS.md"), str(repo / "pkg" / "AGENTS.md")]
+
+
+def test_the_tui_names_a_skipped_file_when_nothing_loads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = tmp_path / "elsewhere.txt"
+    outside.write_text("Not project text.\n")
+    work = tmp_path / "work"
+    (work / ".git").mkdir(parents=True)
+    (work / "CLAUDE.md").symlink_to(outside)
+    monkeypatch.chdir(work)
+    [detail] = tui_events(
+        monkeypatch, ["hello"], transport=FakeProvider([text_reply("ok")])
+    )
+    assert detail["files"] == []
+    assert detail["skipped"] == [
+        {"file": str(work / "CLAUDE.md"), "reason": "outside the project"}
+    ]
+
+
+def test_a_tui_resume_names_the_files_only_when_it_adds_them(
+    repo: Path, built: list[str | None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As in nare -p: a resume that sends the record adds none, and one given a
+    system option reads them again, once."""
+    assert main(["-p", "hello"]) == 0
+    assert tui_events(monkeypatch, ["-c", "again"]) == []
+    [detail] = tui_events(
+        monkeypatch, ["-c", "--append-system-prompt", "Persona.", "again"]
+    )
+    assert detail["files"] == [str(repo / "AGENTS.md"), str(repo / "pkg" / "AGENTS.md")]

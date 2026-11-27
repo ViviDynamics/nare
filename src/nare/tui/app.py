@@ -43,6 +43,7 @@ from textual.worker import Worker, WorkerCancelled
 
 from nare.accounting import Prices
 from nare.cli import (
+    add_instructions_event,
     adopt_system,
     capacity_for_run,
     fork_with_note,
@@ -597,6 +598,7 @@ class TuiApp(App[None]):
                 None if self.args.root is None else str(Path(self.args.root).resolve())
             )
             adopt_system(self.args, self.session)
+            add_instructions_event(self.args, self.session)
         else:
             reopen(self.session, text)
         messages = self.session.messages
@@ -1006,6 +1008,7 @@ def prepare(args: argparse.Namespace, transport: Transport | None = None) -> Tui
             session = fork_with_note(session, args.resume)
         # As in nare run: the recorded system prompt, unless a flag replaces it.
         adopt_system(args, session)
+        add_instructions_event(args, session)
         # As in nare run: a bad saved budget exits 2, not in the worker.
         configure_budgets(session, args.budget_tokens, args.budget_usd)
     if transport is None:

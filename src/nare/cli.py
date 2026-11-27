@@ -2234,6 +2234,15 @@ def load_instructions(args: argparse.Namespace) -> Event | None:
     return None if loaded is None else loaded.event()
 
 
+def add_instructions_event(args: argparse.Namespace, session: Session) -> None:
+    """Queue the event load_instructions made (args.instructions_event), for
+    the run to emit first. Not when the resume sent the record instead
+    (adopt_system), which adds no instructions."""
+    event = getattr(args, "instructions_event", None)
+    if event is not None and getattr(args, "instructions_text", None) is not None:
+        session.events.append(event)
+
+
 def prepare_run(
     args: argparse.Namespace, transport: Transport | None
 ) -> tuple[
