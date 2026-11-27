@@ -14,11 +14,12 @@ import difflib
 import json
 import os
 import sys
+from collections.abc import Callable
 from typing import Any
 
 from nare.events import Event, redact
-from nare.tools import Policy
-from nare.tui.approve import Approver
+from nare.tools import Approve, Policy
+from nare.tui.approve import FILE_WRITES, Approver, in_git_dir
 
 PREVIEW_LINES = 20
 ALLOW = "allow? y yes, n no (n <why> tells the model why), a always: "
@@ -173,3 +174,28 @@ def progress_line(event: Event) -> str | None:
     if event.type == "error":
         return f"nare: {event.text}"
     return None
+
+
+def accepting_edits(
+    make: Callable[[Policy], Approve],
+) -> Callable[[Policy], Approve]:
+    """--permission-mode acceptEdits: write and edit run unasked, except into
+    .git, which is always asked about; every other call goes to `make`'s
+    approver."""
+
+    def build(policy: Policy) -> Approve:
+        inner = make(policy)
+
+        async def approve(tool: str, args: dict[str, Any]) -> bool | str:
+            if tool in FILE_WRITES and not in_git_dir(
+                str(args.get("path", "")), policy
+            ):
+                return True
+            answer = inner(tool, args)
+            if isinstance(answer, (bool, str)):
+                return answer
+            return await answer
+
+        return approve
+
+    return build

@@ -142,8 +142,11 @@ def main(mode: str, argv: list[str], *, transport: Transport | None = None) -> i
 
 
 def interactive_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="nare", usage='nare ["<task>"] [options]', add_help=False
+    parser = cli.NareParser(
+        prog="nare",
+        usage='nare ["<task>"] [options]',
+        add_help=False,
+        formatter_class=cli.AliasHelpFormatter,
     )
     parser.add_argument("-h", "--help", action="store_true")
     parser.add_argument("prompt", nargs="?")
@@ -153,7 +156,13 @@ def interactive_parser() -> argparse.ArgumentParser:
 
 
 def interactive_main(argv: list[str], transport: Transport | None) -> int:
-    args = interactive_parser().parse_args(argv)
+    parser = interactive_parser()
+    args = parser.parse_args(argv)
+    try:
+        cli.resolve_aliases(parser, argv, args)
+    except ValueError as exc:
+        print(f"nare: {exc}", file=sys.stderr)
+        return NEVER_STARTED
     if args.help:
         print(HELP, end="")
         return 0
@@ -190,8 +199,9 @@ def interactive_main(argv: list[str], transport: Transport | None) -> int:
 
 
 def print_parser(prog: str) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = cli.NareParser(
         prog=prog,
+        formatter_class=cli.AliasHelpFormatter,
         usage=f'{"nare -p" if prog == "nare" else prog} "<task>" [options]',
         description=(
             "Run one task and print the answer on stdout, with progress on "
@@ -217,24 +227,14 @@ def print_parser(prog: str) -> argparse.ArgumentParser:
             "nare run --jsonl prints them"
         ),
     )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        help="--output-format stream-json (Codex's spelling; --jsonl is the same)",
-    )
-    parser.add_argument(
-        "--dangerously-skip-permissions",
-        "--yolo",
-        dest="skip_permissions",
-        action="store_true",
-        help="approve every tool call, as --yes does",
-    )
     return parser
 
 
 def print_main(argv: list[str], prog: str, transport: Transport | None) -> int:
-    args = print_parser(prog).parse_args(argv)
+    parser = print_parser(prog)
+    args = parser.parse_args(argv)
     try:
+        cli.resolve_aliases(parser, argv, args)
         output = output_format(args)
         read_prompt(args, prog)
     except ValueError as exc:
@@ -243,7 +243,6 @@ def print_main(argv: list[str], prog: str, transport: Transport | None) -> int:
     args.jsonl = output == "stream-json"
     if args.root is None:
         args.root = os.getcwd()
-    args.yes = args.yes or args.skip_permissions
     if output != "stream-json":
         from nare.terminal import progress
 
@@ -261,7 +260,9 @@ def output_format(args: argparse.Namespace) -> str:
     """The one output format asked for. --json and --jsonl both mean
     stream-json, and a different --output-format beside them is a conflict."""
     streamed = [
-        flag for flag, on in (("--json", args.json), ("--jsonl", args.jsonl)) if on
+        flag
+        for flag, on in (("--json", args.alias_json), ("--jsonl", args.jsonl))
+        if on
     ]
     if streamed and args.output_format not in (None, "stream-json"):
         raise ValueError(
