@@ -486,13 +486,20 @@ async def drag_over(
     pilot: Pilot[None], widget: Static, line: int = 0, start: int = 0, end: int = 60
 ) -> str:
     """Drag across a widget's line with the mouse, as a person would."""
+    app = widget.app
+    # Cleared first, so a drag that misses cannot read back the last one's.
+    app.screen.clear_selection()
     await pilot.mouse_down(widget, offset=(start, line))
     await pilot.hover(widget, offset=(end, line))
     await pilot.mouse_up(widget, offset=(end, line))
     # Textual sets the selection as the pointer moves. Waited for with a
     # bound, not a fixed number of pauses, so a busy machine is not a failure.
-    await until(pilot, lambda: app_selection(widget.app) != "")
-    return app_selection(widget.app)
+    # A drag that selects nothing returns "" for the caller's assert to show.
+    for _ in range(300):
+        if app_selection(app):
+            break
+        await pilot.pause(0.01)
+    return app_selection(app)
 
 
 def app_selection(app: App[None]) -> str:
@@ -506,20 +513,24 @@ def drawn(widget: Static) -> str:
 
 
 async def block_showing(pilot: Pilot[None], app: TuiApp, text: str) -> Static:
-    """The transcript line that draws `text`, once it is laid out to drag over.
+    """The transcript line that draws `text`, once it is on screen to drag over.
 
     Found by what it draws, not by position: a notice such as the context
     window can land after the prompt's line while the turn runs.
     """
+    shown_at: list[Static] = []
 
-    def found() -> Static | None:
+    def found() -> bool:
+        screen = app.screen_stack[0].region
         for widget in app.query_one(Transcript).query(Static):
-            if widget.region.height and text in drawn(widget):
-                return widget
-        return None
+            on_screen = widget.region.height and screen.contains_region(widget.region)
+            if on_screen and text in drawn(widget):
+                shown_at[:] = [widget]
+                return True
+        return False
 
-    await until(pilot, lambda: found() is not None)
-    return cast(Static, found())
+    await until(pilot, found)
+    return shown_at[0]
 
 
 async def test_ctrl_c_copies_a_selection_during_a_turn(tmp_path: Path) -> None:
