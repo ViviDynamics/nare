@@ -479,6 +479,15 @@ def git_tracks(root: Path, path: str) -> bool:
     raise GitError(proc.stderr.strip() or f"git exited {proc.returncode}")
 
 
+# A sweep case's pass rate only means something next to its rate at another
+# compaction point (#43), so a single blessed rate would mislead (#341).
+NO_SWEEP_BASELINE = (
+    "the sweep tier has no baselines: a sweep case's pass rate only means "
+    "something next to its rate at another compaction point, so compare runs "
+    "at two points (benchmarks/README.md, the sweep tier)"
+)
+
+
 def unblessable(root: Path, files: Mapping[str, str]) -> list[str]:
     """Why each run file would make a baseline other checkouts cannot run.
 
@@ -2442,7 +2451,9 @@ def main(argv: list[str] | None = None) -> int:
             if baseline is None:
                 print(render_first_run(summarize(records)))
                 print(
-                    "\nno baseline yet; bless one with: "
+                    f"\n{NO_SWEEP_BASELINE}"
+                    if args.tier == "sweep"
+                    else "\nno baseline yet; bless one with: "
                     f"bin/bench bless --tier {args.tier}"
                 )
                 return 0
@@ -2466,6 +2477,9 @@ def main(argv: list[str] | None = None) -> int:
         print(calibration_text(root, records))
         return final.exit_code
 
+    if args.command == "bless" and args.tier == "sweep":
+        print(f"bench: {NO_SWEEP_BASELINE}", file=sys.stderr)
+        return 2
     run_files = latest_run(root)
     if not run_files:
         print("bench: no results yet; run `bin/bench run` first", file=sys.stderr)

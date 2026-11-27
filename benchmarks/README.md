@@ -773,8 +773,10 @@ experiment, not a measure of general quality: `deploy-feed-window` exists to
 rank compaction points, and a model's pass rate on it only means something next
 to its rate at another point. `sweep` runs only when named, `bin/bench run
 --tier sweep`, and `full` never includes it, so the matrix and its baselines
-do not grow by a case nobody asked to measure. It has no baselines. Its
-defaults are those of `full`: five repetitions and a 15-minute timeout.
+do not grow by a case nobody asked to measure. It has no baselines:
+`bin/bench bless --tier sweep` exits 2, and a sweep run ends with a reminder
+to compare points rather than a hint to bless. Its defaults are those of
+`full`: five repetitions and a 15-minute timeout.
 
 `bin/bench verify` with no `--tier` checks every case, extended and sweep
 included. CI runs `bin/bench verify --tier full`, which reaches neither, so run
