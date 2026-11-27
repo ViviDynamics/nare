@@ -54,6 +54,11 @@ plus `started_at` (an ISO 8601 UTC time), a field with a default that `nare
 run`'s files never carry. `nare run` without `--session` writes nothing, as
 before.
 
+A key stored with `nare auth login` (in `$NARE_HOME/credentials.json`) is used
+by every command, `nare run` included, when the provider's environment
+variable is unset; the variable, when set, wins. A run with neither fails as it
+always has.
+
 `nare run` without `--yes` refuses to start, exit 2 with nothing on stdout,
 whenever stdin is not a terminal. A caller that spawns it never gives it one,
 so for a caller nothing changed. With a terminal on stdin it asks the person
@@ -1674,7 +1679,9 @@ narrower role for a run whose model should not reach it. A command the model wri
 them, so neither the transcript nor an instruction planted in a file the model
 reads can reach them. This is the same rule as for MCP stdio servers above:
 no child process nare starts inherits the model API keys. Every other variable
-is passed through unchanged. A credential a later transport reads joins the
+is passed through unchanged. A key `nare auth login` stored is in no
+environment at all: nare hands it to the provider client directly, so no child
+process sees it, even under `--bash-credentials`. A credential a later transport reads joins the
 list, and `nare contract` prints it under `bash_env.withheld`.
 
 A task that needs a key in the shell opts in:

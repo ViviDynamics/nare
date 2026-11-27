@@ -41,6 +41,8 @@ def tui_calls(monkeypatch: pytest.MonkeyPatch) -> list[argparse.Namespace]:
         calls.append(args)
         return 0
 
+    # A key, so the person-facing check for one (#328) lets the TUI start.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     monkeypatch.setattr(person, "tui_available", lambda: True)
     monkeypatch.setattr(person, "interactive_terminal", lambda: True)
     monkeypatch.setattr("nare.tui.app.main", fake_tui)

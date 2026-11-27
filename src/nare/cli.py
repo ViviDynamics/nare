@@ -1252,11 +1252,17 @@ def capacity_for_run(
 
 
 def transport_from_args(args: argparse.Namespace) -> Transport:
-    """Everything vendor-shaped is bound here and never reaches the loop."""
+    """Everything vendor-shaped is bound here and never reaches the loop.
+
+    A key `nare auth login` stored goes to the transport as its api_key, and
+    only when the provider's environment variable is unset."""
+    from nare.credentials import key_for
+
     return make_transport(
         args.provider,
         model=args.model,
         base_url=args.base_url,
+        api_key=key_for(args.provider),
         temperature=args.temperature,
         max_tokens=args.max_tokens,
         effort=args.effort,
