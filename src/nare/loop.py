@@ -73,6 +73,7 @@ from nare.tools import (
     approve_all,
     dispatch,
     questions_from,
+    root_replaced_refusal,
     route_deferred,
     tool_result,
 )
@@ -634,7 +635,8 @@ def stop_for_replaced_root(s: Session, policy: Policy) -> bool:
     The file tools and the bash sandbox confine to the roots as they were when
     the policy was built. Once one is replaced nothing reached through it is
     trusted, so the run ends `error` with `stop_reason` `root_replaced`, and no
-    answer is accepted after it.
+    answer is accepted after it: a schema-valid document kept from a reply
+    (step keeps one before it looks at the calls) is dropped too.
     """
     replaced = policy.replaced_root()
     if replaced is None:
@@ -643,6 +645,7 @@ def stop_for_replaced_root(s: Session, policy: Policy) -> bool:
     s.stop_reason = "root_replaced"
     s.error = f"{replaced}; the run stopped, and ran no tool call after it"
     s.failure = None
+    s.output = None
     s.events.append(Event("error", s.error))
     return True
 
@@ -1785,6 +1788,16 @@ async def step(
             for call in reply.tool_calls:
                 if summary:
                     results.append(tool_result(call.id, SUMMARY_REFUSED, is_error=True))
+                    continue
+                # Here as well as in dispatch: the deferral step's own calls
+                # never reach dispatch, and a refused call is not counted.
+                replaced = policy.replaced_root()
+                if replaced is not None:
+                    results.append(
+                        tool_result(
+                            call.id, root_replaced_refusal(replaced), is_error=True
+                        )
+                    )
                     continue
                 if call.name == "ask" and not only_asks and "ask" in policy.tools:
                     results.append(tool_result(call.id, ASK_NOT_ALONE, is_error=True))

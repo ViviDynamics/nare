@@ -1875,8 +1875,9 @@ Added roots are read and write. A read-only mode is not offered.
 
 `--root` and each `--add-root` are resolved once, when the run starts
 (library: when the `Policy` is built), following any symlink in the path
-given. Everything that confines to the roots uses those resolved paths for the
-whole run: the file tools' path check, the directory `bash` runs in, and the
+given. Everything that confines to the roots, or runs in one, uses those
+resolved paths for the whole run: the file tools' path check, the directory
+`bash`, caller tools (`--command-tools`) and `--check-command` run in, and the
 `--bash-sandbox` profile. A root given as a symlink is pinned to the directory
 it pointed at then, and pointing the link elsewhere later changes nothing.
 
@@ -1887,7 +1888,8 @@ or a file (or whose path leads elsewhere because a folder above it changed)
 stops the run:
 
 - The call is not run. Its result is an error naming the root, and so is the
-  result of every later call in the same turn.
+  result of every later call in the same turn. A refused call does not count
+  toward `--max-tool-calls`.
 - The run ends `error` with `stop_reason` `root_replaced` (kind `failure`) and
   exits 1: after the turn that saw it, before the next model call, or before a
   final answer is accepted, whichever comes first. An answer that arrives

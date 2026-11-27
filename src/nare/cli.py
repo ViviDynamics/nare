@@ -1540,7 +1540,9 @@ def validate_run_args(args: argparse.Namespace) -> Prices | None:
     args.command_tools = (
         command_tools(
             json.loads(Path(args.command_tools).read_text(encoding="utf-8")),
-            root=None if args.root is None else Path(args.root),
+            # Resolved now, as the policy pins the root (nare.roots), so a
+            # link given as --root and pointed elsewhere later moves nothing.
+            root=None if args.root is None else Path(args.root).resolve(),
             credentials=args.bash_credentials,
         )
         if args.command_tools

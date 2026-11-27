@@ -42,7 +42,8 @@ class Pin:
     """One root as it was when the policy was built.
 
     `directory` is False when nothing was there yet (a library caller may name
-    a folder before making it); only its real path is held to then.
+    a folder before making it). Its absence is no change then, but anything
+    found there later must be a directory.
     """
 
     flag: str
@@ -63,7 +64,9 @@ class Pin:
             return f"{self.real} no longer resolves ({exc})"
         if now != self.real:
             return f"{self.real} now leads to {now}"
-        if self.directory and not _is_directory(self.real):
+        if _is_directory(self.real):
+            return None
+        if self.directory or os.path.lexists(self.real):
             return f"{self.real} is no longer a directory"
         return None
 

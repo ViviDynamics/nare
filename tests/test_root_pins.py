@@ -639,3 +639,168 @@ def test_nothing_here_depends_on_the_test_runner_cwd(tmp_path: Path) -> None:
 
     assert policy.real_root == root.resolve()
     assert policy.resolve("f") == root.resolve() / "f"
+
+
+# Review round 1.
+
+
+async def test_a_schema_answer_after_the_swap_is_not_kept_as_output(
+    tmp_path: Path, outside: Path
+) -> None:
+    root = tmp_path / "R"
+    root.mkdir()
+    policy = Policy(tools=FILE_TOOLS, root=root)
+    fake = SwapsWhileAnswering(
+        [tool_reply("write", {"path": "f", "content": "x"}), text_reply('{"a": 1}')],
+        root,
+        outside,
+    )
+    session = new_session("go")
+
+    [
+        _
+        async for _ in run(
+            session, transport=fake, policy=policy, schema={"type": "object"}
+        )
+    ]
+
+    assert (session.status, session.stop_reason) == ("error", "root_replaced")
+    assert session.output is None
+
+
+def test_command_tools_run_in_the_pinned_root(
+    tmp_path: Path, outside: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    tools = tmp_path / "tools.json"
+    tools.write_text(
+        json.dumps(
+            {
+                "where": {
+                    "description": "Print the working directory.",
+                    "input_schema": {"type": "object"},
+                    "command": ["/bin/sh", "-c", "pwd -P"],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Pointing the link given as --root elsewhere leaves the pinned target,
+    # which is untouched, so the run goes on, in the target.
+    repoint = f"ln -sfn '{outside}' '{link}'"
+    fake = FakeProvider(
+        [
+            calls_reply(("bash", {"command": repoint}), ("where", {})),
+            text_reply("done"),
+        ]
+    )
+
+    code = main(
+        ["run", "--yes", "--jsonl", "--root", str(link)]
+        + ["--command-tools", str(tools), "go"],
+        transport=fake,
+    )
+
+    assert code == 0
+    assert link.resolve() == outside.resolve()
+    where = results(fake, 1)[1]
+    assert where["is_error"] is False, where
+    assert where["content"].strip() == str(real.resolve())
+
+
+async def test_a_deferred_tool_search_after_the_swap_is_refused(
+    tmp_path: Path, outside: Path
+) -> None:
+    import sys
+
+    from nare import mcp_defer
+    from nare.mcp import parse_servers
+
+    server = str(Path(__file__).with_name("mcp_server.py"))
+    mcp = parse_servers(
+        {
+            "local": {
+                "command": sys.executable,
+                "args": [server, str(tmp_path / "pid"), "--many", "3"],
+                "timeout": 5,
+            }
+        }
+    )
+    root = tmp_path / "R"
+    root.mkdir()
+    swap = f"cd / && mv '{root}' '{root}.aside' && ln -s '{outside}' '{root}'"
+    fake = FakeProvider(
+        [
+            calls_reply(
+                ("bash", {"command": swap}),
+                (mcp_defer.SEARCH, {"query": "echo"}),
+                (mcp_defer.LOAD, {"names": ["local__echo"]}),
+            ),
+            text_reply("never asked"),
+        ]
+    )
+    session = new_session("go")
+
+    events = [
+        e
+        async for e in run(
+            session,
+            transport=fake,
+            policy=Policy(tools=frozenset({"bash"}), root=root),
+            mcp_servers=mcp,
+            mcp_allow_all=True,
+            mcp_defer=True,
+        )
+    ]
+
+    assert (session.status, session.stop_reason) == ("error", "root_replaced")
+    sent = session.messages[-1].content
+    assert [r["is_error"] for r in sent] == [False, True, True]
+    assert all("replaced" in r["content"] for r in sent[1:])
+    assert session.mcp_loaded == {}
+    assert not any("MCP tools loaded" in e.text for e in events)
+
+
+def test_a_call_refused_for_a_replaced_root_is_not_counted(
+    tmp_path: Path, outside: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "R"
+    root.mkdir()
+    swap = f"cd / && mv '{root}' '{root}.aside' && ln -s '{outside}' '{root}'"
+    fake = FakeProvider(
+        [
+            calls_reply(
+                ("bash", {"command": swap}),
+                ("read", {"path": "secret"}),
+                ("read", {"path": "secret"}),
+            )
+        ]
+    )
+
+    main(
+        ["run", "--yes", "--jsonl", "--root", str(root)]
+        + ["--max-tool-calls", "2", "go"],
+        transport=fake,
+    )
+
+    result = lines(capsys.readouterr().out)[-1]
+    assert result["stop_reason"] == "root_replaced"
+    assert result["budget"]["used_tool_calls"] == 1
+
+
+def test_a_root_made_after_the_policy_is_held_to_being_a_directory(
+    tmp_path: Path,
+) -> None:
+    # A library caller may name a folder before making it.
+    root = tmp_path / "later"
+    policy = Policy(tools=FILE_TOOLS, root=root)
+    root.mkdir()
+    assert policy.replaced_root() is None
+
+    root.rmdir()
+    root.write_text("a file now", encoding="utf-8")
+
+    assert policy.replaced_root() is not None
