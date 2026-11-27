@@ -7,6 +7,7 @@ capped at 32 KiB. Never in nare run, unless it opts in with
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 from pathlib import Path
@@ -38,8 +39,8 @@ def systems(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
 
     original = cli.system_from_args
 
-    def spy(args: object) -> str | None:
-        text = original(args)  # type: ignore[arg-type]
+    def spy(args: argparse.Namespace) -> str | None:
+        text = original(args)
         seen.append(text)
         return text
 
