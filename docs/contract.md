@@ -57,11 +57,15 @@ before.
 `nare -p` and `nare exec` read stdin only when the prompt is `-` or missing,
 as Codex's `exec` does. With a task on the command line, or `--prompt-file`,
 stdin is never read, so a caller that spawns them with a stdin pipe it never
-closes still gets its result. With no task, piped stdin is the whole prompt,
-and on a resume (`-c`, `-r <id>`, `nare exec resume`) it is the follow-up. A
-resume with no task and no piped stdin, or with blank stdin, exits 2 before any
-model call and leaves the session file as it was. `nare run` reads stdin only
-for positional `-` ([prompt input](#prompt-input)).
+closes still gets its result. With no task, piped stdin (a pipe, a socket or a
+file) is the whole prompt, and on a resume (`-c`, `-r <id>`, `nare exec
+resume`) it is the follow-up, so a caller resuming with no follow-up closes
+stdin or gives `/dev/null`. A resume of a session that ended (`done`, or
+`blocked` on a question) with no task and no nonblank stdin exits 2 before any
+model call and leaves the session file as it was: running it again would only
+repeat its last turn. A session that stopped partway (an error, a limit or a
+signal) continues without a follow-up, as `nare run --resume` does. `nare run`
+reads stdin only for positional `-` ([prompt input](#prompt-input)).
 
 A key stored with `nare auth login` (in `$NARE_HOME/credentials.json`) is used
 by every command, `nare run` included, when the provider's environment

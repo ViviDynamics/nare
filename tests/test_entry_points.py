@@ -254,8 +254,8 @@ def test_a_task_leaves_piped_stdin_unread(
 def test_a_task_finishes_with_a_stdin_pipe_never_closed(
     form: list[str], tmp_path: Path
 ) -> None:
-    """A parent that spawns nare with an open stdin pipe and never closes it,
-    as Node's default stdio does (#351)."""
+    """A parent that spawns nare with a stdin pipe and never closes it (#351).
+    Output goes to files, so a full pipe cannot pass for the hang."""
     env = {
         key: value
         for key, value in os.environ.items()
@@ -263,6 +263,7 @@ def test_a_task_finishes_with_a_stdin_pipe_never_closed(
     }
     env["NARE_HOME"] = str(tmp_path / "home")
     replay = Path(__file__).resolve().parent.parent / "docs" / "replay" / "done.json"
+    out = tmp_path / "out.txt"
     proc = subprocess.Popen(
         [
             sys.executable,
@@ -276,8 +277,8 @@ def test_a_task_finishes_with_a_stdin_pipe_never_closed(
             str(replay),
         ],
         stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=out.open("wb"),
+        stderr=subprocess.DEVNULL,
         cwd=tmp_path,
         env=env,
     )
@@ -286,9 +287,11 @@ def test_a_task_finishes_with_a_stdin_pipe_never_closed(
     finally:
         if proc.poll() is None:
             proc.kill()
-        out, _err = proc.communicate()
+            proc.wait()
+        assert proc.stdin is not None
+        proc.stdin.close()
     assert code == 0
-    assert b"Nothing needed changing" in out
+    assert "Nothing needed changing" in out.read_text()
 
 
 @pytest.mark.parametrize("argv", [["-p", "-"], ["exec", "-"], ["-p"]])
@@ -298,6 +301,21 @@ def test_the_whole_prompt_can_come_from_stdin(
     piped(monkeypatch, b"list the files")
     fake = FakeProvider([text_reply("x")])
     assert main(argv, transport=fake) == 0
+    assert first_prompt(fake) == "list the files"
+
+
+def test_a_socket_on_stdin_is_read_as_the_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Node's stdio: "pipe" hands the child a socket, not a FIFO."""
+    import socket
+
+    ours, theirs = socket.socketpair()
+    ours.sendall(b"list the files")
+    ours.close()
+    monkeypatch.setattr(sys, "stdin", os.fdopen(theirs.detach(), "r"))
+    fake = FakeProvider([text_reply("x")])
+    assert main(["-p"], transport=fake) == 0
     assert first_prompt(fake) == "list the files"
 
 

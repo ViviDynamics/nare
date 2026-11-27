@@ -298,6 +298,25 @@ def test_a_blank_follow_up_on_stdin_calls_no_model(
     assert "follow-up" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("stdin", [None, b"\n"])
+def test_a_session_that_stopped_partway_continues_without_a_follow_up(
+    stdin: bytes | None, here: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An error, a limit or a signal leaves the task unjudged: a resume with
+    no text continues it, as nare run --resume does."""
+    assert main(["-p", "a"], transport=FakeProvider([text_reply("one")])) == 0
+    [saved] = files_in(here)
+    raw = json.loads(saved.read_text())
+    raw["status"] = "error"
+    saved.write_text(json.dumps(raw))
+    if stdin is not None:
+        piped(monkeypatch, stdin)
+    fake = FakeProvider([text_reply("two")])
+    assert main(["-p", "-c"], transport=fake) == 0
+    assert len(fake.calls) == 1
+    assert user_texts(fake) == ["a"]
+
+
 def test_a_follow_up_on_stdin_is_read_once(
     here: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -32,6 +32,7 @@ from nare.session import (
     SavedSession,
     Session,
     find_session,
+    loads,
     new_store_path,
     newest_in,
     reopen,
@@ -149,13 +150,14 @@ def interactive_terminal() -> bool:
 
 
 def stdin_piped() -> bool:
-    """Whether stdin is a pipe or a file to read as context. A terminal,
-    /dev/null, or no stdin at all is not read."""
+    """Whether stdin is a pipe, a socket or a file a prompt can be read from.
+    A terminal, /dev/null, or no stdin at all is not read. A socket is what
+    Node's stdio: "pipe" hands a child."""
     try:
         mode = os.fstat(sys.stdin.fileno()).st_mode
     except (AttributeError, ValueError, OSError):
         return False
-    return stat.S_ISFIFO(mode) or stat.S_ISREG(mode)
+    return stat.S_ISFIFO(mode) or stat.S_ISREG(mode) or stat.S_ISSOCK(mode)
 
 
 def main(mode: str, argv: list[str], *, transport: Transport | None = None) -> int:
@@ -572,35 +574,51 @@ def read_prompt(args: argparse.Namespace, prog: str) -> None:
     prompt is - or missing, as Codex exec does: a task on the command line
     never waits on stdin, so a caller that leaves its pipe open does not hang
     the run (#351). With no task, piped stdin is the whole prompt, and on a
-    resume the follow-up (#349). A resume with no follow-up exits 2 before
-    any model call, since running a finished session again only repeats it.
+    resume the follow-up (#349).
+
+    A resume of a session that ended (done, or blocked on a question) needs
+    that follow-up, and exits 2 before any model call without one: running
+    it again would only repeat its last turn. One that stopped partway, on
+    an error, a limit or a signal, continues without one, as nare run does.
     """
     if args.prompt_file is not None or args.prompt not in (None, "-"):
         return
     command = "nare -p" if prog == "nare" else prog
-    resuming = args.resume is not None
-    follow_up = (
-        f'a resume needs a follow-up: {command} -c "<follow-up>", or pipe one on stdin'
-    )
-    if args.prompt is None and not stdin_piped():
-        if resuming:
-            raise ValueError(follow_up)
-        raise ValueError(
-            f'{command} needs a task: {command} "<task>", or pipe one on stdin'
-        )
-    if not resuming:
+    if args.resume is None:
+        if args.prompt is None and not stdin_piped():
+            raise ValueError(
+                f'{command} needs a task: {command} "<task>", or pipe one on stdin'
+            )
         args.prompt = "-"
         return
+    text = ""
+    if args.prompt == "-" or stdin_piped():
+        try:
+            text = sys.stdin.buffer.read().decode("utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ValueError(f"stdin: {exc}") from exc
+    if text.strip():
+        args.prompt = text
+        # Read here, so the run does not read stdin again for a follow-up
+        # that is itself a lone -.
+        args.prompt_from_stdin = True
+        return
+    if _ended(args.resume):
+        raise ValueError(
+            "this session has ended, so a resume needs a follow-up: give it "
+            "as the task, or pipe it on stdin"
+        )
+    args.prompt = None
+
+
+def _ended(path: str) -> bool:
+    """Whether the saved session ended rather than stopped partway. A file
+    that cannot be read is left for the run to report."""
     try:
-        text = sys.stdin.buffer.read().decode("utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise ValueError(f"stdin: {exc}") from exc
-    if not text.strip():
-        raise ValueError(follow_up)
-    args.prompt = text
-    # Read here, so the run does not read stdin again for a follow-up that
-    # is itself a lone -.
-    args.prompt_from_stdin = True
+        session = loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+    return session.status in ("done", "blocked")
 
 
 def _text_result(session: Session, **totals: Any) -> None:
