@@ -26,6 +26,7 @@ from nare import __version__, mcp_auth
 from nare.accounting import Prices, finite_number, prices_from_env
 from nare.caller_tools import (
     COMMAND_TIMEOUT_DEFAULT,
+    check_file_in_roots,
     command_check,
     command_tools,
     parse_check_command,
@@ -481,6 +482,15 @@ def add_run_command_flags(run_parser: argparse.ArgumentParser) -> None:
             "of errors; its errors are corrected like schema errors, under "
             "--max-corrections. A non-zero exit, a timeout or other output ends "
             "the run with an error"
+        ),
+    )
+    run_parser.add_argument(
+        "--allow-check-in-root",
+        action="store_true",
+        help=(
+            "run a --check-command that names a file inside --root or an "
+            "--add-root even though the run allows write, edit or bash, which can "
+            "rewrite it. Without this flag such a run never starts"
         ),
     )
     run_parser.add_argument(
@@ -1557,24 +1567,63 @@ def cited_read_map_from_args(args: argparse.Namespace) -> Any:
     return loaded
 
 
+# The built-in tools that can change a file under the roots. bash counts with
+# --bash-sandbox too: the sandbox leaves the root and the added roots writable.
+WRITING_TOOLS = frozenset({"write", "edit", "bash"})
+
+
 def check_from_args(
-    args: argparse.Namespace, schema: dict[str, Any] | None
+    args: argparse.Namespace, schema: dict[str, Any] | None, policy: Policy
 ) -> Check | None:
     """The run's check from --check-command and --check-timeout (#296), or None.
-    A malformed argv or timeout, or a check without a schema, is refused here,
-    before any turn."""
+    A malformed argv or timeout, a check without a schema, or a check file the
+    model could rewrite (#344), is refused here, before any turn."""
     if args.check_command is None:
         if args.check_timeout is not None:
             raise ValueError("--check-timeout requires --check-command")
+        if args.allow_check_in_root:
+            raise ValueError("--allow-check-in-root requires --check-command")
         return None
     argv = parse_check_command(args.check_command)
     if schema is None:
         raise ValueError("--check-command requires --schema")
+    refuse_writable_check(argv, policy, allowed=args.allow_check_in_root)
     timeout = COMMAND_TIMEOUT_DEFAULT
     if args.check_timeout is not None:
         timeout = finite_number(args.check_timeout, "--check-timeout")
     return command_check(
         argv, timeout=timeout, root=None if args.root is None else Path(args.root)
+    )
+
+
+def refuse_writable_check(argv: list[str], policy: Policy, *, allowed: bool) -> None:
+    """Refuse a check whose file the model can rewrite: one inside the root or
+    an added root, in a run that allows a writing tool (#344). The check runs in
+    the root, so a relative word is resolved there."""
+    writers = sorted(policy.tools & WRITING_TOOLS)
+    if allowed or policy.root is None or not writers:
+        return
+    found = check_file_in_roots(
+        argv,
+        cwd=policy.root,
+        roots=[policy.root, *policy.extra_roots],
+        path=os.environ.get("PATH"),
+    )
+    if found is None:
+        return
+    word, inside = found
+    where = word if Path(word) == inside else f"{word} ({inside})"
+    unconfined = ""
+    if "bash" in writers and not policy.bash_sandbox:
+        unconfined = (
+            " bash without --bash-sandbox can write outside the roots too, so "
+            "also add --bash-sandbox or leave bash out of --tools."
+        )
+    raise ValueError(
+        f"--check-command names {where}, inside --root or an --add-root, and "
+        f"the run allows {', '.join(writers)}, so the model could rewrite the "
+        "check. Move it outside --root and every --add-root, or pass "
+        f"--allow-check-in-root to run it anyway.{unconfined}"
     )
 
 
@@ -2233,7 +2282,7 @@ def prepare_run(
     if args.require_cited_reads and schema is None:
         raise ValueError("--require-cited-reads requires --schema")
     cited_read_map = cited_read_map_from_args(args)
-    check = check_from_args(args, schema)
+    check = check_from_args(args, schema, policy)
     if reads_required:
         # Refused here, before any turn, as a bad path, pointer or missing
         # tool is.

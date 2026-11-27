@@ -115,6 +115,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--max-tool-calls` | yes | | Run at most this many tool calls in this invocation ([Budgets and partial results](#budgets-and-partial-results)) |
 | `--max-corrections` | yes | | Let a failing `--schema` answer be corrected up to this many times in the run, default 1 ([Schema corrections](#schema-corrections)) |
 | `--check-command` | yes | | A caller check the command line runs: a JSON array argv whose errors are corrected like schema errors ([A check from the command line](#a-check-from-the-command-line)) |
+| `--allow-check-in-root` | no | | Run a `--check-command` that names a file inside `--root` or an `--add-root` although the run allows `write`, `edit` or `bash`; needs `--check-command` ([A check from the command line](#a-check-from-the-command-line)) |
 | `--check-timeout` | yes | | How long `--check-command` may run on one answer, default 30 seconds ([A check from the command line](#a-check-from-the-command-line)) |
 | `--max-cutoffs` | yes | | Correct up to this many replies cut off at the output cap or by repeating one span, in this invocation ([Cut-off replies](#cut-off-replies)) |
 | `--require-reads` | yes | | Hold the final answer until the run has read at least this many distinct files ([Read requirements](#read-requirements)) |
@@ -2858,16 +2859,42 @@ deadline or a signal kills the command's process group.
 
 **Keep the check out of the model's reach.** The command runs as you, and like
 a command tool it is not confined by `--bash-sandbox`. A check the model can
-rewrite is no check: with `write` or `edit` allowed, the model can change any
-file under `--root`, including a script there that the argv names. Name the
-script by an absolute path outside `--root`, and keep the data it reads (a
-manifest, a capture) where the model cannot write it either.
+rewrite is no check: with `write`, `edit` or `bash` allowed, the model can
+change any file under `--root` and each `--add-root`, including a script there
+that the argv names. `bash` counts with `--bash-sandbox` too, since the sandbox
+leaves the roots writable. So nare refuses that run: when a writing tool is
+allowed and an argv word names an existing file inside `--root` or an
+`--add-root`, the run never starts (exit 2) and names the file. A word names a
+file as the check would use it: a first word without a slash is the program
+found on `PATH` (so a virtualenv inside the project counts), any other word is
+a path relative to `--root`, where the check runs, and `--name=value` names its
+value too. A link is followed, and a link that itself lies inside a root counts
+too, since the model can replace it. Roots are compared as directories, not as
+spellings, so another letter case or a linked spelling of a root still
+matches. Words that name no file (flags, a missing path, a directory) are not
+checked. Name the script by an absolute path outside every root, or pass
+`--allow-check-in-root` to accept the risk and run it as before. A read-only
+run (`--tools read,list`) and a run without `--root` are not refused; without
+`--root` the file tools reach any path, so no place is out of the model's
+reach.
 
-`--check-command` requires `--schema`, and `--check-timeout` requires
-`--check-command`; a malformed argv or a timeout that is not a positive finite
-number never starts (exit 2). Neither is saved: a resume without the flag runs
-no check. `nare contract` advertises this under `check_command`. The flags and
-the entry are additive and keep the contract version.
+The refusal looks only at the roots and the built-in tools, so some reach is
+yours to judge. `bash` without `--bash-sandbox` can write anywhere you can,
+including a script outside every root; the refusal says so when it applies.
+Only `write`, `edit` and `bash` count as writing tools: an MCP or
+`--command-tools` tool that writes files is yours to account for. And nare does
+not follow what the check loads: the data it reads (a manifest, a capture), a
+`Makefile` that `make check` runs, or a module that `python3 -m` imports from
+`--root`. Keep all of these where the model cannot write them either.
+
+`--check-command` requires `--schema`, and `--check-timeout` and
+`--allow-check-in-root` require `--check-command`; a malformed argv or a timeout
+that is not a positive finite number never starts (exit 2). None of them is
+saved: a resume without the flag runs no check. `nare contract` advertises
+this under `check_command`. The flags and the entry are additive and keep the
+contract version. The refusal does too: exit 2 keeps its meaning, an
+invocation nare refuses before starting, and only a run whose check the model
+could rewrite now gets it.
 
 ### Finding the document in an answer
 
