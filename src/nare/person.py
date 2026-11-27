@@ -300,7 +300,11 @@ def auth_main(argv: list[str]) -> int:
     )
     sub = parser.add_subparsers(dest="action", required=True)
     providers = list(credentials.KEY_ENV)
-    default = os.environ.get("NARE_PROVIDER") or "anthropic"
+    # argparse never checks a default against choices (#354), so NARE_PROVIDER
+    # is checked here. login falls back to anthropic, since adding a key the
+    # message names is harmless; logout never guesses which key to remove.
+    env = os.environ.get("NARE_PROVIDER") or "anthropic"
+    default = env if env in [*providers, "bedrock"] else "anthropic"
     login = sub.add_parser(
         "login",
         help="store a key in NARE_HOME/credentials.json (mode 0600), typed with "
@@ -319,9 +323,16 @@ def auth_main(argv: list[str]) -> int:
     )
     status.add_argument("--provider", choices=[*providers, "bedrock", "fake"])
     logout = sub.add_parser("logout", help="remove a stored key")
-    logout.add_argument("--provider", choices=providers, default=default)
+    logout.add_argument("--provider", choices=providers)
     args = parser.parse_args(words)
     try:
+        if args.action == "logout" and args.provider is None:
+            if env not in providers:
+                raise ValueError(
+                    f"NARE_PROVIDER={env} keeps no stored key: pass --provider "
+                    + " or --provider ".join(providers)
+                )
+            args.provider = env
         if args.action == "login":
             if args.provider == "bedrock":
                 raise ValueError(
@@ -341,9 +352,10 @@ def auth_main(argv: list[str]) -> int:
                 file=sys.stderr,
             )
             return 0
-        chosen = args.provider or default
+        chosen = args.provider or (env if env == "fake" else default)
+        listed = [*providers, "bedrock", *(["fake"] if chosen == "fake" else [])]
         found = False
-        for provider in [*providers, "bedrock"] if args.provider is None else [chosen]:
+        for provider in listed if args.provider is None else [chosen]:
             has, where = credentials.source(provider)
             found = found or (has and provider == chosen)
             marker = "*" if provider == chosen else " "
