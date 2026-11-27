@@ -14,7 +14,6 @@ import logging
 import os
 import shlex
 import sys
-import tempfile
 import time
 import uuid
 from collections.abc import Iterator
@@ -62,10 +61,12 @@ from nare.session import (
     loads,
     nare_home,
     new_session,
+    private_folder,
     reopen,
     resumable_in,
     save,
     sessions_dir,
+    started_now,
     unanswered,
 )
 from nare.tools import Policy, group_alive, stop_group
@@ -591,6 +592,7 @@ class TuiApp(App[None]):
             self.session = new_session(text, self.session_id)
             # Where the run started, so the resume picker can find it again.
             self.session.cwd = os.getcwd()
+            self.session.started_at = started_now()
             self.session.root = (
                 None if self.args.root is None else str(Path(self.args.root).resolve())
             )
@@ -966,31 +968,12 @@ def _home_or_none() -> Path | None:
         return None
 
 
-def _private_folder(folder: Path) -> None:
-    """Create the sessions folder and its NARE_HOME parent, 0700 when new.
-    An existing folder keeps its permissions. A folder that cannot be written
-    is a startup error that names both ways out, so the probe below is what
-    catches an existing folder that is read-only.
-    """
-    try:
-        home = nare_home()
-        if home is not None:
-            home.mkdir(mode=0o700, parents=True, exist_ok=True)
-        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with tempfile.TemporaryFile(dir=folder):
-            pass
-    except OSError as exc:
-        raise ValueError(
-            f"cannot save sessions in {folder}: {exc.strerror or exc}. Set NARE_HOME "
-            "to a writable folder, or pass --session PATH"
-        ) from exc
-
-
 def prepare(args: argparse.Namespace, transport: Transport | None = None) -> TuiApp:
     """Everything that can fail at startup, before Textual takes the screen."""
     prices = validate_run_args(args)
     policy = policy_from_args(args)
-    session_id: str | None = None
+    # nare "<task>" names its store file for the session it will hold.
+    session_id: str | None = getattr(args, "session_id", None)
     warning: str | None = None
     if not args.session:
         # Every run is saved, outside the project.
@@ -1001,7 +984,7 @@ def prepare(args: argparse.Namespace, transport: Transport | None = None) -> Tui
                 "or pass --session"
             )
         session_id = uuid.uuid4().hex
-        _private_folder(sessions)
+        private_folder(sessions)
         args.session = str(sessions / f"{session_id}.json")
     else:
         path = Path(args.session).resolve()

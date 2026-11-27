@@ -7,9 +7,11 @@ import binascii
 import copy
 import json
 import os
+import re
 import tempfile
 import uuid
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -216,6 +218,11 @@ class Session:
     # before nare recorded them.
     cwd: str | None = None
     root: str | None = None
+    # When a person-facing run (nare, nare -p, nare exec, nare tui) started the
+    # session, as an ISO 8601 UTC time, for nare sessions to list. None on a
+    # nare run session, and written only when set, so a nare run session file
+    # is the file it always was.
+    started_at: str | None = None
     # Set on a session `nare run --resume PATH --fork` wrote: the session and
     # turn it was forked from, and the path it was read from (None for a
     # library fork without one). Redacted on save. None on any other session.
@@ -254,6 +261,43 @@ def sessions_dir() -> Path | None:
     return None if home is None else home / "sessions"
 
 
+def project_sessions_dir(cwd: str) -> Path | None:
+    """$NARE_HOME/sessions/<project>: the store a person-facing run saves to
+    when it is given no --session, one folder per working directory. The
+    folder's name is the directory's real path with every character outside
+    letters, digits, dot, dash and underscore made a dash, as Claude Code
+    names its project folders."""
+    root = sessions_dir()
+    if root is None:
+        return None
+    return root / re.sub(r"[^A-Za-z0-9._-]", "-", os.path.realpath(cwd))
+
+
+def private_folder(folder: Path) -> None:
+    """Create a sessions folder and every nare folder above it, 0700 when new.
+    An existing folder keeps its permissions. A folder that cannot be written
+    is a startup error that names both ways out; the probe is what catches an
+    existing folder that is read-only.
+    """
+    try:
+        home = nare_home()
+        chain = [folder]
+        if home is not None and folder.is_relative_to(home):
+            above = folder.parent
+            while above != home.parent and above.is_relative_to(home):
+                chain.append(above)
+                above = above.parent
+        for each in reversed(chain):
+            each.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.TemporaryFile(dir=folder):
+            pass
+    except OSError as exc:
+        raise ValueError(
+            f"cannot save sessions in {folder}: {exc.strerror or exc}. Set NARE_HOME "
+            "to a writable folder, or pass --session PATH"
+        ) from exc
+
+
 def legacy_sessions_dir() -> Path | None:
     """$XDG_STATE_HOME/nare/sessions, where nare saved sessions before
     NARE_HOME. Read, never written: those files stay where they are and resume
@@ -274,10 +318,69 @@ def resumable_in(cwd: str) -> list[SavedSession]:
     those saved before it, newest first, each file once.
     """
     found: dict[str, SavedSession] = {}
-    for folder in (sessions_dir(), legacy_sessions_dir()):
+    for folder in (project_sessions_dir(cwd), sessions_dir(), legacy_sessions_dir()):
         for row in saved_in(folder, cwd):
             found.setdefault(os.path.realpath(row.path), row)
     return sorted(found.values(), key=lambda row: row.changed, reverse=True)
+
+
+def started_now() -> str:
+    """A session's started_at: now, in UTC, to the second."""
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def new_store_path(cwd: str) -> tuple[Path, str]:
+    """A new file in `cwd`'s store, its folder made private, and the session
+    id the file is named for."""
+    folder = project_sessions_dir(cwd)
+    if folder is None:
+        raise ValueError(
+            "no home directory to save the session in: set NARE_HOME or pass --session"
+        )
+    private_folder(folder)
+    session_id = uuid.uuid4().hex
+    return folder / f"{session_id}.json", session_id
+
+
+def newest_in(cwd: str) -> Path:
+    """The session -c continues: the newest one started in `cwd`."""
+    rows = resumable_in(cwd)
+    if not rows:
+        raise ValueError(
+            f"no session to continue in {cwd} (looked in {_folders(cwd)}); "
+            'start one with nare "<task>" or nare -p "<task>"'
+        )
+    return rows[0].path
+
+
+def find_session(ref: str, cwd: str) -> Path:
+    """-r's argument: a session file's path, or the id of one started in `cwd`
+    (the file's name, or the session's own id), or a unique start of one."""
+    path = Path(ref).expanduser()
+    if path.is_file():
+        return path
+    rows = resumable_in(cwd)
+    for match in (
+        lambda row: ref in (row.path.stem, row.id),
+        lambda row: row.path.stem.startswith(ref) or row.id.startswith(ref),
+    ):
+        found = {row.path for row in rows if match(row)}
+        if len(found) == 1:
+            return found.pop()
+        if len(found) > 1:
+            raise ValueError(
+                f"{ref!r} names {len(found)} sessions started in {cwd}; give more "
+                "of the id (nare sessions lists them)"
+            )
+    raise ValueError(
+        f"no session {ref!r}: not a file, and not an id of a session started in "
+        f"{cwd} (looked in {_folders(cwd)}; nare sessions lists them)"
+    )
+
+
+def _folders(cwd: str) -> str:
+    folders = [project_sessions_dir(cwd), sessions_dir(), legacy_sessions_dir()]
+    return ", ".join(str(f) for f in folders if f is not None) or "no sessions folder"
 
 
 @dataclass(frozen=True)
@@ -289,6 +392,8 @@ class SavedSession:
     changed: float  # the file's modification time, seconds since the epoch
     status: str
     turns: int
+    id: str = ""
+    started_at: str | None = None
 
 
 def saved_in(folder: Path | None, cwd: str) -> list[SavedSession]:
@@ -316,6 +421,8 @@ def saved_in(folder: Path | None, cwd: str) -> list[SavedSession]:
                 # A file left `working` is a run that died, as the TUI shows it.
                 status="interrupted" if session.status == "working" else session.status,
                 turns=session.turns,
+                id=session.id,
+                started_at=session.started_at,
             )
         )
     return sorted(rows, key=lambda row: row.changed, reverse=True)
@@ -382,6 +489,8 @@ def dumps(s: Session) -> str:
     raw.pop("events")
     if not raw["mcp_loaded"]:
         raw.pop("mcp_loaded")
+    if raw["started_at"] is None:
+        raw.pop("started_at")
     binary: list[tuple[int, int, str]] = []
     for mi, message in enumerate(raw["messages"]):
         for bi, block in enumerate(message["content"]):
@@ -497,6 +606,8 @@ def loads(text: str) -> Session:
             raise TypeError("forked_from must be an object or null")
         if not isinstance(raw.get("failure"), (dict, type(None))):
             raise TypeError("failure must be an object or null")
+        if not isinstance(raw.get("started_at"), (str, type(None))):
+            raise TypeError("started_at must be a string or null")
         loaded = raw.get("mcp_loaded", {})
         if not isinstance(loaded, dict) or not all(
             isinstance(k, str) and isinstance(v, str) for k, v in loaded.items()

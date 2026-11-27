@@ -1114,6 +1114,7 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--resume",
+        "-r",
         nargs="?",
         const="",
         help="continue the session at this path, writing it back unless "
@@ -1525,7 +1526,7 @@ def fork_with_note(session: Session, source: str | Path | None) -> Session:
 
 def _load_or_new(args: argparse.Namespace) -> Session:
     if not args.resume:
-        return new_session(args.prompt)
+        return new_session(args.prompt, getattr(args, "session_id", None))
     session = loads(Path(args.resume).read_text(encoding="utf-8"))
     if args.fork:
         # Forked before reopen, so the copy is the transcript as saved; the
@@ -2004,6 +2005,7 @@ def run_command(
     transport: Transport | None,
     *,
     approver: Approvers | None = None,
+    on_session: Callable[[Session], None] | None = None,
 ) -> int:
     """`nare run`, and nare -p and nare exec over the same path. `approver` is
     the person-facing modes' own; without one, --yes approves every call, and
@@ -2041,6 +2043,8 @@ def run_command(
     except (ValueError, OSError, UnsupportedSchema) as exc:
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED
+    if on_session is not None:
+        on_session(session)
     if approver is not None and getattr(args, "accept_edits", False):
         from nare.terminal import accepting_edits
 
