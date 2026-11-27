@@ -167,7 +167,8 @@ keeps the contract version; removing or renaming one bumps it.
 | `--bash-sandbox` | no | | Run each `bash` command under the OS sandbox: writes only in `--root`, each `--add-root` and a private temp dir, credentials unreadable, no network ([Bash sandbox](#bash-sandbox)) |
 | `--bash-network` | no | | With `--bash-sandbox`, let `bash` use the network ([Bash sandbox](#bash-sandbox)) |
 | `--resume` | yes | | Continue the session at a path, also `-r`. `nare tui --resume` with no path picks one of this directory's saved sessions; `nare run` needs the path. `nare -p`, `nare exec` and `nare "<task>"` also take a session id from `nare sessions` |
-| `--mcp-config` | yes | | JSON file of MCP servers ([MCP tool sources](#mcp-tool-sources)) |
+| `--mcp-config` | yes | | JSON file of MCP servers, in nare's format or Claude Code's `mcpServers` format ([MCP tool sources](#mcp-tool-sources)) |
+| `--strict-mcp-config` | no | | Load only the servers `--mcp-config` names, as `nare run` always does; the person-facing forms otherwise add the configured ones ([Configured servers](#configured-servers)) |
 | `--mcp-defer` | no | | Keep MCP tool definitions out of the request; the model searches, loads and calls them ([MCP tool deferral](#mcp-tool-deferral)) |
 | `--command-tools` | yes | | JSON file of tools this command line runs ([caller tools](#caller-tools)) |
 | `--image-input` | no | | Declare that the model accepts image input ([Read-only image input](#read-only-image-input)) |
@@ -955,6 +956,15 @@ is an object keyed by server alias:
 }
 ```
 
+The file may also be in Claude Code's format, one `mcpServers` object of
+entries: `{"mcpServers": {"local": {"type": "stdio", "command": "python"}}}`.
+There `type` is `stdio`, `http` or `streamable-http` (`sse` is refused, by name),
+and `${VAR}` and `${VAR:-default}` in `command`, `args`, `env`, `url` and
+`headers` are expanded from the environment when the run starts; an unset
+variable with no default exits 2. nare's own format is read as before, with no
+expansion. A file is the `mcpServers` format when its `mcpServers` value is an
+object of objects.
+
 Remote sources use Streamable HTTP; stdio sources are child processes. Each
 source specifies exactly one of `command` or `url`. Optional `headers` apply
 only to HTTP; `args` and `env` apply only to stdio. Unknown fields and invalid
@@ -998,6 +1008,19 @@ content blocks are represented as JSON, rather than interpreted as model images.
 The standard [tool output cap](#the-tool-output-cap) applies, keeping the head and the tail. Session transcripts preserve results in
 the same way as built-ins; raw transcripts can contain secrets and should be
 handled as private artifacts.
+
+### Configured servers
+
+`nare mcp add`, `list`, `get`, `remove` and `trust` keep servers for a person
+in two files, both in the `mcpServers` format: the user's,
+`$NARE_HOME/mcp.json` (mode 0600), and the project's, `.mcp.json` in the
+working directory. `nare`, `nare "<task>"`, `nare -p` and `nare exec` load
+both (the project's winning on a shared name, `--mcp-config` winning over
+both), unless `--strict-mcp-config`. A project's servers start only after the
+person trusts that `.mcp.json`, recorded with its SHA-256 in
+`$NARE_HOME/trusted-projects.json`, so a changed file is asked about again;
+without a terminal they are skipped and named on stderr. `nare run` never reads
+either file: it loads what `--mcp-config` names and nothing else.
 
 ### MCP tool deferral
 

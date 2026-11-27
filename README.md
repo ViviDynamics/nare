@@ -659,6 +659,31 @@ MCP tool sources are configured explicitly with `--mcp-config servers.json`.
 Both stdio child servers and remote Streamable HTTP servers use the normal tool
 allowlist and approval seam. For configuration, names (`server__tool`), errors,
 credential isolation and resume semantics, see [the MCP contract](docs/contract.md#mcp-tool-sources).
+`--mcp-config` also reads Claude Code's `{"mcpServers": {...}}` format, with its
+`type` and `${VAR}` / `${VAR:-default}` expansion.
+
+For a person, servers can be configured once, as with `claude mcp add`:
+
+    nare mcp add github -- npx -y @modelcontextprotocol/server-github
+    nare mcp add --env LOG_LEVEL=debug local -- python -m my_server
+    nare mcp add --scope project docs --url https://mcp.example.com/mcp
+    nare mcp list            # --json for data
+    nare mcp get github      # env and header values are hidden
+    nare mcp remove github
+
+The user scope (the default) writes `~/.nare/mcp.json`, mode 0600; `--scope
+project` writes `.mcp.json` in this directory, in the `mcpServers` format, so a
+project that already carries a Claude Code `.mcp.json` works unchanged. `-s`,
+`-e`, `-H` and `-t` are Claude Code's short forms, `--transport http` with a
+URL in place of the command works as there, and `sse` is refused. `nare`,
+`nare "<task>"`, `nare -p` and `nare exec` load the user's servers and the
+project's, the project's winning on a shared name and `--mcp-config` winning
+over both. A project's servers start only once you trust its `.mcp.json` as it
+is: `nare` at a terminal asks once, and `nare mcp trust` (`--revoke` to undo)
+trusts it for runs with no terminal. A changed `.mcp.json` is asked about
+again. `--strict-mcp-config` loads only `--mcp-config`. `nare run` loads only
+what `--mcp-config` names, as before. `nare mcp login <name>` finds a configured
+server without `--mcp-config`.
 
 With many MCP tools, `--mcp-defer` keeps their definitions out of the request: the model
 finds a tool with `mcp_search`, loads it with `mcp_load` and calls it with `mcp_call`.
