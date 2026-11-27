@@ -254,6 +254,13 @@ denied, reported on stderr and told to the model, and the run goes on; reads
 and read-only commands run. `--yes`, `--dangerously-skip-permissions` or
 `--yolo` approves every call.
 
+In a project with an `AGENTS.md` (or a `CLAUDE.md`), the person-facing forms
+follow it: they read `~/.nare/AGENTS.md`, then one file per directory from the
+project root down to the working directory, after nare's system prompt and
+before `--append-system-prompt`, 32 KiB at most. `--no-project-instructions`
+leaves them out. `nare run` never reads them unless given
+`--project-instructions`. See [project instructions](docs/contract.md#project-instructions).
+
 nare also takes Claude Code's and Codex's spellings of its flags:
 `--append-system-prompt`, `--system-prompt`, `--dangerously-skip-permissions`,
 `--yolo`, `--allowedTools "Bash(git log:*),Read"`, `--permission-mode`, `-a`,
