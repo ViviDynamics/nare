@@ -15,8 +15,9 @@ It prints the version, the exit codes, the statuses, the stop reasons
 (`stop_reasons`), the event types, the
 built-in tool names (`tools`), the navigation limits (`navigation`), the read
 evidence record (`evidence`), the tool result record (`tool_results`), the
-system prompt routes (`system_input`), every `nare run` option (`flags`) and
-the redaction rule set this build speaks.
+system prompt routes (`system_input`), every `nare run` option (`flags`), the
+other tools' spellings of them (`flag_aliases`) and the redaction rule set this
+build speaks.
 
 ## Refusing a contract you do not speak
 
@@ -41,9 +42,9 @@ in any release. Two things about them are fixed, because they reuse `nare run`:
   `nare run --jsonl` prints, with the same exit codes. `--output-format json`
   prints that `result` line alone.
 - They take every `nare run` flag listed below, with the same meaning, plus
-  `-p`/`--print`, `--output-format`, `--json`, and
-  `--dangerously-skip-permissions`/`--yolo` for `--yes`. Without a permission
-  flag, a call the terminal UI would ask about is denied, and the model is told.
+  `-p`/`--print`, `--output-format` and `--json`. Without a permission flag
+  (`--yes` or one of its [spellings](#other-tools-spellings)), a call the
+  terminal UI would ask about is denied, and the model is told.
 
 `nare run` without `--yes` refuses to start, exit 2 with nothing on stdout,
 whenever stdin is not a terminal. A caller that spawns it never gives it one,
@@ -81,9 +82,18 @@ keeps the contract version; removing or renaming one bumps it.
 | `--prompt-file` | yes | | Read the task from a UTF-8 file ([Prompt input](#prompt-input)) |
 | `--stream` | no | | Stream text and reasoning while each turn runs ([Streaming model turns](#streaming-model-turns)) |
 | `--jsonl` | no | | Emit the JSONL event stream on stdout |
+| `--json` | no | | Codex's `--jsonl` ([Other tools' spellings](#other-tools-spellings)) |
 | `--yes` | no | | Approve every tool call; required for unattended runs |
+| `--dangerously-skip-permissions` | no | | Claude Code's `--yes` ([Other tools' spellings](#other-tools-spellings)) |
+| `--dangerously-bypass-approvals-and-sandbox` | no | | Codex's `--yes` |
+| `--yolo` | no | | Codex's short `--yes` |
+| `--permission-mode` | yes | `default`, `acceptEdits`, `plan`, `bypassPermissions` | Claude Code's approval modes: as without `--yes`, also approve `write` and `edit` unasked, only the read-only tools, `--yes` ([Other tools' spellings](#other-tools-spellings)) |
+| `--ask-for-approval` | yes | `never`, `on-request` | Codex's approval policy, also `-a`: `--yes`, or as without it |
+| `--sandbox` | yes | `read-only`, `workspace-write`, `danger-full-access` | Codex's sandbox, also `-s`: only the read-only tools, `--bash-sandbox` with `--root` defaulting to the working directory, or no sandbox |
 | `--contract` | yes | | The contract version the caller speaks ([Refusing a contract](#refusing-a-contract-you-do-not-speak)) |
 | `--schema` | yes | | JSON Schema file the final answer must satisfy ([Answer schemas](#answer-schemas)) |
+| `--json-schema` | yes | | Claude Code's `--schema`; also takes the schema inline, as JSON |
+| `--output-schema` | yes | | Codex's `--schema`; also takes the schema inline, as JSON |
 | `--structured-output` | yes | `json_schema`, `json_object`, `tool_call` | Select supported answer encoding, on the anthropic, bedrock and openai rails ([Schema-constrained answers](#schema-constrained-answers)) |
 | `--max-tool-calls` | yes | | Run at most this many tool calls in this invocation ([Budgets and partial results](#budgets-and-partial-results)) |
 | `--max-corrections` | yes | | Let a failing `--schema` answer be corrected up to this many times in the run, default 1 ([Schema corrections](#schema-corrections)) |
@@ -113,7 +123,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--cache-breakpoints` | no | | Mark prompt-cache breakpoints on the openai rail ([Prompt-cache breakpoints](#prompt-cache-breakpoints)) |
 | `--provider` | yes | `anthropic`, `bedrock`, `openai`, `fake` | Model provider (`bedrock` is Claude on Amazon Bedrock, signed with AWS credentials) |
 | `--replay` | yes | | JSON script of replies `--provider fake` replays ([Scripted runs](#scripted-runs)) |
-| `--model` | yes | | Model name |
+| `--model` | yes | | Model name, also `-m`. `provider/model` picks the provider too when neither `--provider`, `NARE_PROVIDER` nor `--base-url` names one ([Other tools' spellings](#other-tools-spellings)) |
 | `--base-url` | yes | | Override the provider endpoint (on `bedrock`, the Bedrock runtime endpoint) |
 | `--region` | yes | | AWS region for `--provider bedrock`; refused with any other provider |
 | `--temperature` | yes | | Sampling temperature; not accepted by the anthropic provider |
@@ -121,15 +131,23 @@ keeps the contract version; removing or renaming one bumps it.
 | `--context-window` | yes | | Context window used for elision |
 | `--budget-tokens` | yes | | Cumulative session token budget ([Budgets and partial results](#budgets-and-partial-results)) |
 | `--budget-usd` | yes | | Cumulative session dollar budget |
+| `--max-budget-usd` | yes | | Claude Code's `--budget-usd` |
 | `--effort` | yes | `low`, `medium`, `high`, `xhigh`, `max` | Reasoning effort ([Reasoning effort](#reasoning-effort)) |
 | `--thinking-budget` | yes | | A fixed thinking budget, anthropic and bedrock only, for older models |
 | `--system` | yes | | Replace the default system prompt ([System prompt input](#system-prompt-input)) |
 | `--system-file` | yes | | `--system`, read from a UTF-8 file |
+| `--system-prompt` | yes | | Claude Code's `--system` |
+| `--system-prompt-file` | yes | | Claude Code's `--system-file` |
 | `--append-system` | yes | | Add text after the system prompt |
 | `--append-system-file` | yes | | `--append-system`, read from a UTF-8 file |
+| `--append-system-prompt` | yes | | Claude Code's `--append-system` |
+| `--append-system-prompt-file` | yes | | Claude Code's `--append-system-file` |
 | `--tools` | yes | | Comma-separated tools the run may call, or `none` |
+| `--allowed-tools` | yes | | Claude Code's `--tools`, also `--allowedTools`: tool names in nare's or Claude Code's spelling, and `Bash(PATTERN)` for `--bash-allow`; repeatable ([Other tools' spellings](#other-tools-spellings)) |
+| `--disallowed-tools` | yes | | Built-in tools the run may not call, also `--disallowedTools`; `Bash(PATTERN)` is `--bash-deny`; repeatable |
 | `--root` | yes | | Confine file tools to a directory and run `bash` in it |
 | `--add-root` | yes | | Let the file tools also reach this directory; needs `--root`; repeatable ([Added roots](#added-roots)) |
+| `--add-dir` | yes | | Claude Code's `--add-root`; repeatable |
 | `--bash-credentials` | no | | Let `bash` see the provider credentials nare reads ([The bash environment](#the-bash-environment)) |
 | `--bash-allow` | yes | | Run a `bash` command matching PATTERN without asking; repeatable ([Bash command rules](#bash-command-rules)) |
 | `--bash-deny` | yes | | Refuse a `bash` command matching PATTERN, even with `--yes`; repeatable ([Bash command rules](#bash-command-rules)) |
@@ -146,6 +164,45 @@ keeps the contract version; removing or renaming one bumps it.
 
 A test fails when this table and the parser disagree, so a new flag is
 documented here in the change that adds it.
+
+### Other tools' spellings
+
+nare accepts Claude Code's and Codex's names for the same options, so a script
+or a habit moves over without translating. Each is an option of its own, listed
+under `flags` and above, and `nare contract` also maps every other spelling to
+the flag it stands for under `flag_aliases`:
+
+```json
+"flag_aliases": {"--yolo": "--yes", "--allowedTools": "--tools", "-m": "--model"}
+```
+
+An alias sets its canonical flag, so the run is exactly the canonical flag's
+run. Given beside that flag with a different value, it is a conflict: nare
+exits 2 and names both. The same value twice is not a conflict, and a
+repeatable flag (`--add-dir` beside `--add-root`) adds to it. A value from the
+environment is a default, which an alias overrides as the flag would.
+
+- `--allowed-tools` (`--allowedTools`) takes names comma or space separated, in
+  nare's names or Claude Code's (`Read`, `Edit`, `MultiEdit`, `Write`, `Bash`,
+  `Glob` and `Grep` for `search`, `LS` for `list`), and `mcp__server__tool` for
+  nare's `server__tool`. `Bash(PATTERN)` allows `bash` and adds PATTERN to
+  `--bash-allow`; Claude Code's `PATTERN:*` is PATTERN alone or followed by
+  anything, so `Bash(git log:*)` adds `git log` and `git log *`.
+- `--disallowed-tools` (`--disallowedTools`) names built-in tools only; MCP tools
+  stay allowed as with no `--tools`. Its `Bash(PATTERN)` adds to `--bash-deny`.
+- `--permission-mode acceptEdits`, and `default`, `-a on-request`, are not
+  `--yes`: without a terminal, `nare run` refuses them as it refuses a run
+  without `--yes`. At a terminal, `acceptEdits` runs `write` and `edit` unasked
+  (except into `.git`) and asks about the rest. Under `nare -p` the rest is
+  denied.
+- `--model provider/model`, and `-m`, split only when the prefix is a nare
+  provider and nothing else names one; otherwise the value is the model name,
+  as before, which keeps a proxy's own `vendor/model` names working.
+- `-m` is the same option as `--model`: given twice, the last one counts, as
+  with `--model` twice.
+- Every alias matches only when spelled in full. A unique prefix of a flag,
+  which argparse accepts, still means what it meant before the aliases:
+  `--json` was `--jsonl` and still is, and `--y` is still `--yes`.
 
 ## Prompt input
 
