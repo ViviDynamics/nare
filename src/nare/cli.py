@@ -1541,7 +1541,9 @@ def validate_run_args(args: argparse.Namespace) -> Prices | None:
     args.command_tools = (
         command_tools(
             json.loads(Path(args.command_tools).read_text(encoding="utf-8")),
-            root=None if args.root is None else Path(args.root),
+            # Resolved now, as the policy pins the root (nare.roots), so a
+            # link given as --root and pointed elsewhere later moves nothing.
+            root=None if args.root is None else Path(args.root).resolve(),
             credentials=args.bash_credentials,
         )
         if args.command_tools
@@ -1592,9 +1594,9 @@ def check_from_args(
     timeout = COMMAND_TIMEOUT_DEFAULT
     if args.check_timeout is not None:
         timeout = finite_number(args.check_timeout, "--check-timeout")
-    return command_check(
-        argv, timeout=timeout, root=None if args.root is None else Path(args.root)
-    )
+    # The pinned root (nare.roots): a run whose root is replaced stops before
+    # an answer is checked, so the check never runs in a replaced one.
+    return command_check(argv, timeout=timeout, root=policy.real_root)
 
 
 def refuse_writable_check(argv: list[str], policy: Policy, *, allowed: bool) -> None:
@@ -1602,12 +1604,12 @@ def refuse_writable_check(argv: list[str], policy: Policy, *, allowed: bool) -> 
     an added root, in a run that allows a writing tool (#344). The check runs in
     the root, so a relative word is resolved there."""
     writers = sorted(policy.tools & WRITING_TOOLS)
-    if allowed or policy.root is None or not writers:
+    if allowed or policy.real_root is None or not writers:
         return
     found = check_file_in_roots(
         argv,
-        cwd=policy.root,
-        roots=[policy.root, *policy.extra_roots],
+        cwd=policy.real_root,
+        roots=[policy.real_root, *policy.real_extra_roots],
         path=os.environ.get("PATH"),
     )
     if found is None:

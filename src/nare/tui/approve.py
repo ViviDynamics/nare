@@ -99,8 +99,8 @@ def _git_dir(policy: Policy) -> Path:
     """The .git directory protected: the root's, or with no root the nearest
     one above the cwd, as git finds its repository.
     """
-    if policy.root is not None:
-        return policy.root.resolve() / ".git"
+    if policy.real_root is not None:
+        return policy.real_root / ".git"
     here = Path.cwd().resolve()
     for above in (here, *here.parents):
         if (above / ".git").exists():
@@ -127,9 +127,9 @@ def in_git_dir(path: str, policy: Policy) -> bool:
     # A relative path is relative to the root, or with none to the cwd, as
     # Policy.resolve and bash read it.
     try:
-        anchor = policy.root.resolve() if policy.root is not None else Path.cwd()
+        anchor = policy.real_root if policy.real_root is not None else Path.cwd()
         gits = [_folded(_git_dir(policy).resolve())]
-        gits += [_folded((e / ".git").resolve()) for e in policy.extra_roots]
+        gits += [_folded((e / ".git").resolve()) for e in policy.real_extra_roots]
         target = _folded((anchor / path).resolve())
     except (OSError, RuntimeError, ValueError):
         return True
@@ -185,7 +185,7 @@ def risks(command: str, policy: Policy) -> list[str]:
     # Without a root, bash runs in the current directory: that is the boundary.
     bounded = policy if policy.root is not None else Policy(root=Path.cwd())
     git = _git(tokens)
-    dirs = _dirs(tokens, bounded.root or Path.cwd())
+    dirs = _dirs(tokens, bounded.real_root or Path.cwd())
     flags = {
         "network": network,
         "exec": ("chmod", "+x") in pairs

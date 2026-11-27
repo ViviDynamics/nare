@@ -25,7 +25,9 @@ from typing import Any
 
 # Recorded in the session's policy, so a reader can tell which rules were in
 # force. Changing what the profile allows or denies means a new name.
-PROFILE = "confined-1"
+# confined-2: a root, an added root, and a folder between two roots cannot be
+# removed or renamed.
+PROFILE = "confined-2"
 SUPPORTED = "macOS (sandbox-exec) and Linux (bubblewrap)"
 
 # Credential locations, relative to the home directory. A folder is masked as a
@@ -219,6 +221,26 @@ def default_denied() -> tuple[Path, ...]:
     return tuple(p.resolve() for p in paths)
 
 
+def held_in_place(root: Path, writable: Sequence[Path] = ()) -> tuple[Path, ...]:
+    """The folders a confined command must not remove or rename, outermost first.
+
+    Each root and added root, and every folder between two of them (a folder
+    inside one root that holds another): renaming that folder would carry the
+    inner root away, and a link left at the old path would lead its pinned
+    path somewhere else. A folder outside every root needs nothing here, since
+    no write reaches it.
+    """
+    roots = (root, *writable)
+    held: list[Path] = []
+    for path in roots:
+        for folder in (path, *path.parents):
+            if folder in held:
+                continue
+            if any(folder == other or folder.is_relative_to(other) for other in roots):
+                held.append(folder)
+    return tuple(sorted(held, key=lambda folder: len(folder.parts)))
+
+
 def _quote(path: Path) -> str:
     """A path as a Seatbelt string literal."""
     text = str(path)
@@ -241,6 +263,10 @@ def seatbelt_profile(
     that matches, so the credential denials come after the broad read allow and
     the write allows. `writable` is the added roots, writable like the root.
     Paths are used as given: the caller resolves them.
+
+    A writable folder's subpath includes the folder itself, so without the
+    unlink denial a command could remove a root and leave a link in its place.
+    Everything inside a root stays removable and renamable.
     """
     keychain = " ".join(f'(global-name "{name}")' for name in KEYCHAIN_SERVICES)
     lines = [
@@ -262,6 +288,10 @@ def seatbelt_profile(
         f"(allow file-write* (subpath {_quote(scratch)}))",
     ]
     lines += [f"(allow file-write* (subpath {_quote(path)}))" for path in writable]
+    held = " ".join(
+        f"(literal {_quote(path)})" for path in held_in_place(root, writable)
+    )
+    lines.append(f"(deny file-write-unlink {held})")
     for path in denied:
         lines.append(f"(deny file-read* (subpath {_quote(path)}))")
         lines.append(f"(deny file-write* (subpath {_quote(path)}))")
@@ -282,10 +312,13 @@ def bwrap_argv(
 ) -> list[str]:
     """The bubblewrap command line for one bash call.
 
-    The host is mounted read-only, then the root, each added root (`writable`)
-    and the scratch directory are bound writable on top, and each credential is
-    masked after that: a folder by an empty read-only tmpfs, a file by
-    /dev/null. /tmp and /run are replaced
+    The host is mounted read-only, then the scratch directory, and the root,
+    each added root (`writable`) and each folder between two roots are bound
+    writable on top, outermost first. A mount point cannot be removed or
+    renamed, so a command cannot carry a root away and leave a link in its
+    place, and binding an outer root after an inner one would hide that inner
+    mount. Each credential is masked after that: a folder by an empty read-only
+    tmpfs, a file by /dev/null. /tmp and /run are replaced
     by empty tmpfs mounts, made read-only last. Unix sockets live in those
     folders (ssh-agent, a container runtime socket, the D-Bus session bus), and
     a read-only mount does not stop connect(), so the host copies are hidden
@@ -319,11 +352,8 @@ def bwrap_argv(
         "--bind",
         str(scratch),
         str(scratch),
-        "--bind",
-        str(root),
-        str(root),
     ]
-    for path in writable:
+    for path in held_in_place(root, writable):
         argv += ["--bind", str(path), str(path)]
     for path in denied:
         if path.is_dir():

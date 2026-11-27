@@ -73,6 +73,7 @@ from nare.tools import (
     approve_all,
     dispatch,
     questions_from,
+    root_replaced_refusal,
     route_deferred,
     tool_result,
 )
@@ -626,6 +627,27 @@ def schema_digest(schema: dict[str, Any]) -> str:
     """The schema's identity: key order and whitespace are not a change."""
     canonical = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def stop_for_replaced_root(s: Session, policy: Policy) -> bool:
+    """End the run when a root was replaced under it (nare.roots).
+
+    The file tools and the bash sandbox confine to the roots as they were when
+    the policy was built. Once one is replaced nothing reached through it is
+    trusted, so the run ends `error` with `stop_reason` `root_replaced`, and no
+    answer is accepted after it: a schema-valid document kept from a reply
+    (step keeps one before it looks at the calls) is dropped too.
+    """
+    replaced = policy.replaced_root()
+    if replaced is None:
+        return False
+    s.status = "error"
+    s.stop_reason = "root_replaced"
+    s.error = f"{replaced}; the run stopped, and ran no tool call after it"
+    s.failure = None
+    s.output = None
+    s.events.append(Event("error", s.error))
+    return True
 
 
 def prefix_changes(recorded: dict[str, Any], now: dict[str, Any]) -> list[str]:
@@ -1594,6 +1616,11 @@ async def step(
     s.stop_reason = reply.stop_reason
 
     if not reply.tool_calls:
+        # Before the answer is taken: a root replaced while the model answered
+        # (by a process an earlier call left running) ends the run here, and
+        # no check runs in it.
+        if stop_for_replaced_root(s, policy):
+            return s
         if unfinished and corrected:
             append_user_text(s, _CUTOFF_GUIDANCE[reply.stop_reason])
             return s
@@ -1762,6 +1789,16 @@ async def step(
                 if summary:
                     results.append(tool_result(call.id, SUMMARY_REFUSED, is_error=True))
                     continue
+                # Here as well as in dispatch: the deferral step's own calls
+                # never reach dispatch, and a refused call is not counted.
+                replaced = policy.replaced_root()
+                if replaced is not None:
+                    results.append(
+                        tool_result(
+                            call.id, root_replaced_refusal(replaced), is_error=True
+                        )
+                    )
+                    continue
                 if call.name == "ask" and not only_asks and "ask" in policy.tools:
                     results.append(tool_result(call.id, ASK_NOT_ALONE, is_error=True))
                     continue
@@ -1854,6 +1891,10 @@ async def step(
                 )
             )
 
+    # The calls after a replacement were refused by dispatch; the run ends with
+    # the turn that saw it.
+    if stop_for_replaced_root(s, policy):
+        return s
     if unfinished and corrected:
         # Merged into the tool results just kept, so the turn stays well formed.
         append_user_text(s, _CUTOFF_GUIDANCE[reply.stop_reason] + _CALLS_NOT_RUN)
@@ -2131,6 +2172,12 @@ async def _run(
     capacity = fresh_queue(capacity)
     summary_tier = SummaryTier() if compaction == "summary" else None
     while session.status == "working":
+        # Before every model call, the first included: a root replaced between
+        # turns, or before this invocation, ends the run without one.
+        if stop_for_replaced_root(session, policy):
+            while session.events:
+                yield session.events.pop(0)
+            break
         if inbox is not None:
             # What a person typed while the last step ran. It follows that
             # step's tool results, so the model reads it on this turn.
@@ -2322,10 +2369,10 @@ async def run(
     reads = build_reads(
         require_reads,
         list(require_read),
-        root=policy.root if policy is not None else None,
+        root=policy.real_root if policy is not None else None,
         cited=list(require_cited_reads),
         cited_map=cited_read_map,
-        extra_roots=policy.extra_roots if policy is not None else (),
+        extra_roots=policy.real_extra_roots if policy is not None else (),
     )
     if reads.active and "read" not in base.tools:
         raise ValueError("a read requirement needs the read tool")

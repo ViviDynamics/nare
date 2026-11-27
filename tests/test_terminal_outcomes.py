@@ -161,6 +161,23 @@ SCENARIOS: dict[str, tuple[list[str], Any]] = {
         ),
     ),
     "provider": ([], lambda: Exploding()),
+    # bash, unconfined here, moves --root aside and links it back: the root no
+    # longer resolves to its pinned path (docs/contract.md, Pinned roots).
+    "root_replaced": (
+        [],
+        lambda: FakeProvider(
+            [
+                tool_reply(
+                    "bash",
+                    {
+                        "command": 'd=$(pwd -P) && cd / && mv "$d" "$d.aside" '
+                        '&& ln -s "$d.aside" "$d"'
+                    },
+                ),
+                text_reply("never"),
+            ]
+        ),
+    ),
 }
 
 

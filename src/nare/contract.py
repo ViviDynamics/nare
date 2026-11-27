@@ -78,6 +78,7 @@ STOP_REASONS: tuple[tuple[str | None, StopReasonKind, tuple[Status, ...]], ...] 
     (None, "failure", ("error",)),
     ("mcp", "failure", ("error",)),
     ("session_write", "failure", ("error",)),
+    ("root_replaced", "failure", ("error",)),
 )
 
 

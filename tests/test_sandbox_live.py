@@ -371,3 +371,181 @@ async def test_a_sandboxed_bash_writes_into_an_added_root_only(
 
     assert (added / "x").read_text() == "ok\n"
     assert not (neither / "x").exists()
+
+
+# The roots stay where they were (the pins in nare.roots, and the profile's own
+# refusal to remove or rename a root).
+
+
+def _swap_for_link(path: Path, target: Path) -> None:
+    path.rename(path.with_name(path.name + ".aside"))
+    path.symlink_to(target, target_is_directory=True)
+
+
+async def _sandboxed_bash(policy: object, command: str) -> dict[str, object]:
+    from nare.tools import Policy, dispatch
+    from nare.transport import ToolCall
+
+    assert isinstance(policy, Policy)
+    return await dispatch(
+        ToolCall(id="c1", name="bash", args={"command": command}),
+        policy,
+        approve=lambda *_: True,
+    )
+
+
+@pytest.fixture
+def outside(tmp_path: Path) -> Path:
+    out = tmp_path / "outside"
+    out.mkdir()
+    return out
+
+
+async def test_a_confined_command_cannot_remove_or_replace_the_root(
+    tmp_path: Path, outside: Path
+) -> None:
+    from nare.tools import Policy
+
+    root = tmp_path / "R"
+    root.mkdir()
+    policy = Policy(root=root, bash_sandbox=True)
+
+    swap = await _sandboxed_bash(
+        policy, f"cd / && rmdir '{root}' && ln -s '{outside}' '{root}'"
+    )
+    renamed = await _sandboxed_bash(policy, f"cd / && mv '{root}' '{root}2'")
+    after = await _sandboxed_bash(policy, "echo x > f")
+
+    assert "exit 0" not in str(swap["content"]).splitlines()[0]
+    assert "exit 0" not in str(renamed["content"]).splitlines()[0]
+    assert root.is_dir() and not root.is_symlink()
+    assert after["is_error"] is False, after
+    assert (root / "f").read_text() == "x\n"
+    assert not (outside / "f").exists()
+
+
+async def test_a_confined_command_cannot_replace_an_added_root(
+    tmp_path: Path, outside: Path
+) -> None:
+    from nare.tools import Policy
+
+    root, added = tmp_path / "A", tmp_path / "B"
+    root.mkdir()
+    added.mkdir()
+    policy = Policy(root=root, extra_roots=(added,), bash_sandbox=True)
+
+    await _sandboxed_bash(
+        policy, f"cd / && rmdir '{added}' && ln -s '{outside}' '{added}'"
+    )
+    after = await _sandboxed_bash(policy, f"echo x > '{added}/f'")
+
+    assert added.is_dir() and not added.is_symlink()
+    assert after["is_error"] is False, after
+    assert (added / "f").exists()
+    assert not (outside / "f").exists()
+
+
+async def test_a_confined_command_cannot_rename_the_root_through_an_added_parent(
+    tmp_path: Path, outside: Path
+) -> None:
+    from nare.tools import Policy
+
+    work = tmp_path / "work"
+    app = work / "app"
+    app.mkdir(parents=True)
+    policy = Policy(root=app, extra_roots=(work,), bash_sandbox=True)
+
+    await _sandboxed_bash(
+        policy, f"cd / && mv '{app}' '{work}/app2' && ln -s '{outside}' '{app}'"
+    )
+    after = await _sandboxed_bash(policy, "echo x > f")
+
+    assert app.is_dir() and not app.is_symlink()
+    assert not (work / "app2").exists()
+    assert after["is_error"] is False, after
+    assert (app / "f").exists()
+    assert not (outside / "f").exists()
+
+
+async def test_a_confined_command_cannot_move_the_root_by_renaming_its_parent(
+    tmp_path: Path, outside: Path
+) -> None:
+    from nare.tools import Policy
+
+    work = tmp_path / "work"
+    root = work / "a" / "b"
+    root.mkdir(parents=True)
+    (outside / "b").mkdir()
+    policy = Policy(root=root, extra_roots=(work,), bash_sandbox=True)
+
+    await _sandboxed_bash(
+        policy, f"cd / && mv '{work}/a' '{work}/z' && ln -s '{outside}' '{work}/a'"
+    )
+    after = await _sandboxed_bash(policy, "echo x > f")
+
+    assert (work / "a").is_dir() and not (work / "a").is_symlink()
+    assert after["is_error"] is False, after
+    assert (root / "f").exists()
+    assert not (outside / "b" / "f").exists()
+
+
+async def test_a_confined_command_still_renames_and_removes_inside_the_root(
+    tmp_path: Path,
+) -> None:
+    from nare.tools import Policy
+
+    work = tmp_path / "work"
+    root = work / "a" / "b"
+    root.mkdir(parents=True)
+    policy = Policy(root=root, extra_roots=(work,), bash_sandbox=True)
+
+    result = await _sandboxed_bash(
+        policy,
+        "mkdir -p d/e && mv d g && echo x > g/e/f && mv g/e/f g/e/h && rm -r g "
+        f"&& mkdir '{work}/other' && mv '{work}/other' '{work}/again' "
+        f"&& rmdir '{work}/again' && echo ok",
+    )
+
+    assert result["is_error"] is False, result
+    assert "ok" in str(result["content"])
+    assert sorted(p.name for p in root.iterdir()) == []
+
+
+async def test_a_root_replaced_outside_the_sandbox_stops_bash(
+    tmp_path: Path, outside: Path
+) -> None:
+    from nare.tools import Policy
+
+    root = tmp_path / "R"
+    root.mkdir()
+    policy = Policy(root=root, bash_sandbox=True)
+
+    # Replaced by something other than the confined shell: a caller's tool, a
+    # process outside the run. The pin refuses every call after it.
+    _swap_for_link(root, outside)
+    result = await _sandboxed_bash(policy, f"echo x > '{root}/f'")
+
+    assert result["is_error"] is True
+    assert "replaced" in str(result["content"])
+    assert not (outside / "f").exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt is macOS")
+async def test_the_seatbelt_profile_refuses_a_write_through_a_replaced_root(
+    tmp_path: Path, outside: Path
+) -> None:
+    # The profile names the pinned path, so even a command that reached the
+    # shell after the swap cannot write where the link now points.
+    from nare.tools import Policy
+
+    root = tmp_path / "R"
+    root.mkdir()
+    policy = Policy(root=root, bash_sandbox=True)
+    _swap_for_link(root, outside)
+
+    outcome = await bash_outcome(
+        f"echo x > '{root}/f'", 30, cwd=str(tmp_path), confine=policy.confinement()
+    )
+
+    assert not outcome.text.startswith("exit 0")
+    assert not (outside / "f").exists()
