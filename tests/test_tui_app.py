@@ -1443,10 +1443,14 @@ async def test_approval_header_stays_visible_after_long_preview_scroll(
         await until(pilot, lambda: isinstance(app.screen, ApprovalScreen))
         screen = app.screen
         header = screen.query_one("#approval-header", Static)
-        before = header.region
         scroll = screen.query_one("#approval-scroll", VerticalScroll)
+        # Laid out first, so `before` is where the header sits on screen.
+        await until(pilot, lambda: scroll.max_scroll_y > 0)
+        before = header.region
         scroll.scroll_end(animate=False)
-        await pilot.pause()
+        # scroll_end moves only after the next screen refresh, which a busy
+        # machine runs later than one pause: wait for the end, then check it.
+        await until(pilot, lambda: scroll.scroll_y == scroll.max_scroll_y)
         assert scroll.scroll_y > 0
         assert header.region == before
         assert header.region.bottom <= scroll.region.y
