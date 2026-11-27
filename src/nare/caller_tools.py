@@ -14,9 +14,10 @@ import json
 import math
 import os
 import re
+import shutil
 import signal
 import subprocess
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -257,6 +258,80 @@ def parse_check_command(text: str) -> list[str]:
             'to run without a shell, such as \'["python3", "check.py"]\''
         )
     return argv
+
+
+def check_file_in_roots(
+    argv: Sequence[str], *, cwd: Path, roots: Sequence[Path], path: str | None
+) -> tuple[str, Path] | None:
+    """The first argv word that names an existing file inside one of `roots`,
+    with that file's path, or None (#344).
+
+    A word names a file the way the check would use it: a first word without a
+    slash is the program found on `path` (a PATH value, its relative entries
+    taken in `cwd`), any other word is a path relative to `cwd`, where the check
+    runs, and an option's `--name=value` names its value too. A file counts when
+    it is in a root with links followed, or when its own spelling is: a link in
+    a root can be replaced by the model, so a script it reaches is no safer.
+    Roots are compared by identity, not spelling, so a case-insensitive file
+    system or a linked root cannot hide one. A word that names no file is not a
+    path here.
+    """
+    base = cwd.absolute()
+    root_ids = {_file_id(root) for root in roots} - {None}
+    for n, word in enumerate(argv):
+        for named in _named_files(word, program=n == 0, base=base, path=path):
+            inside = _inside(named, root_ids)
+            if inside is not None:
+                return word, inside
+    return None
+
+
+def _named_files(
+    word: str, *, program: bool, base: Path, path: str | None
+) -> Iterator[Path]:
+    """The existing files one argv word can name, as absolute paths."""
+    if program and os.sep not in word:
+        entries = (path if path is not None else os.defpath).split(os.pathsep)
+        # An empty or relative PATH entry is taken in the check's directory,
+        # as the program is looked up there.
+        search = os.pathsep.join(str(base / entry) for entry in entries)
+        found = shutil.which(word, path=search)
+        spellings = [] if found is None else [found]
+    else:
+        spellings = [word]
+        if word.startswith("-") and "=" in word:
+            spellings.append(word.split("=", 1)[1])
+    for spelling in spellings:
+        named = Path(spelling)
+        if not named.is_absolute():
+            named = base / named
+        try:
+            if named.is_file():
+                yield Path(os.path.abspath(named))
+        except (OSError, ValueError):
+            # A word no file system path can be (a NUL, a name too long).
+            continue
+
+
+def _inside(named: Path, root_ids: set[tuple[int, int] | None]) -> Path | None:
+    """`named`, links followed or as spelled, when it lies under a root."""
+    try:
+        reached = named.resolve()
+    except (OSError, RuntimeError):
+        reached = named
+    for candidate in (reached, named):
+        if any(_file_id(folder) in root_ids for folder in candidate.parents):
+            return candidate
+    return None
+
+
+def _file_id(path: Path) -> tuple[int, int] | None:
+    """The device and inode `path` reaches, or None when it reaches nothing."""
+    try:
+        found = path.stat()
+    except (OSError, ValueError):
+        return None
+    return found.st_dev, found.st_ino
 
 
 def _check_error_shape(n: int, item: Any) -> None:
