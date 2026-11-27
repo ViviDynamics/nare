@@ -822,10 +822,6 @@ async def run_rep(
         if case.judge is not None:
             attempts: tuple[JudgeAttempt, ...]
             try:
-                if transport is None:
-                    # require_judge refuses a judged case with no judge before
-                    # any rep; reaching this is a bug, recorded as one rep's.
-                    raise JudgeError("no judge model is configured")
                 met, reasons, attempts = await score(
                     case, diff, closing, transport=transport
                 )

@@ -769,7 +769,11 @@ def test_a_run_with_no_judged_case_needs_no_judge_model(
     seen: list[object] = []
 
     async def passing(
-        case: Case, config: Config, transport: Transport, reps: int, evidence: Path
+        case: Case,
+        config: Config,
+        transport: Transport | None,
+        reps: int,
+        evidence: Path,
     ) -> list[RepRecord]:
         seen.append(transport)
         return [record(case.id, model="m")]

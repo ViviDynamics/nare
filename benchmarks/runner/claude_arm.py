@@ -223,7 +223,7 @@ async def run_claude_rep(
     model: str,
     base_url: str,
     price: ModelPrice,
-    transport: Transport,
+    transport: Transport | None,
     judge_model: str,
     evidence: Path,
     image: str,
@@ -521,7 +521,7 @@ async def _run_all(
     model: str,
     base_url: str,
     price: ModelPrice,
-    transport: Transport,
+    transport: Transport | None,
     judge_model: str,
     evidence: Path,
     image: str,
@@ -705,7 +705,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     build_image(root)
     build_arm_image(root)
     version = claude_version()
-    transport = judge_transport(config)
+    # None when no judge model is named, which require_judge allows only for
+    # a selection with no judged case (#355).
+    transport = None if config.judge_model is None else judge_transport(config)
     reps = {c.id: args.reps for c in cases}
     started = datetime.now(UTC).isoformat(timespec="seconds")
     manifest = {
