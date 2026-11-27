@@ -513,3 +513,10 @@ def test_help_names_the_headless_option(release: Release) -> None:
     assert result.returncode == 0, result.stderr
     assert "--no-tui" in result.stdout
     assert "NARE_INSTALL_NO_TUI=1" in result.stdout
+
+
+def test_help_works_whatever_the_headless_variable_holds(release: Release) -> None:
+    result = _run(release, args=("--help",), extra_env={"NARE_INSTALL_NO_TUI": "yes"})
+
+    assert result.returncode == 0, result.stderr
+    assert "--no-tui" in result.stdout

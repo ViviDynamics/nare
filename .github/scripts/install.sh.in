@@ -31,12 +31,8 @@ main() (
     }
 
     # The headless option, for CI and other callers with no terminal:
-    # either spelling installs nare without the tui extra.
-    case "${NARE_INSTALL_NO_TUI:-}" in
-        '' | 0) tui=1 ;;
-        1) tui=0 ;;
-        *) fail 'NARE_INSTALL_NO_TUI must be 1 (install without the terminal UI), 0 or unset.' ;;
-    esac
+    # --no-tui or NARE_INSTALL_NO_TUI=1 installs nare without the tui extra.
+    tui=1
     for arg in "$@"; do
         case "$arg" in
             -h | --help)
@@ -59,6 +55,11 @@ main() (
                 ;;
         esac
     done
+    case "${NARE_INSTALL_NO_TUI:-}" in
+        '' | 0) ;;
+        1) tui=0 ;;
+        *) fail 'NARE_INSTALL_NO_TUI must be 1 (install without the terminal UI), 0 or unset.' ;;
+    esac
     if [ "$tui" = 1 ]; then
         requirement="nare[tui]"
         flavour='with the terminal UI'
