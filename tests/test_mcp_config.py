@@ -336,7 +336,7 @@ def test_the_trust_question_shows_each_command_line_and_url(
     err = capsys.readouterr().err
     assert "filesystem: npx -y @modelcontextprotocol/server-filesystem" in err
     assert "'${HOME}'" in err  # as the file has it, before any expansion
-    assert "(env LOG_LEVEL; reads ${HOME}, ${NARE_TEST_LEVEL})" in err
+    assert "(env LOG_LEVEL=${NARE_TEST_LEVEL:-info}; reads ${HOME}" in err
     assert (
         "docs: https://mcp.example.com/mcp "
         "(headers Authorization; reads ${NARE_TEST_TOKEN})"
@@ -354,20 +354,54 @@ def test_the_trust_question_survives_a_malformed_entry(
     assert "x: srv 5" in err and "y: " in err
 
 
-def test_a_withheld_credential_is_refused_before_the_trust_question(
+def test_a_withheld_credential_is_left_out_of_the_trust_question(
     here: Path,
     tui_calls: list[argparse.Namespace],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Refused before anything is trusted, so a yes is never recorded for a
-    file that can never load."""
+    servers = {
+        "leaky": {"command": "srv", "args": ["${OPENAI_API_KEY}"]},
+        "fine": {"command": "ok"},
+    }
+    (here / ".mcp.json").write_text(json.dumps({"mcpServers": servers}))
+    monkeypatch.setattr(sys, "stdin", io.StringIO("y\n"))
+    assert main(["do it"]) == 0
+    assert set(tui_calls[-1].mcp_servers) == {"fine"}
+    err = capsys.readouterr().err
+    assert "skipped MCP server leaky" in err and "${OPENAI_API_KEY}" in err
+    assert "Trust it" in err and "  leaky:" not in err and "  fine: ok" in err
+
+
+def test_a_file_of_only_withheld_credentials_asks_nothing(
+    here: Path,
+    tui_calls: list[argparse.Namespace],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     leaky = {"mcpServers": {"leaky": {"command": "srv", "args": ["${OPENAI_API_KEY}"]}}}
     (here / ".mcp.json").write_text(json.dumps(leaky))
     monkeypatch.setattr(sys, "stdin", io.StringIO("y\n"))
-    assert main(["do it"]) == 2
+    assert main(["do it"]) == 0
+    assert tui_calls[-1].mcp_servers == {}
     err = capsys.readouterr().err
     assert "${OPENAI_API_KEY}" in err and "Trust it" not in err
+    assert not mcp_config.trusted(str(here))
+
+
+def test_a_malformed_project_file_is_refused_before_the_trust_question(
+    here: Path,
+    tui_calls: list[argparse.Namespace],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A yes is never recorded for a file that could never load."""
+    bad = {"mcpServers": {"old": {"type": "sse", "url": "https://h.example/sse"}}}
+    (here / ".mcp.json").write_text(json.dumps(bad))
+    monkeypatch.setattr(sys, "stdin", io.StringIO("y\n"))
+    assert main(["do it"]) == 2
+    err = capsys.readouterr().err
+    assert "sse" in err and "Trust it" not in err
     assert not mcp_config.trusted(str(here))
 
 
@@ -375,17 +409,19 @@ def test_a_credential_name_in_another_case_is_refused_too(
     here: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Windows reads the environment without regard to case."""
-    monkeypatch.setattr("nare.cli._execute", _capture_servers([]))
+    seen: list[dict[str, Server]] = []
+    monkeypatch.setattr("nare.cli._execute", _capture_servers(seen))
     leaky = {
         "mcpServers": {"leaky": {"command": "srv", "args": ["${anthropic_api_key}"]}}
     }
     (here / ".mcp.json").write_text(json.dumps(leaky))
     monkeypatch.setenv("anthropic_api_key", "s3cret-value")
     mcp_config.trust(str(here))
-    assert main(["-p", "x"], transport=FakeProvider([])) == 2
+    assert main(["-p", "x"], transport=FakeProvider([])) == 0
     err = capsys.readouterr().err
     assert "${anthropic_api_key}" in err and "provider credential" in err
     assert "s3cret-value" not in err
+    assert seen[-1] == {}
 
 
 def test_the_skipped_line_escapes_control_characters() -> None:
@@ -432,11 +468,14 @@ def test_a_project_server_may_not_expand_a_withheld_credential(
         "AWS_SESSION_TOKEN",
     ):
         monkeypatch.setenv(name, "s3cret-value")
-    monkeypatch.setattr("nare.cli._execute", _capture_servers([]))
+    seen: list[dict[str, Server]] = []
+    monkeypatch.setattr("nare.cli._execute", _capture_servers(seen))
     entry = CREDENTIAL_PLACES[place]
-    (here / ".mcp.json").write_text(json.dumps({"mcpServers": {"leaky": entry}}))
+    servers = {"leaky": entry, "fine": {"command": "srv"}}
+    (here / ".mcp.json").write_text(json.dumps({"mcpServers": servers}))
     mcp_config.trust(str(here))
-    assert main(["-p", "x"], transport=FakeProvider([])) == 2
+    assert main(["-p", "x"], transport=FakeProvider([])) == 0
+    assert set(seen[-1]) == {"fine"}  # skipped, and the rest still start
     captured = capsys.readouterr()
     assert "s3cret-value" not in captured.out + captured.err
     [variable] = [
@@ -451,7 +490,7 @@ def test_a_project_server_may_not_expand_a_withheld_credential(
         if name in json.dumps(entry)
     ]
     assert f"${{{variable}}}" in captured.err
-    assert "leaky" in captured.err and ".mcp.json" in captured.err
+    assert "skipped MCP server leaky in .mcp.json" in captured.err
 
 
 def test_a_user_server_may_still_expand_a_credential(
@@ -482,16 +521,16 @@ def test_a_project_server_overriding_a_user_one_is_the_one_expanded(
     assert seen[-1]["same"].command == "project"
 
 
-def test_mcp_trust_refuses_a_file_naming_a_withheld_credential(
+def test_mcp_trust_names_a_server_it_will_skip(
     here: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     leaky = {
         "mcpServers": {"leaky": {"command": "srv", "env": {"K": "${OPENAI_API_KEY}"}}}
     }
     (here / ".mcp.json").write_text(json.dumps(leaky))
-    assert main(["mcp", "trust"]) == 2
-    assert "${OPENAI_API_KEY}" in capsys.readouterr().err
-    assert not mcp_config.trusted(str(here))
+    assert main(["mcp", "trust"]) == 0
+    assert "skipped MCP server leaky" in capsys.readouterr().err
+    assert mcp_config.trusted(str(here))
 
 
 def test_trust_is_recorded_for_the_file_that_was_shown(here: Path) -> None:

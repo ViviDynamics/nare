@@ -69,7 +69,8 @@ def _withheld_message(where: str, name: str) -> str:
     return (
         f"{where}: ${{{name}}} is a provider credential nare keeps from the "
         "programs it starts, so a project's servers may not use it; to pass it "
-        "to a server on purpose, add the server to your own config (nare mcp add)"
+        "to a server on purpose, add one under another name to your own config "
+        "(nare mcp add)"
     )
 
 
@@ -89,15 +90,35 @@ def variables(entry: Any) -> list[str]:
     return list(dict.fromkeys(names))
 
 
-def check_project(servers: dict[str, dict[str, Any]]) -> None:
-    """Refuse a project's servers that name a withheld credential, before the
-    person is asked to trust them, so a yes is never recorded for a file that
-    could never load."""
+def withheld_in(servers: dict[str, dict[str, Any]]) -> dict[str, str]:
+    """Each project server that names a withheld credential, with the first
+    such ${VAR}: it is skipped, never started, while the rest still are."""
+    found: dict[str, str] = {}
     for name, entry in servers.items():
         for variable in variables(entry):
             if variable.upper() in CREDENTIAL_ENV:
-                where = f"MCP server {_printable(name)} in {PROJECT_FILE}"
-                raise ValueError(_withheld_message(where, variable))
+                found[name] = variable
+                break
+    return found
+
+
+def leave_out_withheld(servers: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """`servers` without those that name a withheld credential, each named on
+    stderr."""
+    refused = withheld_in(servers)
+    for name, variable in refused.items():
+        where = f"skipped MCP server {_printable(name)} in {PROJECT_FILE}"
+        print(f"nare: {_withheld_message(where, variable)}", file=sys.stderr)
+    return {name: entry for name, entry in servers.items() if name not in refused}
+
+
+def check_project(servers: dict[str, dict[str, Any]]) -> None:
+    """Each project entry as nare will read it, before the person is asked to
+    trust the file, so a yes is never recorded for one that could not load."""
+    for name, entry in servers.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"MCP server {_printable(name)}: not an object")
+        _entry(name, entry, expand=False, project=True)
 
 
 def _expand(value: Any, where: str, withheld: frozenset[str]) -> Any:
@@ -128,6 +149,7 @@ def _entry(
     """One mcpServers entry in nare's terms: `type` checked and dropped, and
     ${VAR} expanded when the server is about to start."""
     entry = dict(entry)
+    name = _printable(name)
     kind = entry.pop("type", None)
     if kind == "sse":
         raise ValueError(
@@ -142,9 +164,7 @@ def _entry(
         raise ValueError(f"MCP server {name}: type {kind} needs a url")
     if not expand:
         return entry
-    where = f"MCP server {_printable(name)}" + (
-        f" in {PROJECT_FILE}" if project else ""
-    )
+    where = f"MCP server {name}" + (f" in {PROJECT_FILE}" if project else "")
     expanded: dict[str, Any] = _expand(
         entry, where, CREDENTIAL_ENV if project else frozenset()
     )
@@ -286,9 +306,10 @@ def defaults(
     data = _bytes(path) if path.is_file() else None
     project = {} if data is None else _servers_in(_loads(data, path), path)
     skipped: list[str] = []
+    if project and ask is not None:
+        check_project(project)
+    project = leave_out_withheld(project)
     if project and data is not None and not trusted(root, data):
-        if ask is not None:
-            check_project(project)
         if ask is not None and ask(project):
             trust(root, data)
         else:
@@ -328,10 +349,13 @@ def terminal_ask(servers: dict[str, dict[str, Any]]) -> bool:
     for name in sorted(servers):
         entry = servers[name]
         notes = []
-        for key in ("env", "headers"):
-            given = entry.get(key)
-            if isinstance(given, dict) and given:
-                notes.append(f"{key} {', '.join(str(k) for k in given)}")
+        env = entry.get("env")
+        if isinstance(env, dict) and env:
+            # Shown whole, unexpanded: PATH or NODE_OPTIONS can change what runs.
+            notes.append("env " + ", ".join(f"{k}={v}" for k, v in env.items()))
+        headers = entry.get("headers")
+        if isinstance(headers, dict) and headers:
+            notes.append("headers " + ", ".join(str(k) for k in headers))
         read = variables(entry)
         if read:
             notes.append("reads " + ", ".join(f"${{{v}}}" for v in read))
@@ -543,9 +567,13 @@ def trust_main(revoke: bool) -> int:
     if not project_path(here).is_file():
         print(f"nare: there is no {PROJECT_FILE} in {here} to trust", file=sys.stderr)
         return 2
+    path = project_path(here)
     try:
-        check_project(entries(project_path(here)))
-        trust(here)
+        data = _bytes(path)
+        servers = _servers_in(_loads(data, path), path)
+        check_project(servers)
+        leave_out_withheld(servers)
+        trust(here, data)
     except ValueError as exc:
         print(f"nare: {exc}", file=sys.stderr)
         return 2
