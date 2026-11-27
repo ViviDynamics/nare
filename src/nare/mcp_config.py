@@ -3,8 +3,10 @@
 Two scopes, both in Claude Code's format, `{"mcpServers": {name: entry}}`:
 
 - user: NARE_HOME/mcp.json, mode 0600, for every project;
-- project: .mcp.json in the project root, the file a project commits, so one
-  that already carries a Claude Code .mcp.json works unchanged.
+- project: .mcp.json in the working directory, the file a project commits, so
+  one that already carries a Claude Code .mcp.json works unchanged. Runs,
+  `nare mcp trust` and `nare mcp list` all read it there, never under --root,
+  as Claude Code reads it where it is started (#353).
 
 The person-facing forms (nare, nare "<task>", nare -p, nare exec) load both;
 project servers start only once the person trusted that exact .mcp.json,
@@ -296,10 +298,12 @@ def defaults(
     """The servers a person-facing run loads besides --mcp-config: the user's,
     then the project's, which win on a shared name, in nare's format. An
     untrusted project's servers start only if `ask` says yes; without `ask`
-    they are skipped and named. --strict-mcp-config loads none of them."""
+    they are skipped and named (skipped_line). --strict-mcp-config loads none
+    of them. The project's file is the working directory's, not --root's, so
+    a run reads the file nare mcp trust and list read."""
     if getattr(args, "strict_mcp_config", False):
         return {}, []
-    root = args.root or os.getcwd()
+    root = os.getcwd()
     user = entries(user_path())
     # Read once: what is shown, trusted and started are the same bytes.
     path = project_path(root)
@@ -374,11 +378,13 @@ def terminal_ask(servers: dict[str, dict[str, Any]]) -> bool:
 
 
 def skipped_line(names: list[str]) -> str:
+    """Why defaults skipped `names`, naming the file and the directory to
+    trust it from: the working directory, which defaults read."""
+    here = os.getcwd()
     return (
-        f"nare: skipped {PROJECT_FILE}'s MCP servers "
-        f"({_printable(', '.join(names))}): this "
-        "project is not trusted. nare mcp trust trusts it, or run nare here once "
-        "at a terminal"
+        f"nare: skipped the MCP servers in {_printable(str(project_path(here)))} "
+        f"({_printable(', '.join(names))}): it is not trusted. nare mcp trust in "
+        f"{_printable(here)} trusts it, or run nare there once at a terminal"
     )
 
 
@@ -584,6 +590,6 @@ def trust_main(revoke: bool) -> int:
 def configured() -> dict[str, Server]:
     """The user's and this directory's trusted project servers, for nare mcp
     login and logout without --mcp-config."""
-    namespace = argparse.Namespace(root=None, strict_mcp_config=False)
+    namespace = argparse.Namespace(strict_mcp_config=False)
     merged, _skipped = defaults(namespace, None)
     return parse_servers(merged)

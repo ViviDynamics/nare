@@ -1025,12 +1025,16 @@ handled as private artifacts.
 `nare mcp add`, `list`, `get`, `remove` and `trust` keep servers for a person
 in two files, both in the `mcpServers` format: the user's,
 `$NARE_HOME/mcp.json` (mode 0600), and the project's, `.mcp.json` in the
-working directory. `nare`, `nare "<task>"`, `nare -p` and `nare exec` load
-both (the project's winning on a shared name, `--mcp-config` winning over
-both), unless `--strict-mcp-config`. A project's servers start only after the
-person trusts that `.mcp.json`, recorded with its SHA-256 in
-`$NARE_HOME/trusted-projects.json`, so a changed file is asked about again;
-without a terminal they are skipped and named on stderr. The question at the
+working directory, as Claude Code reads it where it is started. Runs, `nare
+mcp trust` and `nare mcp list` all read that one file: never the one under
+`--root`, and never one in a directory above, so a run from a subdirectory of
+a repository does not see the repository root's. `nare`, `nare "<task>"`,
+`nare -p` and `nare exec` load both (the project's winning on a shared name,
+`--mcp-config` winning over both), unless `--strict-mcp-config`. A project's
+servers start only after the person trusts that `.mcp.json`, recorded with its
+SHA-256 in `$NARE_HOME/trusted-projects.json`, so a changed file is asked
+about again; without a terminal they are skipped and named on stderr, with the
+file and the directory to run `nare mcp trust` in. The question at the
 terminal lists each server with its command line or its URL, as the file has
 them, before any expansion, then its `env` (names and values, unexpanded,
 since `PATH` or `NODE_OPTIONS` can change what runs), the names of the

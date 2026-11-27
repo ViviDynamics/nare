@@ -546,3 +546,54 @@ def test_trust_is_recorded_for_the_file_that_was_shown(here: Path) -> None:
     merged, _ = mcp_config.defaults(args, ask)
     assert set(merged) == {"filesystem", "docs"}
     assert not mcp_config.trusted(str(here))
+
+
+def test_a_run_reads_the_file_trust_and_list_read(
+    here: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#353: the working directory's .mcp.json, whatever --root says, as
+    nare mcp trust and list read it, and as Claude Code does."""
+    seen: list[dict[str, Server]] = []
+    monkeypatch.setattr("nare.cli._execute", _capture_servers(seen))
+    (here / ".mcp.json").write_text(json.dumps(CLAUDE_MCP_JSON))
+    (here / "sub").mkdir()
+    assert main(["mcp", "trust"]) == 0
+    assert main(["mcp", "list", "--json"]) == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert {(r["name"], r["path"], r["trusted"]) for r in rows} == {
+        ("filesystem", str(here / ".mcp.json"), True),
+        ("docs", str(here / ".mcp.json"), True),
+    }
+    assert main(["-p", "--root", "sub", "x"], transport=FakeProvider([])) == 0
+    assert set(seen[-1]) == {"filesystem", "docs"}
+
+
+def test_a_run_from_a_subdirectory_reads_that_directory(
+    here: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """contract.md says the working directory: from below a project's root, its
+    .mcp.json is not read, by a run, by list or by trust."""
+    seen: list[dict[str, Server]] = []
+    monkeypatch.setattr("nare.cli._execute", _capture_servers(seen))
+    (here / ".mcp.json").write_text(json.dumps(CLAUDE_MCP_JSON))
+    mcp_config.trust(str(here))
+    (here / "sub").mkdir()
+    monkeypatch.chdir(here / "sub")
+    assert main(["-p", "--root", str(here), "x"], transport=FakeProvider([])) == 0
+    assert seen[-1] == {}
+    assert main(["mcp", "list", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == []
+    assert main(["mcp", "trust"]) == 2
+    assert str(here / "sub") in capsys.readouterr().err
+
+
+def test_the_skipped_line_names_the_directory(
+    here: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("nare.cli._execute", _capture_servers([]))
+    (here / ".mcp.json").write_text(json.dumps(CLAUDE_MCP_JSON))
+    (here / "sub").mkdir()
+    assert main(["-p", "--root", "sub", "x"], transport=FakeProvider([])) == 0
+    err = capsys.readouterr().err
+    assert f"nare mcp trust in {here}" in err
+    assert str(here / ".mcp.json") in err
