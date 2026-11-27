@@ -1447,10 +1447,19 @@ async def test_approval_header_stays_visible_after_long_preview_scroll(
         # Laid out first, so `before` is where the header sits on screen.
         await until(pilot, lambda: scroll.max_scroll_y > 0)
         before = header.region
+        preview = screen.query_one("#preview", Static)
         scroll.scroll_end(animate=False)
         # scroll_end moves only after the next screen refresh, which a busy
-        # machine runs later than one pause: wait for the end, then check it.
-        await until(pilot, lambda: scroll.scroll_y == scroll.max_scroll_y)
+        # machine runs later than one pause. Regions come from the screen's
+        # map, redrawn later still: wait until it shows the preview's last
+        # line at the bottom, so the checks below read the scrolled screen.
+        await until(
+            pilot,
+            lambda: (
+                scroll.scroll_y == scroll.max_scroll_y
+                and preview.region.bottom == scroll.region.bottom
+            ),
+        )
         assert scroll.scroll_y > 0
         assert header.region == before
         assert header.region.bottom <= scroll.region.y
