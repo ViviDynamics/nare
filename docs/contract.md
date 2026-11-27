@@ -1025,17 +1025,19 @@ both), unless `--strict-mcp-config`. A project's servers start only after the
 person trusts that `.mcp.json`, recorded with its SHA-256 in
 `$NARE_HOME/trusted-projects.json`, so a changed file is asked about again;
 without a terminal they are skipped and named on stderr. The question at the
-terminal lists each server with its command line (and the names of the `env`
-it sets) or its URL, as the file has them, before any expansion, with control
-characters escaped. `nare run` never reads either file: it loads what
+terminal lists each server with its command line or its URL, as the file has
+them, before any expansion, then the names of the `env` and `headers` it sets
+and each `${VAR}` it reads, with control characters escaped. `nare run` never reads either file: it loads what
 `--mcp-config` names and nothing else.
 
 Both files expand `${VAR}` and `${VAR:-default}` as above, with one
 difference: a project's `.mcp.json` may not name a provider credential nare
 withholds from the programs it starts (the `withheld` list under `bash_env` in
-`nare contract`, such as `ANTHROPIC_API_KEY`), with or without a default.
-Such an entry exits 2, naming the server and the variable, rather than hand
-the key to a program the project chose. The user's own `$NARE_HOME/mcp.json`
+`nare contract`, such as `ANTHROPIC_API_KEY`, in any letter case), with or
+without a default. Such an entry exits 2, naming the server and the variable,
+rather than hand the key to a program the project chose; it is refused before
+the trust question, and `nare mcp trust` refuses it too, so no trust is
+recorded for a file that could never load. The user's own `$NARE_HOME/mcp.json`
 still expands them, since the person wrote it: `nare mcp add --env
 KEY='${OPENAI_API_KEY}' name -- command` is how to pass one on purpose.
 

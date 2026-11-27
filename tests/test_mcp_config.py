@@ -335,10 +335,62 @@ def test_the_trust_question_shows_each_command_line_and_url(
     assert main(["do it"]) == 0
     err = capsys.readouterr().err
     assert "filesystem: npx -y @modelcontextprotocol/server-filesystem" in err
-    assert "${HOME}" in err  # as the file has it, before any expansion
-    assert "with env LOG_LEVEL" in err
-    assert "docs: https://mcp.example.com/mcp" in err
+    assert "'${HOME}'" in err  # as the file has it, before any expansion
+    assert "(env LOG_LEVEL; reads ${HOME}, ${NARE_TEST_LEVEL})" in err
+    assert (
+        "docs: https://mcp.example.com/mcp "
+        "(headers Authorization; reads ${NARE_TEST_TOKEN})"
+    ) in err
     assert "t0ken" not in err
+
+
+def test_the_trust_question_survives_a_malformed_entry(
+    here: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    raw: dict[str, Any] = {"x": {"command": "srv", "args": 5}, "y": {"args": None}}
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\n"))
+    assert not mcp_config.terminal_ask(raw)
+    err = capsys.readouterr().err
+    assert "x: srv 5" in err and "y: " in err
+
+
+def test_a_withheld_credential_is_refused_before_the_trust_question(
+    here: Path,
+    tui_calls: list[argparse.Namespace],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Refused before anything is trusted, so a yes is never recorded for a
+    file that can never load."""
+    leaky = {"mcpServers": {"leaky": {"command": "srv", "args": ["${OPENAI_API_KEY}"]}}}
+    (here / ".mcp.json").write_text(json.dumps(leaky))
+    monkeypatch.setattr(sys, "stdin", io.StringIO("y\n"))
+    assert main(["do it"]) == 2
+    err = capsys.readouterr().err
+    assert "${OPENAI_API_KEY}" in err and "Trust it" not in err
+    assert not mcp_config.trusted(str(here))
+
+
+def test_a_credential_name_in_another_case_is_refused_too(
+    here: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Windows reads the environment without regard to case."""
+    monkeypatch.setattr("nare.cli._execute", _capture_servers([]))
+    leaky = {
+        "mcpServers": {"leaky": {"command": "srv", "args": ["${anthropic_api_key}"]}}
+    }
+    (here / ".mcp.json").write_text(json.dumps(leaky))
+    monkeypatch.setenv("anthropic_api_key", "s3cret-value")
+    mcp_config.trust(str(here))
+    assert main(["-p", "x"], transport=FakeProvider([])) == 2
+    err = capsys.readouterr().err
+    assert "${anthropic_api_key}" in err and "provider credential" in err
+    assert "s3cret-value" not in err
+
+
+def test_the_skipped_line_escapes_control_characters() -> None:
+    line = mcp_config.skipped_line(["a\x1b[2Kb"])
+    assert "\x1b" not in line and "a\\x1b[2Kb" in line
 
 
 def test_the_trust_question_escapes_control_characters(
@@ -428,3 +480,15 @@ def test_a_project_server_overriding_a_user_one_is_the_one_expanded(
     mcp_config.trust(str(here))
     assert main(["-p", "x"], transport=FakeProvider([])) == 0
     assert seen[-1]["same"].command == "project"
+
+
+def test_mcp_trust_refuses_a_file_naming_a_withheld_credential(
+    here: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    leaky = {
+        "mcpServers": {"leaky": {"command": "srv", "env": {"K": "${OPENAI_API_KEY}"}}}
+    }
+    (here / ".mcp.json").write_text(json.dumps(leaky))
+    assert main(["mcp", "trust"]) == 2
+    assert "${OPENAI_API_KEY}" in capsys.readouterr().err
+    assert not mcp_config.trusted(str(here))

@@ -65,18 +65,48 @@ def is_mcp_servers(raw: Any) -> bool:
     )
 
 
+def _withheld_message(where: str, name: str) -> str:
+    return (
+        f"{where}: ${{{name}}} is a provider credential nare keeps from the "
+        "programs it starts, so a project's servers may not use it; to pass it "
+        "to a server on purpose, add the server to your own config (nare mcp add)"
+    )
+
+
+def _strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [text for item in value for text in _strings(item)]
+    if isinstance(value, dict):
+        return [text for item in value.values() for text in _strings(item)]
+    return []
+
+
+def variables(entry: Any) -> list[str]:
+    """The ${VAR} names an entry reads, in order, each once."""
+    names = [m.group(1) for text in _strings(entry) for m in _VAR.finditer(text)]
+    return list(dict.fromkeys(names))
+
+
+def check_project(servers: dict[str, dict[str, Any]]) -> None:
+    """Refuse a project's servers that name a withheld credential, before the
+    person is asked to trust them, so a yes is never recorded for a file that
+    could never load."""
+    for name, entry in servers.items():
+        for variable in variables(entry):
+            if variable.upper() in CREDENTIAL_ENV:
+                where = f"MCP server {_printable(name)} in {PROJECT_FILE}"
+                raise ValueError(_withheld_message(where, variable))
+
+
 def _expand(value: Any, where: str, withheld: frozenset[str]) -> Any:
     if isinstance(value, str):
 
         def one(match: re.Match[str]) -> str:
             name, default = match.group(1), match.group(2)
-            if name in withheld:
-                raise ValueError(
-                    f"{where}: ${{{name}}} is a provider credential nare keeps from "
-                    "the programs it starts, so a project's servers may not use "
-                    "it; to pass it to a server on purpose, add the server to "
-                    "your own config (nare mcp add)"
-                )
+            if name.upper() in withheld:  # Windows reads env in any case
+                raise ValueError(_withheld_message(where, name))
             found = os.environ.get(name)
             if found is not None:
                 return found
@@ -112,7 +142,9 @@ def _entry(
         raise ValueError(f"MCP server {name}: type {kind} needs a url")
     if not expand:
         return entry
-    where = f"MCP server {name}" + (f" in {PROJECT_FILE}" if project else "")
+    where = f"MCP server {_printable(name)}" + (
+        f" in {PROJECT_FILE}" if project else ""
+    )
     expanded: dict[str, Any] = _expand(
         entry, where, CREDENTIAL_ENV if project else frozenset()
     )
@@ -231,6 +263,8 @@ def defaults(
     project = entries(project_path(root)) if project_path(root).is_file() else {}
     skipped: list[str] = []
     if project and not trusted(root):
+        if ask is not None:
+            check_project(project)
         if ask is not None and ask(project):
             trust(root)
         else:
@@ -248,9 +282,9 @@ def target(entry: dict[str, Any]) -> str:
     """A server as a person reads it: its URL, or its command line, unexpanded."""
     if "url" in entry:
         return str(entry["url"])
-    return shlex.join(
-        [str(entry.get("command", "")), *(str(arg) for arg in entry.get("args", []))]
-    )
+    args = entry.get("args", [])
+    words = [str(arg) for arg in args] if isinstance(args, list) else [repr(args)]
+    return shlex.join([str(entry.get("command", "")), *words])
 
 
 def _printable(text: str) -> str:
@@ -264,14 +298,22 @@ def _printable(text: str) -> str:
 
 def terminal_ask(servers: dict[str, dict[str, Any]]) -> bool:
     """The trust question, at a terminal, before anything takes the screen:
-    each server with its command line, or URL, as the file has it."""
+    each server with its command line, or URL, as the file has it, the names
+    of the env and headers it sets, and each ${VAR} it reads."""
     lines = []
     for name in sorted(servers):
         entry = servers[name]
+        notes = []
+        for key in ("env", "headers"):
+            given = entry.get(key)
+            if isinstance(given, dict) and given:
+                notes.append(f"{key} {', '.join(str(k) for k in given)}")
+        read = variables(entry)
+        if read:
+            notes.append("reads " + ", ".join(f"${{{v}}}" for v in read))
         line = f"  {name}: {target(entry)}"
-        env = entry.get("env")
-        if isinstance(env, dict) and env:
-            line += f" (with env {', '.join(str(key) for key in env)})"
+        if notes:
+            line += f" ({'; '.join(notes)})"
         lines.append(_printable(line))
     sys.stderr.write(
         f"nare: this project's {PROJECT_FILE} starts MCP servers, which run "
@@ -285,7 +327,8 @@ def terminal_ask(servers: dict[str, dict[str, Any]]) -> bool:
 
 def skipped_line(names: list[str]) -> str:
     return (
-        f"nare: skipped {PROJECT_FILE}'s MCP servers ({', '.join(names)}): this "
+        f"nare: skipped {PROJECT_FILE}'s MCP servers "
+        f"({_printable(', '.join(names))}): this "
         "project is not trusted. nare mcp trust trusts it, or run nare here once "
         "at a terminal"
     )
@@ -477,6 +520,7 @@ def trust_main(revoke: bool) -> int:
         print(f"nare: there is no {PROJECT_FILE} in {here} to trust", file=sys.stderr)
         return 2
     try:
+        check_project(entries(project_path(here)))
         trust(here)
     except ValueError as exc:
         print(f"nare: {exc}", file=sys.stderr)
