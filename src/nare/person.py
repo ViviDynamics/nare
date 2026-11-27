@@ -21,16 +21,30 @@ import os
 import stat
 import sys
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from nare import __version__, cli
 from nare.contract import EXIT_CODES, NEVER_STARTED
 from nare.loop import final_text
-from nare.session import Session, reopen
+from nare.session import (
+    SavedSession,
+    Session,
+    find_session,
+    new_store_path,
+    newest_in,
+    reopen,
+    resumable_in,
+    started_now,
+)
 from nare.transport import Transport
 
 # The first word that keeps meaning a subcommand. Anything else is a task.
 SUBCOMMANDS = ("run", "tui", "contract", "redact", "mcp")
+# The person-facing commands this module answers, in Codex's spelling.
+SESSION_COMMANDS = ("sessions", "resume", "fork")
+COMMANDS = (*SUBCOMMANDS, "exec", *SESSION_COMMANDS)
 HELP_FLAGS = frozenset({"-h", "--help"})
 PRINT_FLAGS = frozenset({"-p", "--print"})
 OUTPUT_FORMATS = ("text", "json", "stream-json")
@@ -67,6 +81,11 @@ Start here:
                       Piped stdin is extra context; - reads the prompt from it.
                       --output-format text|json|stream-json, --json
   exec                nare exec "<task>": the same as nare -p
+  -c, -r <id>         continue the newest session here, or the one named;
+                      --fork-session writes the continuation as a new one
+  sessions            nare sessions: this directory's saved sessions
+  resume, fork        nare resume [--last|<id>], nare fork [--last|<id>]:
+                      Codex's spelling of -c and -r; nare exec resume too
   tui                 nare tui [options]: the terminal UI, or --attach to
                       watch a run
 
@@ -98,7 +117,9 @@ def route(argv: list[str]) -> str | None:
     if first in HELP_FLAGS:
         return "help"
     if first == "exec":
-        return "exec"
+        return "exec-resume" if argv[1:2] == ["resume"] else "exec"
+    if first in SESSION_COMMANDS:
+        return first
     if any(word in PRINT_FLAGS for word in _before_dashes(argv)):
         return "print"
     return "interactive"
@@ -136,6 +157,20 @@ def main(mode: str, argv: list[str], *, transport: Transport | None = None) -> i
         return 0
     if mode == "exec":
         return print_main(argv[1:], "nare exec", transport)
+    if mode == "sessions":
+        return sessions_main(argv[1:])
+    try:
+        if mode == "exec-resume":
+            return print_main(
+                codex_resume(argv[2:], "nare exec resume"), "nare exec", transport
+            )
+        if mode in ("resume", "fork"):
+            return interactive_main(
+                codex_resume(argv[1:], f"nare {mode}", fork=mode == "fork"), transport
+            )
+    except ValueError as exc:
+        print(f"nare: {exc}", file=sys.stderr)
+        return NEVER_STARTED
     if mode == "print":
         return print_main(argv, "nare", transport)
     return interactive_main(argv, transport)
@@ -152,7 +187,133 @@ def interactive_parser() -> argparse.ArgumentParser:
     parser.add_argument("prompt", nargs="?")
     cli.add_run_flags(parser)
     parser.add_argument("--fork", action="store_true", help=cli.FORK_HELP)
+    add_session_flags(parser)
     return parser
+
+
+def add_session_flags(parser: argparse.ArgumentParser) -> None:
+    """-c and --fork-session, for the person-facing forms only: nare run keeps
+    its sessions where --session puts them."""
+    for action in (
+        parser.add_argument(
+            "-c",
+            "--continue",
+            dest="continue_last",
+            action="store_true",
+            help="continue the newest session started in this directory",
+        ),
+        parser.add_argument(
+            "--fork-session",
+            action="store_true",
+            help="with -c or -r: write the continuation as a new session and "
+            "leave the one it came from as it was",
+        ),
+    ):
+        cli._mark(action, nare_exact=True)
+
+
+def settle_session(args: argparse.Namespace) -> None:
+    """Where a person-facing run reads and writes its session: -c and -r find
+    one in this directory's store, and a run given no --session saves to the
+    store. Raises ValueError, which is exit 2."""
+    here = os.getcwd()
+    if args.continue_last and args.resume is not None:
+        raise ValueError("-c continues the newest session; -r names one: give one")
+    if args.continue_last:
+        args.resume = str(newest_in(here))
+    elif args.resume:
+        args.resume = str(find_session(args.resume, here))
+    if args.fork_session:
+        if args.resume is None:
+            raise ValueError("--fork-session needs -c or -r: it branches a session")
+        args.fork = True
+    args.session_id = None
+    if args.session is None and (args.fork or args.resume is None):
+        path, args.session_id = new_store_path(here)
+        args.session = str(path)
+
+
+def stamp_session(args: argparse.Namespace) -> Callable[[Session], None]:
+    """Record where and when a person-facing session started, for nare
+    sessions and the resume picker. A session that already has its record
+    keeps it, except a fork, which starts now."""
+
+    def stamp(session: Session) -> None:
+        if args.session_id is not None:
+            session.id = args.session_id
+        if session.started_at is None or args.fork:
+            session.started_at = started_now()
+        if session.cwd is None:
+            session.cwd = os.getcwd()
+            session.root = None if args.root is None else str(Path(args.root).resolve())
+
+    return stamp
+
+
+def codex_resume(argv: list[str], prog: str, *, fork: bool = False) -> list[str]:
+    """Codex's resume, fork and exec resume, as -c, -r and --fork-session:
+    `--last` or a session id first, then the options and the prompt."""
+    head, rest = argv[:1], argv[1:]
+    if head == ["--last"]:
+        picked = ["-c"]
+    elif head and not head[0].startswith("-"):
+        picked = ["-r", head[0]]
+    elif prog == "nare exec resume":
+        raise ValueError(f'{prog} needs --last or a session id: {prog} --last "<task>"')
+    else:
+        # No session named: the terminal UI's picker chooses one.
+        picked, rest = [], argv
+        rest = [*rest, "--resume="]
+    return [*picked, *(["--fork-session"] if fork else []), *rest]
+
+
+def sessions_main(argv: list[str]) -> int:
+    """nare sessions: this directory's saved sessions, newest first."""
+    parser = cli.NareParser(
+        prog="nare sessions",
+        description="List the sessions started in this directory, newest first.",
+    )
+    parser.add_argument("--json", action="store_true", help="one JSON array")
+    args = parser.parse_args(argv)
+    here = os.getcwd()
+    try:
+        rows = resumable_in(here)
+    except ValueError as exc:  # a relative NARE_HOME
+        print(f"nare: {exc}", file=sys.stderr)
+        return NEVER_STARTED
+    if args.json:
+        print(json.dumps([_row(row) for row in rows]))
+        return 0
+    if not rows:
+        print(f"no saved session started in {here}")
+        return 0
+    for row in rows:
+        record = _row(row)
+        started = str(record["started"] or "")[:16].replace("T", " ")
+        prompt = record["prompt"]
+        if len(prompt) > 60:
+            prompt = prompt[:59] + "…"
+        print(f"{record['id']}  {started:16}  {record['status']:11}  {prompt}")
+    print("\ncontinue the newest: nare -c; one of these: nare -r <id>")
+    return 0
+
+
+def _row(row: SavedSession) -> dict[str, Any]:
+    return {
+        "id": row.path.stem,
+        "session_id": row.id,
+        "path": str(row.path),
+        # The recorded start, or for a session saved before nare recorded
+        # one, when its file last changed.
+        "started": row.started_at
+        or datetime.fromtimestamp(row.changed, UTC).isoformat(timespec="seconds"),
+        "changed": datetime.fromtimestamp(row.changed, UTC).isoformat(
+            timespec="seconds"
+        ),
+        "prompt": row.prompt,
+        "status": row.status,
+        "turns": row.turns,
+    }
 
 
 def interactive_main(argv: list[str], transport: Transport | None) -> int:
@@ -166,7 +327,7 @@ def interactive_main(argv: list[str], transport: Transport | None) -> int:
     if args.help:
         print(HELP, end="")
         return 0
-    if args.prompt in SUBCOMMANDS and "--" not in argv:
+    if args.prompt in COMMANDS and "--" not in argv:
         print(
             f"nare: {args.prompt!r} is a command: put its options after it "
             f"(nare {args.prompt} ...), or send it as a task with "
@@ -175,7 +336,8 @@ def interactive_main(argv: list[str], transport: Transport | None) -> int:
         )
         return NEVER_STARTED
     at_terminal = interactive_terminal()
-    if args.prompt is None and not (at_terminal and tui_available()):
+    resuming = args.continue_last or args.resume is not None
+    if args.prompt is None and not resuming and not (at_terminal and tui_available()):
         print(GETTING_STARTED.format(version=__version__), end="")
         if at_terminal:
             print(f"\n{cli._tui_extra_hint(__version__)}")
@@ -191,6 +353,18 @@ def interactive_main(argv: list[str], transport: Transport | None) -> int:
     args.attach = None
     if args.root is None:
         args.root = os.getcwd()
+    if args.resume == "" and not tui_available():
+        print(
+            "nare: picking a session needs the terminal UI; give an id with -r "
+            "(nare sessions lists them), or -c for the newest",
+            file=sys.stderr,
+        )
+        return NEVER_STARTED
+    try:
+        settle_session(args)
+    except ValueError as exc:
+        print(f"nare: {exc}", file=sys.stderr)
+        return NEVER_STARTED
     if tui_available():
         from nare.tui import app
 
@@ -227,6 +401,7 @@ def print_parser(prog: str) -> argparse.ArgumentParser:
             "nare run --jsonl prints them"
         ),
     )
+    add_session_flags(parser)
     return parser
 
 
@@ -236,13 +411,14 @@ def print_main(argv: list[str], prog: str, transport: Transport | None) -> int:
     try:
         cli.resolve_aliases(parser, argv, args)
         output = output_format(args)
+        if args.root is None:
+            args.root = os.getcwd()
+        settle_session(args)
         read_prompt(args, prog)
     except ValueError as exc:
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED
     args.jsonl = output == "stream-json"
-    if args.root is None:
-        args.root = os.getcwd()
     if output != "stream-json":
         from nare.terminal import progress
 
@@ -253,7 +429,9 @@ def print_main(argv: list[str], prog: str, transport: Transport | None) -> int:
         from nare.terminal import deny_approver
 
         approver = deny_approver
-    return cli.run_command(args, transport, approver=approver)
+    return cli.run_command(
+        args, transport, approver=approver, on_session=stamp_session(args)
+    )
 
 
 def output_format(args: argparse.Namespace) -> str:
@@ -317,6 +495,12 @@ def line_session(args: argparse.Namespace, transport: Transport | None) -> int:
     plain terminal. Ends at end of input (Ctrl-D) or on exit."""
     from nare.terminal import progress, read_line, terminal_approver
 
+    if args.prompt is None:
+        # A resume with nothing typed yet: ask before the model runs again.
+        first = asyncio.run(_follow_up(read_line))
+        if first is None:
+            return 0
+        args.prompt = first
     # The run-only options at their defaults, under the flags given.
     full = print_parser("nare").parse_args([])
     for key, value in vars(args).items():
@@ -329,6 +513,7 @@ def line_session(args: argparse.Namespace, transport: Transport | None) -> int:
     except (ValueError, OSError) as exc:
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED
+    stamp_session(args)(session)
     args.emit = progress
     args.emit_result = _text_result
     args.approve = terminal_approver(policy)
