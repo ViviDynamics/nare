@@ -482,14 +482,16 @@ async def test_a_settled_turn_leaves_a_scrolled_up_transcript_alone(
         assert transcript.scroll_y == transcript.max_scroll_y
 
 
-async def drag_over(pilot: Pilot[None], widget: Static, line: int = 0) -> str:
+async def drag_over(
+    pilot: Pilot[None], widget: Static, line: int = 0, start: int = 0, end: int = 60
+) -> str:
     """Drag across a widget's line with the mouse, as a person would."""
-    await pilot.mouse_down(widget, offset=(0, line))
-    await pilot.hover(widget, offset=(60, line))
-    await pilot.mouse_up(widget, offset=(60, line))
-    # Textual fills in the selection a few event loop turns after the drag.
-    for _ in range(3):
-        await pilot.pause()
+    await pilot.mouse_down(widget, offset=(start, line))
+    await pilot.hover(widget, offset=(end, line))
+    await pilot.mouse_up(widget, offset=(end, line))
+    # Textual sets the selection as the pointer moves. Waited for with a
+    # bound, not a fixed number of pauses, so a busy machine is not a failure.
+    await until(pilot, lambda: app_selection(widget.app) != "")
     return app_selection(widget.app)
 
 
@@ -497,9 +499,27 @@ def app_selection(app: App[None]) -> str:
     return app.screen.get_selected_text() or ""
 
 
-def user_block(app: TuiApp) -> Static:
-    # While a turn is stalled, its prompt is the newest transcript line.
-    return cast(Static, app.query_one(Transcript).children[-1])
+def drawn(widget: Static) -> str:
+    console = Console(width=120, file=io.StringIO(), record=True)
+    console.print(cast(RenderableType, widget.content), markup=False)
+    return console.export_text()
+
+
+async def block_showing(pilot: Pilot[None], app: TuiApp, text: str) -> Static:
+    """The transcript line that draws `text`, once it is laid out to drag over.
+
+    Found by what it draws, not by position: a notice such as the context
+    window can land after the prompt's line while the turn runs.
+    """
+
+    def found() -> Static | None:
+        for widget in app.query_one(Transcript).query(Static):
+            if widget.region.height and text in drawn(widget):
+                return widget
+        return None
+
+    await until(pilot, lambda: found() is not None)
+    return cast(Static, found())
 
 
 async def test_ctrl_c_copies_a_selection_during_a_turn(tmp_path: Path) -> None:
@@ -507,7 +527,9 @@ async def test_ctrl_c_copies_a_selection_during_a_turn(tmp_path: Path) -> None:
     app = make(tmp_path, transport, prompt="go")
     async with app.run_test() as pilot:
         await until(pilot, lambda: transport.calls == 1)
-        selected = await drag_over(pilot, user_block(app), line=1)
+        selected = await drag_over(
+            pilot, await block_showing(pilot, app, "> go"), line=1
+        )
         assert "go" in selected
         await pilot.press("ctrl+c")
         await pilot.pause()
@@ -545,12 +567,7 @@ async def test_ctrl_c_copies_a_selection_when_idle(tmp_path: Path) -> None:
         selected = await drag_over(pilot, answer, line=1)
         assert selected == "alpha beta"
         # A drag that stops inside the line copies only what it crossed.
-        await pilot.mouse_down(answer, offset=(0, 1))
-        await pilot.hover(answer, offset=(4, 1))
-        await pilot.mouse_up(answer, offset=(4, 1))
-        for _ in range(3):
-            await pilot.pause()
-        assert app_selection(app) == "alpha"
+        assert await drag_over(pilot, answer, line=1, end=4) == "alpha"
 
 
 async def test_a_drag_after_a_wide_character_starts_on_the_right_one(
@@ -573,14 +590,9 @@ async def test_a_drag_after_a_wide_character_starts_on_the_right_one(
                 offsets.append(meta["offset"][0])
         assert offsets[:2] == [0, 1]
         # Cells 3 and 4 hold "本" (cell 2 is the space before it).
-        await pilot.mouse_down(answer, offset=(3, 1))
-        await pilot.hover(answer, offset=(4, 1))
-        await pilot.mouse_up(answer, offset=(4, 1))
-        for _ in range(3):
-            await pilot.pause()
+        selected = await drag_over(pilot, answer, line=1, start=3, end=4)
         # Starts on 本, not on the character before it (a cell-based offset
         # would start one character late, at 語).
-        selected = app_selection(app)
         assert selected.startswith("本")
         assert "日" not in selected
 
