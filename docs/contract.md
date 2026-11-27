@@ -30,6 +30,27 @@ both numbers named on stderr.
 The session file carries the same number. Resuming a session written under a
 different contract is refused for the same reason.
 
+## The person-facing commands
+
+`nare`, `nare "<task>"`, `nare -p` and `nare exec` are for a person at a
+terminal, and this contract does not cover them: their text output may change
+in any release. Two things about them are fixed, because they reuse `nare run`:
+
+- `nare -p --output-format stream-json` (also `--json` or `--jsonl`, and the
+  same under `nare exec`) prints exactly the event stream and `result` line
+  `nare run --jsonl` prints, with the same exit codes. `--output-format json`
+  prints that `result` line alone.
+- They take every `nare run` flag listed below, with the same meaning, plus
+  `-p`/`--print`, `--output-format`, `--json`, and
+  `--dangerously-skip-permissions`/`--yolo` for `--yes`. Without a permission
+  flag, a call the terminal UI would ask about is denied, and the model is told.
+
+`nare run` without `--yes` refuses to start, exit 2 with nothing on stdout,
+whenever stdin is not a terminal. A caller that spawns it never gives it one,
+so for a caller nothing changed. With a terminal on stdin it asks the person
+there before each call the terminal UI would ask about, on stderr, and the
+stream on stdout is the same.
+
 ## Run flags
 
 `nare contract` lists every `nare run` option under `flags`, keyed by name,

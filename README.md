@@ -4,6 +4,13 @@ A standalone agent harness: a headless CLI and a library that run a model
 against a project's tools and report what happened as typed events, a session
 file and an exit code.
 
+    curl -fsSL https://github.com/ViviDynamics/nare/releases/latest/download/install.sh | sh
+    export ANTHROPIC_API_KEY=...
+    nare "fix the failing test"         # the terminal UI, with that first task
+    nare -p "what does this repo do?"   # one-shot: the answer on stdout
+
+Programs drive `nare run --yes --jsonl`, the [machine contract](docs/contract.md).
+
 ## Install
 
 On Linux or macOS, this installs the newest release with its terminal UI:
@@ -177,6 +184,32 @@ example scripts.
 
 ## Use
 
+For a person, nare takes the shape Claude Code and Codex share:
+
+| Command | What it does |
+| --- | --- |
+| `nare` | Opens the [terminal UI](#terminal-ui) |
+| `nare "<task>"` | Opens it with that first task. Without the `tui` extra, a plain line-mode session at the terminal that asks before each change and each command, then takes follow-ups until Ctrl-D |
+| `nare -p "<task>"`, `--print` | One-shot: the answer on stdout, progress on stderr |
+| `nare exec "<task>"` | The same as `nare -p`, in Codex's spelling |
+
+All four work in the current directory, which is the root the file tools are
+confined to (`--root` changes it). A task that is a command's name goes after
+`--`: `nare -- run`.
+
+`nare -p` and `nare exec` take every `nare run` flag. Piped stdin is extra
+context, added after the task in a `<stdin>` block (`cat f.py | nare -p
+"explain"`), and `-` or no task at all reads the whole prompt from stdin.
+`--output-format text` (the default) prints the answer alone, `json` the
+`result` line alone, and `stream-json` (or `--json`, or `--jsonl`) the event
+stream and the result line exactly as `nare run --jsonl` prints them. With no
+permission flag, a tool call that would change something or run a command is
+denied, reported on stderr and told to the model, and the run goes on; reads
+and read-only commands run. `--yes`, `--dangerously-skip-permissions` or
+`--yolo` approves every call.
+
+For a program, `nare run` is the [machine contract](docs/contract.md):
+
     nare run --yes --jsonl "add a docstring to foo() in bar.py"
 
 Stdout is typed JSONL, terminated by one `result` line carrying status,
@@ -196,6 +229,11 @@ without putting its text in argv. Both routes read UTF-8 exactly and work with
 model-generated shell commands with your privileges. Unless you pass
 `--bash-sandbox`, it has no sandbox of its own, so treat it like piping a
 script you have not read: run it in a container, a VM, or a throwaway checkout.
+
+Without `--yes`, `nare run` at a terminal asks before each tool call the
+terminal UI would ask about (**y**, **n** with an optional reason, **a** for
+always), on stderr. With no terminal on stdin, as when a program spawns it, it
+refuses to start and exits 2, as it always has.
 
 nare sends a short default system prompt that keeps the agent in scope: no
 installs, long-lived services or commits unless asked, claims limited to what
@@ -285,7 +323,8 @@ See [calling nare from Python](docs/contract.md#calling-nare-from-python).
 
 ## Terminal UI
 
-`nare tui` is the same loop for a person. Type a task, watch it stream, and
+`nare tui` is the same loop for a person, and so are `nare` and
+`nare "<task>"`, which open it in the current directory. Type a task, watch it stream, and
 approve each tool call: **y** allows, **n** or **Esc** denies, **a** allows
 that tool for as long as this `nare tui` runs (it is not saved to the
 session). `edit` and `write` show a diff first. `read`, `list`, `search` and `ask` never prompt.
