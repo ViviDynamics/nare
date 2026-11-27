@@ -259,6 +259,43 @@ def parse_check_command(text: str) -> list[str]:
     return argv
 
 
+def check_file_in_roots(
+    argv: Sequence[str], *, cwd: Path, roots: Sequence[Path]
+) -> tuple[str, Path] | None:
+    """The first argv word that names an existing file inside one of `roots`,
+    with the path it reaches, or None (#344).
+
+    A relative word is resolved against `cwd`, where the check runs. A word
+    counts when the file it reaches is in a root, links followed, or when the
+    word's own path is: a link in a root can be replaced by the model, so a
+    script outside reached through it is no safer. A bare command name looked
+    up on PATH is not a path here, and neither is a word that names no file.
+    """
+    base = cwd.absolute()
+    # Each root as spelled and as resolved, so either spelling of a path matches.
+    every_root = {Path(os.path.abspath(root)) for root in roots}
+    every_root |= {root.resolve() for root in roots}
+    for word in argv:
+        named = Path(word)
+        if not named.is_absolute():
+            named = base / named
+        try:
+            if not named.is_file():
+                continue
+            reached = named.resolve()
+        except (OSError, ValueError):
+            # A word no file system path can be (a NUL, a name too long).
+            continue
+        spelled = Path(os.path.abspath(named))
+        if any(
+            path.is_relative_to(root)
+            for path in (reached, spelled)
+            for root in every_root
+        ):
+            return word, reached
+    return None
+
+
 def _check_error_shape(n: int, item: Any) -> None:
     """Refuse an item of a check command's list that is not an error, so a
     malformed verdict ends the run with a reason, not a mangled correction."""

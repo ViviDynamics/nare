@@ -384,6 +384,15 @@ def test_the_contract_advertises_the_check_command() -> None:
         "cwd": "--root, else the current directory",
         "credentials": "withheld",
         "sandbox": "not confined by --bash-sandbox",
+        "in_root": {
+            "refused": (
+                "an argv word naming a file inside --root or an --add-root, "
+                "links followed"
+            ),
+            "when": "the run allows write, edit or bash",
+            "exit": 2,
+            "allow_flag": "--allow-check-in-root",
+        },
         "stdin": {"answer": "the parsed answer", "reads": "the run's read records"},
         "stdout": (
             "JSON list of errors: {code, message, location?, guidance?} or strings"
@@ -397,7 +406,11 @@ def test_the_contract_advertises_the_check_command() -> None:
             "error_prefix": "check raised CheckCommandFailed: ",
         },
     }
-    for flag in (entry["flag"], entry["timeout_flag"]):
+    for flag in (
+        entry["flag"],
+        entry["timeout_flag"],
+        entry["in_root"]["allow_flag"],
+    ):
         assert flag in describe()["flags"]
 
 
@@ -412,6 +425,8 @@ def test_the_documented_contract_describes_the_check_command() -> None:
     assert "check raised CheckCommandFailed:" in flat
     assert '{"answer": ..., "reads": [...]}' in flat
     assert "advertises this under `check_command`" in flat
+    assert "`--allow-check-in-root`" in flat
+    assert "never starts (exit 2) and names the file" in flat
 
 
 def test_the_run_deadline_stops_a_slow_check_command(
@@ -432,3 +447,277 @@ def test_the_run_deadline_stops_a_slow_check_command(
     assert time.monotonic() - started < 15
     assert result["stop_reason"] == "timeout"
     assert code == 1
+
+
+# A check the model can write is refused (#344), unless --allow-check-in-root.
+
+PASS_ALL = "json.load(sys.stdin)\nprint('[]')\n"
+
+
+def in_root_run(tmp_path: Path, extra: list[str]) -> int:
+    """`nare run` with a passing check, the project at tmp_path/A as --root."""
+    from nare.cli import main
+
+    project = tmp_path / "A"
+    project.mkdir(exist_ok=True)
+    schema = tmp_path / "person.json"
+    schema.write_text(json.dumps(PERSON), encoding="utf-8")
+    return main(
+        ["run", "who?", "--yes", "--jsonl", "--schema", str(schema), *extra],
+        transport=FakeProvider([text_reply('{"name": "ada"}')]),
+    )
+
+
+def write_script(directory: Path) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "check.py"
+    path.write_text("import json, sys\n" + PASS_ALL, encoding="utf-8")
+    return path
+
+
+def test_a_check_script_inside_the_root_never_starts_with_write_allowed(
+    tmp_path: Path, capsys: Any
+) -> None:
+    import sys
+
+    check = write_script(tmp_path / "A")
+    argv = json.dumps([sys.executable, str(check)])
+
+    code = in_root_run(
+        tmp_path,
+        [
+            "--root",
+            str(tmp_path / "A"),
+            "--tools",
+            "read,write",
+            "--check-command",
+            argv,
+        ],
+    )
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert str(check) in captured.err
+    assert "--allow-check-in-root" in captured.err
+    assert "outside --root" in captured.err
+
+
+@pytest.mark.parametrize("tool", ["write", "edit", "bash"])
+def test_each_writing_tool_makes_an_in_root_check_refused(
+    tmp_path: Path, capsys: Any, tool: str
+) -> None:
+    import sys
+
+    check = write_script(tmp_path / "A")
+
+    code = in_root_run(
+        tmp_path,
+        [
+            "--root",
+            str(tmp_path / "A"),
+            "--tools",
+            f"read,{tool}",
+            "--check-command",
+            json.dumps([sys.executable, str(check)]),
+        ],
+    )
+
+    assert code == 2
+    assert str(check) in capsys.readouterr().err
+
+
+def test_a_relative_check_path_is_resolved_where_the_check_runs(
+    tmp_path: Path, capsys: Any
+) -> None:
+    import sys
+
+    write_script(tmp_path / "A" / "tools")
+
+    code = in_root_run(
+        tmp_path,
+        [
+            "--root",
+            str(tmp_path / "A"),
+            "--check-command",
+            json.dumps([sys.executable, "tools/check.py"]),
+        ],
+    )
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "tools/check.py" in captured.err
+
+
+def test_a_link_outside_the_roots_to_a_script_inside_is_refused(
+    tmp_path: Path, capsys: Any
+) -> None:
+    import sys
+
+    check = write_script(tmp_path / "A")
+    link = tmp_path / "outside" / "check.py"
+    link.parent.mkdir()
+    link.symlink_to(check)
+
+    code = in_root_run(
+        tmp_path,
+        [
+            "--root",
+            str(tmp_path / "A"),
+            "--check-command",
+            json.dumps([sys.executable, str(link)]),
+        ],
+    )
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert str(link) in captured.err
+    assert str(check.resolve()) in captured.err
+
+
+def test_a_link_inside_the_root_to_a_script_outside_is_refused(
+    tmp_path: Path, capsys: Any
+) -> None:
+    """The model can replace the link itself, so the script it reaches is
+    no safer than one in the root."""
+    import sys
+
+    check = write_script(tmp_path / "outside")
+    (tmp_path / "A").mkdir()
+    link = tmp_path / "A" / "check.py"
+    link.symlink_to(check)
+
+    code = in_root_run(
+        tmp_path,
+        [
+            "--root",
+            str(tmp_path / "A"),
+            "--check-command",
+            json.dumps([sys.executable, str(link)]),
+        ],
+    )
+
+    assert code == 2
+    assert str(link) in capsys.readouterr().err
+
+
+def test_a_check_script_inside_an_added_root_is_refused(
+    tmp_path: Path, capsys: Any
+) -> None:
+    import sys
+
+    check = write_script(tmp_path / "cache")
+
+    code = in_root_run(
+        tmp_path,
+        [
+            "--root",
+            str(tmp_path / "A"),
+            "--add-root",
+            str(tmp_path / "cache"),
+            "--check-command",
+            json.dumps([sys.executable, str(check)]),
+        ],
+    )
+
+    assert code == 2
+    assert str(check) in capsys.readouterr().err
+
+
+def test_a_check_script_outside_every_root_runs(tmp_path: Path, capsys: Any) -> None:
+    import sys
+
+    check = write_script(tmp_path / "outside")
+
+    code = in_root_run(
+        tmp_path,
+        [
+            "--root",
+            str(tmp_path / "A"),
+            "--add-root",
+            str(write_script(tmp_path / "cache").parent),
+            "--check-command",
+            json.dumps([sys.executable, str(check)]),
+        ],
+    )
+
+    assert code == 0
+    assert result_line(capsys.readouterr().out)["status"] == "done"
+
+
+def test_a_read_only_run_may_name_a_check_inside_the_root(
+    tmp_path: Path, capsys: Any
+) -> None:
+    import sys
+
+    check = write_script(tmp_path / "A")
+
+    code = in_root_run(
+        tmp_path,
+        [
+            "--root",
+            str(tmp_path / "A"),
+            "--tools",
+            "read,list",
+            "--check-command",
+            json.dumps([sys.executable, str(check)]),
+        ],
+    )
+
+    assert code == 0
+    assert result_line(capsys.readouterr().out)["status"] == "done"
+
+
+def test_allow_check_in_root_runs_an_in_root_check(tmp_path: Path, capsys: Any) -> None:
+    import sys
+
+    check = write_script(tmp_path / "A")
+
+    code = in_root_run(
+        tmp_path,
+        [
+            "--root",
+            str(tmp_path / "A"),
+            "--allow-check-in-root",
+            "--check-command",
+            json.dumps([sys.executable, str(check)]),
+        ],
+    )
+
+    assert code == 0
+    assert result_line(capsys.readouterr().out)["status"] == "done"
+
+
+def test_allow_check_in_root_without_a_check_never_starts(
+    tmp_path: Path, capsys: Any
+) -> None:
+    code = in_root_run(tmp_path, ["--allow-check-in-root"])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert "--allow-check-in-root requires --check-command" in captured.err
+
+
+def test_argv_words_that_name_no_file_are_not_paths(
+    tmp_path: Path, capsys: Any
+) -> None:
+    """Flags and values that are not existing files, and a directory, never
+    count: only a file the argv names can be rewritten into a passing check."""
+    import sys
+
+    check = write_script(tmp_path / "outside")
+    (tmp_path / "A").mkdir()
+
+    code = in_root_run(
+        tmp_path,
+        [
+            "--root",
+            str(tmp_path / "A"),
+            "--check-command",
+            json.dumps([sys.executable, str(check), "--strict", ".", "missing.py"]),
+        ],
+    )
+
+    assert code == 0
+    assert result_line(capsys.readouterr().out)["status"] == "done"

@@ -340,6 +340,16 @@ def describe() -> dict[str, Any]:
             "cwd": "--root, else the current directory",
             "credentials": "withheld",
             "sandbox": "not confined by --bash-sandbox",
+            # Additive (#344): a check file the model could rewrite never runs.
+            "in_root": {
+                "refused": (
+                    "an argv word naming a file inside --root or an --add-root, "
+                    "links followed"
+                ),
+                "when": "the run allows write, edit or bash",
+                "exit": 2,
+                "allow_flag": "--allow-check-in-root",
+            },
             "stdin": {
                 "answer": "the parsed answer",
                 "reads": "the run's read records",
