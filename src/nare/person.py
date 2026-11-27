@@ -211,6 +211,13 @@ def add_session_flags(parser: argparse.ArgumentParser) -> None:
             help="continue the newest session started in this directory",
         ),
         parser.add_argument(
+            "--no-project-instructions",
+            dest="no_instructions",
+            action="store_true",
+            help="leave out the project's AGENTS.md (or CLAUDE.md) files, which "
+            "are added after the system prompt by default",
+        ),
+        parser.add_argument(
             "--fork-session",
             action="store_true",
             help="with -c or -r: write the continuation as a new session and "
@@ -463,6 +470,8 @@ def interactive_main(argv: list[str], transport: Transport | None) -> int:
     except ValueError as exc:
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED
+    args.load_instructions = not args.no_instructions
+    args.instructions_event = cli.load_instructions(args)
     if tui_available():
         from nare.tui import app
 
@@ -524,6 +533,7 @@ def print_main(argv: list[str], prog: str, transport: Transport | None) -> int:
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED
     args.jsonl = output == "stream-json"
+    args.load_instructions = args.load_instructions or not args.no_instructions
     if output != "stream-json":
         from nare.terminal import progress
 
@@ -619,6 +629,8 @@ def line_session(args: argparse.Namespace, transport: Transport | None) -> int:
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED
     stamp_session(args)(session)
+    if getattr(args, "instructions_event", None) is not None:
+        session.events.append(args.instructions_event)
     args.emit = progress
     args.emit_result = _text_result
     args.approve = terminal_approver(policy)
