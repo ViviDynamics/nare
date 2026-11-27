@@ -304,7 +304,9 @@ def built(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
 
 def recorded(repo: Path) -> str:
     saved = newest_in(str(repo / "pkg"))
-    return str(loads(saved.read_text(encoding="utf-8")).system)
+    system = loads(saved.read_text(encoding="utf-8")).system
+    assert system is not None
+    return system
 
 
 def test_resumes_keep_one_copy_of_the_instructions(
@@ -360,3 +362,37 @@ def test_a_resume_with_a_system_option_rebuilds_it_once(
     assert recorded(repo) == sent
     out = capsys.readouterr().out
     assert '"system_prompt": {"changed": true}' in out
+
+
+def test_a_resume_that_sends_the_record_names_no_files(
+    repo: Path, built: list[str | None], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The record is what is sent, so no event says the files were added."""
+    assert main(["-p", "--json", "hello"]) == 0
+    assert "project_instructions" in capsys.readouterr().out
+    assert main(["-p", "-c", "--json", "again"]) == 0
+    assert "project_instructions" not in capsys.readouterr().out
+
+
+def test_a_line_session_resume_names_no_files(
+    repo: Path, built: list[str | None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import io
+    import sys
+
+    from nare import person
+
+    seen: list[str] = []
+    monkeypatch.setattr(
+        "nare.terminal.progress", lambda event: seen.append(str(event.detail))
+    )
+    assert main(["-p", "hello"]) == 0
+    assert any("project_instructions" in detail for detail in seen)
+    seen.clear()
+    monkeypatch.setattr(person, "tui_available", lambda: False)
+    monkeypatch.setattr(person, "interactive_terminal", lambda: True)
+    monkeypatch.setattr("nare.cli.stdin_is_terminal", lambda: True)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("and more\n"))
+    assert main(["-c"]) == 0
+    assert seen and not any("project_instructions" in detail for detail in seen)
+    assert built[-1] == recorded(repo)

@@ -1256,9 +1256,9 @@ def adopt_system(args: argparse.Namespace, session: Session) -> None:
     A resume given no system option sends what the session recorded: falling
     back to the default would swap the model's instructions mid-session with
     no error, and change the prefix a caching backend matches on. A resume
-    given one sends it, project instructions included, and says so when it
-    differs from the record. A session saved before the record existed has
-    none and keeps the flags.
+    given one sends it, with the project instructions when the run reads
+    them, and says so when it differs from the record. A session saved
+    before the record existed has none and keeps the flags.
 
     The file holds the redacted copy, so the comparison is made redacted: the
     same prompt resent is never reported as a change.
@@ -2191,7 +2191,8 @@ def run_command(
     except (ValueError, OSError, UnsupportedSchema) as exc:
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED
-    if loaded is not None:
+    if loaded is not None and args.instructions_text is not None:
+        # Not when the resume sent the record instead (adopt_system).
         session.events.append(loaded)
     if on_session is not None:
         on_session(session)

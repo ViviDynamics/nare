@@ -1744,8 +1744,13 @@ its runs stay deterministic. `nare run --project-instructions` opts in, with
 the same files, order, cap and event. A resume sends the system prompt the
 session recorded, instructions included, unless a system option replaces it:
 the instructions are not added to the record again, so any number of resumes
-sends the same prompt (#348). A resume given a system option builds the prompt
-from the flags as a new run would, with the instructions read again, once.
+sends the same prompt (#348), and no event names the files, since none were
+added. The instructions are fixed when the session starts: a session started
+without them (by `nare run`, or with `--no-project-instructions`) resumes
+without them, and an edit to AGENTS.md reaches a resume only through a system
+option. A resume given one (`--append-system-prompt`, say) builds the prompt
+from the flags as a new run would, with the instructions read again, once,
+unless `--no-project-instructions` leaves them out.
 
 Related fixes: [#142](https://github.com/ViviDynamics/nare/issues/142) imports
 the MCP client only when a run configures MCP servers, which shortens startup.
