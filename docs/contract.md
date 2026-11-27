@@ -1029,8 +1029,28 @@ both (the project's winning on a shared name, `--mcp-config` winning over
 both), unless `--strict-mcp-config`. A project's servers start only after the
 person trusts that `.mcp.json`, recorded with its SHA-256 in
 `$NARE_HOME/trusted-projects.json`, so a changed file is asked about again;
-without a terminal they are skipped and named on stderr. `nare run` never reads
-either file: it loads what `--mcp-config` names and nothing else.
+without a terminal they are skipped and named on stderr. The question at the
+terminal lists each server with its command line or its URL, as the file has
+them, before any expansion, then its `env` (names and values, unexpanded,
+since `PATH` or `NODE_OPTIONS` can change what runs), the names of the
+`headers` it sets, and each `${VAR}` it reads, with control characters
+escaped. An entry nare could not read (an `sse` or unknown `type`, a missing
+`command` or `url`) exits 2 before the question, so no trust is recorded for a
+file that could never load. The file is read once: the servers shown, the
+SHA-256 recorded on a yes, and the servers started come from the same bytes.
+`nare run` never reads either file: it loads what `--mcp-config` names and
+nothing else.
+
+Both files expand `${VAR}` and `${VAR:-default}` as above, with one
+difference: a project's `.mcp.json` may not name a provider credential nare
+withholds from the programs it starts (the `withheld` list under `bash_env` in
+`nare contract`, such as `ANTHROPIC_API_KEY`, in any letter case), with or
+without a default. Such a server is skipped, never started and left out of the
+trust question, with a line on stderr naming it and the variable; the
+project's other servers are unaffected. The user's own `$NARE_HOME/mcp.json`
+still expands them, since the person wrote it: `nare mcp add --env
+KEY='${OPENAI_API_KEY}' name -- command`, under a name the project does not
+use, is how to pass one on purpose.
 
 ### MCP tool deferral
 

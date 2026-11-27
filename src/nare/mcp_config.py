@@ -8,7 +8,10 @@ Two scopes, both in Claude Code's format, `{"mcpServers": {name: entry}}`:
 
 The person-facing forms (nare, nare "<task>", nare -p, nare exec) load both;
 project servers start only once the person trusted that exact .mcp.json,
-since a cloned repository could otherwise start any program. `nare run` loads
+since a cloned repository could otherwise start any program; the question
+shows each server's command line or URL. A project's ${VAR} may not name a
+provider credential nare withholds from the programs it starts
+(CREDENTIAL_ENV). `nare run` loads
 only what --mcp-config names, as it always has. No MCP SDK import here: the
 servers are only parsed, and connecting stays in nare.mcp.
 """
@@ -20,6 +23,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import sys
 import tempfile
 from collections.abc import Callable
@@ -28,6 +32,7 @@ from typing import Any
 
 from nare.mcp import Server, parse_servers
 from nare.session import nare_home, private_folder
+from nare.transport import CREDENTIAL_ENV
 
 PROJECT_FILE = ".mcp.json"
 SCOPES = ("user", "project")
@@ -60,11 +65,69 @@ def is_mcp_servers(raw: Any) -> bool:
     )
 
 
-def _expand(value: Any, where: str) -> Any:
+def _withheld_message(where: str, name: str) -> str:
+    return (
+        f"{where}: ${{{name}}} is a provider credential nare keeps from the "
+        "programs it starts, so a project's servers may not use it; to pass it "
+        "to a server on purpose, add one under another name to your own config "
+        "(nare mcp add)"
+    )
+
+
+def _strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [text for item in value for text in _strings(item)]
+    if isinstance(value, dict):
+        return [text for item in value.values() for text in _strings(item)]
+    return []
+
+
+def variables(entry: Any) -> list[str]:
+    """The ${VAR} names an entry reads, in order, each once."""
+    names = [m.group(1) for text in _strings(entry) for m in _VAR.finditer(text)]
+    return list(dict.fromkeys(names))
+
+
+def withheld_in(servers: dict[str, dict[str, Any]]) -> dict[str, str]:
+    """Each project server that names a withheld credential, with the first
+    such ${VAR}: it is skipped, never started, while the rest still are."""
+    found: dict[str, str] = {}
+    for name, entry in servers.items():
+        for variable in variables(entry):
+            if variable.upper() in CREDENTIAL_ENV:
+                found[name] = variable
+                break
+    return found
+
+
+def leave_out_withheld(servers: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """`servers` without those that name a withheld credential, each named on
+    stderr."""
+    refused = withheld_in(servers)
+    for name, variable in refused.items():
+        where = f"skipped MCP server {_printable(name)} in {PROJECT_FILE}"
+        print(f"nare: {_withheld_message(where, variable)}", file=sys.stderr)
+    return {name: entry for name, entry in servers.items() if name not in refused}
+
+
+def check_project(servers: dict[str, dict[str, Any]]) -> None:
+    """Each project entry as nare will read it, before the person is asked to
+    trust the file, so a yes is never recorded for one that could not load."""
+    for name, entry in servers.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"MCP server {_printable(name)}: not an object")
+        _entry(name, entry, expand=False, project=True)
+
+
+def _expand(value: Any, where: str, withheld: frozenset[str]) -> Any:
     if isinstance(value, str):
 
         def one(match: re.Match[str]) -> str:
             name, default = match.group(1), match.group(2)
+            if name.upper() in withheld:  # Windows reads env in any case
+                raise ValueError(_withheld_message(where, name))
             found = os.environ.get(name)
             if found is not None:
                 return found
@@ -74,16 +137,19 @@ def _expand(value: Any, where: str) -> Any:
 
         return _VAR.sub(one, value)
     if isinstance(value, list):
-        return [_expand(item, where) for item in value]
+        return [_expand(item, where, withheld) for item in value]
     if isinstance(value, dict):
-        return {key: _expand(item, where) for key, item in value.items()}
+        return {key: _expand(item, where, withheld) for key, item in value.items()}
     return value
 
 
-def _entry(name: str, entry: dict[str, Any], *, expand: bool) -> dict[str, Any]:
+def _entry(
+    name: str, entry: dict[str, Any], *, expand: bool, project: bool
+) -> dict[str, Any]:
     """One mcpServers entry in nare's terms: `type` checked and dropped, and
     ${VAR} expanded when the server is about to start."""
     entry = dict(entry)
+    name = _printable(name)
     kind = entry.pop("type", None)
     if kind == "sse":
         raise ValueError(
@@ -96,16 +162,23 @@ def _entry(name: str, entry: dict[str, Any], *, expand: bool) -> dict[str, Any]:
         raise ValueError(f"MCP server {name}: type stdio needs a command")
     if kind in ("http", "streamable-http") and "url" not in entry:
         raise ValueError(f"MCP server {name}: type {kind} needs a url")
-    return _expand(entry, f"MCP server {name}") if expand else entry
+    if not expand:
+        return entry
+    where = f"MCP server {name}" + (f" in {PROJECT_FILE}" if project else "")
+    expanded: dict[str, Any] = _expand(
+        entry, where, CREDENTIAL_ENV if project else frozenset()
+    )
+    return expanded
 
 
-def to_nare(raw: Any, *, expand: bool = True) -> Any:
+def to_nare(raw: Any, *, expand: bool = True, project: bool = False) -> Any:
     """A config in either format, as nare's own. nare's format passes through
-    untouched, with no expansion, so it means what it always meant."""
+    untouched, with no expansion, so it means what it always meant. A
+    project's entries (`project`) may not expand a CREDENTIAL_ENV name."""
     if not is_mcp_servers(raw):
         return raw
     return {
-        name: _entry(name, entry, expand=expand)
+        name: _entry(name, entry, expand=expand, project=project)
         for name, entry in raw["mcpServers"].items()
     }
 
@@ -117,9 +190,20 @@ def servers_from(raw: Any) -> dict[str, Server]:
 def _read(path: Path | None) -> dict[str, Any]:
     if path is None or not path.exists():
         return {}
+    return _loads(_bytes(path), path)
+
+
+def _bytes(path: Path) -> bytes:
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+        return path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"{path}: {exc}") from exc
+
+
+def _loads(data: bytes, path: Path) -> dict[str, Any]:
+    try:
+        loaded = json.loads(data.decode("utf-8"))
+    except ValueError as exc:
         raise ValueError(f"{path}: {exc}") from exc
     if not isinstance(loaded, dict):
         raise ValueError(f"{path} must hold a JSON object")
@@ -128,7 +212,10 @@ def _read(path: Path | None) -> dict[str, Any]:
 
 def entries(path: Path | None) -> dict[str, dict[str, Any]]:
     """The servers a file names, in mcpServers form, whichever format it has."""
-    raw = _read(path)
+    return _servers_in(_read(path), path)
+
+
+def _servers_in(raw: dict[str, Any], path: Path | None) -> dict[str, dict[str, Any]]:
     if not raw:
         return {}
     if is_mcp_servers(raw):
@@ -139,27 +226,34 @@ def entries(path: Path | None) -> dict[str, dict[str, Any]]:
     raise ValueError(f"{path} is neither nare's MCP format nor mcpServers")
 
 
-def _digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def _digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def _project_key(root: str) -> str:
     return os.path.realpath(root)
 
 
-def trusted(root: str) -> bool:
-    """Whether the person trusted this project's .mcp.json, as it is now: a
-    file changed since, a new server in it say, is asked about again."""
+def trusted(root: str, data: bytes | None = None) -> bool:
+    """Whether the person trusted this project's .mcp.json, as it is now (or
+    as `data`, the bytes already read): a file changed since, a new server in
+    it say, is asked about again."""
     path = project_path(root)
-    if not path.is_file():
-        return False
+    if data is None:
+        if not path.is_file():
+            return False
+        data = path.read_bytes()
     record = _read(_trust_path()).get(_project_key(root))
-    return isinstance(record, dict) and record.get("mcp_sha256") == _digest(path)
+    return isinstance(record, dict) and record.get("mcp_sha256") == _digest(data)
 
 
-def trust(root: str) -> None:
+def trust(root: str, data: bytes | None = None) -> None:
+    """Record the project's .mcp.json as trusted: `data`, the bytes the
+    person was shown, or the file as it is now."""
+    if data is None:
+        data = project_path(root).read_bytes()
     records = _read(_trust_path())
-    records[_project_key(root)] = {"mcp_sha256": _digest(project_path(root))}
+    records[_project_key(root)] = {"mcp_sha256": _digest(data)}
     _write(_trust_path(), records, private=True)
 
 
@@ -196,7 +290,8 @@ def _write(path: Path | None, value: dict[str, Any], *, private: bool) -> None:
 
 
 def defaults(
-    args: argparse.Namespace, ask: Callable[[list[str]], bool] | None
+    args: argparse.Namespace,
+    ask: Callable[[dict[str, dict[str, Any]]], bool] | None,
 ) -> tuple[dict[str, Any], list[str]]:
     """The servers a person-facing run loads besides --mcp-config: the user's,
     then the project's, which win on a shared name, in nare's format. An
@@ -206,23 +301,73 @@ def defaults(
         return {}, []
     root = args.root or os.getcwd()
     user = entries(user_path())
-    project = entries(project_path(root)) if project_path(root).is_file() else {}
+    # Read once: what is shown, trusted and started are the same bytes.
+    path = project_path(root)
+    data = _bytes(path) if path.is_file() else None
+    project = {} if data is None else _servers_in(_loads(data, path), path)
     skipped: list[str] = []
-    if project and not trusted(root):
-        if ask is not None and ask(sorted(project)):
-            trust(root)
+    if project and ask is not None:
+        check_project(project)
+    project = leave_out_withheld(project)
+    if project and data is not None and not trusted(root, data):
+        if ask is not None and ask(project):
+            trust(root, data)
         else:
             skipped, project = sorted(project), {}
-    merged = to_nare({"mcpServers": {**user, **project}})
+    # The project's entry wins on a shared name, so the user's is not expanded.
+    user = {name: entry for name, entry in user.items() if name not in project}
+    merged = {
+        **to_nare({"mcpServers": user}),
+        **to_nare({"mcpServers": project}, project=True),
+    }
     return merged, skipped
 
 
-def terminal_ask(names: list[str]) -> bool:
-    """The trust question, at a terminal, before anything takes the screen."""
+def target(entry: dict[str, Any]) -> str:
+    """A server as a person reads it: its URL, or its command line, unexpanded."""
+    if "url" in entry:
+        return str(entry["url"])
+    args = entry.get("args", [])
+    words = [str(arg) for arg in args] if isinstance(args, list) else [repr(args)]
+    return shlex.join([str(entry.get("command", "")), *words])
+
+
+def _printable(text: str) -> str:
+    """`text` with each control character escaped, so a file cannot redraw or
+    hide the question that asks about it."""
+    return "".join(
+        char if char.isprintable() else char.encode("unicode_escape").decode()
+        for char in text
+    )
+
+
+def terminal_ask(servers: dict[str, dict[str, Any]]) -> bool:
+    """The trust question, at a terminal, before anything takes the screen:
+    each server with its command line, or URL, as the file has it, the names
+    of the env and headers it sets, and each ${VAR} it reads."""
+    lines = []
+    for name in sorted(servers):
+        entry = servers[name]
+        notes = []
+        env = entry.get("env")
+        if isinstance(env, dict) and env:
+            # Shown whole, unexpanded: PATH or NODE_OPTIONS can change what runs.
+            notes.append("env " + ", ".join(f"{k}={v}" for k, v in env.items()))
+        headers = entry.get("headers")
+        if isinstance(headers, dict) and headers:
+            notes.append("headers " + ", ".join(str(k) for k in headers))
+        read = variables(entry)
+        if read:
+            notes.append("reads " + ", ".join(f"${{{v}}}" for v in read))
+        line = f"  {name}: {target(entry)}"
+        if notes:
+            line += f" ({'; '.join(notes)})"
+        lines.append(_printable(line))
     sys.stderr.write(
-        f"nare: this project's {PROJECT_FILE} starts MCP servers "
-        f"({', '.join(names)}), which run programs on this machine. Trust it and "
-        "start them? [y/N] "
+        f"nare: this project's {PROJECT_FILE} starts MCP servers, which run "
+        "programs on this machine or connect to these addresses:\n"
+        + "\n".join(lines)
+        + "\nTrust it and start them? [y/N] "
     )
     sys.stderr.flush()
     return sys.stdin.readline().strip().lower() in ("y", "yes")
@@ -230,7 +375,8 @@ def terminal_ask(names: list[str]) -> bool:
 
 def skipped_line(names: list[str]) -> str:
     return (
-        f"nare: skipped {PROJECT_FILE}'s MCP servers ({', '.join(names)}): this "
+        f"nare: skipped {PROJECT_FILE}'s MCP servers "
+        f"({_printable(', '.join(names))}): this "
         "project is not trusted. nare mcp trust trusts it, or run nare here once "
         "at a terminal"
     )
@@ -421,8 +567,13 @@ def trust_main(revoke: bool) -> int:
     if not project_path(here).is_file():
         print(f"nare: there is no {PROJECT_FILE} in {here} to trust", file=sys.stderr)
         return 2
+    path = project_path(here)
     try:
-        trust(here)
+        data = _bytes(path)
+        servers = _servers_in(_loads(data, path), path)
+        check_project(servers)
+        leave_out_withheld(servers)
+        trust(here, data)
     except ValueError as exc:
         print(f"nare: {exc}", file=sys.stderr)
         return 2
