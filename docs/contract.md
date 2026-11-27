@@ -54,6 +54,15 @@ plus `started_at` (an ISO 8601 UTC time), a field with a default that `nare
 run`'s files never carry. `nare run` without `--session` writes nothing, as
 before.
 
+`nare -p` and `nare exec` read stdin only when the prompt is `-` or missing,
+as Codex's `exec` does. With a task on the command line, or `--prompt-file`,
+stdin is never read, so a caller that spawns them with a stdin pipe it never
+closes still gets its result. With no task, piped stdin is the whole prompt,
+and on a resume (`-c`, `-r <id>`, `nare exec resume`) it is the follow-up. A
+resume with no task and no piped stdin, or with blank stdin, exits 2 before any
+model call and leaves the session file as it was. `nare run` reads stdin only
+for positional `-` ([prompt input](#prompt-input)).
+
 A key stored with `nare auth login` (in `$NARE_HOME/credentials.json`) is used
 by every command, `nare run` included, when the provider's environment
 variable is unset; the variable, when set, wins. A run with neither fails as it

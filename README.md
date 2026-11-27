@@ -243,9 +243,10 @@ All four work in the current directory, which is the root the file tools are
 confined to (`--root` changes it). A task that is a command's name goes after
 `--`: `nare -- run`.
 
-`nare -p` and `nare exec` take every `nare run` flag. Piped stdin is extra
-context, added after the task in a `<stdin>` block (`cat f.py | nare -p
-"explain"`), and `-` or no task at all reads the whole prompt from stdin.
+`nare -p` and `nare exec` take every `nare run` flag. With no task, or `-`,
+they read the whole prompt from stdin (`git diff | nare -p`), and on a resume
+the follow-up (`echo "now fix it" | nare -p -c`). With a task they never read
+stdin, so a caller's open pipe cannot hang them.
 `--output-format text` (the default) prints the answer alone, `json` the
 `result` line alone, and `stream-json` (or `--json`, or `--jsonl`) the event
 stream and the result line exactly as `nare run --jsonl` prints them. With no

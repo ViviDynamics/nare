@@ -235,21 +235,60 @@ def test_json_and_another_output_format_conflict(
     assert "--json" in err and "--output-format" in err
 
 
-def test_piped_stdin_is_extra_context(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("argv", [["-p", "explain"], ["exec", "explain"]])
+def test_a_task_leaves_piped_stdin_unread(
+    argv: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """With a task, stdin is not read at all (#351): the prompt is the task."""
     piped(monkeypatch, b"def f(): pass\n")
     fake = FakeProvider([text_reply("it defines f")])
-    assert main(["-p", "explain"], transport=fake) == 0
-    assert first_prompt(fake) == "explain\n\n<stdin>\ndef f(): pass\n</stdin>"
-    assert capsys.readouterr().out == "it defines f\n"
-
-
-def test_blank_stdin_adds_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    piped(monkeypatch, b"\n")
-    fake = FakeProvider([text_reply("x")])
-    assert main(["-p", "explain"], transport=fake) == 0
+    assert main(argv, transport=fake) == 0
     assert first_prompt(fake) == "explain"
+    assert capsys.readouterr().out == "it defines f\n"
+    assert sys.stdin.read() == "def f(): pass\n"
+
+
+@pytest.mark.parametrize("form", [["-p"], ["exec"]])
+def test_a_task_finishes_with_a_stdin_pipe_never_closed(
+    form: list[str], tmp_path: Path
+) -> None:
+    """A parent that spawns nare with an open stdin pipe and never closes it,
+    as Node's default stdio does (#351)."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.endswith("_API_KEY") and not key.startswith("NARE_")
+    }
+    env["NARE_HOME"] = str(tmp_path / "home")
+    replay = Path(__file__).resolve().parent.parent / "docs" / "replay" / "done.json"
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "from nare.cli import main; raise SystemExit(main())",
+            *form,
+            "look around",
+            "--provider",
+            "fake",
+            "--replay",
+            str(replay),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=tmp_path,
+        env=env,
+    )
+    try:
+        code = proc.wait(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        out, _err = proc.communicate()
+    assert code == 0
+    assert b"Nothing needed changing" in out
 
 
 @pytest.mark.parametrize("argv", [["-p", "-"], ["exec", "-"], ["-p"]])

@@ -20,6 +20,7 @@ from fake_provider import FakeProvider, text_reply
 from nare import person
 from nare.cli import main
 from nare.session import loads, project_sessions_dir
+from test_entry_points import piped
 
 SECRET = "sk-ant-" + "Z" * 30
 
@@ -243,6 +244,69 @@ def test_codex_exec_resume(here: Path) -> None:
     fake = FakeProvider([text_reply("three")])
     assert main(["exec", "resume", saved.stem, "c"], transport=fake) == 0
     assert user_texts(fake) == ["a", "b", "c"]
+
+
+@pytest.mark.parametrize(
+    "argv", [["-p", "-c"], ["-p", "-r", "ID"], ["exec", "resume", "--last"]]
+)
+def test_a_resume_with_no_task_takes_piped_stdin_as_the_follow_up(
+    argv: list[str], here: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """echo "..." | nare -p -c (#349): stdin is the follow-up, and the
+    finished session is not run again without it."""
+    assert main(["-p", "a"], transport=FakeProvider([text_reply("one")])) == 0
+    [saved] = files_in(here)
+    piped(monkeypatch, b"my follow-up question\n")
+    fake = FakeProvider([text_reply("two")])
+    argv = [saved.stem if word == "ID" else word for word in argv]
+    assert main(argv, transport=fake) == 0
+    assert user_texts(fake) == ["a", "my follow-up question\n"]
+    roles = [message.role for message in loads(saved.read_text()).messages]
+    assert roles == ["user", "assistant", "user", "assistant"]
+
+
+@pytest.mark.parametrize(
+    "argv", [["-p", "-c"], ["-p", "-r", "ID"], ["exec", "resume", "--last"]]
+)
+def test_a_resume_with_no_task_and_no_stdin_needs_a_follow_up(
+    argv: list[str], here: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["-p", "a"], transport=FakeProvider([text_reply("one")])) == 0
+    [saved] = files_in(here)
+    before = saved.read_text()
+    capsys.readouterr()
+    fake = FakeProvider([])
+    argv = [saved.stem if word == "ID" else word for word in argv]
+    assert main(argv, transport=fake) == 2
+    assert fake.calls == []
+    assert "follow-up" in capsys.readouterr().err
+    assert saved.read_text() == before
+
+
+@pytest.mark.parametrize("argv", [["-p", "-c"], ["-p", "-c", "-"]])
+def test_a_blank_follow_up_on_stdin_calls_no_model(
+    argv: list[str],
+    here: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["-p", "a"], transport=FakeProvider([text_reply("one")])) == 0
+    piped(monkeypatch, b"\n")
+    fake = FakeProvider([])
+    assert main(argv, transport=fake) == 2
+    assert fake.calls == []
+    assert "follow-up" in capsys.readouterr().err
+
+
+def test_a_follow_up_on_stdin_is_read_once(
+    here: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A follow-up that is itself a lone - is sent, not read as - again."""
+    assert main(["-p", "a"], transport=FakeProvider([text_reply("one")])) == 0
+    piped(monkeypatch, b"-")
+    fake = FakeProvider([text_reply("two")])
+    assert main(["-p", "-c", "-"], transport=fake) == 0
+    assert user_texts(fake) == ["a", "-"]
 
 
 def test_codex_exec_resume_needs_a_session(

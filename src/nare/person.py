@@ -80,7 +80,8 @@ Start here:
   nare "<task>"       open it with a first task; without the tui extra, a
                       line-mode session that asks before each change
   nare -p "<task>"    one-shot: the answer on stdout, progress on stderr.
-                      Piped stdin is extra context; - reads the prompt from it.
+                      With no task (or -), stdin is the prompt; with a task,
+                      stdin is not read.
                       --output-format text|json|stream-json, --json
   exec                nare exec "<task>": the same as nare -p
   -c, -r <id>         continue the newest session here, or the one named;
@@ -567,27 +568,39 @@ def output_format(args: argparse.Namespace) -> str:
 
 
 def read_prompt(args: argparse.Namespace, prog: str) -> None:
-    """Piped stdin is extra context after the task, in a <stdin> block. With
-    no task, stdin is the whole prompt, as positional - makes it."""
-    piped = stdin_piped()
-    if args.prompt is None and args.prompt_file is None and args.resume is None:
-        if not piped:
-            command = "nare -p" if prog == "nare" else prog
-            raise ValueError(
-                f'{command} needs a task: {command} "<task>", or pipe one on stdin'
-            )
+    """Settle the prompt a one-shot run sends. Stdin is read only when the
+    prompt is - or missing, as Codex exec does: a task on the command line
+    never waits on stdin, so a caller that leaves its pipe open does not hang
+    the run (#351). With no task, piped stdin is the whole prompt, and on a
+    resume the follow-up (#349). A resume with no follow-up exits 2 before
+    any model call, since running a finished session again only repeats it.
+    """
+    if args.prompt_file is not None or args.prompt not in (None, "-"):
+        return
+    command = "nare -p" if prog == "nare" else prog
+    resuming = args.resume is not None
+    follow_up = (
+        f'a resume needs a follow-up: {command} -c "<follow-up>", or pipe one on stdin'
+    )
+    if args.prompt is None and not stdin_piped():
+        if resuming:
+            raise ValueError(follow_up)
+        raise ValueError(
+            f'{command} needs a task: {command} "<task>", or pipe one on stdin'
+        )
+    if not resuming:
         args.prompt = "-"
         return
-    if args.prompt in (None, "-") or args.prompt_file is not None or not piped:
-        return
     try:
-        extra = sys.stdin.buffer.read().decode("utf-8")
+        text = sys.stdin.buffer.read().decode("utf-8")
     except (OSError, UnicodeError) as exc:
         raise ValueError(f"stdin: {exc}") from exc
-    if extra.strip():
-        if not extra.endswith("\n"):
-            extra += "\n"
-        args.prompt = f"{args.prompt}\n\n<stdin>\n{extra}</stdin>"
+    if not text.strip():
+        raise ValueError(follow_up)
+    args.prompt = text
+    # Read here, so the run does not read stdin again for a follow-up that
+    # is itself a lone -.
+    args.prompt_from_stdin = True
 
 
 def _text_result(session: Session, **totals: Any) -> None:
