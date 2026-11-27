@@ -44,15 +44,17 @@ from nare.transport import Transport
 SUBCOMMANDS = ("run", "tui", "contract", "redact", "mcp")
 # The person-facing commands this module answers, in Codex's spelling.
 SESSION_COMMANDS = ("sessions", "resume", "fork")
-COMMANDS = (*SUBCOMMANDS, "exec", *SESSION_COMMANDS)
+AUTH_COMMANDS = ("auth", "login", "logout")
+COMMANDS = (*SUBCOMMANDS, "exec", *SESSION_COMMANDS, *AUTH_COMMANDS)
 HELP_FLAGS = frozenset({"-h", "--help"})
 PRINT_FLAGS = frozenset({"-p", "--print"})
 OUTPUT_FORMATS = ("text", "json", "stream-json")
 EXIT_WORDS = frozenset({"exit", "quit", "/exit", "/quit"})
 
 KEYS = """\
-nare needs a model key: set ANTHROPIC_API_KEY, or OPENAI_API_KEY with
---provider openai. nare run --help lists every provider option."""
+nare needs a model key: run nare auth login to store one, or set
+ANTHROPIC_API_KEY (OPENAI_API_KEY with --provider openai). nare run --help
+lists every provider option."""
 
 GETTING_STARTED = f"""\
 nare {{version}}: a coding agent for your terminal.
@@ -84,6 +86,8 @@ Start here:
   -c, -r <id>         continue the newest session here, or the one named;
                       --fork-session writes the continuation as a new one
   sessions            nare sessions: this directory's saved sessions
+  auth                nare auth login|status|logout: store a key once
+                      (also nare login, nare logout)
   resume, fork        nare resume [--last|<id>], nare fork [--last|<id>]:
                       Codex's spelling of -c and -r; nare exec resume too
   tui                 nare tui [options]: the terminal UI, or --attach to
@@ -120,6 +124,8 @@ def route(argv: list[str]) -> str | None:
         return "exec-resume" if argv[1:2] == ["resume"] else "exec"
     if first in SESSION_COMMANDS:
         return first
+    if first in AUTH_COMMANDS:
+        return "auth"
     if any(word in PRINT_FLAGS for word in _before_dashes(argv)):
         return "print"
     return "interactive"
@@ -159,6 +165,8 @@ def main(mode: str, argv: list[str], *, transport: Transport | None = None) -> i
         return print_main(argv[1:], "nare exec", transport)
     if mode == "sessions":
         return sessions_main(argv[1:])
+    if mode == "auth":
+        return auth_main(argv)
     try:
         if mode == "exec-resume":
             return print_main(
@@ -267,6 +275,89 @@ def codex_resume(argv: list[str], prog: str, *, fork: bool = False) -> list[str]
     return [*picked, *(["--fork-session"] if fork else []), *rest]
 
 
+def auth_main(argv: list[str]) -> int:
+    """nare auth login|status|logout, and Codex's nare login [status] and
+    nare logout. Messages go to stderr, the status table to stdout."""
+    from nare import credentials
+
+    if argv[0] == "login":
+        words = (
+            ["status", *argv[2:]] if argv[1:2] == ["status"] else ["login", *argv[1:]]
+        )
+    elif argv[0] == "logout":
+        words = ["logout", *argv[1:]]
+    else:
+        words = argv[1:]
+    parser = cli.NareParser(
+        prog="nare auth", description="Store a provider key once, and check it."
+    )
+    sub = parser.add_subparsers(dest="action", required=True)
+    providers = list(credentials.KEY_ENV)
+    default = os.environ.get("NARE_PROVIDER") or "anthropic"
+    login = sub.add_parser(
+        "login",
+        help="store a key in NARE_HOME/credentials.json (mode 0600), typed with "
+        "the input hidden",
+    )
+    login.add_argument("--provider", choices=[*providers, "bedrock"], default=default)
+    login.add_argument(
+        "--with-api-key",
+        action="store_true",
+        help="read the key from stdin instead, for scripts",
+    )
+    status = sub.add_parser(
+        "status",
+        help="name where each provider's key comes from, never the key; exit 0 "
+        "when the provider has one, 1 when not",
+    )
+    status.add_argument("--provider", choices=[*providers, "bedrock", "fake"])
+    logout = sub.add_parser("logout", help="remove a stored key")
+    logout.add_argument("--provider", choices=providers, default=default)
+    args = parser.parse_args(words)
+    try:
+        if args.action == "login":
+            if args.provider == "bedrock":
+                raise ValueError(
+                    "bedrock signs with AWS credentials, not a stored key: use an "
+                    "AWS profile, the environment or a role"
+                )
+            key = credentials.read_key(args.provider, from_stdin=args.with_api_key)
+            path = credentials.store_key(args.provider, key)
+            print(f"nare: stored the {args.provider} key in {path}", file=sys.stderr)
+            return 0
+        if args.action == "logout":
+            removed = credentials.remove_key(args.provider)
+            print(
+                f"nare: removed the stored {args.provider} key"
+                if removed
+                else f"nare: no {args.provider} key was stored",
+                file=sys.stderr,
+            )
+            return 0
+        chosen = args.provider or default
+        found = False
+        for provider in [*providers, "bedrock"] if args.provider is None else [chosen]:
+            has, where = credentials.source(provider)
+            found = found or (has and provider == chosen)
+            marker = "*" if provider == chosen else " "
+            print(f"{marker} {provider:9} {where}")
+        return 0 if found else 1
+    except ValueError as exc:
+        print(f"nare: {exc}", file=sys.stderr)
+        return NEVER_STARTED
+
+
+def no_key(args: argparse.Namespace, transport: Transport | None) -> bool:
+    """A person-facing run with no key says how to get one, in one line, and
+    stops before anything starts. A run handed its transport needs none."""
+    from nare.credentials import missing_key_line
+
+    line = None if transport is not None else missing_key_line(args.provider)
+    if line is not None:
+        print(f"nare: {line}", file=sys.stderr)
+    return line is not None
+
+
 def sessions_main(argv: list[str]) -> int:
     """nare sessions: this directory's saved sessions, newest first."""
     parser = cli.NareParser(
@@ -353,6 +444,8 @@ def interactive_main(argv: list[str], transport: Transport | None) -> int:
     args.attach = None
     if args.root is None:
         args.root = os.getcwd()
+    if no_key(args, transport):
+        return NEVER_STARTED
     if args.resume == "" and not tui_available():
         print(
             "nare: picking a session needs the terminal UI; give an id with -r "
@@ -411,6 +504,8 @@ def print_main(argv: list[str], prog: str, transport: Transport | None) -> int:
     try:
         cli.resolve_aliases(parser, argv, args)
         output = output_format(args)
+        if no_key(args, transport):
+            return NEVER_STARTED
         if args.root is None:
             args.root = os.getcwd()
         settle_session(args)
