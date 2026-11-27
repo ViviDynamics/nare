@@ -1024,7 +1024,12 @@ def _bench(where: str | None) -> str:
 
 
 def model_changed(
-    baseline: Baseline, config: Config, allow: bool, *, where: str | None = None
+    baseline: Baseline,
+    config: Config,
+    allow: bool,
+    *,
+    where: str | None = None,
+    judged: bool = True,
 ) -> bool:
     """Numbers are comparable within a model and nowhere else.
 
@@ -1034,15 +1039,18 @@ def model_changed(
     cut off at nare's default fails reps it passes with room to think. So is
     the provider: the same model on the other route can lose a reasoning
     model's thinking on the way. An empty `config.provider` is results that
-    never recorded theirs, which is unknown, not a mismatch. `where` names
-    the baseline in the message when there is more than one.
+    never recorded theirs, which is unknown, not a mismatch. `judged` is
+    whether any compared case is judged: numbers no judge produced are the
+    same under any judge, so with none the judge is not pinned (#355), and a
+    run with no judge model compares. `where` names the baseline in the
+    message when there is more than one.
     """
     if allow:
         return False
     if (
         baseline.meta.model == config.model
         and (not config.provider or baseline.meta.provider == config.provider)
-        and baseline.meta.judge_model == config.judge_model
+        and (not judged or baseline.meta.judge_model == config.judge_model)
         and baseline.meta.max_tokens == config.max_tokens
     ):
         return False
@@ -1139,14 +1147,18 @@ def incomparable(
     *,
     where: str | None = None,
     hashes: Mapping[str, str] | None = None,
+    judged: bool = True,
 ) -> bool:
     """Whether a model change or a variant change refuses the comparison.
 
     Both are checked and each prints its refusal, so an operator who needs
     both overrides learns so at once rather than one at a time. `where`, the
     baseline's file name, is given for the matrix, where there are several.
+    `judged` is model_changed's.
     """
-    model = model_changed(baseline, config, args.allow_model_change, where=where)
+    model = model_changed(
+        baseline, config, args.allow_model_change, where=where, judged=judged
+    )
     arguments = args_changed(
         baseline,
         config,
@@ -2448,7 +2460,11 @@ def main(argv: list[str] | None = None) -> int:
         # Before the image and the reps: numbers the baseline cannot be
         # compared with would be paid for and then thrown away.
         if baseline is not None and incomparable(
-            baseline, config, args, hashes={c.id: case_hash(c) for c in cases}
+            baseline,
+            config,
+            args,
+            hashes={c.id: case_hash(c) for c in cases},
+            judged=any(c.judge for c in cases),
         ):
             return 2
         try:
@@ -2546,11 +2562,12 @@ def main(argv: list[str] | None = None) -> int:
         merged = merge_baseline(old.cases if old else {}, summaries, tier_ids)
         fresh = {s.case for s in summaries if s.pass_rate is not None}
         kept = sorted({s.case for s in merged} - fresh)
+        judged = any(c.judge for c in cases if c.id in fresh)
         # Kept cases were measured under the old baseline's provider, judge,
         # cap and run arguments, and would be written under these results'.
         # Both are checked, so both refusals print when both apply.
         if old is not None and kept:
-            relabel = model_changed(old, config, args.allow_model_change)
+            relabel = model_changed(old, config, args.allow_model_change, judged=judged)
             if relabel:
                 print(
                     f"bench: blessing would keep {', '.join(kept)} from "
@@ -2569,12 +2586,28 @@ def main(argv: list[str] | None = None) -> int:
                 )
             if relabel or revariant:
                 return 2
+        # Fresh numbers no judge produced say nothing about the judge, so the
+        # old baseline's still names the one its kept cases were judged by.
+        blessed_judge = (
+            config.judge_model
+            if judged
+            else (old.meta.judge_model if old else None) or config.judge_model
+        )
+        if not blessed_judge:
+            # The matrix takes each model's judge from its baseline (#355).
+            print(
+                f"bench: {results_file.name} ran with no judge model, and a "
+                "baseline names one: pass --judge-model or set "
+                "NARE_BENCH_JUDGE_MODEL",
+                file=sys.stderr,
+            )
+            return 2
         meta = BaselineMeta(
             blessed=datetime.now(UTC).isoformat(timespec="seconds"),
             commit=_commit(),
             provider=config.provider,
             model=config.model,
-            judge_model=config.judge_model or "",
+            judge_model=blessed_judge,
             max_tokens=config.max_tokens,
             nare_args=config.run_args.recorded,
             nare_files=dict(config.run_args.files),
@@ -2582,7 +2615,7 @@ def main(argv: list[str] | None = None) -> int:
         baseline_file.write_text(dumps_baseline(meta, merged), encoding="utf-8")
         print(
             f"blessed {baseline_file} from {results_file.name} "
-            f"(provider {config.provider}, judge {config.judge_model})"
+            f"(provider {config.provider}, judge {blessed_judge})"
         )
         return 0
 
@@ -2594,8 +2627,13 @@ def main(argv: list[str] | None = None) -> int:
         # Results written before the provider was recorded, and no flag to
         # say: the route they took is unknown, which is not a mismatch.
         config = replace(config, provider="")
+    compared = {s.case for s in summaries}
     if incomparable(
-        baseline, config, args, hashes={s.case: s.case_hash for s in summaries}
+        baseline,
+        config,
+        args,
+        hashes={s.case: s.case_hash for s in summaries},
+        judged=any(c.judge for c in cases if c.id in compared),
     ):
         return 2
     comparison = compare(

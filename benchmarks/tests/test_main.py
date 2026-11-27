@@ -789,6 +789,81 @@ def test_a_run_with_no_judged_case_needs_no_judge_model(
     assert "Traceback" not in capsys.readouterr().err
 
 
+def no_judge_baseline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A smoke baseline for model m judged by judge-x, holding an unjudged case
+    (multi-file-rename) and a judged one (edit-docstring); no judge in the shell."""
+    from benchmarks.runner.report import baseline_path
+
+    baselines = results_dir(tmp_path, monkeypatch)
+    baselines.mkdir()
+    monkeypatch.delenv("NARE_BENCH_JUDGE_MODEL")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.delenv("NARE_BASE_URL", raising=False)
+    path = baseline_path(baselines, "m", "smoke")
+    path.write_text(
+        dumps_baseline(
+            BaselineMeta("t", "abc1234", "anthropic", "m", "judge-x"),
+            [summary("edit-docstring", 1.0), summary("multi-file-rename", 1.0)],
+        )
+    )
+    return path
+
+
+def test_a_run_with_no_judge_compares_with_a_judged_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The judge is pinned because it moves judged scores. A run of unjudged
+    cases has none to move, so the baseline's judge does not refuse it."""
+    import benchmarks.runner.__main__ as bench
+
+    no_judge_baseline(tmp_path, monkeypatch)
+
+    async def passing(
+        case: Case,
+        config: Config,
+        transport: Transport | None,
+        reps: int,
+        evidence: Path,
+    ) -> list[RepRecord]:
+        return [replace(record(case.id, model="m"), rep=n) for n in range(reps)]
+
+    monkeypatch.setattr(bench, "build_image", lambda root: None)
+    monkeypatch.setattr(bench, "run_case", passing)
+    argv = ["run", "--case", "multi-file-rename", "--model", "m"]
+    assert main([*argv, "--provider", "anthropic"]) == 0
+    assert "judge" not in capsys.readouterr().err
+
+
+def test_blessing_unjudged_results_keeps_the_baselines_judge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from benchmarks.runner.report import load_baseline
+
+    path = no_judge_baseline(tmp_path, monkeypatch)
+    write_results(tmp_path, [record("multi-file-rename", model="m")])
+    assert main(["bless", "--model", "m", "--provider", "anthropic"]) == 0
+    blessed = load_baseline(path)
+    assert blessed.meta.judge_model == "judge-x"
+    assert set(blessed.cases) == {"edit-docstring", "multi-file-rename"}
+
+
+def test_blessing_unjudged_results_into_no_baseline_needs_a_judge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A baseline always names its judge: the matrix takes it from there."""
+    from benchmarks.runner.report import load_baseline
+
+    path = no_judge_baseline(tmp_path, monkeypatch)
+    path.unlink()
+    write_results(tmp_path, [record("multi-file-rename", model="m")])
+    argv = ["bless", "--model", "m", "--provider", "anthropic"]
+    assert main(argv) == 2
+    assert "--judge-model" in capsys.readouterr().err
+    assert not path.exists()
+    assert main([*argv, "--judge-model", "judge-y"]) == 0
+    assert load_baseline(path).meta.judge_model == "judge-y"
+
+
 def test_a_run_with_a_judged_case_and_no_judge_stops_before_the_image(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
