@@ -90,7 +90,7 @@ from nare.session import (
     save,
     unanswered,
 )
-from nare.tools import TOOLS, Policy, approve_all, stop_group
+from nare.tools import TOOLS, Approve, Policy, approve_all, stop_group
 from nare.transport import (
     EFFORTS,
     Transport,
@@ -227,7 +227,27 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_parser = sub.add_parser("run", help="run a task headlessly")
+    add_run_command_flags(run_parser)
 
+    tui_parser = sub.add_parser(
+        "tui", help="work with nare in a terminal UI, or watch a run with --attach"
+    )
+    tui_parser.add_argument(
+        "prompt", nargs="?", help="the task to start with; without one, type it"
+    )
+    tui_parser.add_argument(
+        "--attach",
+        metavar="PATH",
+        help="watch the session file at PATH, read-only; other flags are ignored",
+    )
+    add_run_flags(tui_parser)
+    tui_parser.add_argument("--fork", action="store_true", help=FORK_HELP)
+    return parser
+
+
+def add_run_command_flags(run_parser: argparse.ArgumentParser) -> None:
+    """Every `nare run` option, in the order `nare contract` lists them. nare -p
+    and nare exec take the same set, so a script moves between them freely."""
     run_parser.add_argument(
         "prompt", nargs="?", help="the task, as plain text; - reads UTF-8 stdin"
     )
@@ -427,21 +447,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_run_flags(run_parser)
     run_parser.add_argument("--fork", action="store_true", help=FORK_HELP)
-
-    tui_parser = sub.add_parser(
-        "tui", help="work with nare in a terminal UI, or watch a run with --attach"
-    )
-    tui_parser.add_argument(
-        "prompt", nargs="?", help="the task to start with; without one, type it"
-    )
-    tui_parser.add_argument(
-        "--attach",
-        metavar="PATH",
-        help="watch the session file at PATH, read-only; other flags are ignored",
-    )
-    add_run_flags(tui_parser)
-    tui_parser.add_argument("--fork", action="store_true", help=FORK_HELP)
-    return parser
 
 
 def _share_of(name: str) -> Callable[[str], float]:
@@ -1174,9 +1179,8 @@ def _emit(event: Event, jsonl: bool) -> None:
         print(f"[{event.type}] {event.text}", flush=True)
 
 
-def _emit_result(
+def result_record(
     session: Session,
-    jsonl: bool,
     *,
     max_tool_calls: int | None = None,
     tool_calls_from: int | None = None,
@@ -1185,57 +1189,58 @@ def _emit_result(
     cutoffs_from: int | None = None,
     reads_required: bool = False,
     timing: RequestTimingTotals | None = None,
-) -> None:
+) -> dict[str, Any]:
+    """The `result` line a run ends with, as data. `nare run --jsonl` prints it
+    after the events; `nare -p --output-format json` prints it alone."""
+    return {
+        "type": "result",
+        "session_id": session.id,
+        "status": session.status,
+        "questions": session.questions,
+        "usage": session.usage.wire(),
+        "budget": budget_record(
+            session,
+            max_tool_calls=max_tool_calls,
+            tool_calls_from=tool_calls_from,
+            max_corrections=max_corrections,
+            max_cutoffs=max_cutoffs,
+            cutoffs_from=cutoffs_from,
+        ),
+        # Every correction the run made, free or charged, with the
+        # distinct errors it answered. Present only when there was one.
+        **(
+            {"corrections": session.schema_correction_log}
+            if session.schema_correction_log
+            else {}
+        ),
+        # Each distinct file read, with its digest, when reads were
+        # required. Present only then.
+        **({"reads": read_record(session)} if reads_required else {}),
+        "stop_reason": session.stop_reason,
+        "turns": session.turns,
+        "retries": session.retries,
+        "capacity_refusals": session.capacity_refusals,
+        "capacity_wait_seconds": round(session.capacity_wait, 3),
+        "capacity_limit": session.capacity_limit,
+        "capacity_slot_wait_seconds": round(session.capacity_slot_wait, 3),
+        "cutoffs": session.cutoffs,
+        # This invocation's model requests, summed from the timing
+        # on their cost events. Per invocation, and never saved.
+        "request_timing": (timing or RequestTimingTotals()).wire(),
+        "contract": CONTRACT_VERSION,
+        "nare": __version__,
+        "output": session.output,
+        "text": final_text(session),
+        "error": session.error,
+        # How the provider request the run ended on failed: null
+        # unless the run ended on one.
+        "failure": session.failure,
+    }
+
+
+def _emit_result(session: Session, jsonl: bool, **totals: Any) -> None:
     if jsonl:
-        print(
-            json.dumps(
-                {
-                    "type": "result",
-                    "session_id": session.id,
-                    "status": session.status,
-                    "questions": session.questions,
-                    "usage": session.usage.wire(),
-                    "budget": budget_record(
-                        session,
-                        max_tool_calls=max_tool_calls,
-                        tool_calls_from=tool_calls_from,
-                        max_corrections=max_corrections,
-                        max_cutoffs=max_cutoffs,
-                        cutoffs_from=cutoffs_from,
-                    ),
-                    # Every correction the run made, free or charged, with the
-                    # distinct errors it answered. Present only when there was one.
-                    **(
-                        {"corrections": session.schema_correction_log}
-                        if session.schema_correction_log
-                        else {}
-                    ),
-                    # Each distinct file read, with its digest, when reads were
-                    # required. Present only then.
-                    **({"reads": read_record(session)} if reads_required else {}),
-                    "stop_reason": session.stop_reason,
-                    "turns": session.turns,
-                    "retries": session.retries,
-                    "capacity_refusals": session.capacity_refusals,
-                    "capacity_wait_seconds": round(session.capacity_wait, 3),
-                    "capacity_limit": session.capacity_limit,
-                    "capacity_slot_wait_seconds": round(session.capacity_slot_wait, 3),
-                    "cutoffs": session.cutoffs,
-                    # This invocation's model requests, summed from the timing
-                    # on their cost events. Per invocation, and never saved.
-                    "request_timing": (timing or RequestTimingTotals()).wire(),
-                    "contract": CONTRACT_VERSION,
-                    "nare": __version__,
-                    "output": session.output,
-                    "text": final_text(session),
-                    "error": session.error,
-                    # How the provider request the run ended on failed: null
-                    # unless the run ended on one.
-                    "failure": session.failure,
-                }
-            ),
-            flush=True,
-        )
+        print(json.dumps(result_record(session, **totals)), flush=True)
     else:
         print(
             f"{session.status} after {session.turns} turns "
@@ -1305,7 +1310,9 @@ class _Stop:
             self._task.cancel()
 
 
-def _stopped(session: Session, stop: _Stop, groups_from: int, jsonl: bool) -> None:
+def _stopped(
+    session: Session, stop: _Stop, groups_from: int, emit: Callable[[Event], None]
+) -> None:
     """Record a run that a deadline or a signal ended."""
     # A command that left something running is this run's to stop. The one
     # running when the stop landed was killed by its own cancel.
@@ -1325,7 +1332,7 @@ def _stopped(session: Session, stop: _Stop, groups_from: int, jsonl: bool) -> No
         session.error = f"run stopped by {stop.signal}"
         detail = {"reason": "interrupted", "signal": stop.signal}
     detail["process_groups"] = killed
-    _emit(Event("error", session.error, {"stop": detail}), jsonl)
+    emit(Event("error", session.error, {"stop": detail}))
 
 
 async def _execute(
@@ -1355,6 +1362,14 @@ async def _execute(
     )
     cutoffs_from = session.cutoffs
     timing = RequestTimingTotals()
+    # How events and the result reach the terminal: nare run's own printing
+    # unless a person-facing mode (nare -p, a line session) set its own.
+    emit: Callable[[Event], None] = getattr(args, "emit", None) or (
+        lambda event: _emit(event, args.jsonl)
+    )
+    emit_result: Callable[..., None] = getattr(args, "emit_result", None) or (
+        lambda session, **totals: _emit_result(session, args.jsonl, **totals)
+    )
     stop = _Stop(getattr(args, "timeout", None))
     stop.install()
     try:
@@ -1362,7 +1377,7 @@ async def _execute(
             run(
                 session,
                 transport=transport,
-                approve=approve_all,
+                approve=getattr(args, "approve", None) or approve_all,
                 policy=policy,
                 schema=schema,
                 max_turns=args.max_turns,
@@ -1388,14 +1403,15 @@ async def _execute(
                 require_cited_reads=args.require_cited_reads or (),
                 cited_read_map=cited_read_map,
                 check=check,
-                # Headless only: a person reading a TUI reply can answer it.
-                question_nudge=True,
+                # Headless only: a person reading a TUI reply, or a line
+                # session's, can answer it.
+                question_nudge=getattr(args, "question_nudge", True),
             )
             if transport is not None
             else _pending_events(session)
         )
         async for event in stream:
-            _emit(event, args.jsonl)
+            emit(event)
             timing.add(event)
             # Saved per turn, not once at the end. SIGTERM and SIGINT save on
             # the way out, but SIGKILL cannot be caught, and a run persisted
@@ -1423,7 +1439,7 @@ async def _execute(
         task = asyncio.current_task()
         assert task is not None
         task.uncancel()
-        _stopped(session, stop, groups_from, args.jsonl)
+        _stopped(session, stop, groups_from, emit)
     finally:
         stop.release()
         if args.session:
@@ -1439,10 +1455,9 @@ async def _execute(
                 session.error = f"could not write --session {args.session}: {exc}"
                 # The record goes with a null stop_reason, never another.
                 session.failure = None
-                _emit(Event("error", session.error), args.jsonl)
-    _emit_result(
+                emit(Event("error", session.error))
+    emit_result(
         session,
-        args.jsonl,
         max_tool_calls=args.max_tool_calls,
         tool_calls_from=tool_calls_from,
         max_corrections=corrections_budget,
@@ -1568,8 +1583,24 @@ def _tui_extra_hint(version: str) -> str:
     return "nare tui needs the tui extra. In a source checkout: uv sync --extra tui"
 
 
+def stdin_is_terminal() -> bool:
+    """Whether a person is at stdin to answer an approval. A caller that spawns
+    nare gives it a pipe or nothing, never a terminal."""
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
 def main(argv: list[str] | None = None, *, transport: Transport | None = None) -> int:
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+    argv = sys.argv[1:] if argv is None else list(argv)
+    from nare import person
+
+    mode = person.route(argv)
+    if mode is not None:
+        # nare, nare "<task>", nare -p, nare exec: the person-facing forms.
+        return person.main(mode, argv, transport=transport)
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -1593,6 +1624,22 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
 
         return tui_main(args, transport=transport)
 
+    return run_command(args, transport)
+
+
+# Builds the approver for a run once its policy is known.
+Approvers = Callable[[Policy], Approve]
+
+
+def run_command(
+    args: argparse.Namespace,
+    transport: Transport | None,
+    *,
+    approver: Approvers | None = None,
+) -> int:
+    """`nare run`, and nare -p and nare exec over the same path. `approver` is
+    the person-facing modes' own; without one, --yes approves every call, and
+    a person at the terminal is asked."""
     # Everything below exits 2 and emits nothing on stdout: the result line
     # implies a session existed, so a run that never started does not emit one.
     if args.contract is not None and args.contract != CONTRACT_VERSION:
@@ -1603,9 +1650,14 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
             file=sys.stderr,
         )
         return NEVER_STARTED
-    if not args.yes:
-        print("nare run refuses to start unattended without --yes", file=sys.stderr)
-        return NEVER_STARTED
+    if not args.yes and approver is None:
+        if not stdin_is_terminal():
+            print("nare run refuses to start unattended without --yes", file=sys.stderr)
+            return NEVER_STARTED
+        # Not unattended: the person at the terminal answers each change.
+        from nare.terminal import terminal_approver
+
+        approver = terminal_approver
     if args.prompt is not None and args.prompt_file is not None:
         source = "stdin (-)" if args.prompt == "-" else "positional prompt"
         print(f"nare: {source} conflicts with --prompt-file", file=sys.stderr)
@@ -1615,82 +1667,14 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         return NEVER_STARTED
 
     try:
-        if args.timeout is not None:
-            finite_number(args.timeout, "--timeout")
-        if args.max_tool_calls is not None and args.max_tool_calls <= 0:
-            raise ValueError("--max-tool-calls must be a positive integer")
-        if args.max_corrections is not None and args.max_corrections <= 0:
-            raise ValueError("--max-corrections must be a positive integer")
-        if args.max_cutoffs < 0:
-            raise ValueError("--max-cutoffs must be a nonnegative integer")
-        if args.compaction not in COMPACTION_MODES:
-            raise ValueError(
-                f"--compaction must be one of {', '.join(COMPACTION_MODES)}, "
-                f"not {args.compaction!r} (from NARE_COMPACTION)"
-            )
-        check_compaction_point(
-            args.compaction_trigger,
-            args.compaction_target,
-            names=("--compaction-trigger", "--compaction-target"),
+        session, transport, policy, schema, prices, check, cited_read_map = prepare_run(
+            args, transport
         )
-        prices = validate_run_args(args)
-        if args.prompt_file is not None:
-            try:
-                args.prompt = Path(args.prompt_file).read_bytes().decode("utf-8")
-            except (OSError, UnicodeError) as exc:
-                raise ValueError(f"--prompt-file {args.prompt_file}: {exc}") from exc
-        elif args.prompt == "-":
-            try:
-                args.prompt = sys.stdin.buffer.read().decode("utf-8")
-            except (OSError, UnicodeError) as exc:
-                raise ValueError(f"stdin (-): {exc}") from exc
-        policy = policy_from_args(args)
-        schema = schema_from_args(args)
-        if args.structured_output is not None and schema is None:
-            raise ValueError("--structured-output requires --schema")
-        reads_required = bool(
-            args.require_reads or args.require_read or args.require_cited_reads
-        )
-        if args.max_corrections is not None and schema is None and not reads_required:
-            raise ValueError(
-                "--max-corrections requires --schema or a read requirement"
-            )
-        if args.require_reads is not None and args.require_reads <= 0:
-            raise ValueError("--require-reads must be a positive integer")
-        if args.require_cited_reads and schema is None:
-            raise ValueError("--require-cited-reads requires --schema")
-        cited_read_map = cited_read_map_from_args(args)
-        check = check_from_args(args, schema)
-        if reads_required:
-            # Refused here, before any turn, as a bad path, pointer or missing
-            # tool is.
-            build_reads(
-                args.require_reads or 0,
-                args.require_read or [],
-                root=Path(args.root).resolve() if args.root else None,
-                cited=args.require_cited_reads or [],
-                cited_map=cited_read_map,
-                extra_roots=[Path(path) for path in args.add_root],
-            )
-            if "read" not in tools_from_args(args):
-                raise ValueError(
-                    "--require-reads, --require-read and --require-cited-reads "
-                    "need the read tool"
-                )
-        session = _load_or_new(args)
-        adopt_system(args, session)
-        configure_budgets(session, args.budget_tokens, args.budget_usd)
-        if check_budget(session):
-            # Already-spent sessions report their artifacts even when provider
-            # construction would fail (for example, credentials were removed).
-            transport = None
-        elif transport is None:
-            transport = transport_from_args(args)
-        if transport is not None:
-            check_structured_output(transport, schema, args.structured_output)
     except (ValueError, OSError, UnsupportedSchema) as exc:
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED
+    if approver is not None:
+        args.approve = approver(policy)
 
     try:
         return asyncio.run(
@@ -1708,3 +1692,90 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     except KeyboardInterrupt:
         print("nare: interrupted", file=sys.stderr)
         return 130
+
+
+def prepare_run(
+    args: argparse.Namespace, transport: Transport | None
+) -> tuple[
+    Session,
+    Transport | None,
+    Policy,
+    dict[str, Any] | None,
+    Prices | None,
+    Check | None,
+    Any,
+]:
+    """Every startup check of a run, and what it starts with. Raises ValueError,
+    OSError or UnsupportedSchema, which the caller turns into exit 2."""
+    if args.timeout is not None:
+        finite_number(args.timeout, "--timeout")
+    if args.max_tool_calls is not None and args.max_tool_calls <= 0:
+        raise ValueError("--max-tool-calls must be a positive integer")
+    if args.max_corrections is not None and args.max_corrections <= 0:
+        raise ValueError("--max-corrections must be a positive integer")
+    if args.max_cutoffs < 0:
+        raise ValueError("--max-cutoffs must be a nonnegative integer")
+    if args.compaction not in COMPACTION_MODES:
+        raise ValueError(
+            f"--compaction must be one of {', '.join(COMPACTION_MODES)}, "
+            f"not {args.compaction!r} (from NARE_COMPACTION)"
+        )
+    check_compaction_point(
+        args.compaction_trigger,
+        args.compaction_target,
+        names=("--compaction-trigger", "--compaction-target"),
+    )
+    prices = validate_run_args(args)
+    if args.prompt_file is not None:
+        try:
+            args.prompt = Path(args.prompt_file).read_bytes().decode("utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ValueError(f"--prompt-file {args.prompt_file}: {exc}") from exc
+    elif args.prompt == "-":
+        try:
+            args.prompt = sys.stdin.buffer.read().decode("utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ValueError(f"stdin (-): {exc}") from exc
+    policy = policy_from_args(args)
+    schema = schema_from_args(args)
+    if args.structured_output is not None and schema is None:
+        raise ValueError("--structured-output requires --schema")
+    reads_required = bool(
+        args.require_reads or args.require_read or args.require_cited_reads
+    )
+    if args.max_corrections is not None and schema is None and not reads_required:
+        raise ValueError("--max-corrections requires --schema or a read requirement")
+    if args.require_reads is not None and args.require_reads <= 0:
+        raise ValueError("--require-reads must be a positive integer")
+    if args.require_cited_reads and schema is None:
+        raise ValueError("--require-cited-reads requires --schema")
+    cited_read_map = cited_read_map_from_args(args)
+    check = check_from_args(args, schema)
+    if reads_required:
+        # Refused here, before any turn, as a bad path, pointer or missing
+        # tool is.
+        build_reads(
+            args.require_reads or 0,
+            args.require_read or [],
+            root=Path(args.root).resolve() if args.root else None,
+            cited=args.require_cited_reads or [],
+            cited_map=cited_read_map,
+            extra_roots=[Path(path) for path in args.add_root],
+        )
+        if "read" not in tools_from_args(args):
+            raise ValueError(
+                "--require-reads, --require-read and --require-cited-reads "
+                "need the read tool"
+            )
+    session = _load_or_new(args)
+    adopt_system(args, session)
+    configure_budgets(session, args.budget_tokens, args.budget_usd)
+    if check_budget(session):
+        # Already-spent sessions report their artifacts even when provider
+        # construction would fail (for example, credentials were removed).
+        transport = None
+    elif transport is None:
+        transport = transport_from_args(args)
+    if transport is not None:
+        check_structured_output(transport, schema, args.structured_output)
+    return session, transport, policy, schema, prices, check, cited_read_map
