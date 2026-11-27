@@ -58,7 +58,8 @@ STUB_UV_INSTALLER = """#!/bin/sh
 set -eu
 PATH=/usr/bin:/bin
 if [ -t 0 ]; then tty=yes; else tty=no; fi
-printf 'uv-installer UV_INSTALL_DIR=%s tty=%s\\n' "${UV_INSTALL_DIR:-}" "$tty" >> "$STUB_LOG"
+printf 'uv-installer UV_INSTALL_DIR=%s tty=%s\\n' "${UV_INSTALL_DIR:-}" "$tty" \\
+  >> "$STUB_LOG"
 [ "$STUB_UV_INSTALLER_EXIT" = 0 ] || exit "$STUB_UV_INSTALLER_EXIT"
 [ "$STUB_UV_INSTALLER_WRITES" = 1 ] || exit 0
 mkdir -p "$UV_INSTALL_DIR"
