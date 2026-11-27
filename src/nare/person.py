@@ -629,8 +629,10 @@ def line_session(args: argparse.Namespace, transport: Transport | None) -> int:
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED
     stamp_session(args)(session)
-    if getattr(args, "instructions_event", None) is not None:
-        session.events.append(args.instructions_event)
+    # Not when the resume sent the record instead (adopt_system).
+    event = getattr(args, "instructions_event", None)
+    if event is not None and getattr(args, "instructions_text", None) is not None:
+        session.events.append(event)
     args.emit = progress
     args.emit_result = _text_result
     args.approve = terminal_approver(policy)
