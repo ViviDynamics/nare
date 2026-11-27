@@ -598,6 +598,19 @@ def add_run_command_flags(run_parser: argparse.ArgumentParser) -> None:
             "saved (env: NARE_COMPACTION_TARGET)"
         ),
     )
+    _mark(
+        run_parser.add_argument(
+            "--project-instructions",
+            dest="load_instructions",
+            action="store_true",
+            help=(
+                "add the project's AGENTS.md files (CLAUDE.md where a directory has "
+                "none) after the system prompt, as nare -p does by default. Off "
+                "in nare run, so its prompt is only what the caller sent"
+            ),
+        ),
+        nare_exact=True,
+    )
     add_run_flags(run_parser)
     run_parser.add_argument("--fork", action="store_true", help=FORK_HELP)
 
@@ -1201,7 +1214,11 @@ def system_from_args(args: argparse.Namespace) -> str | None:
         base: str | None = args.system
     else:
         base = DEFAULT_SYSTEM if tools_from_args(args) else None
-    parts = [part for part in (base, args.append_system) if part and part.strip()]
+    # A person-facing run's AGENTS.md text goes between the two (#330).
+    project = getattr(args, "instructions_text", None)
+    parts = [
+        part for part in (base, project, args.append_system) if part and part.strip()
+    ]
     return "\n\n".join(parts) or None
 
 
@@ -2111,12 +2128,15 @@ def run_command(
         return NEVER_STARTED
 
     try:
+        loaded = load_instructions(args)
         session, transport, policy, schema, prices, check, cited_read_map = prepare_run(
             args, transport
         )
     except (ValueError, OSError, UnsupportedSchema) as exc:
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED
+    if loaded is not None:
+        session.events.append(loaded)
     if on_session is not None:
         on_session(session)
     if approver is not None and getattr(args, "accept_edits", False):
@@ -2142,6 +2162,19 @@ def run_command(
     except KeyboardInterrupt:
         print("nare: interrupted", file=sys.stderr)
         return 130
+
+
+def load_instructions(args: argparse.Namespace) -> Event | None:
+    """Read the project's AGENTS.md files when the run asks for them, for
+    system_from_args, and the event that names them. None when not asked, or
+    when there are none."""
+    if not getattr(args, "load_instructions", False):
+        return None
+    from nare.instructions import load
+
+    loaded = load(os.getcwd())
+    args.instructions_text = None if loaded is None else loaded.text
+    return None if loaded is None else loaded.event()
 
 
 def prepare_run(

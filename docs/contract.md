@@ -59,6 +59,10 @@ by every command, `nare run` included, when the provider's environment
 variable is unset; the variable, when set, wins. A run with neither fails as it
 always has.
 
+They also add the project's AGENTS.md (or CLAUDE.md) files to the system
+prompt, which `nare run` never does unless asked ([Project
+instructions](#project-instructions)).
+
 `nare run` without `--yes` refuses to start, exit 2 with nothing on stdout,
 whenever stdin is not a terminal. A caller that spawns it never gives it one,
 so for a caller nothing changed. With a terminal on stdin it asks the person
@@ -121,6 +125,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--compaction` | yes | `elide`, `summary` | What nare does first at the compaction point: elide old tool output, or have the model summarize its oldest turns ([Compaction modes](#compaction-modes)) |
 | `--compaction-trigger` | yes | | The share of the window where compaction starts, default `0.8`; with `--compaction-target`, `0 < target < trigger <= 1` ([Compaction modes](#compaction-modes)) |
 | `--compaction-target` | yes | | The share that elision stops at, default `0.6`; below the trigger ([Compaction modes](#compaction-modes)) |
+| `--project-instructions` | no | | Add the project's AGENTS.md files (CLAUDE.md where a directory has none) after the system prompt; off in `nare run` ([Project instructions](#project-instructions)) |
 | `--request-timeout` | yes | | HTTP timeout for each model request ([Provider retries and the request timeout](#provider-retries-and-the-request-timeout)) |
 | `--request-retries` | yes | | Resend a model request after a transient failure, up to this many times |
 | `--request-retry-seconds` | yes | | Longest wait between one request's retries |
@@ -1665,8 +1670,8 @@ blank line. Put in the text what the model cannot read off the repository:
   append-only; never edit one that has shipped".
 - A role, when the caller needs one.
 
-Leave out a repository overview, a directory tree, and a generated AGENTS.md.
-Gloaguen et al. ([arXiv:2602.11988](https://arxiv.org/abs/2602.11988)) found
+In a caller's `--append-system`, leave out a repository overview, a directory
+tree, and a generated AGENTS.md. Gloaguen et al. ([arXiv:2602.11988](https://arxiv.org/abs/2602.11988)) found
 that repository context files did not raise task success on average, raised
 inference cost by over 20%, found that the instructions in them are well
 followed, and found that repository overviews are not helpful. Lulla et al.
@@ -1678,6 +1683,29 @@ controlled comparison, so the guidance here rests on the first.
 Keep the text short and the same on every call. It is part of the request
 prefix, so changing it between calls misses the prompt cache. A resume without
 a system option sends the prompt the session recorded.
+
+That advice is for a caller building a `nare run` prompt. A person's project
+instructions belong in the project's own AGENTS.md (or CLAUDE.md), which the
+person-facing forms read on their own ([Project instructions](#project-instructions)).
+The findings above still say what makes such a file useful: commands and
+conventions the model cannot read off the repository, not an overview of it.
+
+### Project instructions
+
+`nare`, `nare "<task>"`, `nare -p` and `nare exec` add the project's
+instructions to the system prompt, after it and before `--append-system`:
+`$NARE_HOME/AGENTS.md`, then one file per directory from the project root (the
+nearest directory above with `.git`, else the working directory) down to the
+working directory, outermost first: `AGENTS.md`, or `CLAUDE.md` where a
+directory has no `AGENTS.md`. Their total is capped at 32 KiB; a cut ends with
+`[nare: project instructions cut at 32 KiB]`. A `progress` event names the
+files, with `detail.project_instructions` as `{"files": [...], "bytes": N,
+"truncated": false}`. `--no-project-instructions` leaves them out.
+
+`nare run` never reads them, so a caller's prompt is exactly what it sent and
+its runs stay deterministic. `nare run --project-instructions` opts in, with
+the same files, order, cap and event. A resume sends the system prompt the
+session recorded, instructions included, unless a system option replaces it.
 
 Related fixes: [#142](https://github.com/ViviDynamics/nare/issues/142) imports
 the MCP client only when a run configures MCP servers, which shortens startup.
