@@ -8,9 +8,10 @@ root (the nearest directory above with .git, else the working directory) down
 to the working directory, outermost first, as Codex reads them. Their total is
 capped at 32 KiB, as Codex caps it, and a cut says so.
 
-A file is read only where it really is: one that resolves outside the folder
-it was found for (the project root, or NARE_HOME for the home file), through a
-symbolic link, is skipped, and the progress event names it.
+A project's file is read only where it really is: one that resolves, through
+a symbolic link, outside the project root is skipped, the progress event names
+it, and that directory's CLAUDE.md is tried instead of its AGENTS.md. The home
+file is read wherever it points, since only the person writes NARE_HOME.
 """
 
 from __future__ import annotations
@@ -68,8 +69,9 @@ def project_root(cwd: str) -> Path:
     return here
 
 
-def files_for(cwd: str) -> list[tuple[Path, Path]]:
-    """Each instructions file for `cwd`, with the folder it must stay inside."""
+def files_for(cwd: str) -> list[tuple[Path, Path | None]]:
+    """Each instructions file for `cwd`, with where it really is, or None for
+    a project file that resolves outside the project root."""
     here = Path(os.path.realpath(cwd))
     root = project_root(cwd)
     chain = [
@@ -78,15 +80,17 @@ def files_for(cwd: str) -> list[tuple[Path, Path]]:
     ]
     if here != root:
         chain.append(here)
-    found: list[tuple[Path, Path]] = []
+    found: list[tuple[Path, Path | None]] = []
     home = nare_home()
     if home is not None and (home / "AGENTS.md").is_file():
-        found.append((home / "AGENTS.md", home))
+        found.append((home / "AGENTS.md", home / "AGENTS.md"))
     for directory in chain:
         for name in NAMES:
             if (directory / name).is_file():
-                found.append((directory / name, root))
-                break
+                real = contained(directory / name, root)
+                found.append((directory / name, real))
+                if real is not None:
+                    break
     return found
 
 
@@ -109,8 +113,7 @@ def load(cwd: str) -> Instructions | None:
     skipped: list[str] = []
     used = 0
     truncated = False
-    for path, base in files_for(cwd):
-        real = contained(path, base)
+    for path, real in files_for(cwd):
         if real is None:
             skipped.append(str(path))
             continue
@@ -119,6 +122,11 @@ def load(cwd: str) -> Instructions | None:
             data = read_head(real, room)
         except OSError:
             continue
+        if data and room == 0:
+            # The files before filled the cap exactly: none of this one fits.
+            truncated = True
+            blocks.append(CUT)
+            break
         if len(data) > room:
             data, truncated = data[:room], True
         used += len(data)

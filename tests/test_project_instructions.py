@@ -199,17 +199,42 @@ def test_a_link_out_of_the_project_is_skipped_and_named(
 
 
 def test_a_skipped_link_still_reports_when_nothing_loads(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    systems: list[str | None],
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     outside = tmp_path / "elsewhere.txt"
     outside.write_text("Not project text.\n")
     work = tmp_path / "work"
     (work / ".git").mkdir(parents=True)
     (work / "CLAUDE.md").symlink_to(outside)
+    monkeypatch.chdir(work)
     loaded = instructions.load(str(work))
     assert loaded is not None
     assert loaded.files == [] and loaded.text == ""
     assert loaded.skipped == [str(work / "CLAUDE.md")]
+    assert main(["-p", "--json", "x"], transport=FakeProvider([text_reply("ok")])) == 0
+    assert systems[-1] == DEFAULT_SYSTEM
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    [event] = [e for e in events if "project_instructions" in e.get("detail", {})]
+    detail = event["detail"]["project_instructions"]
+    assert detail["files"] == [] and detail["skipped"][0]["file"].endswith("CLAUDE.md")
+
+
+def test_a_skipped_agents_md_falls_back_to_claude_md(
+    repo: Path, tmp_path: Path
+) -> None:
+    outside = tmp_path / "elsewhere.txt"
+    outside.write_text("Not project text.\n")
+    (repo / "pkg" / "AGENTS.md").unlink()
+    (repo / "pkg" / "AGENTS.md").symlink_to(outside)
+    (repo / "pkg" / "CLAUDE.md").write_text("Claude fallback.\n")
+    loaded = instructions.load(str(repo / "pkg"))
+    assert loaded is not None
+    assert "Claude fallback." in loaded.text and "Not project text" not in loaded.text
+    assert loaded.skipped == [str(repo / "pkg" / "AGENTS.md")]
+    assert loaded.files[-1] == str(repo / "pkg" / "CLAUDE.md")
 
 
 def test_a_link_inside_the_project_still_loads(repo: Path) -> None:
@@ -223,20 +248,36 @@ def test_a_link_inside_the_project_still_loads(repo: Path) -> None:
     assert loaded.skipped == []
 
 
-def test_the_home_file_must_stay_in_nare_home(repo: Path, tmp_path: Path) -> None:
+def test_the_home_file_may_link_into_a_dotfiles_folder(
+    repo: Path, tmp_path: Path
+) -> None:
+    """Only the person writes NARE_HOME, and a link from it into their own
+    dotfiles checkout is a common setup, so the home file is read wherever
+    it points."""
     home = nare_home()
     assert home is not None
     home.mkdir(parents=True, exist_ok=True)
-    outside = tmp_path / "elsewhere.txt"
-    outside.write_text("Not home text.\n")
-    (home / "AGENTS.md").symlink_to(outside)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    (dotfiles / "AGENTS.md").write_text("Personal rule.\n")
+    (home / "AGENTS.md").symlink_to(dotfiles / "AGENTS.md")
     loaded = instructions.load(str(repo / "pkg"))
     assert loaded is not None
-    assert "Not home text" not in loaded.text
-    assert loaded.skipped == [str(home / "AGENTS.md")]
+    assert "Personal rule." in loaded.text
+    assert loaded.skipped == []
+
+
+def test_a_file_that_fills_the_cap_exactly_ends_the_list(repo: Path) -> None:
+    (repo / "AGENTS.md").write_text("x" * instructions.MAX_BYTES)
+    loaded = instructions.load(str(repo / "pkg"))
+    assert loaded is not None and loaded.truncated
+    assert loaded.files == [str(repo / "AGENTS.md")]
+    assert "Package rule" not in loaded.text and str(repo / "pkg") not in loaded.text
+    assert loaded.text.endswith(instructions.CUT)
 
 
 def test_a_file_is_read_only_up_to_the_cap(tmp_path: Path) -> None:
+    (tmp_path / ".git").mkdir()
     big = tmp_path / "AGENTS.md"
     with big.open("wb") as handle:
         handle.truncate(64 * 1024 * 1024)

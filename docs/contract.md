@@ -1702,13 +1702,16 @@ directory has no `AGENTS.md`. Their total is capped at 32 KiB; a cut ends with
 files, with `detail.project_instructions` as `{"files": [...], "bytes": N,
 "truncated": false}`. `--no-project-instructions` leaves them out.
 
-A file is read where it really is. One that resolves, through a symbolic link,
-outside the folder it was found for (the project root, or `$NARE_HOME` for the
-home file) is skipped, never read: the event's text says so, and
+A project's file is read where it really is. One that resolves, through a
+symbolic link, outside the project root is skipped, never read, and the
+directory's `CLAUDE.md` is tried in its place: the event's text says so, and
 `detail.project_instructions.skipped` lists each as `{"file": "<path>",
 "reason": "outside the project"}`. When every file is skipped, the event still
-comes, with `"files": []`. A link that stays inside the project loads as usual.
-Each file is read only as far as the cap needs.
+comes, with `"files": []`. A link that stays inside the project root loads as
+usual; in a git submodule the root is the submodule's own, so a link up into
+the superproject is skipped. `$NARE_HOME/AGENTS.md` is read wherever it
+points (a link into a dotfiles checkout, say), since only the person writes
+`$NARE_HOME`. Each file is read only as far as the cap needs.
 
 `nare run` never reads them, so a caller's prompt is exactly what it sent and
 its runs stay deterministic. `nare run --project-instructions` opts in, with
