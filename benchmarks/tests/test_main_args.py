@@ -1372,3 +1372,53 @@ def test_the_timeout_scale_must_be_positive_and_is_not_for_the_matrix(
     assert refused.value.code == 2
     assert main(["run", "--matrix", "--timeout-scale", "2"]) == 2
     assert "--timeout-scale" in capsys.readouterr().err
+
+
+# The sweep tier (#43, #341): a case's rate there only means something next to
+# its rate at another point, so a single blessed rate would mislead.
+
+
+def test_bless_refuses_the_sweep_tier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    baselines = results_dir(tmp_path, monkeypatch)
+    write_results(tmp_path, [record("deploy-feed-window", model="m")], STAMP)
+    assert main(["bless", "--tier", "sweep", "--model", "m"]) == 2
+    err = capsys.readouterr().err
+    assert "the sweep tier has no baselines" in err
+    assert not baselines.exists()
+
+
+@pytest.mark.parametrize(
+    ("tier", "case", "hint"),
+    [
+        ("sweep", "deploy-feed-window", "the sweep tier has no baselines"),
+        ("smoke", "edit-docstring", "bless one with: bin/bench bless --tier smoke"),
+    ],
+)
+def test_a_first_run_suggests_a_bless_only_where_a_baseline_belongs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tier: str,
+    case: str,
+    hint: str,
+) -> None:
+    import benchmarks.runner.__main__ as bench
+
+    results_dir(tmp_path, monkeypatch)
+    monkeypatch.setattr(bench, "build_image", lambda root: None)
+    monkeypatch.setattr(bench, "judge_transport", lambda config: None)
+    monkeypatch.setattr(
+        bench,
+        "run_model",
+        lambda root, cases, config, stamp: (None, [record(case, model="m")]),
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.delenv("NARE_BASE_URL", raising=False)
+    argv = ["run", "--tier", tier, "--case", case, "--model", "m"]
+    assert main([*argv, "--provider", "anthropic"]) == 0
+    out = capsys.readouterr().out
+    assert hint in out
+    if tier == "sweep":
+        assert "bless" not in out
