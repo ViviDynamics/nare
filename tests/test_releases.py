@@ -84,6 +84,45 @@ STABLE_INSTALL = (
 )
 
 
+def _install_section() -> str:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    return readme[readme.index("## Install") : readme.index("## Providers")]
+
+
+def test_the_install_section_leads_with_the_single_command() -> None:
+    install = _install_section()
+    commands = [
+        line.strip() for line in install.splitlines() if line.startswith("    ")
+    ]
+    assert commands[0] == STABLE_INSTALL
+    assert install.index(STABLE_INSTALL) < install.index("### Other ways to install")
+
+
+def test_every_other_route_is_under_one_other_ways_heading() -> None:
+    install = _install_section()
+    assert install.count("### Other ways to install") == 1
+    assert install.count("\n### ") == 1
+    other = install[install.index("### Other ways to install") :]
+    for route in (
+        "releases/download/$V/nare-$V-py3-none-any.whl",
+        "ghcr.io/vividynamics/nare:$V",
+        'pip install "git+https://github.com/ViviDynamics/nare@$V"',
+    ):
+        assert route in other, route
+
+
+def test_the_install_section_documents_the_pin_and_the_headless_option() -> None:
+    install = _install_section()
+    assert (
+        "curl -fsSL https://github.com/ViviDynamics/nare/releases/download/"
+        "<version>/install.sh | sh"
+    ) in install
+    assert "| sh -s -- --no-tui" in install
+    assert "NARE_INSTALL_NO_TUI=1" in install
+    # uv is installed for the reader now, and the README says so.
+    assert "installs uv" in install
+
+
 def test_the_readme_gives_the_stable_installer_and_how_to_start_the_tui() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     install = readme[readme.index("## Install") : readme.index("## Providers")]
