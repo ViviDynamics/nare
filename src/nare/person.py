@@ -300,17 +300,12 @@ def auth_main(argv: list[str]) -> int:
     )
     sub = parser.add_subparsers(dest="action", required=True)
     providers = list(credentials.KEY_ENV)
-    # argparse never checks a default against choices (#354), so NARE_PROVIDER
-    # is checked here. login falls back to anthropic, since adding a key the
-    # message names is harmless; logout never guesses which key to remove.
-    env = os.environ.get("NARE_PROVIDER") or "anthropic"
-    default = env if env in [*providers, "bedrock"] else "anthropic"
     login = sub.add_parser(
         "login",
         help="store a key in NARE_HOME/credentials.json (mode 0600), typed with "
         "the input hidden",
     )
-    login.add_argument("--provider", choices=[*providers, "bedrock"], default=default)
+    login.add_argument("--provider", choices=[*providers, "bedrock"])
     login.add_argument(
         "--with-api-key",
         action="store_true",
@@ -325,34 +320,49 @@ def auth_main(argv: list[str]) -> int:
     logout = sub.add_parser("logout", help="remove a stored key")
     logout.add_argument("--provider", choices=providers)
     args = parser.parse_args(words)
+    # The default is NARE_PROVIDER, checked here because argparse never checks
+    # a default against choices (#354).
+    env = os.environ.get("NARE_PROVIDER") or "anthropic"
     try:
-        if args.action == "logout" and args.provider is None:
-            if env not in providers:
-                raise ValueError(
-                    f"NARE_PROVIDER={env} keeps no stored key: pass --provider "
-                    + " or --provider ".join(providers)
-                )
-            args.provider = env
+        if args.provider is None and env not in cli.PROVIDERS:
+            raise ValueError(
+                f"NARE_PROVIDER={env} is not a provider: pass --provider, or set "
+                "it to one of " + ", ".join(cli.PROVIDERS)
+            )
         if args.action == "login":
-            if args.provider == "bedrock":
+            # fake replays a script and needs no key, so the key a person
+            # types is for the default provider; the message names it.
+            provider = args.provider or ("anthropic" if env == "fake" else env)
+            if provider == "bedrock":
                 raise ValueError(
                     "bedrock signs with AWS credentials, not a stored key: use an "
                     "AWS profile, the environment or a role"
                 )
-            key = credentials.read_key(args.provider, from_stdin=args.with_api_key)
-            path = credentials.store_key(args.provider, key)
-            print(f"nare: stored the {args.provider} key in {path}", file=sys.stderr)
+            key = credentials.read_key(provider, from_stdin=args.with_api_key)
+            path = credentials.store_key(provider, key)
+            print(f"nare: stored the {provider} key in {path}", file=sys.stderr)
             return 0
         if args.action == "logout":
-            removed = credentials.remove_key(args.provider)
+            provider = args.provider or env
+            if provider not in providers:
+                # Never a guess at which key to remove.
+                print(
+                    f"nare: NARE_PROVIDER={env} keeps no stored key, so none was "
+                    "removed; pass --provider "
+                    + " or --provider ".join(providers)
+                    + " to remove one",
+                    file=sys.stderr,
+                )
+                return 0
+            removed = credentials.remove_key(provider)
             print(
-                f"nare: removed the stored {args.provider} key"
+                f"nare: removed the stored {provider} key"
                 if removed
-                else f"nare: no {args.provider} key was stored",
+                else f"nare: no {provider} key was stored",
                 file=sys.stderr,
             )
             return 0
-        chosen = args.provider or (env if env == "fake" else default)
+        chosen = args.provider or env
         listed = [*providers, "bedrock", *(["fake"] if chosen == "fake" else [])]
         found = False
         for provider in listed if args.provider is None else [chosen]:

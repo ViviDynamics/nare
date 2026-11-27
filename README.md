@@ -114,12 +114,12 @@ argv. The environment variable, when set, wins over a stored key, for every
 command including `nare run`. `nare auth status` exits 0 when the default
 provider (`NARE_PROVIDER`, else anthropic) has a key and 1 when not; for
 bedrock it reports whether the AWS credential chain resolves, and `fake` needs
-none. When `NARE_PROVIDER` is not anthropic or openai, `nare auth login` with
-no `--provider` stores an anthropic key (under bedrock it says to use AWS
-credentials instead), and `nare auth logout` exits 2 asking for `--provider`
-rather than guess which key to remove. Nothing prompts without a terminal: `nare auth login` there needs `--with-api-key`. `nare`,
-`nare "<task>"` and `nare -p` with no key say so in one line, naming
-`nare auth login`.
+none. Under `NARE_PROVIDER=fake`, `nare auth login` stores an anthropic key;
+`nare auth logout` under fake or bedrock removes nothing unless `--provider`
+names a key; and a `NARE_PROVIDER` nare does not know is an exit 2 for all
+three, never taken for anthropic. Nothing prompts without a terminal:
+`nare auth login` there needs `--with-api-key`. `nare`, `nare "<task>"` and
+`nare -p` with no key say so in one line, naming `nare auth login`.
 
 ### Claude on Amazon Bedrock
 
