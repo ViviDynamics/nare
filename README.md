@@ -17,7 +17,7 @@ It needs only `curl`. nare installs as a [uv](https://docs.astral.sh/uv/) tool
 in its own environment, and the script uses the uv it finds. When there is
 none, it says so and installs uv into `~/.local/bin` with Astral's official
 installer (`https://astral.sh/uv/install.sh`, which also adds that directory to
-your shell profile, as it always does), without asking; install uv yourself
+your shell profile, as it does by default), without asking; install uv yourself
 first if you would rather run that step on your own. uv brings Python 3.12 or
 newer if the machine has none. The `nare` command lands in uv's tool bin
 directory (`uv tool dir --bin`, usually `~/.local/bin`), and when that is not

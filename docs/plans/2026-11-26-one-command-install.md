@@ -37,18 +37,18 @@ command does one thing wherever it runs).
   the URL shape changes.
 
 ## Tasks
-- [ ] 1. Missing uv is installed after the digest check: tests with a stub uv
+- [x] 1. Missing uv is installed after the digest check: tests with a stub uv
   installer (installed into `~/.local/bin`, says so, no prompt, a repeat run
   does not install it again, a mismatch never runs it, a failed installer
   stops with the docs link, an existing uv is used).
-- [ ] 2. Headless option: tests that `--no-tui` and `NARE_INSTALL_NO_TUI=1`
+- [x] 2. Headless option: tests that `--no-tui` and `NARE_INSTALL_NO_TUI=1`
   install `nare @ ...` without the extra and skip the TUI check, and that a bad
   value is refused.
-- [ ] 3. PATH line: test that the exact `export PATH=` line is printed when the
+- [x] 3. PATH line: test that the exact `export PATH=` line is printed when the
   bin dir is off `PATH`, and not when it is on it.
-- [ ] 4. README: tests that the Install section leads with the single command
+- [x] 4. README: tests that the Install section leads with the single command
   and holds the pinned and headless forms and one "Other ways to install"
   heading.
-- [ ] 5. Smoke: `smoke_installer.sh --without-uv` (real Astral installer, uv
+- [x] 5. Smoke: `smoke_installer.sh --without-uv` (real Astral installer, uv
   stripped from `PATH`, then repeat, upgrade and headless) in CI on Linux and
   macOS, and in a `debian:stable-slim` container on Linux.
