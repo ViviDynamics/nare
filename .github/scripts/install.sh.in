@@ -193,8 +193,12 @@ main() (
     case ":${PATH:-}:" in
         *":$bin_dir:"*) ;;
         *)
-            printf '\n%s is not on your PATH yet. Run: %s tool update-shell\n' "$bin_dir" "$uv"
-            printf 'then open a new terminal, or call %s/nare directly.\n' "$bin_dir"
+            printf '\n%s is not on your PATH yet. To use nare in this shell, run:\n' "$bin_dir"
+            # $PATH stays literal: the reader's shell expands it.
+            # shellcheck disable=SC2016
+            printf '  export PATH="%s:$PATH"\n' "$bin_dir"
+            printf 'For new terminals, run: %s tool update-shell\n' "$uv"
+            printf 'or call %s/nare directly.\n' "$bin_dir"
             ;;
     esac
 )

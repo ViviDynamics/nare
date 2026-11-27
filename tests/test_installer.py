@@ -364,7 +364,9 @@ def test_it_says_how_to_reach_nare_when_the_bin_dir_is_off_path(
     on_path = _run(release, extra_path=f"{release.home / 'bin'}{os.pathsep}")
 
     assert off_path.returncode == 0, off_path.stderr
-    assert "PATH" in off_path.stdout
+    # The exact line for this shell, with $PATH left for the shell to expand.
+    bin_dir = release.home / "bin"
+    assert f'  export PATH="{bin_dir}:$PATH"' in off_path.stdout.splitlines()
     # The uv it used, by path: it may have been found off PATH too.
     assert f"{uv} tool update-shell" in off_path.stdout
     assert on_path.returncode == 0, on_path.stderr
