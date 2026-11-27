@@ -170,9 +170,20 @@ def servers_from(raw: Any) -> dict[str, Server]:
 def _read(path: Path | None) -> dict[str, Any]:
     if path is None or not path.exists():
         return {}
+    return _loads(_bytes(path), path)
+
+
+def _bytes(path: Path) -> bytes:
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+        return path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"{path}: {exc}") from exc
+
+
+def _loads(data: bytes, path: Path) -> dict[str, Any]:
+    try:
+        loaded = json.loads(data.decode("utf-8"))
+    except ValueError as exc:
         raise ValueError(f"{path}: {exc}") from exc
     if not isinstance(loaded, dict):
         raise ValueError(f"{path} must hold a JSON object")
@@ -181,7 +192,10 @@ def _read(path: Path | None) -> dict[str, Any]:
 
 def entries(path: Path | None) -> dict[str, dict[str, Any]]:
     """The servers a file names, in mcpServers form, whichever format it has."""
-    raw = _read(path)
+    return _servers_in(_read(path), path)
+
+
+def _servers_in(raw: dict[str, Any], path: Path | None) -> dict[str, dict[str, Any]]:
     if not raw:
         return {}
     if is_mcp_servers(raw):
@@ -192,27 +206,34 @@ def entries(path: Path | None) -> dict[str, dict[str, Any]]:
     raise ValueError(f"{path} is neither nare's MCP format nor mcpServers")
 
 
-def _digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def _digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def _project_key(root: str) -> str:
     return os.path.realpath(root)
 
 
-def trusted(root: str) -> bool:
-    """Whether the person trusted this project's .mcp.json, as it is now: a
-    file changed since, a new server in it say, is asked about again."""
+def trusted(root: str, data: bytes | None = None) -> bool:
+    """Whether the person trusted this project's .mcp.json, as it is now (or
+    as `data`, the bytes already read): a file changed since, a new server in
+    it say, is asked about again."""
     path = project_path(root)
-    if not path.is_file():
-        return False
+    if data is None:
+        if not path.is_file():
+            return False
+        data = path.read_bytes()
     record = _read(_trust_path()).get(_project_key(root))
-    return isinstance(record, dict) and record.get("mcp_sha256") == _digest(path)
+    return isinstance(record, dict) and record.get("mcp_sha256") == _digest(data)
 
 
-def trust(root: str) -> None:
+def trust(root: str, data: bytes | None = None) -> None:
+    """Record the project's .mcp.json as trusted: `data`, the bytes the
+    person was shown, or the file as it is now."""
+    if data is None:
+        data = project_path(root).read_bytes()
     records = _read(_trust_path())
-    records[_project_key(root)] = {"mcp_sha256": _digest(project_path(root))}
+    records[_project_key(root)] = {"mcp_sha256": _digest(data)}
     _write(_trust_path(), records, private=True)
 
 
@@ -260,13 +281,16 @@ def defaults(
         return {}, []
     root = args.root or os.getcwd()
     user = entries(user_path())
-    project = entries(project_path(root)) if project_path(root).is_file() else {}
+    # Read once: what is shown, trusted and started are the same bytes.
+    path = project_path(root)
+    data = _bytes(path) if path.is_file() else None
+    project = {} if data is None else _servers_in(_loads(data, path), path)
     skipped: list[str] = []
-    if project and not trusted(root):
+    if project and data is not None and not trusted(root, data):
         if ask is not None:
             check_project(project)
         if ask is not None and ask(project):
-            trust(root)
+            trust(root, data)
         else:
             skipped, project = sorted(project), {}
     # The project's entry wins on a shared name, so the user's is not expanded.

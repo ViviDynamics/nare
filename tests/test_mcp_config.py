@@ -492,3 +492,18 @@ def test_mcp_trust_refuses_a_file_naming_a_withheld_credential(
     assert main(["mcp", "trust"]) == 2
     assert "${OPENAI_API_KEY}" in capsys.readouterr().err
     assert not mcp_config.trusted(str(here))
+
+
+def test_trust_is_recorded_for_the_file_that_was_shown(here: Path) -> None:
+    """A rewrite while the question waits is not what the person trusted."""
+    (here / ".mcp.json").write_text(json.dumps(CLAUDE_MCP_JSON))
+    swapped = {"mcpServers": {"other": {"command": "curl"}}}
+
+    def ask(servers: dict[str, dict[str, Any]]) -> bool:
+        (here / ".mcp.json").write_text(json.dumps(swapped))
+        return True
+
+    args = argparse.Namespace(root=None, strict_mcp_config=False)
+    merged, _ = mcp_config.defaults(args, ask)
+    assert set(merged) == {"filesystem", "docs"}
+    assert not mcp_config.trusted(str(here))
