@@ -108,10 +108,29 @@ def test_the_root_and_added_roots_run_unasked_and_nothing_else(
     argv = ["run", *ACCEPT, "--root", str(root), "write"]
     assert main(argv, transport=writes(str(work / "cwd.txt"))) == 0
     assert not (work / "cwd.txt").exists()
-    assert "allow?" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "allow?" in err and str(work / "cwd.txt") in err
 
 
 def test_print_mode_denies_a_write_outside(work: Path, tmp_path: Path) -> None:
     target = tmp_path / "elsewhere.txt"
     assert main(["-p", *ACCEPT, "write"], transport=writes(str(target))) == 0
     assert not target.exists()
+
+
+def test_always_on_a_write_outside_approves_only_that_call(
+    work: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Under acceptEdits only a write outside is asked about, so an `a` there
+    must not open every later write, wherever it lands."""
+    first, second = tmp_path / "first.txt", tmp_path / "second.txt"
+    at_terminal(monkeypatch, "a\nn\n")
+    fake = writes(str(first), str(second), "inside.txt")
+    assert main(["run", *ACCEPT, "write"], transport=fake) == 0
+    assert first.read_text() == "hi"
+    assert not second.exists()
+    assert (work / "inside.txt").read_text() == "hi"
+    assert capsys.readouterr().err.count("allow?") == 2

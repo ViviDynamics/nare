@@ -199,9 +199,14 @@ def accepting_edits(
             ):
                 return True
             answer = inner(tool, args)
-            if isinstance(answer, (bool, str)):
-                return answer
-            return await answer
+            if not isinstance(answer, (bool, str)):
+                answer = await answer
+            if tool in FILE_WRITES and isinstance(inner, Approver):
+                # Only a write outside the folders is asked about here, so an
+                # `a` approves that call alone, as for .git: it must not open
+                # every later write, wherever it lands.
+                inner.always.discard(tool)
+            return answer
 
         return approve
 
@@ -210,8 +215,11 @@ def accepting_edits(
 
 def working_folders(policy: Policy) -> list[Path]:
     """Where acceptEdits writes unasked, resolved once, as the run starts."""
-    base = policy.root if policy.root is not None else Path.cwd()
-    return [folder.resolve() for folder in (base, *policy.extra_roots)]
+    try:
+        base = policy.root if policy.root is not None else Path.cwd()
+        return [folder.resolve() for folder in (base, *policy.extra_roots)]
+    except (OSError, RuntimeError):
+        return []  # nothing runs unasked: every write is asked about
 
 
 def lands_in(path: str, folders: list[Path], policy: Policy) -> bool:

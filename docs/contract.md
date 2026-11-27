@@ -215,8 +215,9 @@ environment is a default, which an alias overrides as the flag would.
   inside the working folders, as Claude Code scopes it: the root (the working
   directory when there is no `--root`) and each `--add-root`, judged where the
   path resolves through any `..` or symbolic link. A write or edit anywhere
-  else, or into `.git`, is asked about like any other call, as is the rest.
-  Under `nare -p` the rest is denied.
+  else, or into `.git`, is asked about like any other call, as is the rest;
+  there `a` approves that one write, not every later one. Under `nare -p`
+  the rest is denied.
 - `--model provider/model`, and `-m`, split only when the prefix is a nare
   provider and nothing else names one; otherwise the value is the model name,
   as before, which keeps a proxy's own `vendor/model` names working.
