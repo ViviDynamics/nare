@@ -715,12 +715,13 @@ def _errored_rep(
 
 
 async def run_rep(
-    case: Case, config: Config, transport: Transport, rep: int, evidence: Path
+    case: Case, config: Config, transport: Transport | None, rep: int, evidence: Path
 ) -> RepRecord:
     """One repetition, from a clean fixture to a graded record.
 
     `evidence` is this run's directory under benchmarks/results/; the rep's
     session, output and judge replies are kept in a subdirectory of it.
+    `transport` is the judge's, None for a run that judges no case (run_judge).
     """
     kept = evidence / f"{case.id}-{rep}"
     kept_ref = kept.relative_to(evidence.parent).as_posix()
@@ -821,6 +822,10 @@ async def run_rep(
         if case.judge is not None:
             attempts: tuple[JudgeAttempt, ...]
             try:
+                if transport is None:
+                    # require_judge refuses a judged case with no judge before
+                    # any rep; reaching this is a bug, recorded as one rep's.
+                    raise JudgeError("no judge model is configured")
                 met, reasons, attempts = await score(
                     case, diff, closing, transport=transport
                 )
@@ -873,7 +878,7 @@ async def run_rep(
 
 
 async def run_case(
-    case: Case, config: Config, transport: Transport, reps: int, evidence: Path
+    case: Case, config: Config, transport: Transport | None, reps: int, evidence: Path
 ) -> list[RepRecord]:
     # Sequential on purpose: repetitions share one rate limit and one Docker
     # daemon, and a benchmark that saturates either measures the machine.
@@ -1734,7 +1739,7 @@ def ab_command(args: argparse.Namespace, root: Path, config: Config) -> int:
             except SandboxError as exc:
                 print(f"bench: {arm}: {exc}", file=sys.stderr)
                 return 2
-        transport = judge_transport(config)
+        transport = run_judge(config)
         records: dict[str, list[RepRecord]] = {"base": [], "head": []}
         for case in cases:
             for rep in range(args.reps):
@@ -1797,13 +1802,22 @@ def _positive_scale(text: str) -> float:
     return value
 
 
+def run_judge(config: Config) -> Transport | None:
+    """The judge's transport for a run, or None when it has no judge model.
+
+    require_judge lets a run start without one only when none of its cases is
+    judged (#355), so no rep of it asks for a judge.
+    """
+    return None if config.judge_model is None else judge_transport(config)
+
+
 def run_model(
     root: Path, cases: Sequence[Case], config: Config, name: str
-) -> tuple[Transport, list[RepRecord]]:
+) -> tuple[Transport | None, list[RepRecord]]:
     """Every case at its own reps: results/<name>.jsonl, and each rep's
     evidence under results/<name>/. A stop writes no results file: the cases
     it finished are kept in results/<name>/results.partial.jsonl."""
-    transport = judge_transport(config)
+    transport = run_judge(config)
     evidence = root / "benchmarks" / "results" / name
     records: list[RepRecord] = []
     try:
@@ -1849,7 +1863,7 @@ def confirm(
     root: Path,
     cases: Sequence[Case],
     config: Config,
-    transport: Transport,
+    transport: Transport | None,
     name: str,
     records: list[RepRecord],
     baseline: Baseline,
