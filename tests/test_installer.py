@@ -2,9 +2,10 @@
 
 The stub records what the installer asked of uv and lays down a fake `nare`
 and a fake tool interpreter, so these tests cover the script's own decisions:
-the digest check, the uv requirement, the tui extra, the version and TUI
-checks, and a repeat run. CI's installer smoke job does the same against a
-real build and the real uv.
+the digest check, finding or installing uv, the tui extra and the headless
+option, the version and TUI checks, and a repeat run. A stub of Astral's uv
+installer stands in for the real one. CI's installer smoke job does the same
+against a real build, the real uv and the real uv installer.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ set -eu
 PATH=/usr/bin:/bin
 printf '%s\\n' "$*" >> "$STUB_LOG"
 case "$*" in
+  "--version") echo "uv 0.0.0-stub" ;;
   "tool dir --bin") printf '%s\\n' "$UV_TOOL_BIN_DIR" ;;
   "tool dir") printf '%s\\n' "$UV_TOOL_DIR" ;;
   "tool install "*)
@@ -49,8 +51,23 @@ PYTHON
 esac
 """
 
+# Astral's installer, as far as the installer relies on it: it puts uv in
+# UV_INSTALL_DIR. It records how it was called and whether stdin was a
+# terminal, which would let it prompt.
+STUB_UV_INSTALLER = """#!/bin/sh
+set -eu
+PATH=/usr/bin:/bin
+if [ -t 0 ]; then tty=yes; else tty=no; fi
+printf 'uv-installer UV_INSTALL_DIR=%s tty=%s\\n' "${UV_INSTALL_DIR:-}" "$tty" >> "$STUB_LOG"
+[ "$STUB_UV_INSTALLER_EXIT" = 0 ] || exit "$STUB_UV_INSTALLER_EXIT"
+[ "$STUB_UV_INSTALLER_WRITES" = 1 ] || exit 0
+mkdir -p "$UV_INSTALL_DIR"
+cp "$STUB_UV_SOURCE" "$UV_INSTALL_DIR/uv"
+chmod +x "$UV_INSTALL_DIR/uv"
+"""
+
 # What the installer may call besides uv. Everything else is a shell builtin.
-TOOLS = ("curl", "mkdir", "mktemp", "mv", "rm", "sha256sum", "shasum")
+TOOLS = ("curl", "mkdir", "mktemp", "mv", "rm", "sh", "sha256sum", "shasum")
 
 
 @dataclass
@@ -60,6 +77,8 @@ class Release:
     tools: Path
     log: Path
     installer: Path
+    uv_installer: Path
+    uv_source: Path
 
 
 def _render(digest: str) -> str:
@@ -95,7 +114,15 @@ def release(tmp_path: Path) -> Release:
             (tools / name).symlink_to(found)
     home = tmp_path / "home"
     home.mkdir()
-    return Release(home, assets, tools, tmp_path / "uv.log", installer)
+    astral = tmp_path / "astral"
+    astral.mkdir()
+    uv_installer = astral / "install.sh"
+    uv_installer.write_text(STUB_UV_INSTALLER, encoding="utf-8")
+    uv_source = astral / "uv"
+    uv_source.write_text(STUB_UV, encoding="utf-8")
+    return Release(
+        home, assets, tools, tmp_path / "uv.log", installer, uv_installer, uv_source
+    )
 
 
 def _with_uv(release: Release, where: Path | None = None) -> Path:
@@ -112,7 +139,10 @@ def _run(
     stdin: bool = False,
     reports: str = VERSION,
     tui_exit: int = 0,
+    uv_installer_exit: int = 0,
+    uv_installer_writes: bool = True,
     release_url: str | None = None,
+    args: tuple[str, ...] = (),
     extra_path: str = "",
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -125,19 +155,27 @@ def _run(
         "STUB_LOG": str(release.log),
         "STUB_REPORTS": reports,
         "STUB_TUI_EXIT": str(tui_exit),
+        # Never Astral's real installer: these tests are offline.
+        "NARE_UV_INSTALLER_URL": f"file://{release.uv_installer}",
+        "STUB_UV_SOURCE": str(release.uv_source),
+        "STUB_UV_INSTALLER_EXIT": str(uv_installer_exit),
+        "STUB_UV_INSTALLER_WRITES": "1" if uv_installer_writes else "0",
         **(extra_env or {}),
     }
     if stdin:
         # The documented form: curl ... | sh
         return subprocess.run(
-            ["/bin/sh"],
+            ["/bin/sh", "-s", "--", *args],
             input=release.installer.read_text(encoding="utf-8"),
             env=env,
             capture_output=True,
             text=True,
         )
     return subprocess.run(
-        ["/bin/sh", str(release.installer)], env=env, capture_output=True, text=True
+        ["/bin/sh", str(release.installer), *args],
+        env=env,
+        capture_output=True,
+        text=True,
     )
 
 
@@ -149,6 +187,10 @@ def _uv_calls(release: Release) -> list[str]:
 
 def _installs(release: Release) -> list[str]:
     return [call for call in _uv_calls(release) if call.startswith("tool install")]
+
+
+def _uv_installer_runs(release: Release) -> list[str]:
+    return [call for call in _uv_calls(release) if call.startswith("uv-installer")]
 
 
 def test_it_installs_the_tagged_wheel_with_the_tui_extra(release: Release) -> None:
@@ -205,12 +247,79 @@ def test_a_wheel_with_another_digest_is_never_installed(release: Release) -> Non
     assert _installs(release) == []
 
 
-def test_without_uv_it_stops_and_says_how_to_get_it(release: Release) -> None:
-    result = _run(release)
+def test_without_uv_it_installs_uv_into_local_bin_and_says_so(
+    release: Release,
+) -> None:
+    result = _run(release, stdin=True)
+
+    assert result.returncode == 0, result.stderr
+    local_bin = release.home / ".local" / "bin"
+    # Never a prompt: under curl | sh there is no one to answer it.
+    assert _uv_installer_runs(release) == [
+        f"uv-installer UV_INSTALL_DIR={local_bin} tty=no"
+    ]
+    assert (local_bin / "uv").is_file()
+    assert "uv is not installed" in result.stdout
+    assert "Astral's official installer" in result.stdout
+    assert f"{local_bin / 'uv'}" in result.stdout
+    assert len(_installs(release)) == 1
+    assert f"{local_bin / 'uv'} tool update-shell" in result.stdout
+
+
+def test_a_repeat_run_uses_the_uv_it_installed(release: Release) -> None:
+    first = _run(release, stdin=True)
+    second = _run(release, stdin=True)
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert len(_uv_installer_runs(release)) == 1
+    assert "uv is not installed" not in second.stdout
+    assert len(_installs(release)) == 2
+
+
+def test_an_existing_uv_is_used_and_no_other_is_installed(release: Release) -> None:
+    _with_uv(release)
+
+    result = _run(release, stdin=True)
+
+    assert result.returncode == 0, result.stderr
+    assert _uv_installer_runs(release) == []
+    assert not (release.home / ".local" / "bin" / "uv").exists()
+    assert "uv is not installed" not in result.stdout
+
+
+def test_a_digest_mismatch_installs_no_uv_either(release: Release) -> None:
+    (release.assets / WHEEL).write_bytes(b"different bytes\n")
+
+    result = _run(release, stdin=True)
+
+    assert result.returncode != 0
+    assert "SHA-256" in result.stderr
+    assert _uv_installer_runs(release) == []
+    assert not (release.home / ".local" / "bin" / "uv").exists()
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "writes"), [(1, False), (0, False)], ids=["fails", "no-uv"]
+)
+def test_a_uv_installer_that_leaves_no_uv_stops_with_how_to_get_it(
+    release: Release, exit_code: int, writes: bool
+) -> None:
+    result = _run(release, uv_installer_exit=exit_code, uv_installer_writes=writes)
 
     assert result.returncode != 0
     assert "uv" in result.stderr
     assert "https://docs.astral.sh/uv/" in result.stderr
+    assert _installs(release) == []
+
+
+@pytest.mark.parametrize("url", ["http://example.invalid/uv.sh", "/plain/uv.sh"])
+def test_a_uv_installer_url_must_be_https_or_file(release: Release, url: str) -> None:
+    result = _run(release, extra_env={"NARE_UV_INSTALLER_URL": url})
+
+    assert result.returncode != 0
+    assert "NARE_UV_INSTALLER_URL" in result.stderr
+    assert _uv_installer_runs(release) == []
 
 
 def test_a_mismatched_installed_version_fails(release: Release) -> None:
@@ -342,3 +451,9 @@ def test_it_finds_uv_where_uvs_own_installer_put_it(
     assert result.returncode == 0, result.stderr
     assert len(_installs(release)) == 1
     assert f"{uv} tool update-shell" in result.stdout
+
+
+def test_uv_comes_from_astrals_installer_by_default(release: Release) -> None:
+    # The tests replace it; a reader's run fetches Astral's own, over https.
+    script = release.installer.read_text(encoding="utf-8")
+    assert "${NARE_UV_INSTALLER_URL:-https://astral.sh/uv/install.sh}" in script

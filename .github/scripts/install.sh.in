@@ -47,29 +47,18 @@ main() (
         https://* | file://*) ;;
         *) fail 'NARE_RELEASE_URL must be an https:// or file:// URL.' ;;
     esac
+    # Only for testing the installer offline, against a stub of Astral's.
+    uv_installer_url=${NARE_UV_INSTALLER_URL:-https://astral.sh/uv/install.sh}
+    case "$uv_installer_url" in
+        https://* | file://*) ;;
+        *) fail 'NARE_UV_INSTALLER_URL must be an https:// or file:// URL.' ;;
+    esac
 
     case "${HOME:-}" in
         /?*) ;;
         *) fail 'HOME must be set to an absolute path.' ;;
     esac
     command -v curl >/dev/null 2>&1 || fail 'curl is required. Install it, then run this again.'
-    # uv's own installer may have just put it somewhere this shell's PATH
-    # does not reach yet: XDG_BIN_HOME, ~/.local/bin, or ~/.cargo/bin.
-    uv=$(command -v uv 2>/dev/null || true)
-    if [ -z "$uv" ]; then
-        case "${XDG_BIN_HOME:-}" in
-            /*) xdg_bin=$XDG_BIN_HOME ;;
-            *) xdg_bin=$HOME/.local/bin ;;
-        esac
-        for candidate in "$xdg_bin/uv" "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
-            if [ -x "$candidate" ]; then
-                uv=$candidate
-                break
-            fi
-        done
-    fi
-    [ -n "$uv" ] || fail 'uv is required. Install it from' \
-        'https://docs.astral.sh/uv/getting-started/installation/ and run this again.'
     if command -v sha256sum >/dev/null 2>&1; then
         sha256() { sha256sum "$1"; }
     elif command -v shasum >/dev/null 2>&1; then
@@ -94,6 +83,43 @@ main() (
         || fail "$wheel does not match the SHA-256 this installer was released" \
             "with, so nothing was installed."
     printf 'Verified SHA-256 %s\n' "$wheel_sha256"
+
+    # An existing uv is used as is. uv's own installer may have put it
+    # somewhere this shell's PATH does not reach yet: XDG_BIN_HOME,
+    # ~/.local/bin, or ~/.cargo/bin.
+    uv=$(command -v uv 2>/dev/null || true)
+    if [ -z "$uv" ]; then
+        case "${XDG_BIN_HOME:-}" in
+            /*) xdg_bin=$XDG_BIN_HOME ;;
+            *) xdg_bin=$HOME/.local/bin ;;
+        esac
+        for candidate in "$xdg_bin/uv" "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
+            if [ -x "$candidate" ]; then
+                uv=$candidate
+                break
+            fi
+        done
+    fi
+    # Only after the digest matched, so a bad download installs nothing,
+    # uv included. Astral's installer takes no input, and gets none: under
+    # curl | sh there is no one to answer a prompt.
+    if [ -z "$uv" ]; then
+        uv_dir=$HOME/.local/bin
+        printf "uv is not installed. Installing it into %s with Astral's official installer, %s\n" \
+            "$uv_dir" "$uv_installer_url"
+        uv_help='Install uv from https://docs.astral.sh/uv/getting-started/installation/ and run this again.'
+        curl --fail --silent --show-error --location \
+            --proto '=https,file' --proto-redir '=https' \
+            --connect-timeout 15 --retry 3 \
+            --output "$tmp/uv-installer.sh" "$uv_installer_url" \
+            || fail "could not download $uv_installer_url. $uv_help"
+        UV_INSTALL_DIR=$uv_dir sh "$tmp/uv-installer.sh" </dev/null \
+            || fail "uv's installer failed; its error is above. $uv_help"
+        [ -x "$uv_dir/uv" ] || fail "uv's installer did not put uv in $uv_dir. $uv_help"
+        uv=$uv_dir/uv
+        uv_version=$("$uv" --version </dev/null) || fail "the installed $uv did not run. $uv_help"
+        printf 'Installed %s at %s\n' "$uv_version" "$uv"
+    fi
 
     # uv records the wheel's path and reads it again on uv tool upgrade or a
     # reinstall, so the verified wheel is kept, not left in $tmp.
