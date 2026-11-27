@@ -92,6 +92,22 @@ jobs:
           echo "VERSION=$version" >> "$GITHUB_ENV"
       - name: Install from those assets, clean and again
         run: .github/scripts/smoke_installer.sh dist "$VERSION"
+      # A machine with no uv: the installer has to bring it, with Astral's
+      # real installer, and a repeat run has to use that one.
+      - name: Install with no uv on PATH, clean and again
+        run: .github/scripts/smoke_installer.sh dist "$VERSION" --without-uv
+      # A clean Debian with nothing but curl added: no uv, no Python.
+      - name: Install into a clean debian:stable-slim with only curl
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm \
+            -v "$PWD/dist:/dist:ro" -v "$PWD/.github/scripts:/scripts:ro" \
+            debian:stable-slim bash -c '
+              set -euo pipefail
+              apt-get update -qq
+              apt-get install -y -qq curl >/dev/null
+              /scripts/smoke_installer.sh /dist "$1" --without-uv
+            ' smoke "$VERSION"
 
   cases:
     name: benchmark cases measure something
