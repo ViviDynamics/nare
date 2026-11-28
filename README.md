@@ -113,10 +113,13 @@ To keep a key without exporting it in every shell, store it once:
 argv. The environment variable, when set, wins over a stored key, for every
 command including `nare run`. `nare auth status` exits 0 when the default
 provider (`NARE_PROVIDER`, else anthropic) has a key and 1 when not; for
-bedrock it reports whether the AWS credential chain resolves. Nothing prompts
-without a terminal: `nare auth login` there needs `--with-api-key`. `nare`,
-`nare "<task>"` and `nare -p` with no key say so in one line, naming
-`nare auth login`.
+bedrock it reports whether the AWS credential chain resolves, and `fake` needs
+none. Under `NARE_PROVIDER=fake`, `nare auth login` stores an anthropic key;
+`nare auth logout` under fake or bedrock removes nothing unless `--provider`
+names a key; and a `NARE_PROVIDER` nare does not know is an exit 2 for all
+three, never taken for anthropic. Nothing prompts without a terminal:
+`nare auth login` there needs `--with-api-key`. `nare`, `nare "<task>"` and
+`nare -p` with no key say so in one line, naming `nare auth login`.
 
 ### Claude on Amazon Bedrock
 
@@ -245,7 +248,12 @@ confined to (`--root` changes it). A task that is a command's name goes after
 
 `nare -p` and `nare exec` take every `nare run` flag. Piped stdin is extra
 context, added after the task in a `<stdin>` block (`cat f.py | nare -p
-"explain"`), and `-` or no task at all reads the whole prompt from stdin.
+"explain"`), if it starts or ends within 1 second; a pipe left open and idle is
+skipped with a note on stderr, so it cannot hang them (`NARE_STDIN_WAIT_SECONDS`
+waits longer for a slow producer). With no task, or `-`,
+stdin is the whole prompt (`git diff | nare -p`), and on a resume the
+follow-up (`echo "now fix it" | nare -p -c`). The exact rules are in
+[the contract](docs/contract.md#the-person-facing-commands).
 `--output-format text` (the default) prints the answer alone, `json` the
 `result` line alone, and `stream-json` (or `--json`, or `--jsonl`) the event
 stream and the result line exactly as `nare run --jsonl` prints them. With no
