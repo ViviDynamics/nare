@@ -43,6 +43,7 @@ from textual.worker import Worker, WorkerCancelled
 
 from nare.accounting import Prices
 from nare.cli import (
+    add_instructions_event,
     adopt_system,
     capacity_for_run,
     fork_with_note,
@@ -540,6 +541,9 @@ class TuiApp(App[None]):
             transcript.note(f"{new_path.parent} is not a folder")
             return
         child = fork_with_note(self.session, self.args.session)
+        # Events queued for this run and not yet emitted (a resume's, before
+        # its first turn) are the fork's now: the fork is what runs next.
+        child.events[:0] = self.session.events
         try:
             # Created exclusively first: the save below replaces this empty file,
             # and no other file is ever at risk of being written over.
@@ -597,6 +601,7 @@ class TuiApp(App[None]):
                 None if self.args.root is None else str(Path(self.args.root).resolve())
             )
             adopt_system(self.args, self.session)
+            add_instructions_event(self.args, self.session)
         else:
             reopen(self.session, text)
         messages = self.session.messages
@@ -679,10 +684,13 @@ class TuiApp(App[None]):
             # The call has finished: nothing is running now.
             self.activity = None
         notice = event.type == "progress" and (
-            "compaction" in event.detail or "context_window" in event.detail
+            "compaction" in event.detail
+            or "context_window" in event.detail
+            or "project_instructions" in event.detail
         )
         if notice:
-            # Kept: the live area clears when the turn settles. The window is
+            # Kept: the live area clears when the turn settles, and which
+            # files shaped the prompt matters after it. The window is
             # announced on every follow-up, so only a change is news.
             if event.text != self.window:
                 self.query_one(Transcript).note(event.text)
@@ -1006,6 +1014,7 @@ def prepare(args: argparse.Namespace, transport: Transport | None = None) -> Tui
             session = fork_with_note(session, args.resume)
         # As in nare run: the recorded system prompt, unless a flag replaces it.
         adopt_system(args, session)
+        add_instructions_event(args, session)
         # As in nare run: a bad saved budget exits 2, not in the worker.
         configure_budgets(session, args.budget_tokens, args.budget_usd)
     if transport is None:

@@ -2184,16 +2184,14 @@ def run_command(
         return NEVER_STARTED
 
     try:
-        loaded = load_instructions(args)
+        args.instructions_event = load_instructions(args)
         session, transport, policy, schema, prices, check, cited_read_map = prepare_run(
             args, transport
         )
     except (ValueError, OSError, UnsupportedSchema) as exc:
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED
-    if loaded is not None and args.instructions_text is not None:
-        # Not when the resume sent the record instead (adopt_system).
-        session.events.append(loaded)
+    add_instructions_event(args, session)
     if on_session is not None:
         on_session(session)
     if approver is not None and getattr(args, "accept_edits", False):
@@ -2232,6 +2230,15 @@ def load_instructions(args: argparse.Namespace) -> Event | None:
     loaded = load(os.getcwd())
     args.instructions_text = None if loaded is None else loaded.text
     return None if loaded is None else loaded.event()
+
+
+def add_instructions_event(args: argparse.Namespace, session: Session) -> None:
+    """Queue the event load_instructions made (args.instructions_event), with
+    the run's other pending events. Not when the resume sent the record
+    instead (adopt_system), which adds no instructions."""
+    event = getattr(args, "instructions_event", None)
+    if event is not None and getattr(args, "instructions_text", None) is not None:
+        session.events.append(event)
 
 
 def prepare_run(
