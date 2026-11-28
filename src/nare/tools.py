@@ -1492,6 +1492,10 @@ class Policy:
     # refused before any approval. Deny wins. See nare.bash_rules.
     bash_allow: frozenset[str] = frozenset()
     bash_deny: frozenset[str] = frozenset()
+    # Tools whose calls nare's approver runs unasked (--allowed-tools), as if
+    # `a` had been pressed for each before the run (nare.tui.approve.Approver).
+    # It adds no tool: one not in `tools` is never offered.
+    approved_tools: frozenset[str] = frozenset()
     # Run each bash command under the OS sandbox (nare.sandbox): writes only in
     # the root and a private temp dir, credentials unreadable, and no network
     # unless bash_network. Off by default.
@@ -1636,6 +1640,11 @@ class Policy:
             **({"bash_credentials": True} if self.bash_credentials else {}),
             **({"bash_allow": sorted(self.bash_allow)} if self.bash_allow else {}),
             **({"bash_deny": sorted(self.bash_deny)} if self.bash_deny else {}),
+            **(
+                {"approved_tools": sorted(self.approved_tools)}
+                if self.approved_tools
+                else {}
+            ),
             **({"bash_sandbox": self._sandbox_record()} if self.bash_sandbox else {}),
             **({"external_sha256": external_digest(offered)} if offered else {}),
             # Only when deferral is in the request, so a run without it writes

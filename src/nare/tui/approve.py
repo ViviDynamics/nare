@@ -551,12 +551,14 @@ class Approver:
     """What `a` grants lives for this process only and is never written to
     the session: a saved file must not grant a later run anything. A tool is
     approved whole; bash is approved one program at a time, in `programs`.
+    The policy's approved_tools (--allowed-tools) start in `always`, as if
+    `a` had been pressed for each, so a write into .git is still asked about.
     """
 
     def __init__(self, ask: Ask, policy: Policy | None = None) -> None:
         self.ask = ask
         self.policy = policy or Policy()
-        self.always: set[str] = set()
+        self.always: set[str] = set(self.policy.approved_tools)
         self.programs: set[str] = set()
 
     async def __call__(self, tool: str, args: dict[str, Any]) -> bool | str:

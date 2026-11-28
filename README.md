@@ -273,7 +273,9 @@ nare also takes Claude Code's and Codex's spellings of its flags:
 `--append-system-prompt`, `--system-prompt`, `--dangerously-skip-permissions`,
 `--yolo`, `--allowedTools "Bash(git log:*),Read"`, `--permission-mode`, `-a`,
 `-s`, `--max-budget-usd`, `--json-schema`, `--output-schema`, `-m
-provider/model` and `--add-dir`, each onto the nare flag it stands for. See
+provider/model` and `--add-dir`, each onto the nare flag it stands for. As in
+Claude Code, `--allowedTools` approves the tools it names and leaves the others
+available; `--tools` is what narrows the set. See
 [other tools' spellings](docs/contract.md#other-tools-spellings).
 
 Sessions are kept for you. `nare`, `nare "<task>"`, `nare -p` and `nare exec`

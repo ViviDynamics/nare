@@ -190,7 +190,7 @@ keeps the contract version; removing or renaming one bumps it.
 | `--append-system-prompt` | yes | | Claude Code's `--append-system` |
 | `--append-system-prompt-file` | yes | | Claude Code's `--append-system-file` |
 | `--tools` | yes | | Comma-separated tools the run may call, or `none` |
-| `--allowed-tools` | yes | | Claude Code's `--tools`, also `--allowedTools`: tool names in nare's or Claude Code's spelling, and `Bash(PATTERN)` for `--bash-allow`; repeatable ([Other tools' spellings](#other-tools-spellings)) |
+| `--allowed-tools` | yes | | Claude Code's flag, also `--allowedTools`: pre-approves the tools it names, in nare's or Claude Code's spelling, and leaves the others available (`--tools` narrows the set); `Bash(PATTERN)` is `--bash-allow`; repeatable ([Other tools' spellings](#other-tools-spellings)) |
 | `--disallowed-tools` | yes | | Built-in tools the run may not call, also `--disallowedTools`; `Bash(PATTERN)` is `--bash-deny`; repeatable |
 | `--root` | yes | | Confine file tools to a directory and run `bash` in it; pinned when the run starts ([Pinned roots](#pinned-roots)) |
 | `--add-root` | yes | | Let the file tools also reach this directory; needs `--root`; repeatable ([Added roots](#added-roots)) |
@@ -221,7 +221,7 @@ under `flags` and above, and `nare contract` also maps every other spelling to
 the flag it stands for under `flag_aliases`:
 
 ```json
-"flag_aliases": {"--yolo": "--yes", "--allowedTools": "--tools", "-m": "--model"}
+"flag_aliases": {"--yolo": "--yes", "--allowedTools": "--allowed-tools", "-m": "--model"}
 ```
 
 An alias sets its canonical flag, so the run is exactly the canonical flag's
@@ -230,12 +230,28 @@ exits 2 and names both. The same value twice is not a conflict, and a
 repeatable flag (`--add-dir` beside `--add-root`) adds to it. A value from the
 environment is a default, which an alias overrides as the flag would.
 
-- `--allowed-tools` (`--allowedTools`) takes names comma or space separated, in
-  nare's names or Claude Code's (`Read`, `Edit`, `MultiEdit`, `Write`, `Bash`,
-  `Glob` and `Grep` for `search`, `LS` for `list`), and `mcp__server__tool` for
-  nare's `server__tool`. `Bash(PATTERN)` allows `bash` and adds PATTERN to
+- `--allowed-tools` (`--allowedTools`) approves, as Claude Code's flag does: it
+  is a flag of its own, not `--tools`, and leaves the tool set as it is. It
+  takes names comma or space separated, in nare's names or Claude Code's
+  (`Read`, `Edit`, `MultiEdit`, `Write`, `Bash`, `Glob` and `Grep` for
+  `search`, `LS` for `list`), and `mcp__server__tool` for nare's
+  `server__tool`. A bare name's calls run unasked for the whole run, as if `a`
+  had been pressed for it at the start: a write or edit into `.git` is still
+  asked about, and a deny rule still wins. `Bash(PATTERN)` adds PATTERN to
   `--bash-allow`; Claude Code's `PATTERN:*` is PATTERN alone or followed by
-  anything, so `Bash(git log:*)` adds `git log` and `git log *`.
+  anything, so `Bash(git log:*)` adds `git log` and `git log *`, and `Bash`,
+  `Bash()` and `Bash(*)` approve every command. Approval never adds a tool:
+  under `--tools`, `--permission-mode plan`, `-s read-only` or
+  `--disallowed-tools`, a name or pattern for a tool the run does not offer
+  does nothing. A name that is no built-in, caller or MCP tool exits 2. It is
+  not `--yes`: without a terminal, `nare run` refuses it as it refuses a run
+  without `--yes`, and under `nare -p` the calls it does not approve are
+  denied. The library takes `Policy(approved_tools=...)`, which nare's own
+  approver reads; a caller's own approve function is asked as before. The
+  session records the approved names under its policy as `"approved_tools"`, a
+  sorted list, absent when there are none. Before #350 this flag narrowed the
+  tool set to what it named, unlike Claude Code's; a caller that relied on
+  that passes `--tools`.
 - `--disallowed-tools` (`--disallowedTools`) names built-in tools only; MCP tools
   stay allowed as with no `--tools`. Its `Bash(PATTERN)` adds to `--bash-deny`.
 - `--permission-mode acceptEdits`, and `default`, `-a on-request`, are not
