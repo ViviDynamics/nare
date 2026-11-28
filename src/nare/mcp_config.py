@@ -5,8 +5,8 @@ Two scopes, both in Claude Code's format, `{"mcpServers": {name: entry}}`:
 - user: NARE_HOME/mcp.json, mode 0600, for every project;
 - project: .mcp.json in the working directory, the file a project commits, so
   one that already carries a Claude Code .mcp.json works unchanged. Runs,
-  `nare mcp trust` and `nare mcp list` all read it there, never under --root,
-  as Claude Code reads it where it is started (#353).
+  the trust question, `nare mcp trust` and `nare mcp list` all read it there,
+  never under --root (#353).
 
 The person-facing forms (nare, nare "<task>", nare -p, nare exec) load both;
 project servers start only once the person trusted that exact .mcp.json,
@@ -50,6 +50,12 @@ def user_path() -> Path | None:
 
 def project_path(root: str) -> Path:
     return Path(root) / PROJECT_FILE
+
+
+def project_file() -> Path:
+    """The project's .mcp.json: the working directory's, for runs, the trust
+    question, the skip line, trust and list alike (#353)."""
+    return project_path(os.getcwd())
 
 
 def _trust_path() -> Path | None:
@@ -303,10 +309,21 @@ def defaults(
     a run reads the file nare mcp trust and list read."""
     if getattr(args, "strict_mcp_config", False):
         return {}, []
-    root = os.getcwd()
+    path = project_file()
+    root = str(path.parent)
+    given = getattr(args, "root", None)
+    if given is not None and project_path(given).is_file():
+        theirs = project_path(given)
+        if os.path.realpath(theirs) != os.path.realpath(path):
+            # Runs read --root's file before #353: say why this one does not.
+            print(
+                f"nare: {_printable(str(theirs))} was not read: {PROJECT_FILE} is "
+                f"read from the working directory, {_printable(root)}; run nare "
+                "in that folder to use it",
+                file=sys.stderr,
+            )
     user = entries(user_path())
     # Read once: what is shown, trusted and started are the same bytes.
-    path = project_path(root)
     data = _bytes(path) if path.is_file() else None
     project = {} if data is None else _servers_in(_loads(data, path), path)
     skipped: list[str] = []
@@ -368,7 +385,7 @@ def terminal_ask(servers: dict[str, dict[str, Any]]) -> bool:
             line += f" ({'; '.join(notes)})"
         lines.append(_printable(line))
     sys.stderr.write(
-        f"nare: this project's {PROJECT_FILE} starts MCP servers, which run "
+        f"nare: {_printable(str(project_file()))} starts MCP servers, which run "
         "programs on this machine or connect to these addresses:\n"
         + "\n".join(lines)
         + "\nTrust it and start them? [y/N] "
@@ -380,9 +397,10 @@ def terminal_ask(servers: dict[str, dict[str, Any]]) -> bool:
 def skipped_line(names: list[str]) -> str:
     """Why defaults skipped `names`, naming the file and the directory to
     trust it from: the working directory, which defaults read."""
-    here = os.getcwd()
+    path = project_file()
+    here = str(path.parent)
     return (
-        f"nare: skipped the MCP servers in {_printable(str(project_path(here)))} "
+        f"nare: skipped the MCP servers in {_printable(str(path))} "
         f"({_printable(', '.join(names))}): it is not trusted. nare mcp trust in "
         f"{_printable(here)} trusts it, or run nare there once at a terminal"
     )

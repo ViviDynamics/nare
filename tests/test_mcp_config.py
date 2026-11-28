@@ -597,3 +597,32 @@ def test_the_skipped_line_names_the_directory(
     err = capsys.readouterr().err
     assert f"nare mcp trust in {here}" in err
     assert str(here / ".mcp.json") in err
+
+
+def test_the_trust_question_names_the_file(
+    here: Path,
+    tui_calls: list[argparse.Namespace],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """With --root elsewhere, "this project's" would read as the root's."""
+    (here / ".mcp.json").write_text(json.dumps(CLAUDE_MCP_JSON))
+    (here / "other").mkdir()
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\n"))
+    assert main(["--root", "other", "do it"]) == 0
+    assert f"nare: {here / '.mcp.json'} starts MCP servers" in capsys.readouterr().err
+
+
+def test_a_root_s_own_file_is_named_when_it_is_not_read(
+    here: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A run that once read --root's .mcp.json says why it no longer does."""
+    monkeypatch.setattr("nare.cli._execute", _capture_servers([]))
+    (here / "repo").mkdir()
+    (here / "repo" / ".mcp.json").write_text(json.dumps(CLAUDE_MCP_JSON))
+    root = str(here / "repo")
+    assert main(["-p", "--root", root, "x"], transport=FakeProvider([])) == 0
+    err = capsys.readouterr().err
+    assert f"{here / 'repo' / '.mcp.json'} was not read" in err
+    assert main(["-p", "--root", ".", "x"], transport=FakeProvider([])) == 0
+    assert "was not read" not in capsys.readouterr().err
