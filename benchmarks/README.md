@@ -47,7 +47,7 @@ written before the provider and judge were recorded take them from the flags,
 or else from the shell as `run` would: `NARE_PROVIDER`, which defaults to
 `anthropic`, and `NARE_BENCH_JUDGE_MODEL`, which has no default: a run with a
 judged case refuses to start without one, because a model that grades its own
-reps measures its own self-preference.
+reps measures its own self-preference. A run with no judged case needs none.
 A `--provider` or `--judge-model` that contradicts what the results recorded
 exits 2, for `compare` too. `bless` merges into the existing baseline, so
 cases the results do not cover are kept; when that baseline was blessed on
@@ -58,7 +58,12 @@ unless `--allow-model-change`.
 provider, model, judge or output cap, since those numbers are not comparable;
 `run` does so before it builds anything, and `--allow-model-change` overrides.
 Results that never recorded their provider are compared on the others alone,
-unless `--provider` names it. Run arguments are part of what a baseline
+unless `--provider` names it. The judge is compared only when a compared case
+is judged: numbers no judge produced are the same under any judge. For the
+same reason, blessing results with no judged case keeps the baseline's judge,
+and a new baseline from them needs `--judge-model` (or
+`NARE_BENCH_JUDGE_MODEL`), since `--matrix` takes each model's judge from its
+baseline. Run arguments are part of what a baseline
 measured too, with their own override, `--allow-arg-change`: see "Arguments
 to nare".
 

@@ -1256,15 +1256,19 @@ def adopt_system(args: argparse.Namespace, session: Session) -> None:
     A resume given no system option sends what the session recorded: falling
     back to the default would swap the model's instructions mid-session with
     no error, and change the prefix a caching backend matches on. A resume
-    given one sends it, and says so when it differs from the record. A
-    session saved before the record existed has none and keeps the flags.
+    given one sends it, with the project instructions when the run reads
+    them, and says so when it differs from the record. A session saved
+    before the record existed has none and keeps the flags.
 
     The file holds the redacted copy, so the comparison is made redacted: the
     same prompt resent is never reported as a change.
     """
     given = args.system is not None or args.append_system is not None
     if session.system is not None and not given:
+        # The record already holds the project instructions it was sent with:
+        # adding them again would grow the prompt on every resume (#348).
         args.system, args.append_system = session.system, None
+        args.instructions_text = None
     sent = system_from_args(args) or ""
     if session.system is not None and given and redact(sent) != session.system:
         session.events.append(
@@ -2187,7 +2191,8 @@ def run_command(
     except (ValueError, OSError, UnsupportedSchema) as exc:
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED
-    if loaded is not None:
+    if loaded is not None and args.instructions_text is not None:
+        # Not when the resume sent the record instead (adopt_system).
         session.events.append(loaded)
     if on_session is not None:
         on_session(session)
@@ -2266,7 +2271,7 @@ def prepare_run(
             args.prompt = Path(args.prompt_file).read_bytes().decode("utf-8")
         except (OSError, UnicodeError) as exc:
             raise ValueError(f"--prompt-file {args.prompt_file}: {exc}") from exc
-    elif args.prompt == "-":
+    elif args.prompt == "-" and not getattr(args, "prompt_from_stdin", False):
         try:
             args.prompt = sys.stdin.buffer.read().decode("utf-8")
         except (OSError, UnicodeError) as exc:

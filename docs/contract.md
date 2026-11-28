@@ -54,6 +54,34 @@ plus `started_at` (an ISO 8601 UTC time), a field with a default that `nare
 run`'s files never carry. `nare run` without `--session` writes nothing, as
 before.
 
+`nare -p` and `nare exec` read piped stdin (a pipe, a socket or a file) as
+follows. With a task on the command line, stdin is extra context, added after
+the task in a `<stdin>` block (`cat f.py | nare -p "explain"`), but only if its
+first bytes or its end arrive within 1 second. If neither does, as for a
+caller that spawns nare with a stdin pipe it never writes to or closes, stdin
+is left unread, a one-line note on stderr says so, and the task runs alone. A
+producer slower than that to start (a network fetch, a build) needs a longer
+wait: `NARE_STDIN_WAIT_SECONDS` sets it in seconds, and `inf` waits as long as
+stdin takes. A file redirect (`< f.py`) skips the wait, since it cannot block.
+Once bytes arrive the read goes on to the end, except that it stops at 1 MiB
+(a file too), or after 30 seconds with no new bytes and no end (or the wait,
+if that is longer); the context is then what arrived, cut at a whole
+character, with a note on stderr. With `--prompt-file`, stdin is not read.
+
+With no task, piped stdin is the whole prompt, read to its end: there is
+nothing else to run. On a resume (`-c`, `-r <id>`, `nare exec resume`) with no
+task it is the follow-up, read with the same 1 second wait as context, since a
+resume can go on without one: a caller resuming with an idle open pipe gets
+the resume after the wait, not a hang. A positional `-` always reads stdin to
+its end, so a slow producer can still send a follow-up (`slow | nare -p -c
+-`). A resume of a session that ended (`done`, or `blocked` on a question)
+with no task (or a blank one) and no nonblank stdin exits 2 before any model
+call and leaves the session file as it was: running it again would only
+repeat its last turn.
+A session that stopped partway (an error, a limit or a signal) continues
+without a follow-up, as `nare run --resume` does. `nare run` reads stdin only
+for positional `-` ([prompt input](#prompt-input)).
+
 A key stored with `nare auth login` (in `$NARE_HOME/credentials.json`) is used
 by every command, `nare run` included, when the provider's environment
 variable is unset; the variable, when set, wins. A run with neither fails as it
@@ -1742,7 +1770,15 @@ points (a link into a dotfiles checkout, say), since only the person writes
 `nare run` never reads them, so a caller's prompt is exactly what it sent and
 its runs stay deterministic. `nare run --project-instructions` opts in, with
 the same files, order, cap and event. A resume sends the system prompt the
-session recorded, instructions included, unless a system option replaces it.
+session recorded, instructions included, unless a system option replaces it:
+the instructions are not added to the record again, so any number of resumes
+sends the same prompt (#348), and no event names the files, since none were
+added. The instructions are fixed when the session starts: a session started
+without them (by `nare run`, or with `--no-project-instructions`) resumes
+without them, and an edit to AGENTS.md reaches a resume only through a system
+option. A resume given one (`--append-system-prompt`, say) builds the prompt
+from the flags as a new run would, with the instructions read again, once,
+unless `--no-project-instructions` leaves them out.
 
 Related fixes: [#142](https://github.com/ViviDynamics/nare/issues/142) imports
 the MCP client only when a run configures MCP servers, which shortens startup.
