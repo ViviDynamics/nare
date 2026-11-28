@@ -248,8 +248,9 @@ environment is a default, which an alias overrides as the flag would.
   `Bash(git log:*)` adds `git log` and `git log *`. Approval never adds a tool:
   under `--tools`, `--permission-mode plan`, `-s read-only` or
   `--disallowed-tools`, a name or pattern for a tool the run does not offer does
-  nothing, and is not recorded. A name that is no built-in, caller or MCP tool
-  exits 2. It is not `--yes`: without a terminal, `nare run` refuses it as it
+  nothing, and is not recorded; so does an MCP tool of a server the run did not
+  load. A name that is no built-in or caller tool and not `server__tool`
+  shaped exits 2. It is not `--yes`: without a terminal, `nare run` refuses it as it
   refuses a run without `--yes`, and under `nare -p` the calls it does not
   approve are denied. With `--yes` every call is approved anyway; given beside
   `--yes` without `--tools`, it says on stderr that it no longer narrows the

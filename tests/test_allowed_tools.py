@@ -9,6 +9,7 @@ name is approved for the run, and the tool set is left alone. --tools narrows.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -294,3 +295,47 @@ def test_a_name_the_run_does_not_offer_is_not_recorded(work: Path) -> None:
     code, _fake = run_print([*argv, "--session", str(session)], [text_reply("done")])
     assert code == 0
     assert loads(session.read_text()).policy["approved_tools"] == ["write"]
+
+
+def mcp_policy(work: Path, *argv: str) -> Any:
+    """The policy `nare run` would build with a docs MCP server configured."""
+    from nare.cli import policy_from_args, validate_run_args
+
+    servers = {"mcpServers": {"docs": {"command": "docs-server"}}}
+    (work / "servers.json").write_text(json.dumps(servers))
+    args = parse_args(["run", "go", "--mcp-config", "servers.json", *argv])
+    validate_run_args(args)
+    return policy_from_args(args)
+
+
+def test_an_approved_mcp_tool_survives_a_built_in_denial(work: Path) -> None:
+    """--disallowed-tools narrows the built-ins and leaves MCP tools offered,
+    so their approval stays."""
+    policy = mcp_policy(
+        work, "--disallowedTools", "Bash", "--allowedTools", "mcp__docs__search"
+    )
+    assert policy.approved_tools == frozenset({"docs__search"})
+    assert mcp_policy(
+        work, "--allowedTools", "mcp__docs__search"
+    ).approved_tools == frozenset({"docs__search"})
+
+
+def test_an_mcp_tool_of_a_server_not_loaded_is_approved_to_no_effect(
+    work: Path,
+) -> None:
+    """An untrusted .mcp.json or --strict-mcp-config can leave a server out;
+    its tool is not offered, so approving it does nothing, as for --tools."""
+    args = parse_args(["run", "go", "--allowedTools", "mcp__proj__lint,Read"])
+    from nare.cli import policy_from_args, validate_run_args
+
+    validate_run_args(args)
+    assert "read" in policy_from_args(args).approved_tools
+
+
+def test_yes_beside_a_denial_still_says_it_no_longer_narrows(
+    work: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = FakeProvider([text_reply("done")])
+    argv = ["run", "--yes", "--disallowedTools", "Write", "--allowedTools", "Read"]
+    assert main([*argv, "go"], transport=fake) == 0
+    assert "--allowed-tools approves" in capsys.readouterr().err

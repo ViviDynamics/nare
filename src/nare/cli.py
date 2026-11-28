@@ -741,7 +741,7 @@ def resolve_aliases(
     if args.tools is None or "bash" in tool_set(args.tools):
         args.bash_allow = [*args.bash_allow, *allow_patterns]
     args.approved_tools = sorted(approved)
-    if (approved or allow_patterns) and args.yes and args.tools is None:
+    if (approved or allow_patterns) and args.yes and (args.tools is None or deny_only):
         # Before #350 this narrowed the run: an old command line under --yes
         # would now run every tool unasked, so it says so.
         print(
@@ -1414,21 +1414,31 @@ def policy_from_args(args: argparse.Namespace) -> Policy:
             raise ValueError(f"--add-root {path} is not a directory")
     command_names = {tool.name for tool in args.command_tools}
     approved = frozenset(getattr(args, "approved_tools", ()))
+    # A server__tool name may be of a server this run did not load (an
+    # untrusted .mcp.json, --strict-mcp-config): not offered, so approved to
+    # no effect, as a tool --tools leaves out is.
     unknown = sorted(
         name
         for name in approved
-        if name not in TOOLS
-        and name not in command_names
-        and not any(name.startswith(alias + "__") for alias in args.mcp_servers)
+        if name not in TOOLS and name not in command_names and "__" not in name
     )
     if unknown:
         raise ValueError(
-            f"--allowed-tools: unknown tool {', '.join(unknown)}; "
-            f"nare has: {', '.join(sorted(TOOLS))}"
+            f"--allowed-tools: unknown tool {', '.join(unknown)}; nare has: "
+            f"{', '.join(sorted(TOOLS))}, a caller tool, or server__tool for an "
+            "MCP tool"
         )
-    if args.tools is not None:
-        # Approval never adds a tool, and records none the run cannot call.
-        approved &= tools
+    # Approval never adds a tool, and records none the run cannot call. With
+    # MCP tools offered whole (no --tools, or only --disallowed-tools), only
+    # the built-ins are narrowed.
+    offered_mcp = getattr(args, "mcp_allow_all", args.tools is None)
+    approved = frozenset(
+        name
+        for name in approved
+        if name in tools
+        or (offered_mcp and name not in TOOLS and name not in command_names)
+        or (args.tools is None and name in command_names)
+    )
     unresolved_names = frozenset(
         name
         for name in tools
