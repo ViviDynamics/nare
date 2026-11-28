@@ -54,6 +54,34 @@ plus `started_at` (an ISO 8601 UTC time), a field with a default that `nare
 run`'s files never carry. `nare run` without `--session` writes nothing, as
 before.
 
+`nare -p` and `nare exec` read piped stdin (a pipe, a socket or a file) as
+follows. With a task on the command line, stdin is extra context, added after
+the task in a `<stdin>` block (`cat f.py | nare -p "explain"`), but only if its
+first bytes or its end arrive within 1 second. If neither does, as for a
+caller that spawns nare with a stdin pipe it never writes to or closes, stdin
+is left unread, a one-line note on stderr says so, and the task runs alone. A
+producer slower than that to start (a network fetch, a build) needs a longer
+wait: `NARE_STDIN_WAIT_SECONDS` sets it in seconds, and `inf` waits as long as
+stdin takes. A file redirect (`< f.py`) skips the wait, since it cannot block.
+Once bytes arrive the read goes on to the end, except that it stops at 1 MiB
+(a file too), or after 30 seconds with no new bytes and no end (or the wait,
+if that is longer); the context is then what arrived, cut at a whole
+character, with a note on stderr. With `--prompt-file`, stdin is not read.
+
+With no task, piped stdin is the whole prompt, read to its end: there is
+nothing else to run. On a resume (`-c`, `-r <id>`, `nare exec resume`) with no
+task it is the follow-up, read with the same 1 second wait as context, since a
+resume can go on without one: a caller resuming with an idle open pipe gets
+the resume after the wait, not a hang. A positional `-` always reads stdin to
+its end, so a slow producer can still send a follow-up (`slow | nare -p -c
+-`). A resume of a session that ended (`done`, or `blocked` on a question)
+with no task (or a blank one) and no nonblank stdin exits 2 before any model
+call and leaves the session file as it was: running it again would only
+repeat its last turn.
+A session that stopped partway (an error, a limit or a signal) continues
+without a follow-up, as `nare run --resume` does. `nare run` reads stdin only
+for positional `-` ([prompt input](#prompt-input)).
+
 A key stored with `nare auth login` (in `$NARE_HOME/credentials.json`) is used
 by every command, `nare run` included, when the provider's environment
 variable is unset; the variable, when set, wins. A run with neither fails as it

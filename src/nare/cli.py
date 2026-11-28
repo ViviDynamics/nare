@@ -2278,7 +2278,7 @@ def prepare_run(
             args.prompt = Path(args.prompt_file).read_bytes().decode("utf-8")
         except (OSError, UnicodeError) as exc:
             raise ValueError(f"--prompt-file {args.prompt_file}: {exc}") from exc
-    elif args.prompt == "-":
+    elif args.prompt == "-" and not getattr(args, "prompt_from_stdin", False):
         try:
             args.prompt = sys.stdin.buffer.read().decode("utf-8")
         except (OSError, UnicodeError) as exc:

@@ -20,6 +20,7 @@ from fake_provider import FakeProvider, text_reply
 from nare import person
 from nare.cli import main
 from nare.session import loads, project_sessions_dir
+from test_entry_points import open_pipe, piped
 
 SECRET = "sk-ant-" + "Z" * 30
 
@@ -243,6 +244,134 @@ def test_codex_exec_resume(here: Path) -> None:
     fake = FakeProvider([text_reply("three")])
     assert main(["exec", "resume", saved.stem, "c"], transport=fake) == 0
     assert user_texts(fake) == ["a", "b", "c"]
+
+
+@pytest.mark.parametrize(
+    "argv", [["-p", "-c"], ["-p", "-r", "ID"], ["exec", "resume", "--last"]]
+)
+def test_a_resume_with_no_task_takes_piped_stdin_as_the_follow_up(
+    argv: list[str], here: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """echo "..." | nare -p -c (#349): stdin is the follow-up, and the
+    finished session is not run again without it."""
+    assert main(["-p", "a"], transport=FakeProvider([text_reply("one")])) == 0
+    [saved] = files_in(here)
+    piped(monkeypatch, b"my follow-up question\n")
+    fake = FakeProvider([text_reply("two")])
+    argv = [saved.stem if word == "ID" else word for word in argv]
+    assert main(argv, transport=fake) == 0
+    assert user_texts(fake) == ["a", "my follow-up question\n"]
+    roles = [message.role for message in loads(saved.read_text()).messages]
+    assert roles == ["user", "assistant", "user", "assistant"]
+
+
+@pytest.mark.parametrize(
+    "argv", [["-p", "-c"], ["-p", "-r", "ID"], ["exec", "resume", "--last"]]
+)
+def test_a_resume_with_no_task_and_no_stdin_needs_a_follow_up(
+    argv: list[str], here: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["-p", "a"], transport=FakeProvider([text_reply("one")])) == 0
+    [saved] = files_in(here)
+    before = saved.read_text()
+    capsys.readouterr()
+    fake = FakeProvider([])
+    argv = [saved.stem if word == "ID" else word for word in argv]
+    assert main(argv, transport=fake) == 2
+    assert fake.calls == []
+    assert "follow-up" in capsys.readouterr().err
+    assert saved.read_text() == before
+
+
+@pytest.mark.parametrize("argv", [["-p", "-c"], ["-p", "-c", "-"]])
+def test_a_blank_follow_up_on_stdin_calls_no_model(
+    argv: list[str],
+    here: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["-p", "a"], transport=FakeProvider([text_reply("one")])) == 0
+    piped(monkeypatch, b"\n")
+    fake = FakeProvider([])
+    assert main(argv, transport=fake) == 2
+    assert fake.calls == []
+    assert "follow-up" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("stdin", [None, b"\n"])
+def test_a_session_that_stopped_partway_continues_without_a_follow_up(
+    stdin: bytes | None, here: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An error, a limit or a signal leaves the task unjudged: a resume with
+    no text continues it, as nare run --resume does."""
+    assert main(["-p", "a"], transport=FakeProvider([text_reply("one")])) == 0
+    [saved] = files_in(here)
+    raw = json.loads(saved.read_text())
+    raw["status"] = "error"
+    saved.write_text(json.dumps(raw))
+    if stdin is not None:
+        piped(monkeypatch, stdin)
+    fake = FakeProvider([text_reply("two")])
+    assert main(["-p", "-c"], transport=fake) == 0
+    assert len(fake.calls) == 1
+    assert user_texts(fake) == ["a"]
+
+
+@pytest.mark.parametrize("status", ["done", "error"])
+def test_a_resume_with_no_task_waits_on_an_idle_pipe_only_briefly(
+    status: str,
+    here: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A parent that resumes with an open, idle stdin: after the wait the
+    resume goes on as with no stdin. An ended session exits 2 with no model
+    call; one that stopped partway continues without a follow-up."""
+    assert main(["-p", "a"], transport=FakeProvider([text_reply("one")])) == 0
+    [saved] = files_in(here)
+    raw = json.loads(saved.read_text())
+    raw["status"] = status
+    saved.write_text(json.dumps(raw))
+    capsys.readouterr()
+    monkeypatch.setenv("NARE_STDIN_WAIT_SECONDS", "0.2")
+    write = open_pipe(monkeypatch)
+    fake = FakeProvider([text_reply("two")])
+    try:
+        code = main(["-p", "-c"], transport=fake)
+    finally:
+        os.close(write)
+    err = capsys.readouterr().err
+    assert "stdin left unread" in err
+    if status == "done":
+        assert code == 2
+        assert fake.calls == []
+        assert "follow-up" in err
+    else:
+        assert code == 0
+        assert user_texts(fake) == ["a"]
+
+
+def test_a_blank_task_on_a_resume_is_no_follow_up(
+    here: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """nare -p -c "$EMPTY" on an ended session: exit 2, as with no task."""
+    assert main(["-p", "a"], transport=FakeProvider([text_reply("one")])) == 0
+    capsys.readouterr()
+    fake = FakeProvider([])
+    assert main(["-p", "-c", "  "], transport=fake) == 2
+    assert fake.calls == []
+    assert "follow-up" in capsys.readouterr().err
+
+
+def test_a_follow_up_on_stdin_is_read_once(
+    here: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A follow-up that is itself a lone - is sent, not read as - again."""
+    assert main(["-p", "a"], transport=FakeProvider([text_reply("one")])) == 0
+    piped(monkeypatch, b"-")
+    fake = FakeProvider([text_reply("two")])
+    assert main(["-p", "-c", "-"], transport=fake) == 0
+    assert user_texts(fake) == ["a", "-"]
 
 
 def test_codex_exec_resume_needs_a_session(

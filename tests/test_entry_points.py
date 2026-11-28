@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -235,12 +236,15 @@ def test_json_and_another_output_format_conflict(
     assert "--json" in err and "--output-format" in err
 
 
+@pytest.mark.parametrize("argv", [["-p", "explain"], ["exec", "explain"]])
 def test_piped_stdin_is_extra_context(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    argv: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     piped(monkeypatch, b"def f(): pass\n")
     fake = FakeProvider([text_reply("it defines f")])
-    assert main(["-p", "explain"], transport=fake) == 0
+    assert main(argv, transport=fake) == 0
     assert first_prompt(fake) == "explain\n\n<stdin>\ndef f(): pass\n</stdin>"
     assert capsys.readouterr().out == "it defines f\n"
 
@@ -252,6 +256,234 @@ def test_blank_stdin_adds_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     assert first_prompt(fake) == "explain"
 
 
+def open_pipe(monkeypatch: pytest.MonkeyPatch, data: bytes = b"") -> int:
+    """A real pipe on stdin holding `data` and never closed: a parent that
+    left stdin open. Returns the write end, which the test closes."""
+    read, write = os.pipe()
+    if data:
+        os.write(write, data)
+    monkeypatch.setattr(sys, "stdin", os.fdopen(read, "r", encoding="utf-8"))
+    return write
+
+
+def test_a_task_skips_a_pipe_where_nothing_arrives(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nothing and no end within the wait: the task runs alone, with a note."""
+    monkeypatch.setenv("NARE_STDIN_WAIT_SECONDS", "0.2")
+    write = open_pipe(monkeypatch)
+    try:
+        fake = FakeProvider([text_reply("x")])
+        assert main(["-p", "explain"], transport=fake) == 0
+    finally:
+        os.close(write)
+    assert first_prompt(fake) == "explain"
+    [note] = [line for line in capsys.readouterr().err.splitlines() if "stdin" in line]
+    assert "left unread" in note and "nothing arrived" in note
+
+
+def test_context_that_stops_without_an_end_is_used_as_far_as_it_came(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Data and then silence, with the pipe still open: what arrived is the
+    context once the idle gap passes, and a note says it was cut short."""
+    monkeypatch.setattr(person, "STDIN_IDLE_SECONDS", 0.2)
+    monkeypatch.setenv("NARE_STDIN_WAIT_SECONDS", "0.2")
+    write = open_pipe(monkeypatch, b"first part\n")
+    try:
+        fake = FakeProvider([text_reply("x")])
+        assert main(["-p", "explain"], transport=fake) == 0
+    finally:
+        os.close(write)
+    assert first_prompt(fake) == "explain\n\n<stdin>\nfirst part\n</stdin>"
+    [note] = [line for line in capsys.readouterr().err.splitlines() if "stdin" in line]
+    assert "no end" in note
+
+
+def test_a_silence_inside_a_character_keeps_the_whole_ones(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A producer that flushes half of an e-acute and then goes quiet: the
+    half is dropped, not a decoding error."""
+    monkeypatch.setattr(person, "STDIN_IDLE_SECONDS", 0.2)
+    monkeypatch.setenv("NARE_STDIN_WAIT_SECONDS", "0.2")
+    write = open_pipe(monkeypatch, "caf\u00e9".encode()[:-1])
+    try:
+        fake = FakeProvider([text_reply("x")])
+        assert main(["-p", "explain"], transport=fake) == 0
+    finally:
+        os.close(write)
+    assert first_prompt(fake) == "explain\n\n<stdin>\ncaf\n</stdin>"
+
+
+def test_the_skip_note_names_the_knob(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("NARE_STDIN_WAIT_SECONDS", "0")
+    write = open_pipe(monkeypatch)
+    try:
+        assert main(["-p", "explain"], transport=FakeProvider([text_reply("x")])) == 0
+    finally:
+        os.close(write)
+    assert "NARE_STDIN_WAIT_SECONDS" in capsys.readouterr().err
+
+
+def test_an_endless_stdin_wait_reads_as_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NARE_STDIN_WAIT_SECONDS=inf waits for a slow producer as long as it
+    takes, as nare did before the wait."""
+    monkeypatch.setenv("NARE_STDIN_WAIT_SECONDS", "inf")
+    piped(monkeypatch, b"ctx")
+    fake = FakeProvider([text_reply("x")])
+    assert main(["-p", "explain"], transport=fake) == 0
+    assert first_prompt(fake) == "explain\n\n<stdin>\nctx\n</stdin>"
+
+
+def test_context_is_cut_at_the_size_cap(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A cut never splits a character: the two-byte e-acute at the cap is
+    dropped whole."""
+    monkeypatch.setattr(person, "STDIN_MAX_BYTES", 6)
+    piped(monkeypatch, "abcde\u00e9fgh".encode())
+    fake = FakeProvider([text_reply("x")])
+    assert main(["-p", "explain"], transport=fake) == 0
+    assert first_prompt(fake) == "explain\n\n<stdin>\nabcde\n</stdin>"
+    [note] = [line for line in capsys.readouterr().err.splitlines() if "stdin" in line]
+    assert "6 bytes" in note
+
+
+def test_a_file_on_stdin_is_always_read_as_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file cannot block, so it is read even with no wait at all."""
+    monkeypatch.setenv("NARE_STDIN_WAIT_SECONDS", "0")
+    source = tmp_path / "f.py"
+    source.write_text("def f(): pass\n")
+    monkeypatch.setattr(sys, "stdin", source.open(encoding="utf-8"))
+    fake = FakeProvider([text_reply("x")])
+    assert main(["-p", "explain"], transport=fake) == 0
+    assert first_prompt(fake) == "explain\n\n<stdin>\ndef f(): pass\n</stdin>"
+
+
+def test_a_socket_on_stdin_is_read_as_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import socket
+
+    ours, theirs = socket.socketpair()
+    ours.sendall(b"some context")
+    ours.close()
+    monkeypatch.setattr(sys, "stdin", os.fdopen(theirs.detach(), "r"))
+    fake = FakeProvider([text_reply("x")])
+    assert main(["-p", "explain"], transport=fake) == 0
+    assert first_prompt(fake) == "explain\n\n<stdin>\nsome context\n</stdin>"
+
+
+@pytest.mark.parametrize("value", ["soon", "-1", "nan"])
+def test_a_bad_stdin_wait_is_refused(
+    value: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("NARE_STDIN_WAIT_SECONDS", value)
+    piped(monkeypatch, b"ctx")
+    fake = FakeProvider([])
+    assert main(["-p", "explain"], transport=fake) == 2
+    assert fake.calls == []
+    assert "NARE_STDIN_WAIT_SECONDS" in capsys.readouterr().err
+
+
+def spawn(
+    tmp_path: Path, argv: list[str], stdin: Any
+) -> tuple[subprocess.Popen[bytes], Path, Path]:
+    """nare in a child process on the fake provider, replaying a finished
+    run, with its output in files, so a full pipe cannot pass for a hang."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.endswith("_API_KEY") and not key.startswith("NARE_")
+    }
+    env["NARE_HOME"] = str(tmp_path / "home")
+    replay = Path(__file__).resolve().parent.parent / "docs" / "replay" / "done.json"
+    out, err = tmp_path / "out.txt", tmp_path / "err.txt"
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "from nare.cli import main; raise SystemExit(main())",
+            *argv,
+            "--provider",
+            "fake",
+            "--replay",
+            str(replay),
+        ],
+        stdin=stdin,
+        stdout=out.open("wb"),
+        stderr=err.open("wb"),
+        cwd=tmp_path,
+        env=env,
+    )
+    return proc, out, err
+
+
+def finish(proc: subprocess.Popen[bytes], timeout: float) -> int:
+    try:
+        return proc.wait(timeout=timeout)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+def sent_prompt(tmp_path: Path) -> str:
+    """The first user message of the one session the child saved."""
+    [saved] = (tmp_path / "home" / "sessions").glob("*/*.json")
+    from nare.session import loads
+
+    return str(loads(saved.read_text()).messages[0].content[0]["text"])
+
+
+@pytest.mark.parametrize("form", [["-p"], ["exec"]])
+def test_a_task_finishes_with_a_stdin_pipe_never_closed(
+    form: list[str], tmp_path: Path
+) -> None:
+    """A parent that spawns nare with a stdin pipe and never closes it (#351):
+    the task runs alone after the wait, with a note on stderr."""
+    proc, out, err = spawn(tmp_path, [*form, "look around"], subprocess.PIPE)
+    started = time.monotonic()
+    try:
+        code = finish(proc, timeout=30)
+    finally:
+        assert proc.stdin is not None
+        proc.stdin.close()
+    assert code == 0
+    assert time.monotonic() - started < 10
+    assert "Nothing needed changing" in out.read_text()
+    assert "stdin left unread" in err.read_text()
+    assert sent_prompt(tmp_path) == "look around"
+
+
+def test_piped_context_reaches_a_child(tmp_path: Path) -> None:
+    """printf ctx | nare -p "task"."""
+    proc, out, err = spawn(tmp_path, ["-p", "look around"], subprocess.PIPE)
+    assert proc.stdin is not None
+    proc.stdin.write(b"ctx")
+    proc.stdin.close()
+    assert finish(proc, timeout=30) == 0
+    assert sent_prompt(tmp_path) == "look around\n\n<stdin>\nctx\n</stdin>"
+    assert "stdin" not in err.read_text()
+
+
+def test_a_file_redirect_reaches_a_child(tmp_path: Path) -> None:
+    """nare -p "task" < f.py."""
+    source = tmp_path / "f.py"
+    source.write_text("def f(): pass\n")
+    with source.open("rb") as stdin:
+        proc, out, err = spawn(tmp_path, ["-p", "look around"], stdin)
+        assert finish(proc, timeout=30) == 0
+    assert sent_prompt(tmp_path) == "look around\n\n<stdin>\ndef f(): pass\n</stdin>"
+
+
 @pytest.mark.parametrize("argv", [["-p", "-"], ["exec", "-"], ["-p"]])
 def test_the_whole_prompt_can_come_from_stdin(
     argv: list[str], monkeypatch: pytest.MonkeyPatch
@@ -259,6 +491,21 @@ def test_the_whole_prompt_can_come_from_stdin(
     piped(monkeypatch, b"list the files")
     fake = FakeProvider([text_reply("x")])
     assert main(argv, transport=fake) == 0
+    assert first_prompt(fake) == "list the files"
+
+
+def test_a_socket_on_stdin_is_read_as_the_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Node's stdio: "pipe" hands the child a socket, not a FIFO."""
+    import socket
+
+    ours, theirs = socket.socketpair()
+    ours.sendall(b"list the files")
+    ours.close()
+    monkeypatch.setattr(sys, "stdin", os.fdopen(theirs.detach(), "r"))
+    fake = FakeProvider([text_reply("x")])
+    assert main(["-p"], transport=fake) == 0
     assert first_prompt(fake) == "list the files"
 
 
