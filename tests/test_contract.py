@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from fake_provider import FakeProvider, text_reply, tool_reply
 from nare.cli import main
 from nare.contract import CONTRACT_VERSION, EXIT_CODES, describe
@@ -203,12 +205,8 @@ def test_a_session_from_contract_3_loads_as_this_contract(
 def test_a_session_from_contract_2_is_still_refused(tmp_path: Path) -> None:
     session_path = _saved_under(tmp_path, 2)
 
-    try:
+    with pytest.raises(ValueError, match="speaks contract 2"):
         loads(session_path.read_text(encoding="utf-8"))
-    except ValueError as exc:
-        assert "contract 2" in str(exc)
-    else:  # pragma: no cover - the refusal is the point
-        raise AssertionError("a version 2 session must be refused")
 
 
 def test_the_documented_contract_says_what_version_4_changed() -> None:
