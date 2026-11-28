@@ -399,11 +399,10 @@ def test_a_line_session_resume_names_no_files(
     assert built[-1] == recorded(repo)
 
 
-def tui_events(
+def start_tui(
     monkeypatch: pytest.MonkeyPatch, argv: list[str], transport: Any = None
-) -> list[dict[str, Any]]:
-    """Start the terminal UI as `nare <argv>` would, run its first turn, and
-    return the project_instructions detail of each event the run emitted."""
+) -> Any:
+    """The terminal UI as `nare <argv>` starts it, before it runs."""
     from nare import person
     from nare.tui import app
 
@@ -419,7 +418,12 @@ def tui_events(
     monkeypatch.setattr(app, "main", start)
     assert main(argv, transport=transport) == 0
     [tui] = apps
-    seen: list[dict[str, Any]] = []
+    return tui
+
+
+def watch_instructions(monkeypatch: pytest.MonkeyPatch, tui: Any) -> list[Any]:
+    """The project_instructions detail of each event the TUI is handed."""
+    seen: list[Any] = []
     shown = tui._event
 
     def spy(event: Any) -> None:
@@ -428,17 +432,42 @@ def tui_events(
         shown(event)
 
     monkeypatch.setattr(tui, "_event", spy)
+    return seen
+
+
+async def until_done(pilot: Any, tui: Any) -> None:
+    for _ in range(1000):
+        if tui.session is not None and tui.session.status == "done":
+            return
+        await pilot.pause(0.01)
+    raise AssertionError("the TUI's turn never finished")
+
+
+def tui_events(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str], transport: Any = None
+) -> list[dict[str, Any]]:
+    """Start the terminal UI as `nare <argv>` would, run its first turn, and
+    return the project_instructions detail of each event the run emitted."""
+    tui = start_tui(monkeypatch, argv, transport)
+    seen = watch_instructions(monkeypatch, tui)
 
     async def drive() -> None:
         async with tui.run_test() as pilot:
-            for _ in range(300):
-                if tui.session is not None and tui.session.status == "done":
-                    break
-                await pilot.pause(0.01)
-            assert tui.session is not None and tui.session.status == "done"
+            await until_done(pilot, tui)
+            # Kept in the transcript: the live area clears when the turn ends.
+            if seen:
+                assert "project instructions" in transcript_text(tui)
 
     asyncio.run(drive())
     return seen
+
+
+def transcript_text(tui: Any) -> str:
+    from nare.tui.app import Transcript
+
+    return "\n".join(
+        str(block.content) for block in tui.query_one(Transcript).query("Static")
+    )
 
 
 def test_the_tui_names_the_files_in_a_new_session(
@@ -476,7 +505,33 @@ def test_a_tui_resume_names_the_files_only_when_it_adds_them(
     system option reads them again, once."""
     assert main(["-p", "hello"]) == 0
     assert tui_events(monkeypatch, ["-c", "again"]) == []
+    assert built[-1] == recorded(repo)
     [detail] = tui_events(
         monkeypatch, ["-c", "--append-system-prompt", "Persona.", "again"]
     )
     assert detail["files"] == [str(repo / "AGENTS.md"), str(repo / "pkg" / "AGENTS.md")]
+    assert (built[-1] or "").count("Root rule") == 1
+
+
+def test_a_fork_before_the_first_turn_keeps_the_event(
+    repo: Path, built: list[str | None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The resume queued the event; /fork before any turn carries it over."""
+    assert main(["-p", "hello"]) == 0
+    tui = start_tui(monkeypatch, ["-c", "--append-system-prompt", "Persona."])
+    seen = watch_instructions(monkeypatch, tui)
+    branch = repo / "branch.json"
+
+    async def drive() -> None:
+        from textual.widgets import Input
+
+        async with tui.run_test() as pilot:
+            for text in (f"/fork {branch}", "again"):
+                tui.query_one(Input).value = text
+                await pilot.press("enter")
+                await pilot.pause(0.05)
+            await until_done(pilot, tui)
+
+    asyncio.run(drive())
+    assert tui.args.session == str(branch)
+    assert len(seen) == 1

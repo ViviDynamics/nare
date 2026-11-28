@@ -541,6 +541,9 @@ class TuiApp(App[None]):
             transcript.note(f"{new_path.parent} is not a folder")
             return
         child = fork_with_note(self.session, self.args.session)
+        # Events queued for this run and not yet emitted (a resume's, before
+        # its first turn) are the fork's now: the fork is what runs next.
+        child.events[:0] = self.session.events
         try:
             # Created exclusively first: the save below replaces this empty file,
             # and no other file is ever at risk of being written over.
@@ -681,10 +684,13 @@ class TuiApp(App[None]):
             # The call has finished: nothing is running now.
             self.activity = None
         notice = event.type == "progress" and (
-            "compaction" in event.detail or "context_window" in event.detail
+            "compaction" in event.detail
+            or "context_window" in event.detail
+            or "project_instructions" in event.detail
         )
         if notice:
-            # Kept: the live area clears when the turn settles. The window is
+            # Kept: the live area clears when the turn settles, and which
+            # files shaped the prompt matters after it. The window is
             # announced on every follow-up, so only a change is news.
             if event.text != self.window:
                 self.query_one(Transcript).note(event.text)
