@@ -233,25 +233,32 @@ environment is a default, which an alias overrides as the flag would.
 - `--allowed-tools` (`--allowedTools`) approves, as Claude Code's flag does: it
   is a flag of its own, not `--tools`, and leaves the tool set as it is. It
   takes names comma or space separated, in nare's names or Claude Code's
-  (`Read`, `Edit`, `MultiEdit`, `Write`, `Bash`, `Glob` and `Grep` for
-  `search`, `LS` for `list`), and `mcp__server__tool` for nare's
-  `server__tool`. A bare name's calls run unasked for the whole run, as if `a`
-  had been pressed for it at the start: a write or edit into `.git` is still
-  asked about, and a deny rule still wins. `Bash(PATTERN)` adds PATTERN to
-  `--bash-allow`; Claude Code's `PATTERN:*` is PATTERN alone or followed by
-  anything, so `Bash(git log:*)` adds `git log` and `git log *`, and `Bash`,
-  `Bash()` and `Bash(*)` approve every command. Approval never adds a tool:
+  (`Read`, `Edit`, `MultiEdit`, `Write`, `Bash`, `Glob` and `Grep` for `search`,
+  `LS` for `list`), and `mcp__server__tool` for nare's `server__tool`. A bare
+  name's calls run unasked for the whole run, as if `a` had been pressed for it
+  at the start, and a deny rule still wins. Like `a`, it leaves the checks `a`
+  keeps: a write or edit into `.git` is still asked about, and `Bash` (also
+  `Bash()` and `Bash(*)`) approves every program `a` could approve, not every
+  line, so a line with a risk (a recursive `rm`, `sudo`, the network, a `git
+  commit` or `push`, a path outside the root, and the rest of the approval
+  badges), a wrapper such as `sh -c`, or a read-only program asked about for a
+  redirect is still asked about. `Bash(PATTERN)` adds PATTERN to `--bash-allow`,
+  whose match is the caller's grant ([Bash command rules](#bash-command-rules));
+  Claude Code's `PATTERN:*` is PATTERN alone or followed by anything, so
+  `Bash(git log:*)` adds `git log` and `git log *`. Approval never adds a tool:
   under `--tools`, `--permission-mode plan`, `-s read-only` or
-  `--disallowed-tools`, a name or pattern for a tool the run does not offer
-  does nothing. A name that is no built-in, caller or MCP tool exits 2. It is
-  not `--yes`: without a terminal, `nare run` refuses it as it refuses a run
-  without `--yes`, and under `nare -p` the calls it does not approve are
-  denied. The library takes `Policy(approved_tools=...)`, which nare's own
-  approver reads; a caller's own approve function is asked as before. The
-  session records the approved names under its policy as `"approved_tools"`, a
-  sorted list, absent when there are none. Before #350 this flag narrowed the
-  tool set to what it named, unlike Claude Code's; a caller that relied on
-  that passes `--tools`.
+  `--disallowed-tools`, a name or pattern for a tool the run does not offer does
+  nothing, and is not recorded. A name that is no built-in, caller or MCP tool
+  exits 2. It is not `--yes`: without a terminal, `nare run` refuses it as it
+  refuses a run without `--yes`, and under `nare -p` the calls it does not
+  approve are denied. With `--yes` every call is approved anyway; given beside
+  `--yes` without `--tools`, it says on stderr that it no longer narrows the
+  run. The library takes `Policy(approved_tools=...)`, which nare's own approver
+  reads; a caller's own approve function is asked as before. The session records
+  the approved names under its policy as `"approved_tools"`, a sorted list,
+  absent when there are none. Before #350 this flag narrowed the tool set to
+  what it named, unlike Claude Code's; a caller that relied on that passes
+  `--tools`.
 - `--disallowed-tools` (`--disallowedTools`) names built-in tools only; MCP tools
   stay allowed as with no `--tools`. Its `Bash(PATTERN)` adds to `--bash-deny`.
 - `--permission-mode acceptEdits`, and `default`, `-a on-request`, are not

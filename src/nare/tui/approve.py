@@ -551,15 +551,17 @@ class Approver:
     """What `a` grants lives for this process only and is never written to
     the session: a saved file must not grant a later run anything. A tool is
     approved whole; bash is approved one program at a time, in `programs`.
-    The policy's approved_tools (--allowed-tools) start in `always`, as if
-    `a` had been pressed for each, so a write into .git is still asked about.
+    The policy's approved_tools (--allowed-tools) start approved, as if `a`
+    had been pressed for each: a write into .git is still asked about, and an
+    approved bash is every program `a` could approve, so a risk still asks.
     """
 
     def __init__(self, ask: Ask, policy: Policy | None = None) -> None:
         self.ask = ask
         self.policy = policy or Policy()
-        self.always: set[str] = set(self.policy.approved_tools)
+        self.always: set[str] = set(self.policy.approved_tools - {"bash"})
         self.programs: set[str] = set()
+        self.every_program = "bash" in self.policy.approved_tools
 
     async def __call__(self, tool: str, args: dict[str, Any]) -> bool | str:
         """True to run the call; a denial is False, or the reason given."""
@@ -596,6 +598,12 @@ class Approver:
         # risks() reads the words, not what they expand to: `rm ${X:--r}` may
         # be recursive, `> $HOME/x` outside the root, and `x{1,2}` or `a*b`
         # more than one file. Only a plain word is what it looks like.
-        return _program(words) in self.programs and all(
-            _plain(word) for word in words if not isinstance(word, _Redir)
+        program = _program(words)
+        # As scope() leaves them out: a read-only program that was asked about
+        # (for a redirect, a `$` or a write flag) is not approved whole.
+        every = self.every_program and program not in READ_ONLY
+        return (
+            program is not None
+            and (every or program in self.programs)
+            and all(_plain(word) for word in words if not isinstance(word, _Redir))
         )

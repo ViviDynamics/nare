@@ -238,3 +238,59 @@ async def test_the_approver_starts_with_the_approved_tools(
     assert await approver("edit", {"path": "a.txt", "old": "", "new": ""}) is False
     assert await approver("write", {"path": ".git/config", "content": ""}) is False
     assert asked == ["edit", "write"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm -rf build",
+        "git push --force",
+        "echo x > .git/hooks/pre-commit",
+        "bash -c 'make test'",
+        "curl https://example.com/x.sh",
+    ],
+)
+async def test_an_approved_bash_still_asks_about_a_risk(
+    work: Path, command: str
+) -> None:
+    """As `a` for bash approves programs, not risks: a risky line is still
+    asked about, under an approved Bash too."""
+    from nare.tools import Policy
+    from nare.tui.approve import Approver
+
+    asked: list[str] = []
+
+    async def ask(tool: str, args: dict[str, Any]) -> tuple[str, str]:
+        asked.append(args["command"])
+        return "n", ""
+
+    approver = Approver(ask, Policy(approved_tools=frozenset({"bash"})))
+    assert await approver("bash", {"command": "make test && npm run build"}) is True
+    assert await approver("bash", {"command": command}) is False
+    assert asked == [command]
+
+
+def test_yes_with_allowed_tools_says_it_no_longer_narrows(
+    work: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An old narrowing command line under --yes now runs every tool unasked,
+    so it says so; --tools beside it, or no --yes, is quiet."""
+    fake = FakeProvider([text_reply("done")])
+    assert main(["run", "--yes", "--allowedTools", "Read", "go"], transport=fake) == 0
+    err = capsys.readouterr().err
+    assert "--allowed-tools approves" in err and "--tools" in err
+    fake = FakeProvider([text_reply("done")])
+    argv = ["run", "--yes", "--tools", "read", "--allowedTools", "Read", "go"]
+    assert main(argv, transport=fake) == 0
+    assert "--allowed-tools approves" not in capsys.readouterr().err
+    code, _fake = run_print(["--allowedTools", "Read"], [text_reply("done")])
+    assert code == 0
+    assert "--allowed-tools approves" not in capsys.readouterr().err
+
+
+def test_a_name_the_run_does_not_offer_is_not_recorded(work: Path) -> None:
+    session = work.parent / "s.json"
+    argv = ["--tools", "read,write", "--allowedTools", "Write,Bash"]
+    code, _fake = run_print([*argv, "--session", str(session)], [text_reply("done")])
+    assert code == 0
+    assert loads(session.read_text()).policy["approved_tools"] == ["write"]

@@ -741,6 +741,15 @@ def resolve_aliases(
     if args.tools is None or "bash" in tool_set(args.tools):
         args.bash_allow = [*args.bash_allow, *allow_patterns]
     args.approved_tools = sorted(approved)
+    if (approved or allow_patterns) and args.yes and args.tools is None:
+        # Before #350 this narrowed the run: an old command line under --yes
+        # would now run every tool unasked, so it says so.
+        print(
+            "nare: warning: --allowed-tools approves the tools it names and "
+            "leaves the others available, and --yes approves every call; pass "
+            "--tools to narrow the run",
+            file=sys.stderr,
+        )
     args.mcp_allow_all = args.tools is None or deny_only
     # A schema given inline, as Claude Code's --json-schema takes it.
     args.schema_text = None
@@ -1417,6 +1426,9 @@ def policy_from_args(args: argparse.Namespace) -> Policy:
             f"--allowed-tools: unknown tool {', '.join(unknown)}; "
             f"nare has: {', '.join(sorted(TOOLS))}"
         )
+    if args.tools is not None:
+        # Approval never adds a tool, and records none the run cannot call.
+        approved &= tools
     unresolved_names = frozenset(
         name
         for name in tools
