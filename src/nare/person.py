@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import codecs
 import importlib.util
 import json
+import math
 import os
+import select
 import stat
 import sys
 from collections.abc import Awaitable, Callable
@@ -32,6 +35,7 @@ from nare.session import (
     SavedSession,
     Session,
     find_session,
+    loads,
     new_store_path,
     newest_in,
     reopen,
@@ -49,6 +53,16 @@ COMMANDS = (*SUBCOMMANDS, "exec", *SESSION_COMMANDS, *AUTH_COMMANDS)
 HELP_FLAGS = frozenset({"-h", "--help"})
 PRINT_FLAGS = frozenset({"-p", "--print"})
 OUTPUT_FORMATS = ("text", "json", "stream-json")
+# Stdin a one-shot run can do without (context beside a task, or a resume's
+# follow-up) is read only as far as it comes promptly, so a parent that left
+# its pipe open and idle never hangs the run (#351). The wait is for its first
+# bytes or its end; NARE_STDIN_WAIT_SECONDS changes it (inf: no limit). Once
+# bytes come, the caller is sending context, so only a silence of
+# STDIN_IDLE_SECONDS (or the wait, if longer) with no end stops the read,
+# keeping what came, and STDIN_MAX_BYTES bounds it.
+STDIN_WAIT_SECONDS = 1.0
+STDIN_IDLE_SECONDS = 30.0
+STDIN_MAX_BYTES = 1024 * 1024
 EXIT_WORDS = frozenset({"exit", "quit", "/exit", "/quit"})
 
 KEYS = """\
@@ -80,7 +94,8 @@ Start here:
   nare "<task>"       open it with a first task; without the tui extra, a
                       line-mode session that asks before each change
   nare -p "<task>"    one-shot: the answer on stdout, progress on stderr.
-                      Piped stdin is extra context; - reads the prompt from it.
+                      Piped stdin is extra context if it starts within 1s;
+                      with no task (or -), stdin is the prompt.
                       --output-format text|json|stream-json, --json
   exec                nare exec "<task>": the same as nare -p
   -c, -r <id>         continue the newest session here, or the one named;
@@ -148,13 +163,14 @@ def interactive_terminal() -> bool:
 
 
 def stdin_piped() -> bool:
-    """Whether stdin is a pipe or a file to read as context. A terminal,
-    /dev/null, or no stdin at all is not read."""
+    """Whether stdin is a pipe, a socket or a file a prompt can be read from.
+    A terminal, /dev/null, or no stdin at all is not read. A socket is what
+    Node's stdio: "pipe" hands a child."""
     try:
         mode = os.fstat(sys.stdin.fileno()).st_mode
     except (AttributeError, ValueError, OSError):
         return False
-    return stat.S_ISFIFO(mode) or stat.S_ISREG(mode)
+    return stat.S_ISFIFO(mode) or stat.S_ISREG(mode) or stat.S_ISSOCK(mode)
 
 
 def main(mode: str, argv: list[str], *, transport: Transport | None = None) -> int:
@@ -567,27 +583,155 @@ def output_format(args: argparse.Namespace) -> str:
 
 
 def read_prompt(args: argparse.Namespace, prog: str) -> None:
-    """Piped stdin is extra context after the task, in a <stdin> block. With
-    no task, stdin is the whole prompt, as positional - makes it."""
-    piped = stdin_piped()
-    if args.prompt is None and args.prompt_file is None and args.resume is None:
-        if not piped:
-            command = "nare -p" if prog == "nare" else prog
+    """Settle the prompt a one-shot run sends.
+
+    With a task, piped stdin is extra context after it, in a <stdin> block,
+    read only as far as it comes promptly (read_optional_stdin): a caller
+    that leaves its pipe open and idle does not hang the run (#351). With no
+    task, piped stdin is the whole prompt, read to its end, since there is
+    nothing else to run; on a resume it is the follow-up (#349), read as
+    promptly as context, since a resume can go on without one. An explicit -
+    always reads stdin to its end.
+
+    A resume of a session that ended (done, or blocked on a question) needs
+    that follow-up, and exits 2 before any model call without one: running
+    it again would only repeat its last turn. One that stopped partway, on
+    an error, a limit or a signal, continues without one, as nare run does.
+    """
+    if args.prompt_file is not None:
+        return
+    if args.resume is not None and args.prompt is not None and not args.prompt.strip():
+        # A blank task is no follow-up: an ended session must not run again.
+        args.prompt = None
+    if args.prompt not in (None, "-"):
+        context = read_optional_stdin() if stdin_piped() else None
+        if context and context.strip():
+            if not context.endswith("\n"):
+                context += "\n"
+            args.prompt = f"{args.prompt}\n\n<stdin>\n{context}</stdin>"
+        return
+    command = "nare -p" if prog == "nare" else prog
+    if args.resume is None:
+        if args.prompt is None and not stdin_piped():
             raise ValueError(
                 f'{command} needs a task: {command} "<task>", or pipe one on stdin'
             )
         args.prompt = "-"
         return
-    if args.prompt in (None, "-") or args.prompt_file is not None or not piped:
+    text = ""
+    if args.prompt == "-":
+        try:
+            text = sys.stdin.buffer.read().decode("utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ValueError(f"stdin: {exc}") from exc
+    elif stdin_piped():
+        text = read_optional_stdin() or ""
+    if text.strip():
+        args.prompt = text
+        # Read here, so the run does not read stdin again for a follow-up
+        # that is itself a lone -.
+        args.prompt_from_stdin = True
         return
+    if _ended(args.resume):
+        raise ValueError(
+            "this session has ended, so a resume needs a follow-up: give it "
+            "as the task, or pipe it on stdin"
+        )
+    args.prompt = None
+
+
+def stdin_wait() -> float:
+    """STDIN_WAIT_SECONDS, or NARE_STDIN_WAIT_SECONDS when it is set: a
+    number of seconds, 0 or more, or inf to wait as long as stdin takes."""
+    raw = os.environ.get("NARE_STDIN_WAIT_SECONDS", "").strip()
+    if not raw:
+        return STDIN_WAIT_SECONDS
     try:
-        extra = sys.stdin.buffer.read().decode("utf-8")
+        seconds = float(raw)
+    except ValueError:
+        seconds = math.nan
+    if math.isnan(seconds) or seconds < 0:
+        raise ValueError(
+            f"NARE_STDIN_WAIT_SECONDS is {raw!r}: give a number of seconds, "
+            "0 or more, or inf"
+        )
+    return seconds
+
+
+def read_optional_stdin() -> str | None:
+    """Piped stdin the run can do without, read only as far as it comes
+    promptly. None, with a note on stderr, when neither bytes nor the end
+    came within the wait: the caller left stdin open and idle. A file skips
+    the wait, as it cannot block. Once bytes come, the read goes on to the
+    end, unless STDIN_MAX_BYTES is passed (for a file too) or the bytes stop
+    with no end for the idle gap; then what came is used, with a note."""
+    wait = stdin_wait()
+    idle = max(STDIN_IDLE_SECONDS, wait)
+    try:
+        fd = sys.stdin.fileno()
+        regular = stat.S_ISREG(os.fstat(fd).st_mode)
+        chunks: list[bytes] = []
+        size = 0
+        cut = False
+        while True:
+            if not regular and not _readable(fd, idle if chunks else wait):
+                if not chunks:
+                    _note(
+                        f"stdin left unread: nothing arrived in {wait:g}s "
+                        "(NARE_STDIN_WAIT_SECONDS waits longer)"
+                    )
+                    return None
+                cut = True
+                _note(
+                    f"stdin had no end after {size} bytes and {idle:g}s of "
+                    "silence: sending what arrived"
+                )
+                break
+            chunk = os.read(fd, min(1 << 16, STDIN_MAX_BYTES + 1 - size))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > STDIN_MAX_BYTES:
+                cut = True
+                _note(
+                    f"stdin is longer than {STDIN_MAX_BYTES} bytes: sending "
+                    f"its first {STDIN_MAX_BYTES} bytes"
+                )
+                break
+        data = b"".join(chunks)[:STDIN_MAX_BYTES]
+        # A cut, or a silence, may end inside a character: keep only the
+        # whole ones.
+        return codecs.getincrementaldecoder("utf-8")().decode(data, final=not cut)
     except (OSError, UnicodeError) as exc:
         raise ValueError(f"stdin: {exc}") from exc
-    if extra.strip():
-        if not extra.endswith("\n"):
-            extra += "\n"
-        args.prompt = f"{args.prompt}\n\n<stdin>\n{extra}</stdin>"
+
+
+def _readable(fd: int, timeout: float) -> bool:
+    """Whether a read of fd would not block (bytes, or the end) within
+    timeout. Where fd cannot be polled, as for a pipe on Windows, a read is
+    let block, as before the wait."""
+    try:
+        ready, _, _ = select.select(
+            [fd], [], [], None if math.isinf(timeout) else timeout
+        )
+    except (OSError, ValueError):
+        return True
+    return bool(ready)
+
+
+def _note(line: str) -> None:
+    print(f"nare: {line}", file=sys.stderr)
+
+
+def _ended(path: str) -> bool:
+    """Whether the saved session ended rather than stopped partway. A file
+    that cannot be read is left for the run to report."""
+    try:
+        session = loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+    return session.status in ("done", "blocked")
 
 
 def _text_result(session: Session, **totals: Any) -> None:
@@ -629,8 +773,10 @@ def line_session(args: argparse.Namespace, transport: Transport | None) -> int:
         print(f"nare: {exc}", file=sys.stderr)
         return NEVER_STARTED
     stamp_session(args)(session)
-    if getattr(args, "instructions_event", None) is not None:
-        session.events.append(args.instructions_event)
+    # Not when the resume sent the record instead (adopt_system).
+    event = getattr(args, "instructions_event", None)
+    if event is not None and getattr(args, "instructions_text", None) is not None:
+        session.events.append(event)
     args.emit = progress
     args.emit_result = _text_result
     args.approve = terminal_approver(policy)
