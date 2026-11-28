@@ -20,7 +20,7 @@ from fake_provider import FakeProvider, text_reply
 from nare import person
 from nare.cli import main
 from nare.session import loads, project_sessions_dir
-from test_entry_points import piped
+from test_entry_points import open_pipe, piped
 
 SECRET = "sk-ant-" + "Z" * 30
 
@@ -315,6 +315,40 @@ def test_a_session_that_stopped_partway_continues_without_a_follow_up(
     assert main(["-p", "-c"], transport=fake) == 0
     assert len(fake.calls) == 1
     assert user_texts(fake) == ["a"]
+
+
+@pytest.mark.parametrize("status", ["done", "error"])
+def test_a_resume_with_no_task_waits_on_an_idle_pipe_only_briefly(
+    status: str,
+    here: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A parent that resumes with an open, idle stdin: after the wait the
+    resume goes on as with no stdin. An ended session exits 2 with no model
+    call; one that stopped partway continues without a follow-up."""
+    assert main(["-p", "a"], transport=FakeProvider([text_reply("one")])) == 0
+    [saved] = files_in(here)
+    raw = json.loads(saved.read_text())
+    raw["status"] = status
+    saved.write_text(json.dumps(raw))
+    capsys.readouterr()
+    monkeypatch.setenv("NARE_STDIN_WAIT_SECONDS", "0.2")
+    write = open_pipe(monkeypatch)
+    fake = FakeProvider([text_reply("two")])
+    try:
+        code = main(["-p", "-c"], transport=fake)
+    finally:
+        os.close(write)
+    err = capsys.readouterr().err
+    assert "stdin left unread" in err
+    if status == "done":
+        assert code == 2
+        assert fake.calls == []
+        assert "follow-up" in err
+    else:
+        assert code == 0
+        assert user_texts(fake) == ["a"]
 
 
 def test_a_follow_up_on_stdin_is_read_once(
