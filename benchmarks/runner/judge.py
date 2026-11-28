@@ -182,9 +182,14 @@ async def _ask(
 
 
 async def score(
-    case: Case, diff: str, final_text: str, *, transport: Transport
+    case: Case, diff: str, final_text: str, *, transport: Transport | None
 ) -> tuple[list[bool | None], list[str], tuple[JudgeAttempt, ...]]:
     assert case.judge is not None, "score is only called for judged cases"
+    if transport is None:
+        # A run with no judge model has no transport (#355). require_judge
+        # refuses one with a judged case before any rep; reaching this is a
+        # bug, and the rep records it as a judge failure, not a crash.
+        raise JudgeError("no judge model is configured")
     prompt = build_prompt(case, diff, final_text)
     attempts: list[JudgeAttempt] = []
     last: JudgeError | None = None

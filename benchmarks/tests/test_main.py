@@ -663,6 +663,18 @@ async def test_a_judge_that_fails_twice_still_leaves_both_replies(
     assert "attempt 2: stop_reason=end_turn\nnot json" in judged
 
 
+async def test_a_judged_rep_with_no_judge_is_an_error_not_a_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # require_judge stops this before any rep; if it ever slips through, the
+    # rep says why instead of taking the run down.
+    fake_sandbox(monkeypatch, RunArtifacts(DONE_LINE, "", 0, False, 1.0))
+    case = sandboxed(tmp_path, Judge(("x",), 1))
+    rec = await run_rep(case, CONFIG, None, 0, tmp_path / "results" / "stamp")
+    assert rec.outcome == "error"
+    assert rec.judge_why == "judge failed: no judge model is configured"
+
+
 async def test_a_timed_out_rep_still_keeps_its_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -743,6 +755,135 @@ def test_a_confirmation_rerun_leaves_one_results_file(
     assert code == 1  # the failures were confirmed at ten reps
     results = tmp_path / "benchmarks" / "results"
     assert [p.name for p in results.glob("*.jsonl")] == ["2026-09-24T00-00-00Z.jsonl"]
+
+
+def test_a_run_with_no_judged_case_needs_no_judge_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#355: deploy-feed-window has no judge check, so a run of it alone starts
+    with no judge model, as require_judge allows, instead of a traceback."""
+    import benchmarks.runner.__main__ as bench
+
+    results_dir(tmp_path, monkeypatch)
+    monkeypatch.delenv("NARE_BENCH_JUDGE_MODEL")
+    seen: list[object] = []
+
+    async def passing(
+        case: Case,
+        config: Config,
+        transport: Transport | None,
+        reps: int,
+        evidence: Path,
+    ) -> list[RepRecord]:
+        seen.append(transport)
+        return [record(case.id, model="m")]
+
+    monkeypatch.setattr(bench, "build_image", lambda root: None)
+    monkeypatch.setattr(bench, "run_case", passing)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.delenv("NARE_BASE_URL", raising=False)
+
+    argv = ["run", "--tier", "sweep", "--case", "deploy-feed-window", "--model", "m"]
+    assert main([*argv, "--provider", "anthropic"]) == 0
+    assert seen == [None]
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def no_judge_baseline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A smoke baseline for model m judged by judge-x, holding an unjudged case
+    (multi-file-rename) and a judged one (edit-docstring); no judge in the shell."""
+    from benchmarks.runner.report import baseline_path
+
+    baselines = results_dir(tmp_path, monkeypatch)
+    baselines.mkdir()
+    monkeypatch.delenv("NARE_BENCH_JUDGE_MODEL")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.delenv("NARE_BASE_URL", raising=False)
+    path = baseline_path(baselines, "m", "smoke")
+    path.write_text(
+        dumps_baseline(
+            BaselineMeta("t", "abc1234", "anthropic", "m", "judge-x"),
+            [summary("edit-docstring", 1.0), summary("multi-file-rename", 1.0)],
+        )
+    )
+    return path
+
+
+def test_a_run_with_no_judge_compares_with_a_judged_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The judge is pinned because it moves judged scores. A run of unjudged
+    cases has none to move, so the baseline's judge does not refuse it."""
+    import benchmarks.runner.__main__ as bench
+
+    no_judge_baseline(tmp_path, monkeypatch)
+
+    async def passing(
+        case: Case,
+        config: Config,
+        transport: Transport | None,
+        reps: int,
+        evidence: Path,
+    ) -> list[RepRecord]:
+        return [replace(record(case.id, model="m"), rep=n) for n in range(reps)]
+
+    monkeypatch.setattr(bench, "build_image", lambda root: None)
+    monkeypatch.setattr(bench, "run_case", passing)
+    argv = ["run", "--case", "multi-file-rename", "--model", "m"]
+    assert main([*argv, "--provider", "anthropic"]) == 0
+    assert "judge" not in capsys.readouterr().err
+
+
+def test_blessing_unjudged_results_keeps_the_baselines_judge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from benchmarks.runner.report import load_baseline
+
+    path = no_judge_baseline(tmp_path, monkeypatch)
+    write_results(tmp_path, [record("multi-file-rename", model="m")])
+    assert main(["bless", "--model", "m", "--provider", "anthropic"]) == 0
+    blessed = load_baseline(path)
+    assert blessed.meta.judge_model == "judge-x"
+    assert set(blessed.cases) == {"edit-docstring", "multi-file-rename"}
+
+
+def test_blessing_unjudged_results_into_no_baseline_needs_a_judge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A baseline always names its judge: the matrix takes it from there."""
+    from benchmarks.runner.report import load_baseline
+
+    path = no_judge_baseline(tmp_path, monkeypatch)
+    path.unlink()
+    write_results(tmp_path, [record("multi-file-rename", model="m")])
+    argv = ["bless", "--model", "m", "--provider", "anthropic"]
+    assert main(argv) == 2
+    assert "--judge-model" in capsys.readouterr().err
+    assert not path.exists()
+    assert main([*argv, "--judge-model", "judge-y"]) == 0
+    assert load_baseline(path).meta.judge_model == "judge-y"
+
+
+def test_a_run_with_a_judged_case_and_no_judge_stops_before_the_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import benchmarks.runner.__main__ as bench
+
+    results_dir(tmp_path, monkeypatch)
+    monkeypatch.delenv("NARE_BENCH_JUDGE_MODEL")
+
+    def no_image(root: Path) -> None:
+        raise AssertionError("the image was built")
+
+    monkeypatch.setattr(bench, "build_image", no_image)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.delenv("NARE_BASE_URL", raising=False)
+
+    argv = ["run", "--case", "edit-docstring", "--model", "m"]
+    assert main([*argv, "--provider", "anthropic"]) == 2
+    err = capsys.readouterr().err
+    assert "no judge model: pass --judge-model or set NARE_BENCH_JUDGE_MODEL" in err
+    assert "Traceback" not in err
 
 
 async def test_a_rep_records_the_agents_output_cap(

@@ -221,3 +221,32 @@ def test_a_max_tokens_setting_is_refused_before_anything_runs(
     monkeypatch.setenv("NARE_BASE_URL", "https://gw.example")
     assert claude_arm.main(["--case", "edit-docstring", "--judge-model", "j"]) == 2
     assert "NARE_BENCH_MAX_TOKENS" in capsys.readouterr().out
+
+
+def test_an_arm_run_of_unjudged_cases_needs_no_judge_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#355 in the Claude Code arm: require_judge lets a run of unjudged cases
+    start with no judge, so the arm must not then build a judge transport."""
+    (tmp_path / "benchmarks").mkdir()
+    (tmp_path / "benchmarks" / "cases").symlink_to(repo_root() / "benchmarks" / "cases")
+    monkeypatch.setattr(claude_arm, "repo_root", lambda: tmp_path)
+    for name in ("NARE_BENCH_JUDGE_MODEL", "NARE_BENCH_MAX_TOKENS", "NARE_PROVIDER"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setattr(claude_arm, "fetch_model_info", lambda url, key, model: {})
+    monkeypatch.setattr(claude_arm, "price_from_model_info", lambda info: PRICE)
+    monkeypatch.setattr(claude_arm, "build_image", lambda root: None)
+    monkeypatch.setattr(claude_arm, "build_arm_image", lambda root: None)
+    monkeypatch.setattr(claude_arm, "claude_version", lambda: "test")
+    monkeypatch.setattr(claude_arm, "image_id", lambda image: "sha256:test")
+    monkeypatch.setattr(claude_arm, "_tools_seen", lambda evidence: [])
+    seen: list[object] = []
+
+    async def run_all(cases: object, **kwargs: Any) -> None:
+        seen.append(kwargs["transport"])
+
+    monkeypatch.setattr(claude_arm, "_run_all", run_all)
+    argv = ["--case", "multi-file-rename", "--base-url", "https://gw.example"]
+    assert claude_arm.main([*argv, "--out", "t"]) == 0
+    assert seen == [None]
