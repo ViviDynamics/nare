@@ -72,6 +72,25 @@ def test_a_run_refuses_a_contract_it_does_not_speak(capsys: Any) -> None:
     assert "99" in captured.err and str(CONTRACT_VERSION) in captured.err
 
 
+def test_the_contract_is_version_4(capsys: Any) -> None:
+    """Version 4: --allowed-tools approves instead of narrowing (#350)."""
+    main(["contract"])
+
+    assert json.loads(capsys.readouterr().out)["contract"] == 4 == CONTRACT_VERSION
+
+
+def test_a_run_refuses_contract_3_as_it_does_any_other(capsys: Any) -> None:
+    code = main(["run", "go", "--yes", "--jsonl", "--contract", "3"])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert captured.err == (
+        "nare speaks contract 4, and the caller asked for 3. Refusing rather "
+        "than emitting a stream it would mis-read.\n"
+    )
+
+
 def test_a_run_accepts_the_contract_it_speaks(capsys: Any) -> None:
     code = main(
         ["run", "go", "--yes", "--jsonl", "--contract", str(CONTRACT_VERSION)],
@@ -149,6 +168,64 @@ def test_a_session_from_another_contract_is_refused(tmp_path: Path) -> None:
         assert "contract" in str(exc)
     else:  # pragma: no cover - the refusal is the point
         raise AssertionError("a session from another contract must be refused")
+
+
+def _saved_under(tmp_path: Path, contract: int) -> Path:
+    session_path = tmp_path / "s.json"
+    main(
+        ["run", "go", "--yes", "--session", str(session_path)],
+        transport=FakeProvider([text_reply("done")]),
+    )
+    raw = json.loads(session_path.read_text(encoding="utf-8"))
+    raw["contract"] = contract
+    session_path.write_text(json.dumps(raw), encoding="utf-8")
+    return session_path
+
+
+def test_a_session_from_contract_3_loads_as_this_contract(
+    tmp_path: Path, capsys: Any
+) -> None:
+    """Version 4 changed what a flag means, not a session field, so a saved
+    version 3 session still resumes; the file it writes then says 4."""
+    session_path = _saved_under(tmp_path, 3)
+
+    assert loads(session_path.read_text(encoding="utf-8")).contract == 4
+    code = main(
+        ["run", "again", "--yes", "--resume", str(session_path)],
+        transport=FakeProvider([text_reply("done")]),
+    )
+
+    capsys.readouterr()
+    assert code == 0
+    assert json.loads(session_path.read_text(encoding="utf-8"))["contract"] == 4
+
+
+def test_a_session_from_contract_2_is_still_refused(tmp_path: Path) -> None:
+    session_path = _saved_under(tmp_path, 2)
+
+    try:
+        loads(session_path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        assert "contract 2" in str(exc)
+    else:  # pragma: no cover - the refusal is the point
+        raise AssertionError("a version 2 session must be refused")
+
+
+def test_the_documented_contract_says_what_version_4_changed() -> None:
+    text = (Path(__file__).parent.parent / "docs" / "contract.md").read_text(
+        encoding="utf-8"
+    )
+    section = text.split("## Changes in version 4", 1)[1].split("\n## ", 1)[0]
+    for needle in (
+        "--allowedTools",
+        "--allowed-tools",
+        "--tools",
+        "nare run --yes --allowedTools",
+        "version 3 session",
+    ):
+        assert needle in section
+    rules = text.split("## What changes the version", 1)[1].split("\n## ", 1)[0]
+    assert "changing what an existing flag" in rules
 
 
 def test_the_documented_contract_matches_the_code() -> None:
@@ -405,8 +482,8 @@ def test_the_documented_contract_describes_compaction_modes() -> None:
     text = (Path(__file__).parent.parent / "docs" / "contract.md").read_text(
         encoding="utf-8"
     )
-    assert "Contract version 3 covers" in text
-    assert "Contract version 2 covers" not in text
+    assert "Contract version 4 covers" in text
+    assert "Contract version 3 covers" not in text
     section = text.split("### Compaction modes", 1)[1].split("\n## ", 1)[0]
     for mode in COMPACTION_MODES:
         assert f"| `{mode}`" in section

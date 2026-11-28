@@ -21,7 +21,13 @@ from nare.events import REDACTION_RULES, REDACTION_VERSION, EventType
 if TYPE_CHECKING:
     from nare.session import Status
 
-CONTRACT_VERSION = 3
+CONTRACT_VERSION = 4
+
+# The contract versions whose session files this nare reads. Version 4 changed
+# what --allowed-tools means (#350), not a session field, so a version 3 file
+# has this version's shape and still resumes; it is written back as version 4.
+# A version whose session shapes differ is never listed here.
+SESSION_CONTRACTS = frozenset({3, CONTRACT_VERSION})
 
 # The release that produced a run. Read from the installed distribution when
 # there is one, so a wheel's metadata and what nare reports can never disagree;

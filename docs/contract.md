@@ -1,6 +1,6 @@
 # The machine contract
 
-This is contract version 3.
+This is contract version 4.
 
 A caller drives nare as a subprocess and turns three things into decisions: the
 JSONL event stream on stdout, the session file, and the exit code. This document
@@ -21,7 +21,7 @@ build speaks.
 
 ## Refusing a contract you do not speak
 
-    nare run --contract 2 --yes "..."
+    nare run --contract 3 --yes "..."
 
 When the caller's number and nare's differ, nare exits 2 before starting and
 writes nothing to stdout. A caller that pins the version it understands never
@@ -120,7 +120,9 @@ entry instead: compaction under `compaction` ([Compaction
 modes](#compaction-modes)), and `request_retries`, `capacity_queue` and others.
 Some are not yet advertised, among them `--max-turns`, `--provider` and
 `--model`. The positional prompt is advertised under `prompt_input`. A new flag is a new entry here and
-keeps the contract version; removing or renaming one bumps it.
+keeps the contract version; removing or renaming one bumps it, and so does
+changing what an existing flag does, as version 4 did for `--allowed-tools`
+([Changes in version 4](#changes-in-version-4)).
 
 | Flag | Takes a value | Choices | What it does |
 | --- | --- | --- | --- |
@@ -257,9 +259,9 @@ environment is a default, which an alias overrides as the flag would.
   run. The library takes `Policy(approved_tools=...)`, which nare's own approver
   reads; a caller's own approve function is asked as before. The session records
   the approved names under its policy as `"approved_tools"`, a sorted list,
-  absent when there are none. Before #350 this flag narrowed the tool set to
-  what it named, unlike Claude Code's; a caller that relied on that passes
-  `--tools`.
+  absent when there are none. Under contract version 3 this flag narrowed the
+  tool set to what it named, unlike Claude Code's; a caller that relied on that
+  passes `--tools` ([Changes in version 4](#changes-in-version-4)).
 - `--disallowed-tools` (`--disallowedTools`) names built-in tools only; MCP tools
   stay allowed as with no `--tools`. Its `Bash(PATTERN)` adds to `--bash-deny`.
 - `--permission-mode acceptEdits`, and `default`, `-a on-request`, are not
@@ -515,9 +517,9 @@ The `tool_use_id` field, the result events and the `tool_results` key of
 
 ## What changes the version
 
-Contract version 3 covers the event types and their fields, the `result`
-object's fields, the session file's shape, the exit codes above, and the
-redaction rule set.
+Contract version 4 covers the event types and their fields, the `result`
+object's fields, the session file's shape, what each `nare run` flag does, the
+exit codes above, and the redaction rule set.
 
 **These keep the version:** a new event type, a new field on an event or on the
 `result` object, a new session field with a default, a new flag, a new status
@@ -529,14 +531,39 @@ field) is one of these, and so are the tool result events and the
 A caller must therefore ignore fields and event types it does not recognise.
 That is the price of additive changes not bumping the number.
 
-**These bump it:** removing or renaming a field or an event type, changing what
-an existing field means, changing an exit code, and changing when a status is
-reported. Changing or removing a redaction rule, or changing what a rule
+**These bump it:** removing or renaming a field, an event type or a flag,
+changing what an existing field means, changing what an existing flag does (a
+caller's old command line would run differently, as `--allowed-tools` did in
+version 4), changing an exit code, and changing when a status is reported. Changing or removing a redaction rule, or changing what a rule
 matches, bumps it too: the rule set is part of what an event's `text` means.
 
 nare speaks one contract version at a time. There is no negotiation and no
 compatibility mode: a caller pins a version, and a nare that speaks another one
-refuses to run.
+refuses to run. A session file is the one exception, and only when the bump
+left its shape alone: this nare resumes a session written under a version
+whose session file has the same shape (version 3, for version 4), and writes it
+back under its own number. A session from any other version is refused.
+
+## Changes in version 4
+
+`--allowed-tools`, and Claude Code's spelling `--allowedTools`, narrowed the
+tool set to the tools it named under version 3. It now pre-approves them, as
+Claude Code's flag does, and leaves every other tool available ([Other tools'
+spellings](#other-tools-spellings)). `--tools` is what narrows.
+
+An old command line runs differently, so the version moved:
+`nare run --yes --allowedTools read` was a read-only run under version 3, and
+is now a run with every tool, all of them approved by `--yes`. Without `--yes`
+the calls the flag does not approve are still asked about, or denied where no
+one can answer. A caller that relied on the narrowing passes `--tools read`
+instead, and `nare contract`'s `flag_aliases` now maps `--allowedTools` to
+`--allowed-tools`, no longer to `--tools`. No field, event type, exit code or
+status changed.
+
+A version 3 session resumes under version 4, since its shape is the same, and
+is written back as version 4. A caller pinning `--contract 3` is refused at the
+start with both numbers named, and pins `--contract 4` once it has moved any
+narrowing `--allowedTools` to `--tools`.
 
 ## Releases
 
@@ -2608,7 +2635,7 @@ and discovery key are additive and keep the contract version.
 
 ## Read-only navigation
 
-    nare run --yes --jsonl --contract 2 --tools read,list,search --root "$PWD" \
+    nare run --yes --jsonl --contract 4 --tools read,list,search --root "$PWD" \
       --session survey.json "Where is the database port configured?"
 
 `list` and `search` let a session find its way around a tree without `bash`, so
@@ -2734,7 +2761,7 @@ and keep the contract version.
 
 ## Read-only image input
 
-    nare run --yes --jsonl --contract 2 --provider openai --model VISION_MODEL \
+    nare run --yes --jsonl --contract 4 --provider openai --model VISION_MODEL \
       --image-input --tools read --root "$PWD/images" --session image.json \
       "Read chart.png and describe it."
 
@@ -3061,7 +3088,7 @@ does decode, such as a citation `[1]`, counts as a second document.
 
 ## Schema-constrained answers
 
-    nare run --yes --jsonl --contract 2 --provider openai --model MODEL \
+    nare run --yes --jsonl --contract 4 --provider openai --model MODEL \
       --base-url "$PROXY" --tools read --root "$PWD" \
       --schema answer.schema.json --structured-output json_schema "..."
 
@@ -3202,7 +3229,7 @@ A caller whose own checks reject an answer can correct it without starting
 over. The transcript is already in the session file, so a resume sends only
 the correction, not the original prompt again:
 
-    nare run --yes --jsonl --contract 2 --resume review.json \
+    nare run --yes --jsonl --contract 4 --resume review.json \
       --tools none --max-turns 2 --schema stricter.schema.json \
       "Finding 2 cites the wrong file. Answer again with the file that holds it."
 

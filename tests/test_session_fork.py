@@ -371,7 +371,7 @@ def test_contract_describes_the_fork_and_keeps_the_version() -> None:
         "session_field": "forked_from",
         "fields": ["session_id", "turn", "path"],
     }
-    assert CONTRACT_VERSION == 3
+    assert CONTRACT_VERSION == 4
 
 
 def test_the_documented_contract_describes_the_fork() -> None:

@@ -275,7 +275,9 @@ nare also takes Claude Code's and Codex's spellings of its flags:
 `-s`, `--max-budget-usd`, `--json-schema`, `--output-schema`, `-m
 provider/model` and `--add-dir`, each onto the nare flag it stands for. As in
 Claude Code, `--allowedTools` approves the tools it names and leaves the others
-available; `--tools` is what narrows the set. See
+available; `--tools` is what narrows the set. That is contract version 4:
+under version 3 the flag narrowed, so a caller moving to `--contract 4` moves
+any narrowing `--allowedTools` to `--tools`. See
 [other tools' spellings](docs/contract.md#other-tools-spellings).
 
 Sessions are kept for you. `nare`, `nare "<task>"`, `nare -p` and `nare exec`
@@ -495,7 +497,7 @@ A run that was interrupted shows as `interrupted`, with how long ago.
 
 ## Session budgets, cost and context
 
-    nare run --yes --jsonl --contract 2 --provider openai --model YOUR_MODEL \
+    nare run --yes --jsonl --contract 4 --provider openai --model YOUR_MODEL \
       --max-tokens 8192 --budget-tokens 50000 --tools read --root "$PWD" \
       --schema findings.schema.json --session persona.session.json \
       "Review this checkout" > persona.events.jsonl

@@ -10,7 +10,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from nare.contract import CONTRACT_VERSION
+from nare.contract import CONTRACT_VERSION, SESSION_CONTRACTS
 from nare.session import SESSION_VERSION, Session, loads
 
 
@@ -28,7 +28,7 @@ def _mismatched(text: str) -> bool:
         return False
     return isinstance(raw, dict) and (
         raw.get("version", 0) != SESSION_VERSION
-        or raw.get("contract", CONTRACT_VERSION) != CONTRACT_VERSION
+        or raw.get("contract", CONTRACT_VERSION) not in SESSION_CONTRACTS
     )
 
 

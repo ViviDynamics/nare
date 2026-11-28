@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from nare.contract import CONTRACT_VERSION, NARE_VERSION
+from nare.contract import CONTRACT_VERSION, NARE_VERSION, SESSION_CONTRACTS
 from nare.events import REDACTED, Event, redact_value
 
 SESSION_VERSION = 1
@@ -562,12 +562,14 @@ def loads(text: str) -> Session:
             f"session file is version {version}; this nare writes {SESSION_VERSION}"
         )
     contract = raw.get("contract", CONTRACT_VERSION)
-    if contract != CONTRACT_VERSION:
+    if contract not in SESSION_CONTRACTS:
         raise ValueError(
             f"session file speaks contract {contract}; this nare speaks "
             f"{CONTRACT_VERSION}. Resuming it would mean reading shapes this "
             "nare does not define."
         )
+    # An older contract with this one's session shape: it is this nare's now.
+    raw["contract"] = CONTRACT_VERSION
     # Popped like version: once loaded, a session holds only valid thinking.
     vetted = raw.pop("stale_thinking_dropped", False) is True
     try:
