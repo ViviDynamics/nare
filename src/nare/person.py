@@ -56,11 +56,12 @@ OUTPUT_FORMATS = ("text", "json", "stream-json")
 # Stdin a one-shot run can do without (context beside a task, or a resume's
 # follow-up) is read only as far as it comes promptly, so a parent that left
 # its pipe open and idle never hangs the run (#351). The wait is for its first
-# bytes or its end; NARE_STDIN_WAIT_SECONDS changes it. Once bytes come, a
-# silence of STDIN_IDLE_SECONDS (or the wait, if longer) with no end stops the
-# read, keeping what came, and STDIN_MAX_BYTES bounds it.
+# bytes or its end; NARE_STDIN_WAIT_SECONDS changes it (inf: no limit). Once
+# bytes come, the caller is sending context, so only a silence of
+# STDIN_IDLE_SECONDS (or the wait, if longer) with no end stops the read,
+# keeping what came, and STDIN_MAX_BYTES bounds it.
 STDIN_WAIT_SECONDS = 1.0
-STDIN_IDLE_SECONDS = 5.0
+STDIN_IDLE_SECONDS = 30.0
 STDIN_MAX_BYTES = 1024 * 1024
 EXIT_WORDS = frozenset({"exit", "quit", "/exit", "/quit"})
 
@@ -599,6 +600,9 @@ def read_prompt(args: argparse.Namespace, prog: str) -> None:
     """
     if args.prompt_file is not None:
         return
+    if args.resume is not None and args.prompt is not None and not args.prompt.strip():
+        # A blank task is no follow-up: an ended session must not run again.
+        args.prompt = None
     if args.prompt not in (None, "-"):
         context = read_optional_stdin() if stdin_piped() else None
         if context and context.strip():
@@ -637,7 +641,8 @@ def read_prompt(args: argparse.Namespace, prog: str) -> None:
 
 
 def stdin_wait() -> float:
-    """STDIN_WAIT_SECONDS, or NARE_STDIN_WAIT_SECONDS when it is set."""
+    """STDIN_WAIT_SECONDS, or NARE_STDIN_WAIT_SECONDS when it is set: a
+    number of seconds, 0 or more, or inf to wait as long as stdin takes."""
     raw = os.environ.get("NARE_STDIN_WAIT_SECONDS", "").strip()
     if not raw:
         return STDIN_WAIT_SECONDS
@@ -645,9 +650,10 @@ def stdin_wait() -> float:
         seconds = float(raw)
     except ValueError:
         seconds = math.nan
-    if not math.isfinite(seconds) or seconds < 0:
+    if math.isnan(seconds) or seconds < 0:
         raise ValueError(
-            f"NARE_STDIN_WAIT_SECONDS is {raw!r}: give a number of seconds, 0 or more"
+            f"NARE_STDIN_WAIT_SECONDS is {raw!r}: give a number of seconds, "
+            "0 or more, or inf"
         )
     return seconds
 
@@ -655,10 +661,10 @@ def stdin_wait() -> float:
 def read_optional_stdin() -> str | None:
     """Piped stdin the run can do without, read only as far as it comes
     promptly. None, with a note on stderr, when neither bytes nor the end
-    came within the wait: the caller left stdin open and idle. A file is
-    read whole, as it cannot block. Once bytes come, the read goes on to the
-    end, unless STDIN_MAX_BYTES is passed or the bytes stop with no end for
-    the idle gap; then what came is used, with a note."""
+    came within the wait: the caller left stdin open and idle. A file skips
+    the wait, as it cannot block. Once bytes come, the read goes on to the
+    end, unless STDIN_MAX_BYTES is passed (for a file too) or the bytes stop
+    with no end for the idle gap; then what came is used, with a note."""
     wait = stdin_wait()
     idle = max(STDIN_IDLE_SECONDS, wait)
     try:
@@ -670,8 +676,12 @@ def read_optional_stdin() -> str | None:
         while True:
             if not regular and not _readable(fd, idle if chunks else wait):
                 if not chunks:
-                    _note(f"stdin left unread: nothing arrived in {wait:g}s")
+                    _note(
+                        f"stdin left unread: nothing arrived in {wait:g}s "
+                        "(NARE_STDIN_WAIT_SECONDS waits longer)"
+                    )
                     return None
+                cut = True
                 _note(
                     f"stdin had no end after {size} bytes and {idle:g}s of "
                     "silence: sending what arrived"
@@ -690,7 +700,8 @@ def read_optional_stdin() -> str | None:
                 )
                 break
         data = b"".join(chunks)[:STDIN_MAX_BYTES]
-        # A cut may end inside a character: keep only the whole ones.
+        # A cut, or a silence, may end inside a character: keep only the
+        # whole ones.
         return codecs.getincrementaldecoder("utf-8")().decode(data, final=not cut)
     except (OSError, UnicodeError) as exc:
         raise ValueError(f"stdin: {exc}") from exc
@@ -701,7 +712,9 @@ def _readable(fd: int, timeout: float) -> bool:
     timeout. Where fd cannot be polled, as for a pipe on Windows, a read is
     let block, as before the wait."""
     try:
-        ready, _, _ = select.select([fd], [], [], timeout)
+        ready, _, _ = select.select(
+            [fd], [], [], None if math.isinf(timeout) else timeout
+        )
     except (OSError, ValueError):
         return True
     return bool(ready)

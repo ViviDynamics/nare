@@ -300,6 +300,46 @@ def test_context_that_stops_without_an_end_is_used_as_far_as_it_came(
     assert "no end" in note
 
 
+def test_a_silence_inside_a_character_keeps_the_whole_ones(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A producer that flushes half of an e-acute and then goes quiet: the
+    half is dropped, not a decoding error."""
+    monkeypatch.setattr(person, "STDIN_IDLE_SECONDS", 0.2)
+    monkeypatch.setenv("NARE_STDIN_WAIT_SECONDS", "0.2")
+    write = open_pipe(monkeypatch, "caf\u00e9".encode()[:-1])
+    try:
+        fake = FakeProvider([text_reply("x")])
+        assert main(["-p", "explain"], transport=fake) == 0
+    finally:
+        os.close(write)
+    assert first_prompt(fake) == "explain\n\n<stdin>\ncaf\n</stdin>"
+
+
+def test_the_skip_note_names_the_knob(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("NARE_STDIN_WAIT_SECONDS", "0")
+    write = open_pipe(monkeypatch)
+    try:
+        assert main(["-p", "explain"], transport=FakeProvider([text_reply("x")])) == 0
+    finally:
+        os.close(write)
+    assert "NARE_STDIN_WAIT_SECONDS" in capsys.readouterr().err
+
+
+def test_an_endless_stdin_wait_reads_as_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NARE_STDIN_WAIT_SECONDS=inf waits for a slow producer as long as it
+    takes, as nare did before the wait."""
+    monkeypatch.setenv("NARE_STDIN_WAIT_SECONDS", "inf")
+    piped(monkeypatch, b"ctx")
+    fake = FakeProvider([text_reply("x")])
+    assert main(["-p", "explain"], transport=fake) == 0
+    assert first_prompt(fake) == "explain\n\n<stdin>\nctx\n</stdin>"
+
+
 def test_context_is_cut_at_the_size_cap(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

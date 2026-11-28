@@ -246,7 +246,8 @@ confined to (`--root` changes it). A task that is a command's name goes after
 `nare -p` and `nare exec` take every `nare run` flag. Piped stdin is extra
 context, added after the task in a `<stdin>` block (`cat f.py | nare -p
 "explain"`), if it starts or ends within 1 second; a pipe left open and idle is
-skipped with a note on stderr, so it cannot hang them. With no task, or `-`,
+skipped with a note on stderr, so it cannot hang them (`NARE_STDIN_WAIT_SECONDS`
+waits longer for a slow producer). With no task, or `-`,
 stdin is the whole prompt (`git diff | nare -p`), and on a resume the
 follow-up (`echo "now fix it" | nare -p -c`). The exact rules are in
 [the contract](docs/contract.md#the-person-facing-commands).

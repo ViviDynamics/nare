@@ -351,6 +351,18 @@ def test_a_resume_with_no_task_waits_on_an_idle_pipe_only_briefly(
         assert user_texts(fake) == ["a"]
 
 
+def test_a_blank_task_on_a_resume_is_no_follow_up(
+    here: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """nare -p -c "$EMPTY" on an ended session: exit 2, as with no task."""
+    assert main(["-p", "a"], transport=FakeProvider([text_reply("one")])) == 0
+    capsys.readouterr()
+    fake = FakeProvider([])
+    assert main(["-p", "-c", "  "], transport=fake) == 2
+    assert fake.calls == []
+    assert "follow-up" in capsys.readouterr().err
+
+
 def test_a_follow_up_on_stdin_is_read_once(
     here: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
