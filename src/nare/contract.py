@@ -29,6 +29,13 @@ CONTRACT_VERSION = 4
 # A version whose session shapes differ is never listed here.
 SESSION_CONTRACTS = frozenset({3, CONTRACT_VERSION})
 
+
+def reads_session_contract(contract: object) -> bool:
+    """Whether a session file's `contract` value is one this nare reads. A
+    malformed value (a list, an object) is a mismatch, not a crash."""
+    return type(contract) is int and contract in SESSION_CONTRACTS
+
+
 # The release that produced a run. Read from the installed distribution when
 # there is one, so a wheel's metadata and what nare reports can never disagree;
 # the fallback is for a source checkout, which has no distribution to read.

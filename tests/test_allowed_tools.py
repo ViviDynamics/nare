@@ -287,6 +287,11 @@ def test_yes_with_allowed_tools_says_it_no_longer_narrows(
     code, _fake = run_print(["--allowedTools", "Read"], [text_reply("done")])
     assert code == 0
     assert "--allowed-tools approves" not in capsys.readouterr().err
+    # A caller pinning contract 4 already speaks the new meaning.
+    fake = FakeProvider([text_reply("done")])
+    argv = ["run", "--yes", "--contract", "4", "--allowedTools", "Read", "go"]
+    assert main(argv, transport=fake) == 0
+    assert "--allowed-tools approves" not in capsys.readouterr().err
 
 
 def test_a_name_the_run_does_not_offer_is_not_recorded(work: Path) -> None:
@@ -329,7 +334,40 @@ def test_an_mcp_tool_of_a_server_not_loaded_is_approved_to_no_effect(
     from nare.cli import policy_from_args, validate_run_args
 
     validate_run_args(args)
-    assert "read" in policy_from_args(args).approved_tools
+    approved = policy_from_args(args).approved_tools
+    assert "read" in approved
+    # Not offered, so not recorded, as the contract says.
+    assert "proj__lint" not in approved
+
+
+def test_the_tui_and_bare_nare_take_allowed_tools(work: Path) -> None:
+    """Neither has --yes, so the warning beside it must not need one."""
+    from nare import cli, person
+
+    assert parse_args(["tui", "--allowedTools", "Read"]).approved_tools == ["read"]
+    parser = person.interactive_parser()
+    argv = ["--allowedTools", "Read", "hi"]
+    args = parser.parse_args(argv)
+    cli.resolve_aliases(parser, argv, args)
+    assert args.approved_tools == ["read"]
+
+
+def test_an_approved_caller_tool_survives_a_built_in_denial(work: Path) -> None:
+    """--disallowed-tools leaves caller tools offered, as it leaves MCP tools,
+    so their approval stays."""
+    from nare.cli import policy_from_args, validate_run_args
+
+    entry = {
+        "description": "Lint the tree.",
+        "input_schema": {"type": "object", "properties": {}},
+        "command": ["true"],
+    }
+    (work / "ct.json").write_text(json.dumps({"lint": entry}))
+    for denial in ([], ["--disallowedTools", "Bash"]):
+        argv = ["run", "go", "--command-tools", "ct.json", *denial]
+        args = parse_args([*argv, "--allowedTools", "lint"])
+        validate_run_args(args)
+        assert policy_from_args(args).approved_tools == frozenset({"lint"})
 
 
 def test_yes_beside_a_denial_still_says_it_no_longer_narrows(

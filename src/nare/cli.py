@@ -741,9 +741,14 @@ def resolve_aliases(
     if args.tools is None or "bash" in tool_set(args.tools):
         args.bash_allow = [*args.bash_allow, *allow_patterns]
     args.approved_tools = sorted(approved)
-    if (approved or allow_patterns) and args.yes and (args.tools is None or deny_only):
-        # Before #350 this narrowed the run: an old command line under --yes
-        # would now run every tool unasked, so it says so.
+    # `nare tui` and bare `nare` have no --yes. Under contract 3 this flag
+    # narrowed the run: an old command line under --yes would now run every
+    # tool unasked, so it says so, unless the caller pins contract 4 and so
+    # already speaks the new meaning.
+    yes = getattr(args, "yes", False)
+    pinned = getattr(args, "contract", None) == CONTRACT_VERSION
+    widens = args.tools is None or deny_only
+    if (approved or allow_patterns) and yes and widens and not pinned:
         print(
             "nare: warning: --allowed-tools approves the tools it names and "
             "leaves the others available, and --yes approves every call; pass "
@@ -1429,15 +1434,21 @@ def policy_from_args(args: argparse.Namespace) -> Policy:
             "MCP tool"
         )
     # Approval never adds a tool, and records none the run cannot call. With
-    # MCP tools offered whole (no --tools, or only --disallowed-tools), only
-    # the built-ins are narrowed.
-    offered_mcp = getattr(args, "mcp_allow_all", args.tools is None)
+    # MCP and caller tools offered whole (no --tools, or only
+    # --disallowed-tools), only the built-ins are narrowed; an MCP tool is
+    # still offered only when its server is loaded.
+    offered_external = getattr(args, "mcp_allow_all", args.tools is None)
     approved = frozenset(
         name
         for name in approved
         if name in tools
-        or (offered_mcp and name not in TOOLS and name not in command_names)
-        or (args.tools is None and name in command_names)
+        or (
+            offered_external
+            and (
+                name in command_names
+                or any(name.startswith(alias + "__") for alias in args.mcp_servers)
+            )
+        )
     )
     unresolved_names = frozenset(
         name

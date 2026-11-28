@@ -256,7 +256,7 @@ environment is a default, which an alias overrides as the flag would.
   refuses a run without `--yes`, and under `nare -p` the calls it does not
   approve are denied. With `--yes` every call is approved anyway; given beside
   `--yes` without `--tools`, it says on stderr that it no longer narrows the
-  run. The library takes `Policy(approved_tools=...)`, which nare's own approver
+  run, unless the caller pins `--contract 4`. The library takes `Policy(approved_tools=...)`, which nare's own approver
   reads; a caller's own approve function is asked as before. The session records
   the approved names under its policy as `"approved_tools"`, a sorted list,
   absent when there are none. Under contract version 3 this flag narrowed the

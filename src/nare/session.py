@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from nare.contract import CONTRACT_VERSION, NARE_VERSION, SESSION_CONTRACTS
+from nare.contract import CONTRACT_VERSION, NARE_VERSION, reads_session_contract
 from nare.events import REDACTED, Event, redact_value
 
 SESSION_VERSION = 1
@@ -562,7 +562,7 @@ def loads(text: str) -> Session:
             f"session file is version {version}; this nare writes {SESSION_VERSION}"
         )
     contract = raw.get("contract", CONTRACT_VERSION)
-    if contract not in SESSION_CONTRACTS:
+    if not reads_session_contract(contract):
         raise ValueError(
             f"session file speaks contract {contract}; this nare speaks "
             f"{CONTRACT_VERSION}. Resuming it would mean reading shapes this "

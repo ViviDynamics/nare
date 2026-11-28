@@ -209,6 +209,17 @@ def test_a_session_from_contract_2_is_still_refused(tmp_path: Path) -> None:
         loads(session_path.read_text(encoding="utf-8"))
 
 
+@pytest.mark.parametrize("contract", [[3], {"v": 3}, "3", None])
+def test_a_malformed_contract_is_refused_as_a_mismatch(contract: Any) -> None:
+    from nare.session import SESSION_VERSION
+    from nare.tui.attach import _mismatched
+
+    text = json.dumps({"version": SESSION_VERSION, "contract": contract})
+    with pytest.raises(ValueError, match="speaks contract"):
+        loads(text)
+    assert _mismatched(text) is True
+
+
 def test_the_documented_contract_says_what_version_4_changed() -> None:
     text = (Path(__file__).parent.parent / "docs" / "contract.md").read_text(
         encoding="utf-8"
