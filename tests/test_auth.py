@@ -181,6 +181,93 @@ def test_logout_removes_the_stored_key(home: Path) -> None:
     assert main(["auth", "logout"]) == 0  # nothing left: still fine
 
 
+def test_login_under_the_fake_provider_stores_an_anthropic_key(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # #354: argparse never checks a default against choices, so "fake" reached
+    # KEY_ENV and the credentials file. fake needs no key, so login is for
+    # the default provider, and says which.
+    monkeypatch.setenv("NARE_PROVIDER", "fake")
+    piped(monkeypatch, KEY)
+    assert main(["auth", "login", "--with-api-key"]) == 0
+    assert stored(home) == {"anthropic": {"api_key": KEY}}
+    assert "stored the anthropic key" in capsys.readouterr().err
+
+    monkeypatch.setattr(credentials, "terminal", lambda: True)
+    monkeypatch.setattr(credentials, "hidden_input", lambda prompt: OPENAI_KEY)
+    assert main(["auth", "login", "--provider", "openai"]) == 0
+    assert stored(home) == {
+        "anthropic": {"api_key": KEY},
+        "openai": {"api_key": OPENAI_KEY},
+    }
+
+
+def test_login_under_the_fake_provider_without_a_terminal_names_the_key(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("NARE_PROVIDER", "fake")
+    monkeypatch.setattr(credentials, "terminal", lambda: False)
+    assert main(["auth", "login"]) == 2
+    err = capsys.readouterr().err
+    assert "ANTHROPIC_API_KEY" in err
+    assert "Traceback" not in err
+
+
+def test_status_under_the_fake_provider_needs_no_key(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("NARE_PROVIDER", "fake")
+    assert main(["auth", "status"]) == 0
+    marked = [line for line in capsys.readouterr().out.splitlines() if line[0] == "*"]
+    assert len(marked) == 1
+    assert "fake" in marked[0] and "no key needed" in marked[0]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["auth", "login", "--with-api-key"],
+        ["auth", "login"],
+        ["auth", "status"],
+        ["auth", "logout"],
+    ],
+)
+def test_an_unknown_provider_is_named_not_taken_for_anthropic(
+    argv: list[str],
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A typo must not store, report on or remove the anthropic key.
+    credentials.store_key("anthropic", KEY)
+    monkeypatch.setenv("NARE_PROVIDER", "opneai")
+    monkeypatch.setattr(credentials, "terminal", lambda: True)
+    monkeypatch.setattr(credentials, "hidden_input", lambda prompt: OPENAI_KEY)
+    piped(monkeypatch, OPENAI_KEY)
+    assert main(argv) == 2
+    captured = capsys.readouterr()
+    assert "NARE_PROVIDER=opneai is not a provider" in captured.err
+    assert captured.out == ""
+    assert stored(home) == {"anthropic": {"api_key": KEY}}
+
+
+@pytest.mark.parametrize("provider", ["fake", "bedrock"])
+def test_logout_under_a_keyless_provider_removes_nothing_unasked(
+    provider: str,
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Which key to remove is never guessed; as before, nothing is an exit 0.
+    credentials.store_key("anthropic", KEY)
+    monkeypatch.setenv("NARE_PROVIDER", provider)
+    assert main(["auth", "logout"]) == 0
+    assert "--provider" in capsys.readouterr().err
+    assert stored(home) == {"anthropic": {"api_key": KEY}}
+    assert main(["auth", "logout", "--provider", "anthropic"]) == 0
+    assert stored(home) == {}
+
+
 def test_a_stored_key_reaches_the_transport() -> None:
     credentials.store_key("anthropic", KEY)
     transport = transport_from_args(parse_args(["run", "--yes", "x"]))

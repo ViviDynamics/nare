@@ -113,10 +113,13 @@ To keep a key without exporting it in every shell, store it once:
 argv. The environment variable, when set, wins over a stored key, for every
 command including `nare run`. `nare auth status` exits 0 when the default
 provider (`NARE_PROVIDER`, else anthropic) has a key and 1 when not; for
-bedrock it reports whether the AWS credential chain resolves. Nothing prompts
-without a terminal: `nare auth login` there needs `--with-api-key`. `nare`,
-`nare "<task>"` and `nare -p` with no key say so in one line, naming
-`nare auth login`.
+bedrock it reports whether the AWS credential chain resolves, and `fake` needs
+none. Under `NARE_PROVIDER=fake`, `nare auth login` stores an anthropic key;
+`nare auth logout` under fake or bedrock removes nothing unless `--provider`
+names a key; and a `NARE_PROVIDER` nare does not know is an exit 2 for all
+three, never taken for anthropic. Nothing prompts without a terminal:
+`nare auth login` there needs `--with-api-key`. `nare`, `nare "<task>"` and
+`nare -p` with no key say so in one line, naming `nare auth login`.
 
 ### Claude on Amazon Bedrock
 
