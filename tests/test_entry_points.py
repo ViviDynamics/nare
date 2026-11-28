@@ -1,8 +1,8 @@
 """The person-facing entry points (#324): `nare`, `nare "<task>"`, `nare -p`,
 `nare exec`, and `nare run` at a terminal.
 
-Every one is additive: `nare run --yes --contract 3 --jsonl` and every path
-without a terminal behave as contract 3 says, which the contract tests and the
+Every one is additive: `nare run --yes --contract 4 --jsonl` and every path
+without a terminal behave as contract 4 says, which the contract tests and the
 last tests here hold.
 """
 
@@ -136,7 +136,7 @@ def test_a_subcommand_name_after_options_is_not_taken_as_a_task(
 
 def test_subcommands_keep_their_meaning(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["contract"]) == 0
-    assert json.loads(capsys.readouterr().out)["contract"] == 3
+    assert json.loads(capsys.readouterr().out)["contract"] == 4
 
 
 def test_a_task_with_no_terminal_names_print_mode(
@@ -196,7 +196,7 @@ def test_print_mode_json_is_the_result_line_alone(
     assert result["type"] == "result"
     assert result["status"] == "done"
     assert result["text"] == "hi"
-    assert result["contract"] == 3
+    assert result["contract"] == 4
 
 
 def run_jsonl(argv: list[str], capsys: pytest.CaptureFixture[str]) -> list[str]:
@@ -220,7 +220,7 @@ def test_stream_json_is_the_contract_stream(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     contract = run_jsonl(
-        ["run", "--yes", "--contract", "3", "--jsonl", "--root", ".", "say hi"],
+        ["run", "--yes", "--contract", "4", "--jsonl", "--root", ".", "say hi"],
         capsys,
     )
     assert run_jsonl(argv, capsys) == contract

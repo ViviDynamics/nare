@@ -54,21 +54,6 @@ ALIASES = [
     (["--permission-mode", "bypassPermissions"], ["--yes"]),
     (["-a", "never"], ["--yes"]),
     (["--ask-for-approval", "never"], ["--yes"]),
-    (["--allowedTools", "Read,Edit"], ["--tools", "edit,read"]),
-    (["--allowed-tools", "Read Edit"], ["--tools", "edit,read"]),
-    (["--allowed-tools", "read", "--allowed-tools", "bash"], ["--tools", "bash,read"]),
-    (
-        ["--allowedTools", "Bash(git log:*),Read"],
-        [
-            "--tools",
-            "bash,read",
-            "--bash-allow",
-            "git log",
-            "--bash-allow",
-            "git log *",
-        ],
-    ),
-    (["--allowedTools", "mcp__docs__search"], ["--tools", "docs__search"]),
     (["--disallowedTools", "Bash(rm:*)"], ["--bash-deny", "rm", "--bash-deny", "rm *"]),
     (["--permission-mode", "plan"], ["--tools", "ask,list,read,search"]),
     (["-s", "read-only"], ["--tools", "ask,list,read,search"]),
@@ -95,6 +80,31 @@ def test_an_alias_is_its_canonical_flag(
 ) -> None:
     run = ["run", "go"]
     assert resolved(*run, *alias) == resolved(*run, *canonical)
+
+
+@pytest.mark.parametrize(
+    ("argv", "approved", "allow"),
+    [
+        (["--allowedTools", "Read,Edit"], ["edit", "read"], []),
+        (["--allowed-tools", "Read Edit"], ["edit", "read"], []),
+        (["--allowed-tools", "read", "--allowed-tools", "bash"], ["bash", "read"], []),
+        (
+            ["--allowedTools", "Bash(git log:*),Read"],
+            ["read"],
+            ["git log", "git log *"],
+        ),
+        (["--allowedTools", "Bash(*)"], ["bash"], []),
+    ],
+    ids=lambda a: " ".join(a) if isinstance(a, list) else None,
+)
+def test_allowed_tools_approves_and_leaves_the_tool_set(
+    argv: list[str], approved: list[str], allow: list[str], files: Path
+) -> None:
+    """Claude Code's flag approves (#350); --tools is what narrows."""
+    args = resolved("run", "go", *argv)
+    assert args["tools"] is None
+    assert args["approved_tools"] == approved
+    assert args["bash_allow"] == allow
 
 
 def test_accept_edits_is_its_own_setting(files: Path) -> None:
@@ -144,7 +154,6 @@ CONFLICTS = [
     (["--budget-usd", "1", "--max-budget-usd", "2"], "--budget-usd"),
     (["--schema", "schema.json", "--json-schema", SCHEMA], "--schema"),
     (["--json-schema", "schema.json", "--output-schema", SCHEMA], "--json-schema"),
-    (["--tools", "read", "--allowed-tools", "bash"], "--tools"),
     (["--tools", "bash", "--permission-mode", "plan"], "--tools"),
     (["--bash-sandbox", "--root", ".", "-s", "danger-full-access"], "--bash-sandbox"),
 ]
@@ -264,7 +273,7 @@ def test_every_alias_is_advertised() -> None:
         assert name in flags, name
     aliases = describe()["flag_aliases"]
     assert aliases["--yolo"] == "--yes"
-    assert aliases["--allowedTools"] == "--tools"
+    assert aliases["--allowedTools"] == "--allowed-tools"  # approval (#350)
     assert aliases["--disallowedTools"] == "--disallowed-tools"
     assert aliases["-m"] == "--model"
     assert set(aliases) >= {"--append-system-prompt", "--add-dir", "--max-budget-usd"}

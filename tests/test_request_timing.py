@@ -589,7 +589,7 @@ def test_replay_refuses_a_malformed_timing(timing: Any, message: str) -> None:
 
 def test_contract_advertises_request_timing() -> None:
     contract = describe()
-    assert contract["contract"] == CONTRACT_VERSION == 3
+    assert contract["contract"] == CONTRACT_VERSION == 4
     entry = contract["request_timing"]
     assert entry["event"] == "cost"
     assert entry["event_detail"] == "timing"

@@ -201,10 +201,15 @@ def accepting_edits(
             answer = inner(tool, args)
             if not isinstance(answer, (bool, str)):
                 answer = await answer
-            if tool in FILE_WRITES and isinstance(inner, Approver):
+            if (
+                tool in FILE_WRITES
+                and isinstance(inner, Approver)
+                and tool not in policy.approved_tools
+            ):
                 # Only a write outside the folders is asked about here, so an
                 # `a` approves that call alone, as for .git: it must not open
-                # every later write, wherever it lands.
+                # every later write, wherever it lands. A tool --allowed-tools
+                # approved stays approved.
                 inner.always.discard(tool)
             return answer
 

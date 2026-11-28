@@ -904,6 +904,19 @@ async def test_attach_stops_on_a_contract_mismatch(tmp_path: Path) -> None:
         assert app.watcher.fatal is True
 
 
+async def test_attach_shows_a_contract_3_file(tmp_path: Path) -> None:
+    """A version 3 session file has version 4's shape, so attach reads it."""
+    path = tmp_path / "s.json"
+    save(new_session("older task"), path)
+    raw = json.loads(path.read_text())
+    raw["contract"] = 3
+    path.write_text(json.dumps(raw))
+    app = AttachApp(path, interval=0.02)
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: "older task" in shown(app))
+        assert app.watcher.fatal is False
+
+
 def test_attach_refuses_a_prompt(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["tui", "--attach", "s.json", "do it"]) == 2
     assert "--attach" in capsys.readouterr().err

@@ -666,6 +666,8 @@ def resolve_aliases(
 
     args.accept_edits = False
     deny_only = False
+    approved: set[str] = set()
+    allow_patterns: list[str] = []
     for action in parser._actions:
         if not action.dest.startswith("alias_"):
             continue
@@ -681,11 +683,11 @@ def resolve_aliases(
         elif canonical is not None:
             put(canonical.dest, value, flag)
         elif action.dest == "alias_allowed_tools":
+            # Approval, as in Claude Code, not a tool set (#350): --tools
+            # narrows, and this leaves the others available.
             names, patterns = _claude_tools(value, flag)
-            if patterns:
-                names |= {"bash"}
-            put("tools", ",".join(sorted(names)) or "none", flag, tool_set)
-            args.bash_allow = [*args.bash_allow, *patterns]
+            approved |= names
+            allow_patterns += patterns
         elif action.dest == "alias_disallowed_tools":
             names, patterns = _claude_tools(value, flag)
             unknown = sorted(names - frozenset(TOOLS))
@@ -733,6 +735,26 @@ def resolve_aliases(
                 f"{origin.get(text, text)} conflicts with {origin.get(path, path)}: "
                 "give one of them"
             )
+    # After every alias, since --tools, plan, read-only and --disallowed-tools
+    # may each narrow the set: approval never adds a tool, so a rule for bash
+    # in a run without it does nothing.
+    if args.tools is None or "bash" in tool_set(args.tools):
+        args.bash_allow = [*args.bash_allow, *allow_patterns]
+    args.approved_tools = sorted(approved)
+    # `nare tui` and bare `nare` have no --yes. Under contract 3 this flag
+    # narrowed the run: an old command line under --yes would now run every
+    # tool unasked, so it says so, unless the caller pins contract 4 and so
+    # already speaks the new meaning.
+    yes = getattr(args, "yes", False)
+    pinned = getattr(args, "contract", None) == CONTRACT_VERSION
+    widens = args.tools is None or deny_only
+    if (approved or allow_patterns) and yes and widens and not pinned:
+        print(
+            "nare: warning: --allowed-tools approves the tools it names and "
+            "leaves the others available, and --yes approves every call; pass "
+            "--tools to narrow the run",
+            file=sys.stderr,
+        )
     args.mcp_allow_all = args.tools is None or deny_only
     # A schema given inline, as Claude Code's --json-schema takes it.
     args.schema_text = None
@@ -1077,13 +1099,15 @@ def add_run_flags(parser: argparse.ArgumentParser) -> None:
         action="append",
         metavar="TOOLS",
         help=(
-            "Claude Code's --tools: tool names, comma or space separated and "
-            "repeatable, in nare's names or Claude Code's (Read, Edit, Bash...). "
-            "Bash(PATTERN) allows bash and adds PATTERN to --bash-allow; "
-            "Bash(git log:*) is git log and anything after it"
+            "approve these tools' calls without asking, as Claude Code's flag "
+            "does, and leave the other tools available (--tools narrows the "
+            "set): names comma or space separated and repeatable, in nare's "
+            "names or Claude Code's (Read, Edit, Bash...). Bash(PATTERN) adds "
+            "PATTERN to --bash-allow; Bash(git log:*) is git log and anything "
+            "after it"
         ),
     )
-    _mark(tool_list, nare_stands_for="--tools", nare_exact=True)
+    _mark(tool_list, nare_exact=True)
     tool_denials = parser.add_argument(
         "--disallowed-tools",
         "--disallowedTools",
@@ -1394,6 +1418,38 @@ def policy_from_args(args: argparse.Namespace) -> Policy:
         if not path.is_dir():
             raise ValueError(f"--add-root {path} is not a directory")
     command_names = {tool.name for tool in args.command_tools}
+    approved = frozenset(getattr(args, "approved_tools", ()))
+    # A server__tool name may be of a server this run did not load (an
+    # untrusted .mcp.json, --strict-mcp-config): not offered, so approved to
+    # no effect, as a tool --tools leaves out is.
+    unknown = sorted(
+        name
+        for name in approved
+        if name not in TOOLS and name not in command_names and "__" not in name
+    )
+    if unknown:
+        raise ValueError(
+            f"--allowed-tools: unknown tool {', '.join(unknown)}; nare has: "
+            f"{', '.join(sorted(TOOLS))}, a caller tool, or server__tool for an "
+            "MCP tool"
+        )
+    # Approval never adds a tool, and records none the run cannot call. With
+    # MCP and caller tools offered whole (no --tools, or only
+    # --disallowed-tools), only the built-ins are narrowed; an MCP tool is
+    # still offered only when its server is loaded.
+    offered_external = getattr(args, "mcp_allow_all", args.tools is None)
+    approved = frozenset(
+        name
+        for name in approved
+        if name in tools
+        or (
+            offered_external
+            and (
+                name in command_names
+                or any(name.startswith(alias + "__") for alias in args.mcp_servers)
+            )
+        )
+    )
     unresolved_names = frozenset(
         name
         for name in tools
@@ -1408,6 +1464,7 @@ def policy_from_args(args: argparse.Namespace) -> Policy:
         bash_credentials=args.bash_credentials,
         bash_allow=frozenset(args.bash_allow),
         bash_deny=frozenset(args.bash_deny),
+        approved_tools=approved,
         bash_sandbox=args.bash_sandbox,
         bash_network=args.bash_network,
     )

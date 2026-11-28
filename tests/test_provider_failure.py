@@ -210,7 +210,7 @@ def test_the_reproduction_reports_a_refused_constrained_request(
             "--jsonl",
             "--yes",
             "--contract",
-            "3",
+            "4",
             "--provider",
             "openai",
             "--model",
@@ -481,7 +481,7 @@ def test_the_contract_advertises_the_failure_record() -> None:
         "result_field": "failure",
         "session_field": "failure",
     }
-    assert describe()["contract"] == 3
+    assert describe()["contract"] == 4
 
 
 # Review follow-ups: discovery, the last-turn summary, a failed session write
